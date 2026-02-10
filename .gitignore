@@ -1,0 +1,38 @@
+# Ignore build outputs
+wandersort
+*.exe
+*.dll
+*.so
+*.dylib
+bin/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of go coverage tool
+*.out
+.env
+
+# Database files
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Cache directories
+.wandersort/
+
+# Dependency directories
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+log.json
