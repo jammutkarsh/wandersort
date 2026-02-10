@@ -1,0 +1,210 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "API documentation for WanderSort",
+        "title": "WanderSort API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "paths": {
+        "/internal/v1/scans/cleanup-output": {
+            "post": {
+                "description": "Checks every ORGANIZED entry in the file registry and removes those whose\nfiles no longer exist on disk. Does NOT re-index or re-sort any files.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Scans"
+                ],
+                "summary": "Clean up stale organized-library entries",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/scans.CleanupOutputResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/v1/scans/count": {
+            "get": {
+                "description": "Get the total number of files scanned across all sessions",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Scans"
+                ],
+                "summary": "Get total file count",
+                "responses": {
+                    "200": {
+                        "description": "Total file count",
+                        "schema": {
+                            "$ref": "#/definitions/scans.FileCountResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/v1/scans/start": {
+            "post": {
+                "description": "Start a new scan session with specified root paths",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Scans"
+                ],
+                "summary": "Start a new scan session",
+                "parameters": [
+                    {
+                        "description": "Start Scan Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/scans.StartScanRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/scans.StartScanResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/v1/scans/status": {
+            "get": {
+                "description": "Get the status of a scan session",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Scans"
+                ],
+                "summary": "Get scan status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "name": "sessionId",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/scanner.ScanSession"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "scanner.ScanSession": {
+            "type": "object",
+            "properties": {
+                "completedAt": {
+                    "type": "string"
+                },
+                "errorsEncountered": {
+                    "type": "integer"
+                },
+                "filesDiscovered": {
+                    "type": "integer"
+                },
+                "filesModified": {
+                    "type": "integer"
+                },
+                "filesNew": {
+                    "type": "integer"
+                },
+                "filesSkipped": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "lastError": {
+                    "type": "string"
+                },
+                "rootPaths": {
+                    "description": "JSONB in DB",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "startedAt": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "scans.CleanupOutputResponse": {
+            "type": "object",
+            "properties": {
+                "deletedCount": {
+                    "type": "integer"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "scans.FileCountResponse": {
+            "type": "object",
+            "properties": {
+                "totalFiles": {
+                    "type": "integer"
+                }
+            }
+        },
+        "scans.StartScanRequest": {
+            "type": "object",
+            "required": [
+                "rootPaths"
+            ],
+            "properties": {
+                "rootPaths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "scans.StartScanResponse": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string"
+                },
+                "sessionId": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        }
+    }
+}

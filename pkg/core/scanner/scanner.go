@@ -1,0 +1,593 @@
+package scanner
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jammutkarsh/wandersort/pkg/logger"
+)
+
+// Scanner handles file discovery and registry population
+type Scanner struct {
+	db         *pgxpool.Pool
+	classifier *FileClassifier
+	log        logger.Logger
+
+	// Configuration
+	config ScanConfig
+
+	// Path utilities
+	pathUtil *PathUtil
+
+	// Current session tracking
+	mu             sync.Mutex
+	currentSession *ScanSession
+
+	// Progress tracking (atomic counters)
+	discovered int64
+	skipped    int64
+	newFiles   int64
+	modified   int64
+	errors     int64
+}
+
+// ScanConfig holds scanner configuration
+type ScanConfig struct {
+	// Concurrency
+	MaxWalkers       int           // Number of parallel directory walkers
+	WorkerBufferSize int           // Channel buffer size
+	BatchInsertSize  int           // How many files to insert at once
+	ProgressInterval time.Duration // How often to update DB with progress
+}
+
+// NewScanner creates a new scanner instance.
+func NewScanner(db *pgxpool.Pool, log logger.Logger) *Scanner {
+	pathUtil, err := NewPathUtil()
+	if err != nil {
+		log.Error("Failed to initialize path utility", "error", err)
+		// Fallback: use HOME env var
+		homeDir, _ := os.UserHomeDir()
+		pathUtil = &PathUtil{homeDir: homeDir}
+	}
+
+	return &Scanner{
+		db:         db,
+		classifier: NewFileClassifier(),
+		log:        log,
+		pathUtil:   pathUtil,
+		config: ScanConfig{
+			MaxWalkers:       4,
+			WorkerBufferSize: 1000,
+			BatchInsertSize:  500,
+			ProgressInterval: 5 * time.Second,
+		},
+	}
+}
+
+// StartScan initiates a new scan session.
+// rootPaths may contain ~ notation; they are expanded before walking.
+func (s *Scanner) StartScan(ctx context.Context, rootPaths []string) (uuid.UUID, error) {
+	// Expand and validate root paths
+	expandedRoots := make([]string, len(rootPaths))
+	for i, root := range rootPaths {
+		expanded := s.pathUtil.ExpandPath(root)
+		if _, err := os.Stat(expanded); os.IsNotExist(err) {
+			return uuid.Nil, fmt.Errorf("root path does not exist: %s (expanded from %s)", expanded, root)
+		}
+		expandedRoots[i] = expanded
+	}
+
+	// Create scan session
+	sessionID := uuid.New()
+	session := &ScanSession{
+		ID:        sessionID,
+		StartedAt: time.Now(),
+		Status:    ScanStatusRunning,
+		RootPaths: rootPaths, // Store original paths (may contain ~)
+	}
+
+	// Convert root paths to JSON for PostgreSQL JSONB
+	rootPathsJSON, err := json.Marshal(rootPaths)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to marshal root paths: %w", err)
+	}
+
+	// Insert session into DB
+	_, err = s.db.Exec(ctx, `
+		INSERT INTO scan_sessions (id, started_at, status, root_paths)
+		VALUES ($1, $2, $3, $4)
+	`, sessionID, session.StartedAt, session.Status, rootPathsJSON)
+
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create scan session: %w", err)
+	}
+
+	s.mu.Lock()
+	s.currentSession = session
+	s.mu.Unlock()
+
+	s.log.Info("Scan session created", "session_id", sessionID, "root_paths", rootPaths)
+
+	// Detach from the request context so the scan continues even if the caller cancels.
+	scanCtx := context.WithoutCancel(ctx)
+
+	// Start background goroutine with expanded paths
+	go s.runScan(scanCtx, session, expandedRoots)
+
+	return sessionID, nil
+}
+
+func (s *Scanner) runScan(ctx context.Context, session *ScanSession, expandedRoots []string) {
+	// Reset counters
+	atomic.StoreInt64(&s.discovered, 0)
+	atomic.StoreInt64(&s.skipped, 0)
+	atomic.StoreInt64(&s.newFiles, 0)
+	atomic.StoreInt64(&s.modified, 0)
+	atomic.StoreInt64(&s.errors, 0)
+
+	// Channel for discovered files
+	filesChan := make(chan FileDiscovery, s.config.WorkerBufferSize)
+
+	// Start progress updater
+	progressCtx, cancelProgress := context.WithCancel(ctx)
+	defer cancelProgress()
+	go s.updateProgress(progressCtx, session.ID)
+
+	// Collect first walk error across all goroutines
+	var (
+		walkErrMu sync.Mutex
+		walkErr   error
+	)
+
+	// Start walker goroutines for each root path (expanded + original pairs)
+	var wg sync.WaitGroup
+	for i, expandedRoot := range expandedRoots {
+		wg.Add(1)
+		go func(expanded, original string) {
+			defer wg.Done()
+			if err := s.walkRoot(ctx, expanded, original, filesChan); err != nil {
+				walkErrMu.Lock()
+				if walkErr == nil {
+					walkErr = err
+				}
+				walkErrMu.Unlock()
+			}
+		}(expandedRoot, session.RootPaths[i])
+	}
+
+	// Close channel when all walkers complete
+	go func() {
+		wg.Wait()
+		close(filesChan)
+	}()
+
+	// Process discovered files in batches (returns after channel is closed)
+	s.processDiscoveries(ctx, session.ID, filesChan)
+
+	// Cleanup: Remove files that weren't seen in this scan (use original paths for matching)
+	cleanupErr := s.cleanupDeletedFiles(ctx, session.ID, session.RootPaths)
+
+	// Determine final status from the first significant error encountered.
+	walkErrMu.Lock()
+	ferr := walkErr
+	walkErrMu.Unlock()
+	if ferr == nil {
+		ferr = cleanupErr
+	}
+
+	finalStatus := ScanStatusCompleted
+	var lastError *string
+	if ferr != nil {
+		errStr := ferr.Error()
+		lastError = &errStr
+		if errors.Is(ferr, context.Canceled) {
+			finalStatus = ScanStatusCancelled
+		} else {
+			finalStatus = ScanStatusFailed
+		}
+	}
+
+	s.completeScan(ctx, session, finalStatus, lastError)
+}
+
+// walkRoot walks expandedRoot and emits FileDiscovery records with relative paths.
+// expandedRoot is the absolute filesystem path; originalRoot is the stored path (may use ~).
+func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot string, output chan<- FileDiscovery) error {
+	s.log.Info("Starting walk", "root", expandedRoot)
+
+	err := filepath.WalkDir(expandedRoot, func(path string, d fs.DirEntry, err error) error {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Handle errors (permission denied, etc.)
+		if err != nil {
+			s.log.Warn("Walk error", "path", path, "error", err)
+			atomic.AddInt64(&s.errors, 1)
+			return nil // Continue walking
+		}
+
+		// Skip ignored directories
+		if d.IsDir() {
+			if s.classifier.ShouldIgnoreDir(d.Name()) {
+				s.log.Debug("Skipping ignored directory", "path", path)
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Skip ignored files
+		if s.classifier.ShouldIgnore(d.Name()) {
+			return nil
+		}
+
+		// Classify file
+		mediaType, shouldProcess := s.classifier.Classify(path)
+		if !shouldProcess {
+			return nil
+		}
+
+		// Get file info
+		info, err := d.Info()
+		if err != nil {
+			s.log.Warn("Failed to get file info", "path", path, "error", err)
+			atomic.AddInt64(&s.errors, 1)
+			return nil
+		}
+
+		// Make path relative to the expanded root
+		relPath, err := s.pathUtil.MakeRelative(path, expandedRoot)
+		if err != nil {
+			s.log.Warn("Failed to make path relative", "path", path, "error", err)
+			atomic.AddInt64(&s.errors, 1)
+			return nil
+		}
+
+		// Create discovery record with relative path
+		discovery := FileDiscovery{
+			Path:       relPath, // Relative to source root
+			Size:       info.Size(),
+			ModTime:    info.ModTime(),
+			Extension:  strings.ToLower(filepath.Ext(path)),
+			SourceRoot: originalRoot, // Store original (may contain ~)
+			MediaType:  mediaType,
+		}
+
+		atomic.AddInt64(&s.discovered, 1)
+
+		// Send to processing channel
+		select {
+		case output <- discovery:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		s.log.Error("Walk failed", "root", expandedRoot, "error", err)
+		return err
+	}
+	return nil
+}
+
+func (s *Scanner) processDiscoveries(ctx context.Context, sessionID uuid.UUID, discoveries <-chan FileDiscovery) {
+	batch := make([]FileDiscovery, 0, s.config.BatchInsertSize)
+
+	for discovery := range discoveries {
+		batch = append(batch, discovery)
+
+		if len(batch) >= s.config.BatchInsertSize {
+			s.insertBatch(ctx, sessionID, batch)
+			batch = batch[:0] // Reset batch
+		}
+	}
+
+	// Insert remaining files
+	if len(batch) > 0 {
+		s.insertBatch(ctx, sessionID, batch)
+	}
+}
+
+func (s *Scanner) insertBatch(ctx context.Context, sessionID uuid.UUID, batch []FileDiscovery) {
+	if len(batch) == 0 {
+		return
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		s.log.Error("Failed to begin transaction", "error", err)
+		atomic.AddInt64(&s.errors, int64(len(batch)))
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	// Use pgx batch for better performance
+	batchQuery := &pgx.Batch{}
+
+	for _, file := range batch {
+		batchQuery.Queue(`
+			INSERT INTO file_registry (
+				file_path, file_size, file_modified_at,
+				scan_session_id, source_root, media_type, file_extension,
+				scan_status, path_type, file_origin, discovered_at, last_seen_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+			ON CONFLICT (file_path, source_root) DO UPDATE SET
+				last_seen_at = NOW(),
+				scan_session_id = EXCLUDED.scan_session_id,
+				file_origin = EXCLUDED.file_origin,
+				file_size = EXCLUDED.file_size,
+				file_modified_at = EXCLUDED.file_modified_at,
+				updated_at = NOW()
+			RETURNING (discovered_at = last_seen_at) AS is_new
+		`,
+			file.Path,
+			file.Size,
+			file.ModTime,
+			sessionID,
+			file.SourceRoot,
+			file.MediaType,
+			file.Extension,
+			ScanStatusDiscovered,
+			PathTypeRelative,
+			FileOriginSource, // Source scans always produce SOURCE-origin files
+		)
+	}
+
+	// Execute batch
+	br := tx.SendBatch(ctx, batchQuery)
+
+	// Process results — use QueryRow to read the RETURNING column.
+	// discovered_at is set only on INSERT (never touched by ON CONFLICT UPDATE),
+	// while last_seen_at is always set to NOW(). Within a single transaction NOW()
+	// is constant, so discovered_at = last_seen_at iff the row was freshly inserted.
+	for i := range batch {
+		var isNew bool
+		if err := br.QueryRow().Scan(&isNew); err != nil {
+			s.log.Warn("Failed to insert file", "path", batch[i].Path, "error", err)
+			atomic.AddInt64(&s.errors, 1)
+		} else if isNew {
+			atomic.AddInt64(&s.newFiles, 1)
+		} else {
+			// Existing row — count as skipped (unchanged).
+			// A full "modified" detection would require reading the old row first;
+			// for progress tracking purposes this is sufficient.
+			atomic.AddInt64(&s.skipped, 1)
+		}
+	}
+
+	// Must close BatchResults before Commit; otherwise the connection is still
+	// considered busy and Commit returns "conn busy".
+	if err := br.Close(); err != nil {
+		s.log.Error("Failed to close batch results", "error", err)
+		atomic.AddInt64(&s.errors, int64(len(batch)))
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		s.log.Error("Failed to commit batch", "error", err)
+		atomic.AddInt64(&s.errors, int64(len(batch)))
+		return
+	}
+
+	s.log.Debug("Batch inserted", "count", len(batch))
+}
+
+func (s *Scanner) cleanupDeletedFiles(ctx context.Context, sessionID uuid.UUID, rootPaths []string) error {
+	s.log.Info("Cleaning up deleted files")
+
+	result, err := s.db.Exec(ctx, `
+		DELETE FROM file_registry
+		WHERE source_root = ANY($1)
+		  AND scan_session_id != $2
+	`, rootPaths, sessionID)
+
+	if err != nil {
+		s.log.Error("Failed to cleanup deleted files", "error", err)
+		return err
+	}
+
+	deleted := result.RowsAffected()
+	if deleted > 0 {
+		s.log.Info("Deleted files cleaned up", "count", deleted)
+	}
+	return nil
+}
+
+func (s *Scanner) updateProgress(ctx context.Context, sessionID uuid.UUID) {
+	ticker := time.NewTicker(s.config.ProgressInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, err := s.db.Exec(ctx, `
+				UPDATE scan_sessions
+				SET files_discovered = $1,
+					files_skipped = $2,
+					files_new = $3,
+					files_modified = $4,
+					errors_encountered = $5
+				WHERE id = $6
+			`,
+				atomic.LoadInt64(&s.discovered),
+				atomic.LoadInt64(&s.skipped),
+				atomic.LoadInt64(&s.newFiles),
+				atomic.LoadInt64(&s.modified),
+				atomic.LoadInt64(&s.errors),
+				sessionID,
+			)
+
+			if err != nil {
+				s.log.Warn("Failed to update progress", "error", err)
+			}
+		}
+	}
+}
+
+func (s *Scanner) completeScan(ctx context.Context, session *ScanSession, finalStatus string, lastError *string) {
+	s.log.Info("Completing scan", "session_id", session.ID, "status", finalStatus)
+
+	_, err := s.db.Exec(ctx, `
+		UPDATE scan_sessions
+		SET completed_at = NOW(),
+			status = $1,
+			files_discovered = $2,
+			files_skipped = $3,
+			files_new = $4,
+			files_modified = $5,
+			errors_encountered = $6,
+			last_error = $7
+		WHERE id = $8
+	`,
+		finalStatus,
+		atomic.LoadInt64(&s.discovered),
+		atomic.LoadInt64(&s.skipped),
+		atomic.LoadInt64(&s.newFiles),
+		atomic.LoadInt64(&s.modified),
+		atomic.LoadInt64(&s.errors),
+		lastError,
+		session.ID,
+	)
+
+	if err != nil {
+		s.log.Error("Failed to complete scan", "error", err)
+		return
+	}
+
+	s.log.Info("Scan finished", "session_id", session.ID, "status", finalStatus,
+		"discovered", atomic.LoadInt64(&s.discovered),
+		"new", atomic.LoadInt64(&s.newFiles),
+		"skipped", atomic.LoadInt64(&s.skipped),
+		"modified", atomic.LoadInt64(&s.modified),
+		"errors", atomic.LoadInt64(&s.errors))
+}
+
+// GetScanStatus returns the current status of a scan session
+func (s *Scanner) GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*ScanSession, error) {
+	var session ScanSession
+	var rootPathsJSON []byte
+
+	err := s.db.QueryRow(ctx, `
+		SELECT id, started_at, completed_at, status, root_paths,
+			   files_discovered, files_skipped, files_new, files_modified,
+			   errors_encountered, last_error
+		FROM scan_sessions
+		WHERE id = $1
+	`, sessionID).Scan(
+		&session.ID,
+		&session.StartedAt,
+		&session.CompletedAt,
+		&session.Status,
+		&rootPathsJSON,
+		&session.FilesDiscovered,
+		&session.FilesSkipped,
+		&session.FilesNew,
+		&session.FilesModified,
+		&session.ErrorsEncountered,
+		&session.LastError,
+	)
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("scan session not found")
+		}
+		return nil, fmt.Errorf("failed to get scan status: %w", err)
+	}
+
+	// Unmarshal root paths
+	if err := json.Unmarshal(rootPathsJSON, &session.RootPaths); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal root paths: %w", err)
+	}
+
+	return &session, nil
+}
+
+// GetFileCount returns the total number of files in the registry
+func (s *Scanner) GetFileCount(ctx context.Context) (int64, error) {
+	var count int64
+	err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM file_registry
+	`).Scan(&count)
+
+	return count, err
+}
+
+// CleanupOrganizedFiles checks every ORGANIZED entry in the registry and removes
+// those whose files no longer exist on disk. It does NOT re-index or re-classify
+// any files — it is a pure deletion pass for stale entries.
+// Returns the number of registry rows deleted.
+func (s *Scanner) CleanupOrganizedFiles(ctx context.Context) (int64, error) {
+	type entry struct {
+		ID         int64
+		FilePath   string
+		SourceRoot string
+		PathType   string
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT id, file_path, source_root, path_type
+		FROM file_registry
+		WHERE file_origin = $1
+	`, FileOriginOrganized)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query organized files: %w", err)
+	}
+	defer rows.Close()
+
+	var missing []int64
+	for rows.Next() {
+		var e entry
+		if err := rows.Scan(&e.ID, &e.FilePath, &e.SourceRoot, &e.PathType); err != nil {
+			return 0, fmt.Errorf("failed to scan row: %w", err)
+		}
+
+		var absPath string
+		if e.PathType == PathTypeAbsolute {
+			absPath = e.FilePath
+		} else {
+			absPath = s.pathUtil.MakeAbsolute(e.FilePath, e.SourceRoot)
+		}
+
+		if _, statErr := os.Stat(absPath); os.IsNotExist(statErr) {
+			missing = append(missing, e.ID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("row iteration error: %w", err)
+	}
+
+	if len(missing) == 0 {
+		s.log.Info("Organized library cleanup: no stale entries found")
+		return 0, nil
+	}
+
+	result, err := s.db.Exec(ctx, `
+		DELETE FROM file_registry WHERE id = ANY($1)
+	`, missing)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete stale organized entries: %w", err)
+	}
+
+	deleted := result.RowsAffected()
+	s.log.Info("Organized library cleanup complete", "deleted", deleted)
+	return deleted, nil
+}

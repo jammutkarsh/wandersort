@@ -1,0 +1,138 @@
+definitions:
+  scanner.ScanSession:
+    properties:
+      completedAt:
+        type: string
+      errorsEncountered:
+        type: integer
+      filesDiscovered:
+        type: integer
+      filesModified:
+        type: integer
+      filesNew:
+        type: integer
+      filesSkipped:
+        type: integer
+      id:
+        type: string
+      lastError:
+        type: string
+      rootPaths:
+        description: JSONB in DB
+        items:
+          type: string
+        type: array
+      startedAt:
+        type: string
+      status:
+        type: string
+    type: object
+  scans.CleanupOutputResponse:
+    properties:
+      deletedCount:
+        type: integer
+      message:
+        type: string
+    type: object
+  scans.FileCountResponse:
+    properties:
+      totalFiles:
+        type: integer
+    type: object
+  scans.StartScanRequest:
+    properties:
+      rootPaths:
+        items:
+          type: string
+        type: array
+    required:
+    - rootPaths
+    type: object
+  scans.StartScanResponse:
+    properties:
+      message:
+        type: string
+      sessionId:
+        type: string
+      status:
+        type: string
+    type: object
+info:
+  contact: {}
+  description: API documentation for WanderSort
+  title: WanderSort API
+  version: "1.0"
+paths:
+  /internal/v1/scans/cleanup-output:
+    post:
+      description: |-
+        Checks every ORGANIZED entry in the file registry and removes those whose
+        files no longer exist on disk. Does NOT re-index or re-sort any files.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/scans.CleanupOutputResponse'
+      summary: Clean up stale organized-library entries
+      tags:
+      - Scans
+  /internal/v1/scans/count:
+    get:
+      consumes:
+      - application/json
+      description: Get the total number of files scanned across all sessions
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Total file count
+          schema:
+            $ref: '#/definitions/scans.FileCountResponse'
+      summary: Get total file count
+      tags:
+      - Scans
+  /internal/v1/scans/start:
+    post:
+      consumes:
+      - application/json
+      description: Start a new scan session with specified root paths
+      parameters:
+      - description: Start Scan Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/scans.StartScanRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/scans.StartScanResponse'
+      summary: Start a new scan session
+      tags:
+      - Scans
+  /internal/v1/scans/status:
+    get:
+      consumes:
+      - application/json
+      description: Get the status of a scan session
+      parameters:
+      - in: query
+        name: sessionId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/scanner.ScanSession'
+      summary: Get scan status
+      tags:
+      - Scans
+swagger: "2.0"
