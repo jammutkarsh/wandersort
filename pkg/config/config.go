@@ -3,9 +3,10 @@ package config
 import "os"
 
 type Configuration struct {
-	ServerPort string   `koanf:"port"`
-	Postgres   Postgres `koanf:"postgres"`
-	OutputPath string   `koanf:"output_path"`
+	ServerPort  string   `koanf:"port"`
+	Postgres    Postgres `koanf:"postgres"`
+	OutputPath  string   `koanf:"output_path"`
+	OTelEnabled bool     `koanf:"otel_enabled"`
 }
 
 type Postgres struct {
@@ -23,8 +24,9 @@ func Load() *Configuration {
 		outputPath = home + "/WanderSort_Library"
 	}
 	return &Configuration{
-		ServerPort: os.Getenv("PORT"),
-		OutputPath: outputPath,
+		ServerPort:  os.Getenv("PORT"),
+		OutputPath:  outputPath,
+		OTelEnabled: os.Getenv("OTEL_ENABLED") == "true",
 		Postgres: Postgres{
 			User:     os.Getenv("POSTGRES_USER"),
 			Password: os.Getenv("POSTGRES_PASSWORD"),

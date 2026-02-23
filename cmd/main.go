@@ -12,8 +12,10 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/telemetry"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 )
 
 // @title           WanderSort API
@@ -26,10 +28,27 @@ func main() {
 	// Initialize configuration
 	cfg := config.Load()
 
-	// Setup structured logging: pretty console + JSON appended to log.json
+	// ── OpenTelemetry ──────────────────────────────────────────────────────
+	if cfg.OTelEnabled {
+		shutdown, err := telemetry.Setup(ctx)
+		if err != nil {
+			log.Printf("warn: failed to initialise OpenTelemetry: %v", err)
+		} else {
+			defer func() {
+				if err := shutdown(ctx); err != nil {
+					log.Printf("warn: OTel shutdown error: %v", err)
+				}
+			}()
+		}
+	}
+
+	// ── Logger ─────────────────────────────────────────────────────────────
+	// OTel bridge must be enabled AFTER telemetry.Setup() registers the
+	// global LoggerProvider.
 	wsLogger := logger.New(
 		logger.WithBackend(logger.BackendBoth),
 		logger.WithLevel("info"),
+		logger.WithOTelBridge(cfg.OTelEnabled),
 	)
 
 	// Initialize database
@@ -41,6 +60,9 @@ func main() {
 
 	// Setup Gin router
 	router := gin.New()
+	if cfg.OTelEnabled {
+		router.Use(otelgin.Middleware("wandersort"))
+	}
 	router.Use(logger.GinLogger(wsLogger))
 	router.Use(api.RecoveryMiddleware())
 	router.Use(api.RequestIDMiddleware())
@@ -64,7 +86,7 @@ func main() {
 		port = "8080"
 	}
 
-	wsLogger.Info("Server starting", "port", port)
+	wsLogger.Info("Server starting", "port", port, "otel", cfg.OTelEnabled)
 	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}

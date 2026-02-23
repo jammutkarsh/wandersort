@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/exaring/otelpgx"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
@@ -26,6 +27,7 @@ func InitDB(ctx context.Context, cfg config.Postgres, log logger.Logger) *pgxpoo
 		log.Error("unable to parse database config", "error", err)
 		return nil
 	}
+	poolConfig.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName())
 
 	dbpool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
