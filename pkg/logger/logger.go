@@ -12,6 +12,7 @@ import (
 	"os"
 
 	slogmulti "github.com/samber/slog-multi"
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 )
 
 // Logger is the shared logging interface used throughout the application.
@@ -47,6 +48,9 @@ type Config struct {
 	// LogFile is the path to the JSON log file used by BackendJSON and
 	// BackendBoth. Defaults to DefaultLogFile ("log.json").
 	LogFile string
+	// OTelBridge enables the slog → OpenTelemetry log bridge so that every
+	// log record is also forwarded to the configured OTel LoggerProvider.
+	OTelBridge bool
 }
 
 // Option is a functional option that mutates a Config.
@@ -67,6 +71,13 @@ func WithLogFile(path string) Option {
 	return func(c *Config) { c.LogFile = path }
 }
 
+// WithOTelBridge enables (or disables) forwarding log records to the global
+// OpenTelemetry LoggerProvider. Call this after telemetry.Setup() has
+// registered the global provider.
+func WithOTelBridge(enabled bool) Option {
+	return func(c *Config) { c.OTelBridge = enabled }
+}
+
 // New constructs a Logger from the supplied options.
 // If no options are provided it returns a console logger at debug level.
 //
@@ -75,11 +86,12 @@ func WithLogFile(path string) Option {
 //	// Pretty console only (development)
 //	l := logger.New()
 //
-//	// JSON file only (production)
-//	l := logger.New(logger.WithBackend(logger.BackendJSON), logger.WithLevel("warn"))
-//
-//	// Console + JSON file (default log.json)
-//	l := logger.New(logger.WithBackend(logger.BackendBoth), logger.WithLevel("info"))
+//	// Console + JSON file + OTel log bridge
+//	l := logger.New(
+//		logger.WithBackend(logger.BackendBoth),
+//		logger.WithLevel("info"),
+//		logger.WithOTelBridge(true),
+//	)
 func New(opts ...Option) Logger {
 	cfg := &Config{
 		Backend: BackendConsole,
@@ -94,35 +106,67 @@ func New(opts ...Option) Logger {
 		logFile = DefaultLogFile
 	}
 
+	level := getSlogLevel(cfg.Level)
+
+	// Collect slog.Handler backends to fan out to.
+	buildHandlers := func(includeJSON bool) []slog.Handler {
+		var handlers []slog.Handler
+
+		// Pretty console handler
+		if cfg.Backend == BackendConsole || cfg.Backend == BackendBoth {
+			handlers = append(handlers, NewPrettyHandler(&slog.HandlerOptions{Level: level}))
+		}
+
+		// JSON file handler
+		if includeJSON {
+			f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+			if err != nil {
+				f = os.Stderr
+			}
+			handlers = append(handlers, slog.NewJSONHandler(f, &slog.HandlerOptions{
+				Level:     level,
+				AddSource: true,
+			}))
+		}
+
+		// OTel log bridge
+		if cfg.OTelBridge {
+			handlers = append(handlers, otelslog.NewHandler("wandersort"))
+		}
+
+		return handlers
+	}
+
 	switch cfg.Backend {
 	case BackendJSON:
-		return NewSlogLogger(cfg.Level, logFile)
+		if !cfg.OTelBridge {
+			// Fast path: no fan-out needed
+			return NewSlogLogger(cfg.Level, logFile)
+		}
+		handlers := buildHandlers(true)
+		return &ConsoleLogger{
+			logger: slog.New(slogmulti.Fanout(handlers...)),
+			level:  level,
+		}
 
 	case BackendBoth:
-		level := getSlogLevel(cfg.Level)
-
-		// Pretty handler → stderr
-		prettyH := NewPrettyHandler(&slog.HandlerOptions{Level: level})
-
-		// JSON handler → file
-		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			f = os.Stderr
-		}
-		jsonH := slog.NewJSONHandler(f, &slog.HandlerOptions{
-			Level:     level,
-			AddSource: true,
-		})
-
+		handlers := buildHandlers(true)
 		return &ConsoleLogger{
-			logger: slog.New(slogmulti.Fanout(prettyH, jsonH)),
+			logger: slog.New(slogmulti.Fanout(handlers...)),
 			level:  level,
 		}
 
 	case BackendNoop:
 		return NewNoopLogger()
 
-	default:
-		return NewConsoleLogger(cfg.Level)
+	default: // BackendConsole
+		if !cfg.OTelBridge {
+			return NewConsoleLogger(cfg.Level)
+		}
+		handlers := buildHandlers(false)
+		return &ConsoleLogger{
+			logger: slog.New(slogmulti.Fanout(handlers...)),
+			level:  level,
+		}
 	}
 }
