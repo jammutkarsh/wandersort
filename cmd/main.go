@@ -2,8 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jammutkarsh/wandersort/docs"
@@ -26,7 +31,10 @@ func main() {
 	defer cancel()
 
 	// Initialize configuration
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// ── OpenTelemetry ──────────────────────────────────────────────────────
 	if cfg.OTelEnabled {
@@ -45,18 +53,14 @@ func main() {
 	// ── Logger ─────────────────────────────────────────────────────────────
 	// OTel bridge must be enabled AFTER telemetry.Setup() registers the
 	// global LoggerProvider.
-	wsLogger := logger.New(
-		logger.WithBackend(logger.BackendBoth),
-		logger.WithLevel("info"),
-		logger.WithOTelBridge(cfg.OTelEnabled),
-	)
+	wsLogger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile, cfg.OTelEnabled)
 
 	// Initialize database
 	psql := db.InitDB(ctx, cfg.Postgres, wsLogger)
 	defer psql.Close()
 
 	// Setup API dependencies
-	scansHandler := scans.NewHandler(scans.NewService(ctx, psql, wsLogger), wsLogger)
+	scansHandler := scans.NewHandler(scans.NewService(ctx, psql, wsLogger, cfg.OutputPath), wsLogger)
 
 	// Setup Gin router
 	router := gin.New()
@@ -80,14 +84,41 @@ func main() {
 	docs.SwaggerInfo.Host = os.Getenv("HOST")
 	v1.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
 
-	// Start server
+	// ── HTTP server ────────────────────────────────────────────────────────
 	port := cfg.ServerPort
 	if port == "" {
 		port = "8080"
 	}
 
-	wsLogger.Info("Server starting", "port", port, "otel", cfg.OTelEnabled)
-	if err := router.Run(":" + port); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: router,
 	}
+
+	// Start server in a goroutine so it doesn't block the signal listener.
+	go func() {
+		wsLogger.Info("Server starting", "port", port, "otel", cfg.OTelEnabled)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	// ── Graceful shutdown ──────────────────────────────────────────────────
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-quit
+	wsLogger.Info("Shutting down", "signal", sig.String())
+
+	// Cancel the root context to stop any background goroutines.
+	cancel()
+
+	// Give in-flight requests up to 30 s to complete.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("forced shutdown: %v", err)
+	}
+
+	wsLogger.Info("Server stopped")
 }

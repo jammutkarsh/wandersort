@@ -15,9 +15,9 @@ type Service struct {
 	logger  logger.Logger
 }
 
-func NewService(ctx context.Context, db *pgxpool.Pool, log logger.Logger) *Service {
+func NewService(ctx context.Context, db *pgxpool.Pool, log logger.Logger, outputPath string) *Service {
 	return &Service{
-		scanner: scanner.NewScanner(db, log),
+		scanner: scanner.NewScanner(db, log, outputPath),
 		logger:  log,
 	}
 }

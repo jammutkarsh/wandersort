@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,28 +20,32 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-// Scanner handles file discovery and registry population
+// Scanner handles file discovery and registry population.
+// It is stateless with respect to individual scan runs; all mutable state
+// lives in scanState, which is created fresh for every call to runScan.
+// This makes concurrent scans safe without any locking on Scanner itself.
 type Scanner struct {
 	db         *pgxpool.Pool
 	classifier *FileClassifier
 	log        logger.Logger
+	config     ScanConfig
+	pathUtil   *PathUtil
+	outputPath string
+}
 
-	// Configuration
-	config ScanConfig
-
-	// Path utilities
-	pathUtil *PathUtil
-
-	// Current session tracking
-	mu             sync.Mutex
-	currentSession *ScanSession
-
-	// Progress tracking (atomic counters)
+// scanState holds all mutable counters and collections for a single scan run.
+// A fresh instance is allocated by runScan, so concurrent scans never share
+// any counter or slice — no data races, no cross-scan leakage.
+type scanState struct {
 	discovered int64
 	skipped    int64
 	newFiles   int64
 	modified   int64
 	errors     int64
+
+	unsupported      int64
+	unsupportedMu    sync.Mutex
+	unsupportedPaths []string
 }
 
 // ScanConfig holds scanner configuration
@@ -53,7 +58,7 @@ type ScanConfig struct {
 }
 
 // NewScanner creates a new scanner instance.
-func NewScanner(db *pgxpool.Pool, log logger.Logger) *Scanner {
+func NewScanner(db *pgxpool.Pool, log logger.Logger, outputPath string) *Scanner {
 	pathUtil, err := NewPathUtil()
 	if err != nil {
 		log.Error("Failed to initialize path utility", "error", err)
@@ -67,6 +72,7 @@ func NewScanner(db *pgxpool.Pool, log logger.Logger) *Scanner {
 		classifier: NewFileClassifier(),
 		log:        log,
 		pathUtil:   pathUtil,
+		outputPath: outputPath,
 		config: ScanConfig{
 			MaxWalkers:       4,
 			WorkerBufferSize: 1000,
@@ -114,10 +120,6 @@ func (s *Scanner) StartScan(ctx context.Context, rootPaths []string) (uuid.UUID,
 		return uuid.Nil, fmt.Errorf("failed to create scan session: %w", err)
 	}
 
-	s.mu.Lock()
-	s.currentSession = session
-	s.mu.Unlock()
-
 	s.log.Info("Scan session created", "session_id", sessionID, "root_paths", rootPaths)
 
 	// Detach from the request context so the scan continues even if the caller cancels.
@@ -130,12 +132,8 @@ func (s *Scanner) StartScan(ctx context.Context, rootPaths []string) (uuid.UUID,
 }
 
 func (s *Scanner) runScan(ctx context.Context, session *ScanSession, expandedRoots []string) {
-	// Reset counters
-	atomic.StoreInt64(&s.discovered, 0)
-	atomic.StoreInt64(&s.skipped, 0)
-	atomic.StoreInt64(&s.newFiles, 0)
-	atomic.StoreInt64(&s.modified, 0)
-	atomic.StoreInt64(&s.errors, 0)
+	// Allocate fresh state for this run — no shared mutable fields on Scanner.
+	st := &scanState{}
 
 	// Channel for discovered files
 	filesChan := make(chan FileDiscovery, s.config.WorkerBufferSize)
@@ -143,7 +141,7 @@ func (s *Scanner) runScan(ctx context.Context, session *ScanSession, expandedRoo
 	// Start progress updater
 	progressCtx, cancelProgress := context.WithCancel(ctx)
 	defer cancelProgress()
-	go s.updateProgress(progressCtx, session.ID)
+	go s.updateProgress(progressCtx, session.ID, st)
 
 	// Collect first walk error across all goroutines
 	var (
@@ -157,7 +155,7 @@ func (s *Scanner) runScan(ctx context.Context, session *ScanSession, expandedRoo
 		wg.Add(1)
 		go func(expanded, original string) {
 			defer wg.Done()
-			if err := s.walkRoot(ctx, expanded, original, filesChan); err != nil {
+			if err := s.walkRoot(ctx, expanded, original, filesChan, st); err != nil {
 				walkErrMu.Lock()
 				if walkErr == nil {
 					walkErr = err
@@ -174,7 +172,10 @@ func (s *Scanner) runScan(ctx context.Context, session *ScanSession, expandedRoo
 	}()
 
 	// Process discovered files in batches (returns after channel is closed)
-	s.processDiscoveries(ctx, session.ID, filesChan)
+	s.processDiscoveries(ctx, session.ID, filesChan, st)
+
+	// Write unsupported files report (walkers are all done at this point)
+	s.writeUnsupportedFiles(session.ID, st)
 
 	// Cleanup: Remove files that weren't seen in this scan (use original paths for matching)
 	cleanupErr := s.cleanupDeletedFiles(ctx, session.ID, session.RootPaths)
@@ -199,12 +200,12 @@ func (s *Scanner) runScan(ctx context.Context, session *ScanSession, expandedRoo
 		}
 	}
 
-	s.completeScan(ctx, session, finalStatus, lastError)
+	s.completeScan(ctx, session, finalStatus, lastError, st)
 }
 
 // walkRoot walks expandedRoot and emits FileDiscovery records with relative paths.
 // expandedRoot is the absolute filesystem path; originalRoot is the stored path (may use ~).
-func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot string, output chan<- FileDiscovery) error {
+func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot string, output chan<- FileDiscovery, st *scanState) error {
 	s.log.Info("Starting walk", "root", expandedRoot)
 
 	err := filepath.WalkDir(expandedRoot, func(path string, d fs.DirEntry, err error) error {
@@ -218,7 +219,7 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 		// Handle errors (permission denied, etc.)
 		if err != nil {
 			s.log.Warn("Walk error", "path", path, "error", err)
-			atomic.AddInt64(&s.errors, 1)
+			atomic.AddInt64(&st.errors, 1)
 			return nil // Continue walking
 		}
 
@@ -239,6 +240,11 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 		// Classify file
 		mediaType, shouldProcess := s.classifier.Classify(path)
 		if !shouldProcess {
+			s.log.Debug("Unsupported file type, skipping", "path", path)
+			atomic.AddInt64(&st.unsupported, 1)
+			st.unsupportedMu.Lock()
+			st.unsupportedPaths = append(st.unsupportedPaths, path)
+			st.unsupportedMu.Unlock()
 			return nil
 		}
 
@@ -246,7 +252,7 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 		info, err := d.Info()
 		if err != nil {
 			s.log.Warn("Failed to get file info", "path", path, "error", err)
-			atomic.AddInt64(&s.errors, 1)
+			atomic.AddInt64(&st.errors, 1)
 			return nil
 		}
 
@@ -254,7 +260,7 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 		relPath, err := s.pathUtil.MakeRelative(path, expandedRoot)
 		if err != nil {
 			s.log.Warn("Failed to make path relative", "path", path, "error", err)
-			atomic.AddInt64(&s.errors, 1)
+			atomic.AddInt64(&st.errors, 1)
 			return nil
 		}
 
@@ -268,7 +274,7 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 			MediaType:  mediaType,
 		}
 
-		atomic.AddInt64(&s.discovered, 1)
+		atomic.AddInt64(&st.discovered, 1)
 
 		// Send to processing channel
 		select {
@@ -287,25 +293,76 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 	return nil
 }
 
-func (s *Scanner) processDiscoveries(ctx context.Context, sessionID uuid.UUID, discoveries <-chan FileDiscovery) {
+// writeUnsupportedFiles writes all paths with unsupported extensions that were
+// collected during the scan to <outputPath>/unsupported_files_<sessionID>.txt,
+// one absolute path per line, sorted alphabetically.
+// No file is created when every scanned file had a recognised extension.
+func (s *Scanner) writeUnsupportedFiles(sessionID uuid.UUID, st *scanState) {
+	st.unsupportedMu.Lock()
+	paths := make([]string, len(st.unsupportedPaths))
+	copy(paths, st.unsupportedPaths)
+	st.unsupportedMu.Unlock()
+
+	if len(paths) == 0 {
+		s.log.Debug("No unsupported files found; skipping report")
+		return
+	}
+
+	sort.Strings(paths)
+
+	if err := os.MkdirAll(s.outputPath, 0o755); err != nil {
+		s.log.Error("Failed to create output directory for unsupported report", "error", err)
+		return
+	}
+
+	reportPath := filepath.Join(s.outputPath, fmt.Sprintf("unsupported_files_%s.txt", sessionID))
+	f, err := os.Create(reportPath)
+	if err != nil {
+		s.log.Error("Failed to create unsupported files report", "path", reportPath, "error", err)
+		return
+	}
+	defer f.Close()
+
+	header := fmt.Sprintf(
+		"# Unsupported files found during scan %s\n"+
+			"# These file types are not yet supported by WanderSort.\n"+
+			"# Please raise a feature request at https://github.com/jammutkarsh/wandersort/issues\n\n",
+		sessionID,
+	)
+	if _, err := fmt.Fprint(f, header); err != nil {
+		s.log.Error("Failed to write report header", "error", err)
+		return
+	}
+
+	for _, p := range paths {
+		if _, err := fmt.Fprintln(f, p); err != nil {
+			s.log.Error("Failed to write path to report", "path", p, "error", err)
+			return
+		}
+	}
+
+	s.log.Info("Unsupported files report written", "path", reportPath, "count", len(paths))
+}
+
+func (s *Scanner) processDiscoveries(ctx context.Context, sessionID uuid.UUID, discoveries <-chan FileDiscovery, st *scanState) {
 	batch := make([]FileDiscovery, 0, s.config.BatchInsertSize)
 
 	for discovery := range discoveries {
 		batch = append(batch, discovery)
 
 		if len(batch) >= s.config.BatchInsertSize {
-			s.insertBatch(ctx, sessionID, batch)
+			s.insertBatch(ctx, sessionID, batch, st)
 			batch = batch[:0] // Reset batch
 		}
 	}
 
 	// Insert remaining files
 	if len(batch) > 0 {
-		s.insertBatch(ctx, sessionID, batch)
+		s.insertBatch(ctx, sessionID, batch, st)
 	}
 }
 
-func (s *Scanner) insertBatch(ctx context.Context, sessionID uuid.UUID, batch []FileDiscovery) {
+func (s *Scanner) insertBatch(ctx context.Context, sessionID uuid.UUID, batch []FileDiscovery, st *scanState) {
 	if len(batch) == 0 {
 		return
 	}
@@ -313,7 +370,7 @@ func (s *Scanner) insertBatch(ctx context.Context, sessionID uuid.UUID, batch []
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		s.log.Error("Failed to begin transaction", "error", err)
-		atomic.AddInt64(&s.errors, int64(len(batch)))
+		atomic.AddInt64(&st.errors, int64(len(batch)))
 		return
 	}
 	defer tx.Rollback(ctx)
@@ -361,14 +418,14 @@ func (s *Scanner) insertBatch(ctx context.Context, sessionID uuid.UUID, batch []
 		var isNew bool
 		if err := br.QueryRow().Scan(&isNew); err != nil {
 			s.log.Warn("Failed to insert file", "path", batch[i].Path, "error", err)
-			atomic.AddInt64(&s.errors, 1)
+			atomic.AddInt64(&st.errors, 1)
 		} else if isNew {
-			atomic.AddInt64(&s.newFiles, 1)
+			atomic.AddInt64(&st.newFiles, 1)
 		} else {
 			// Existing row — count as skipped (unchanged).
 			// A full "modified" detection would require reading the old row first;
 			// for progress tracking purposes this is sufficient.
-			atomic.AddInt64(&s.skipped, 1)
+			atomic.AddInt64(&st.skipped, 1)
 		}
 	}
 
@@ -376,13 +433,13 @@ func (s *Scanner) insertBatch(ctx context.Context, sessionID uuid.UUID, batch []
 	// considered busy and Commit returns "conn busy".
 	if err := br.Close(); err != nil {
 		s.log.Error("Failed to close batch results", "error", err)
-		atomic.AddInt64(&s.errors, int64(len(batch)))
+		atomic.AddInt64(&st.errors, int64(len(batch)))
 		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		s.log.Error("Failed to commit batch", "error", err)
-		atomic.AddInt64(&s.errors, int64(len(batch)))
+		atomic.AddInt64(&st.errors, int64(len(batch)))
 		return
 	}
 
@@ -410,7 +467,7 @@ func (s *Scanner) cleanupDeletedFiles(ctx context.Context, sessionID uuid.UUID, 
 	return nil
 }
 
-func (s *Scanner) updateProgress(ctx context.Context, sessionID uuid.UUID) {
+func (s *Scanner) updateProgress(ctx context.Context, sessionID uuid.UUID, st *scanState) {
 	ticker := time.NewTicker(s.config.ProgressInterval)
 	defer ticker.Stop()
 
@@ -428,11 +485,11 @@ func (s *Scanner) updateProgress(ctx context.Context, sessionID uuid.UUID) {
 					errors_encountered = $5
 				WHERE id = $6
 			`,
-				atomic.LoadInt64(&s.discovered),
-				atomic.LoadInt64(&s.skipped),
-				atomic.LoadInt64(&s.newFiles),
-				atomic.LoadInt64(&s.modified),
-				atomic.LoadInt64(&s.errors),
+				atomic.LoadInt64(&st.discovered),
+				atomic.LoadInt64(&st.skipped),
+				atomic.LoadInt64(&st.newFiles),
+				atomic.LoadInt64(&st.modified),
+				atomic.LoadInt64(&st.errors),
 				sessionID,
 			)
 
@@ -443,7 +500,7 @@ func (s *Scanner) updateProgress(ctx context.Context, sessionID uuid.UUID) {
 	}
 }
 
-func (s *Scanner) completeScan(ctx context.Context, session *ScanSession, finalStatus string, lastError *string) {
+func (s *Scanner) completeScan(ctx context.Context, session *ScanSession, finalStatus string, lastError *string, st *scanState) {
 	s.log.Info("Completing scan", "session_id", session.ID, "status", finalStatus)
 
 	_, err := s.db.Exec(ctx, `
@@ -459,11 +516,11 @@ func (s *Scanner) completeScan(ctx context.Context, session *ScanSession, finalS
 		WHERE id = $8
 	`,
 		finalStatus,
-		atomic.LoadInt64(&s.discovered),
-		atomic.LoadInt64(&s.skipped),
-		atomic.LoadInt64(&s.newFiles),
-		atomic.LoadInt64(&s.modified),
-		atomic.LoadInt64(&s.errors),
+		atomic.LoadInt64(&st.discovered),
+		atomic.LoadInt64(&st.skipped),
+		atomic.LoadInt64(&st.newFiles),
+		atomic.LoadInt64(&st.modified),
+		atomic.LoadInt64(&st.errors),
 		lastError,
 		session.ID,
 	)
@@ -474,11 +531,11 @@ func (s *Scanner) completeScan(ctx context.Context, session *ScanSession, finalS
 	}
 
 	s.log.Info("Scan finished", "session_id", session.ID, "status", finalStatus,
-		"discovered", atomic.LoadInt64(&s.discovered),
-		"new", atomic.LoadInt64(&s.newFiles),
-		"skipped", atomic.LoadInt64(&s.skipped),
-		"modified", atomic.LoadInt64(&s.modified),
-		"errors", atomic.LoadInt64(&s.errors))
+		"discovered", atomic.LoadInt64(&st.discovered),
+		"new", atomic.LoadInt64(&st.newFiles),
+		"skipped", atomic.LoadInt64(&st.skipped),
+		"modified", atomic.LoadInt64(&st.modified),
+		"errors", atomic.LoadInt64(&st.errors))
 }
 
 // GetScanStatus returns the current status of a scan session
