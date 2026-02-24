@@ -11,7 +11,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -21,9 +21,10 @@ type Service struct {
 	logger  logger.Logger
 }
 
-func NewService(ctx context.Context, db *pgxpool.Pool, log logger.Logger, outputPath string) *Service {
+// NewService wires together the Scanner and logger.
+func NewService(log logger.Logger, sc *scanner.Scanner) *Service {
 	return &Service{
-		scanner: scanner.NewScanner(db, log, outputPath),
+		scanner: sc,
 		logger:  log,
 	}
 }
