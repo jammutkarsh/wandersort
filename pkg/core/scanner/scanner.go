@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/queue"
 )
 
 // Scanner handles file discovery and registry population.
@@ -31,6 +32,7 @@ type Scanner struct {
 	config     ScanConfig
 	pathUtil   *PathUtil
 	outputPath string
+	jobQueue   queue.Enqueuer
 }
 
 // scanState holds all mutable counters and collections for a single scan run.
@@ -58,6 +60,7 @@ type ScanConfig struct {
 }
 
 // NewScanner creates a new scanner instance.
+// The enqueuer is injected later via SetEnqueuer (see pkg/queue).
 func NewScanner(db *pgxpool.Pool, log logger.Logger, outputPath string) *Scanner {
 	pathUtil, err := NewPathUtil()
 	if err != nil {
@@ -82,56 +85,68 @@ func NewScanner(db *pgxpool.Pool, log logger.Logger, outputPath string) *Scanner
 	}
 }
 
-// StartScan initiates a new scan session.
-// rootPaths may contain ~ notation; they are expanded before walking.
+// SetEnqueuer injects the Enqueuer after construction.
+// Called by queue.New so the scanner can dispatch jobs without importing the queue package.
+func (s *Scanner) SetEnqueuer(e queue.Enqueuer) {
+	s.jobQueue = e
+}
+
+// StartScan validates rootPaths, creates the scan_sessions DB row, enqueues a
+// River job, and returns the new sessionID so the caller can poll for status.
 func (s *Scanner) StartScan(ctx context.Context, rootPaths []string) (uuid.UUID, error) {
+	sessionID, expandedRoots, err := s.prepareSession(ctx, rootPaths)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err := s.jobQueue.Enqueue(ctx, ScanTaskArgs{
+		SessionID:     sessionID.String(),
+		OriginalPaths: rootPaths,
+		ExpandedRoots: expandedRoots,
+	}); err != nil {
+		return uuid.Nil, fmt.Errorf("failed to enqueue scan job: %w", err)
+	}
+	return sessionID, nil
+}
+
+// prepareSession validates rootPaths, creates the scan_sessions DB row, and
+// returns the sessionID and expanded (absolute) root paths.
+func (s *Scanner) prepareSession(ctx context.Context, rootPaths []string) (uuid.UUID, []string, error) {
 	// Expand and validate root paths
 	expandedRoots := make([]string, len(rootPaths))
 	for i, root := range rootPaths {
 		expanded := s.pathUtil.ExpandPath(root)
 		if _, err := os.Stat(expanded); os.IsNotExist(err) {
-			return uuid.Nil, fmt.Errorf("root path does not exist: %s (expanded from %s)", expanded, root)
+			return uuid.Nil, nil, fmt.Errorf("root path does not exist: %s (expanded from %s)", expanded, root)
 		}
 		expandedRoots[i] = expanded
 	}
 
 	// Create scan session
 	sessionID := uuid.New()
-	session := &ScanSession{
-		ID:        sessionID,
-		StartedAt: time.Now(),
-		Status:    ScanStatusRunning,
-		RootPaths: rootPaths, // Store original paths (may contain ~)
-	}
+	startedAt := time.Now()
 
 	// Convert root paths to JSON for PostgreSQL JSONB
 	rootPathsJSON, err := json.Marshal(rootPaths)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("failed to marshal root paths: %w", err)
+		return uuid.Nil, nil, fmt.Errorf("failed to marshal root paths: %w", err)
 	}
 
 	// Insert session into DB
 	_, err = s.db.Exec(ctx, `
 		INSERT INTO scan_sessions (id, started_at, status, root_paths)
 		VALUES ($1, $2, $3, $4)
-	`, sessionID, session.StartedAt, session.Status, rootPathsJSON)
-
+	`, sessionID, startedAt, ScanStatusRunning, rootPathsJSON)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("failed to create scan session: %w", err)
+		return uuid.Nil, nil, fmt.Errorf("failed to create scan session: %w", err)
 	}
 
 	s.log.Info("Scan session created", "session_id", sessionID, "root_paths", rootPaths)
-
-	// Detach from the request context so the scan continues even if the caller cancels.
-	scanCtx := context.WithoutCancel(ctx)
-
-	// Start background goroutine with expanded paths
-	go s.runScan(scanCtx, session, expandedRoots)
-
-	return sessionID, nil
+	return sessionID, expandedRoots, nil
 }
 
-func (s *Scanner) runScan(ctx context.Context, session *ScanSession, expandedRoots []string) {
+// executeScan is the core scan pipeline. It is called by ScanTaskWorker.Work
+// and runs entirely within River's worker goroutine — no extra goroutine needed.
+func (s *Scanner) executeScan(ctx context.Context, session *ScanSession, expandedRoots []string) {
 	// Allocate fresh state for this run — no shared mutable fields on Scanner.
 	st := &scanState{}
 

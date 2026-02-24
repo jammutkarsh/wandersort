@@ -2,6 +2,7 @@ package scans
 
 import (
 	"net/http"
+	"os"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -47,6 +48,17 @@ func (h *Handler) HandleStartScan(c *gin.Context) {
 	if len(req.RootPaths) == 0 {
 		api.RespondError(c, api.BadRequest("VALIDATION_ERROR", "No root paths provided", map[string]any{"error": "At least one root path is required"}))
 		return
+	}
+
+	for i, path := range req.RootPaths {
+		if path == "" {
+			api.RespondError(c, api.BadRequest("VALIDATION_ERROR", "Empty root path provided", map[string]any{"error": "Root paths cannot be empty", "index": i}))
+			return
+		}
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			api.RespondError(c, api.BadRequest("VALIDATION_ERROR", "Root path does not exist", map[string]any{"error": err.Error(), "index": i, "path": path}))
+			return
+		}
 	}
 
 	sessionID, err := h.service.StartScan(c.Request.Context(), req.RootPaths)
