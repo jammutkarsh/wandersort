@@ -23,8 +23,8 @@ type FileRegistry struct {
 	ScanStatus    string `db:"scan_status"`
 
 	// Path storage
-	PathType   string `db:"path_type" json:"path_type"`     // RELATIVE or ABSOLUTE
-	FileOrigin string `db:"file_origin" json:"file_origin"` // SOURCE or ORGANIZED
+	PathType   string `db:"path_type" json:"pathType"`     // RELATIVE or ABSOLUTE
+	FileOrigin string `db:"file_origin" json:"fileOrigin"` // SOURCE or ORGANIZED
 
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`

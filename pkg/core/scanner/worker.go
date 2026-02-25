@@ -13,9 +13,9 @@ import (
 // ScanTaskArgs is the River job payload for a single scan request.
 // One job is inserted per StartScan call; the worker drives the full walk.
 type ScanTaskArgs struct {
-	SessionID     string   `json:"session_id"`
-	OriginalPaths []string `json:"original_paths"` // as supplied by the user (may contain ~)
-	ExpandedRoots []string `json:"expanded_roots"` // absolute, pre-validated by prepareSession
+	SessionID     string   `json:"sessionId"`
+	OriginalPaths []string `json:"originalPaths"` // as supplied by the user (may contain ~)
+	ExpandedRoots []string `json:"expandedRoots"` // absolute, pre-validated by prepareSession
 }
 
 // Kind is the unique job-type identifier River uses for routing.

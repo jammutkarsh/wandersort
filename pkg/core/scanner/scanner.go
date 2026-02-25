@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/queue"
+	"github.com/riverqueue/river"
 )
 
 // Scanner handles file discovery and registry population.
@@ -551,56 +552,99 @@ func (s *Scanner) completeScan(ctx context.Context, session *ScanSession, finalS
 		"skipped", atomic.LoadInt64(&st.skipped),
 		"modified", atomic.LoadInt64(&st.modified),
 		"errors", atomic.LoadInt64(&st.errors))
+
+	if finalStatus == ScanStatusCompleted {
+		s.enqueueHashJobs(ctx, session.ID)
+	}
 }
 
-// GetScanStatus returns the current status of a scan session
-func (s *Scanner) GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*ScanSession, error) {
-	var session ScanSession
-	var rootPathsJSON []byte
+// hashJobArgs is a local mirror of hasher.HashTaskArgs.
+// Defined here to avoid a circular import (scanner ← hasher).
+// The Kind() and JSON field names must stay in sync with hasher.HashTaskArgs.
+type hashJobArgs struct {
+	SessionID string `json:"sessionId"`
+	FileID    int64  `json:"fileId"`
+	FilePath  string `json:"filePath"`
+}
 
-	err := s.db.QueryRow(ctx, `
-		SELECT id, started_at, completed_at, status, root_paths,
-			   files_discovered, files_skipped, files_new, files_modified,
-			   errors_encountered, last_error
-		FROM scan_sessions
-		WHERE id = $1
-	`, sessionID).Scan(
-		&session.ID,
-		&session.StartedAt,
-		&session.CompletedAt,
-		&session.Status,
-		&rootPathsJSON,
-		&session.FilesDiscovered,
-		&session.FilesSkipped,
-		&session.FilesNew,
-		&session.FilesModified,
-		&session.ErrorsEncountered,
-		&session.LastError,
-	)
+func (hashJobArgs) Kind() string { return "hash_task" }
 
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("scan session not found")
+// InsertOpts routes hash jobs to the dedicated hash queue, keeping them
+// separate from scan jobs so they can be throttled independently.
+func (hashJobArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: queue.HashQueue}
+}
+
+// enqueueHashJobs pages through all DISCOVERED files for the given session
+// and enqueues a HashTask job for each one. Running after the scan walk
+// is complete means zero I/O contention with the filesystem walk.
+// Jobs are enqueued in pages of 100 so we never hold a large result set.
+func (s *Scanner) enqueueHashJobs(ctx context.Context, sessionID uuid.UUID) {
+	const pageSize = 100
+	var lastID int64
+
+	for {
+		rows, err := s.db.Query(ctx, `
+			SELECT id, file_path, source_root, path_type
+			FROM file_registry
+			WHERE scan_session_id = $1
+			  AND scan_status    = $2
+			  AND id             > $3
+			ORDER BY id
+			LIMIT $4
+		`, sessionID, ScanStatusDiscovered, lastID, pageSize)
+		if err != nil {
+			s.log.Error("enqueueHashJobs: query failed", "session_id", sessionID, "error", err)
+			return
 		}
-		return nil, fmt.Errorf("failed to get scan status: %w", err)
+
+		type row struct {
+			id         int64
+			filePath   string
+			sourceRoot string
+			pathType   string
+		}
+
+		var page []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.id, &r.filePath, &r.sourceRoot, &r.pathType); err != nil {
+				s.log.Warn("enqueueHashJobs: scan row failed", "error", err)
+				continue
+			}
+			page = append(page, r)
+		}
+		rows.Close()
+
+		if len(page) == 0 {
+			break
+		}
+
+		for _, r := range page {
+			// Resolve to absolute path for the hasher.
+			absPath := r.filePath
+			if r.pathType == PathTypeRelative {
+				absPath = s.pathUtil.MakeAbsolute(r.filePath, r.sourceRoot)
+			}
+
+			if err := s.jobQueue.Enqueue(ctx, hashJobArgs{
+				SessionID: sessionID.String(),
+				FileID:    r.id,
+				FilePath:  absPath,
+			}); err != nil {
+				s.log.Warn("enqueueHashJobs: enqueue failed",
+					"file_id", r.id,
+					"error", err)
+			}
+		}
+
+		lastID = page[len(page)-1].id
+		if len(page) < pageSize {
+			break
+		}
 	}
 
-	// Unmarshal root paths
-	if err := json.Unmarshal(rootPathsJSON, &session.RootPaths); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal root paths: %w", err)
-	}
-
-	return &session, nil
-}
-
-// GetFileCount returns the total number of files in the registry
-func (s *Scanner) GetFileCount(ctx context.Context) (int64, error) {
-	var count int64
-	err := s.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM file_registry
-	`).Scan(&count)
-
-	return count, err
+	s.log.Info("enqueueHashJobs: done", "session_id", sessionID)
 }
 
 // CleanupOrganizedFiles checks every ORGANIZED entry in the registry and removes

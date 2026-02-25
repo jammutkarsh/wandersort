@@ -1,4 +1,47 @@
 definitions:
+  admin.ResetResponse:
+    properties:
+      contentGroupsDeleted:
+        type: integer
+      filesDeleted:
+        type: integer
+      groupMembersDeleted:
+        type: integer
+      scanSessionsDeleted:
+        type: integer
+    type: object
+  hash.HashProgressResponse:
+    properties:
+      completedAt:
+        type: string
+      filesDiscovered:
+        type: integer
+      filesErrored:
+        type: integer
+      filesHashed:
+        type: integer
+      percentComplete:
+        type: number
+      sessionId:
+        type: string
+      startedAt:
+        type: string
+      status:
+        type: string
+    type: object
+  hash.HashStatsResponse:
+    properties:
+      duplicateFiles:
+        type: integer
+      groupsWithDupes:
+        type: integer
+      mastersElected:
+        type: integer
+      totalFiles:
+        type: integer
+      totalGroups:
+        type: integer
+    type: object
   scanner.ScanSession:
     properties:
       completedAt:
@@ -63,6 +106,54 @@ info:
   title: WanderSort API
   version: "1.0"
 paths:
+  /internal/v1/admin/reset:
+    post:
+      description: Deletes all scan sessions, file registry entries, content groups
+        and group members in a single transaction. Irreversible.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/admin.ResetResponse'
+      summary: Reset all application data
+      tags:
+      - Admin
+  /internal/v1/hash/progress:
+    get:
+      description: Returns files_discovered, files_hashed, files_errored and percent_complete
+        for the given session.
+      parameters:
+      - description: Scan session UUID
+        in: query
+        name: session_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/hash.HashProgressResponse'
+      summary: Get hashing progress for a scan session
+      tags:
+      - Hash
+  /internal/v1/hash/stats:
+    get:
+      description: 'Returns aggregate counts across all content groups: total groups,
+        duplicates, masters elected.'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/hash.HashStatsResponse'
+      summary: Get overall content group statistics
+      tags:
+      - Hash
   /internal/v1/scans/cleanup-output:
     post:
       description: |-

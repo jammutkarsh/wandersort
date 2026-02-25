@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,9 +17,10 @@ import (
 
 // Hasher handles file hashing and content group management
 type Hasher struct {
-	db     *pgxpool.Pool
-	log    logger.Logger
-	scorer *Scorer
+	db          *pgxpool.Pool
+	log         logger.Logger
+	scorer      *Scorer
+	totalHashed atomic.Int64 // lifetime counter across all sessions
 }
 
 // NewHasher creates a new hasher instance
@@ -53,6 +55,8 @@ func (h *Hasher) HashFile(filePath string) (string, error) {
 
 // ProcessFile hashes a file and updates the database
 func (h *Hasher) ProcessFile(ctx context.Context, fileID int64, filePath string) error {
+	h.log.Info("Hashing file", "file_id", fileID, "path", filePath)
+
 	// Compute hash
 	hash, err := h.HashFile(filePath)
 	if err != nil {
@@ -94,11 +98,18 @@ func (h *Hasher) ProcessFile(ctx context.Context, fileID int64, filePath string)
 		return fmt.Errorf("failed to add member to group: %w", err)
 	}
 
-	h.log.Debug("File hashed successfully",
+	n := h.totalHashed.Add(1)
+	h.log.Info("File hashed",
 		"file_id", fileID,
 		"hash", hash[:16]+"...",
 		"group_id", groupID,
-		"is_new_group", isNew)
+		"is_new_group", isNew,
+		"total_hashed_lifetime", n)
+
+	// Milestone log every 1000 files so progress is visible without flooding logs
+	if n%1000 == 0 {
+		h.log.Info("Hashing milestone", "files_hashed", n)
+	}
 
 	return nil
 }
@@ -154,56 +165,4 @@ func (h *Hasher) addMemberToGroup(ctx context.Context, groupID, fileID int64) er
 	`, groupID, fileID)
 
 	return err
-}
-
-// GetGroupStats returns statistics about content groups
-func (h *Hasher) GetGroupStats(ctx context.Context) (map[string]interface{}, error) {
-	var stats struct {
-		TotalGroups     int
-		GroupsWithDupes int
-		TotalFiles      int
-		DuplicateFiles  int
-		MastersElected  int
-	}
-
-	err := h.db.QueryRow(ctx, `
-		WITH
-			group_stats AS (
-				SELECT
-					COUNT(*)                                             AS total_groups,
-					COUNT(*) FILTER (WHERE total_copies > 1)            AS groups_with_dupes,
-					COUNT(*) FILTER (WHERE master_file_id IS NOT NULL)  AS masters_elected
-				FROM content_groups
-			),
-			member_stats AS (
-				SELECT
-					COUNT(*)                                             AS total_files,
-					COUNT(*) FILTER (WHERE is_master = FALSE)           AS duplicate_files
-				FROM content_group_members
-			)
-		SELECT
-			total_groups,
-			groups_with_dupes,
-			masters_elected,
-			total_files,
-			duplicate_files
-		FROM group_stats, member_stats
-	`).Scan(
-		&stats.TotalGroups,
-		&stats.GroupsWithDupes,
-		&stats.MastersElected,
-		&stats.TotalFiles,
-		&stats.DuplicateFiles,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query group stats: %w", err)
-	}
-
-	return map[string]any{
-		"total_groups":      stats.TotalGroups,
-		"groups_with_dupes": stats.GroupsWithDupes,
-		"total_files":       stats.TotalFiles,
-		"duplicate_files":   stats.DuplicateFiles,
-		"masters_elected":   stats.MastersElected,
-	}, nil
 }

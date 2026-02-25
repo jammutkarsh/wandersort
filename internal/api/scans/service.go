@@ -12,13 +12,15 @@ import (
 
 type Service struct {
 	scanner *scanner.Scanner
+	repo    *Repository
 	logger  logger.Logger
 }
 
-// NewService wires together the Scanner and logger.
-func NewService(log logger.Logger, sc *scanner.Scanner) *Service {
+// NewService wires together the Scanner, Repository and logger.
+func NewService(log logger.Logger, sc *scanner.Scanner, repo *Repository) *Service {
 	return &Service{
 		scanner: sc,
+		repo:    repo,
 		logger:  log,
 	}
 }
@@ -28,11 +30,11 @@ func (s *Service) StartScan(ctx context.Context, rootPaths []string) (uuid.UUID,
 }
 
 func (s *Service) GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*scanner.ScanSession, error) {
-	return s.scanner.GetScanStatus(ctx, sessionID)
+	return s.repo.GetScanStatus(ctx, sessionID)
 }
 
 func (s *Service) GetFileCount(ctx context.Context) (FileCountResponse, error) {
-	count, err := s.scanner.GetFileCount(ctx)
+	count, err := s.repo.GetFileCount(ctx)
 	if err != nil {
 		return FileCountResponse{}, err
 	}

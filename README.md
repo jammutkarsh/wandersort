@@ -18,7 +18,7 @@ Scan → Deduce → Review → Execute
 
 ### Hashing + Deduplication
 
-- [ ] BLAKE3 worker pool
+- [x] BLAKE3 worker pool
 - [ ] Content group creation
 - [ ] Master selection logic
 

@@ -13,6 +13,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jammutkarsh/wandersort/docs"
 	"github.com/jammutkarsh/wandersort/internal/api"
+	"github.com/jammutkarsh/wandersort/internal/api/admin"
+	"github.com/jammutkarsh/wandersort/internal/api/hash"
 	"github.com/jammutkarsh/wandersort/internal/api/scans"
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/hasher"
@@ -77,7 +79,9 @@ func main() {
 	}
 
 	// API handlers
-	scansHandler := scans.NewHandler(scans.NewService(wsLogger, sc), wsLogger)
+	adminHandler := admin.NewHandler(wsLogger, admin.NewService(wsLogger, admin.NewRepository(psql)))
+	scansHandler := scans.NewHandler(wsLogger, scans.NewService(wsLogger, sc, scans.NewRepository(psql)))
+	hashHandler := hash.NewHandler(wsLogger, hash.NewService(wsLogger, hash.NewRepository(psql)))
 
 	// Setup Gin router
 	router := gin.New()
@@ -92,7 +96,9 @@ func main() {
 	// API routes
 	basePath := "/internal/v1"
 	v1 := router.Group(basePath)
+	admin.SetupRoutes(v1, adminHandler)
 	scans.SetupRoutes(v1, scansHandler)
+	hash.SetupRoutes(v1, hashHandler)
 
 	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "pong"})

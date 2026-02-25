@@ -7,21 +7,21 @@ import (
 // ContentGroup represents a group of files with identical content (hash)
 type ContentGroup struct {
 	ID           int64     `json:"id"`
-	ContentHash  string    `json:"content_hash"`
-	MasterFileID *int64    `json:"master_file_id,omitempty"`
-	TotalCopies  int       `json:"total_copies"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ContentHash  string    `json:"contentHash"`
+	MasterFileID *int64    `json:"masterFileId,omitempty"`
+	TotalCopies  int       `json:"totalCopies"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 // ContentGroupMember represents a file's membership in a content group
 type ContentGroupMember struct {
 	ID            int64     `json:"id"`
-	GroupID       int64     `json:"group_id"`
-	FileID        int64     `json:"file_id"`
-	IsMaster      bool      `json:"is_master"`
-	MetadataScore int       `json:"metadata_score"`
-	CreatedAt     time.Time `json:"created_at"`
+	GroupID       int64     `json:"groupId"`
+	FileID        int64     `json:"fileId"`
+	IsMaster      bool      `json:"isMaster"`
+	MetadataScore int       `json:"metadataScore"`
+	CreatedAt     time.Time `json:"createdAt"`
 }
 
 // ScoringCriteria defines what makes a file a good master candidate
