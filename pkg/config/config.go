@@ -7,14 +7,15 @@ import (
 )
 
 type Configuration struct {
-	ServerPort         string   `koanf:"port"`
-	Postgres           Postgres `koanf:"postgres"`
-	OutputPath         string   `koanf:"output_path"`
-	OTelEnabled        bool     `koanf:"otel_enabled"`
-	LogLevel           string   `koanf:"log_level"`
-	LogConsole         bool     `koanf:"log_console"`
-	LogFile            string   `koanf:"log_file"`
-	MaxConcurrentScans int      `koanf:"max_concurrent_scans"`
+	ServerPort           string   `koanf:"port"`
+	Postgres             Postgres `koanf:"postgres"`
+	OutputPath           string   `koanf:"output_path"`
+	OTelEnabled          bool     `koanf:"otel_enabled"`
+	LogLevel             string   `koanf:"log_level"`
+	LogConsole           bool     `koanf:"log_console"`
+	LogFile              string   `koanf:"log_file"`
+	MaxConcurrentScans   int      `koanf:"max_concurrent_scans"`
+	MaxConcurrentHashers int      `koanf:"max_concurrent_hashers"`
 }
 
 type Postgres struct {
@@ -47,21 +48,29 @@ func Load() (*Configuration, error) {
 		return nil, errors.New("config: missing required Postgres credentials (POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB)")
 	}
 
-	maxConcurrentScans := 5
+	var maxConcurrentScans int
 	if v := os.Getenv("MAX_CONCURRENT_SCANS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			maxConcurrentScans = n
 		}
 	}
 
+	var maxConcurrentHashers int
+	if v := os.Getenv("MAX_CONCURRENT_HASHERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxConcurrentHashers = n
+		}
+	}
+
 	return &Configuration{
-		ServerPort:         os.Getenv("PORT"),
-		OutputPath:         outputPath,
-		OTelEnabled:        os.Getenv("OTEL_ENABLED") == "true",
-		LogLevel:           logLevel,
-		LogConsole:         true, // console logging is always enabled at minimum
-		LogFile:            os.Getenv("LOG_FILE"),
-		Postgres:           pg,
-		MaxConcurrentScans: maxConcurrentScans,
+		ServerPort:           os.Getenv("PORT"),
+		OutputPath:           outputPath,
+		OTelEnabled:          os.Getenv("OTEL_ENABLED") == "true",
+		LogLevel:             logLevel,
+		LogConsole:           true, // console logging is always enabled at minimum
+		LogFile:              os.Getenv("LOG_FILE"),
+		Postgres:             pg,
+		MaxConcurrentScans:   maxConcurrentScans,
+		MaxConcurrentHashers: maxConcurrentHashers,
 	}, nil
 }

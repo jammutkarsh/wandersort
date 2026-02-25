@@ -23,6 +23,11 @@ func (ScanTaskArgs) Kind() string {
 	return "scan_task"
 }
 
+// InsertOpts routes all scan jobs to the dedicated scan queue.
+func (ScanTaskArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: queue.ScanQueue}
+}
+
 // ScanTaskWorker is the River worker that processes a scan_task job.
 // It implements queue.Worker so queue.New can register it and inject the enqueuer.
 type ScanTaskWorker struct {

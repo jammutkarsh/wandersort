@@ -13,9 +13,17 @@ import (
 	"github.com/riverqueue/river/rivermigrate"
 )
 
+// Queue name constants. Use these everywhere instead of raw string literals
+// so a rename stays a single-line change.
+const (
+	ScanQueue = "file_scanning"
+	HashQueue = "file_hashing"
+)
+
 // Config holds queue-level configuration.
 type Config struct {
-	MaxConcurrentScans int
+	MaxConcurrentScans   int // Concurrent scan workers (default: 5)
+	MaxConcurrentHashers int // Concurrent hash workers (default: 4)
 }
 
 // Enqueuer is the job-dispatch capability injected into workers after the client starts.
@@ -42,6 +50,13 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg Config, ww ...Worker) (*ri
 	if err := migrate(ctx, pool); err != nil {
 		return nil, fmt.Errorf("river migration: %w", err)
 	}
+	// Set defaults
+	if cfg.MaxConcurrentScans == 0 {
+		cfg.MaxConcurrentScans = 5
+	}
+	if cfg.MaxConcurrentHashers == 0 {
+		cfg.MaxConcurrentHashers = 4
+	}
 
 	riverWorkers := river.NewWorkers()
 	for _, w := range ww {
@@ -50,7 +65,8 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg Config, ww ...Worker) (*ri
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues: map[string]river.QueueConfig{
-			river.QueueDefault: {MaxWorkers: cfg.MaxConcurrentScans},
+			ScanQueue: {MaxWorkers: cfg.MaxConcurrentScans},
+			HashQueue: {MaxWorkers: cfg.MaxConcurrentHashers},
 		},
 		Workers: riverWorkers,
 	})

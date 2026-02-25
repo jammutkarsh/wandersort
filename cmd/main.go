@@ -15,6 +15,7 @@ import (
 	"github.com/jammutkarsh/wandersort/internal/api"
 	"github.com/jammutkarsh/wandersort/internal/api/scans"
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/hasher"
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -61,9 +62,16 @@ func main() {
 
 	// Core services
 	sc := scanner.NewScanner(psql, wsLogger, cfg.OutputPath)
+	h := hasher.NewHasher(psql, wsLogger)
 
 	// Background job queue
-	riverClient, err := queue.New(ctx, psql, queue.Config{MaxConcurrentScans: cfg.MaxConcurrentScans}, &scanner.ScanTaskWorker{Scanner: sc})
+	riverClient, err := queue.New(ctx, psql, queue.Config{
+		MaxConcurrentScans:   cfg.MaxConcurrentScans,
+		MaxConcurrentHashers: cfg.MaxConcurrentHashers,
+	},
+		&scanner.ScanTaskWorker{Scanner: sc},
+		&hasher.HashTaskWorker{Hasher: h},
+	)
 	if err != nil {
 		log.Fatalf("failed to create river client: %v", err)
 	}
