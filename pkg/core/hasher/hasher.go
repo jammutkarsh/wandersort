@@ -3,13 +3,11 @@ package hasher
 import (
 	"context"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sync/atomic"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"lukechampine.com/blake3"
@@ -87,8 +85,8 @@ func (h *Hasher) ProcessFile(ctx context.Context, fileID int64, filePath string)
 		return fmt.Errorf("failed to update file registry: %w", err)
 	}
 
-	// Create or get content group
-	groupID, isNew, err := h.createOrGetGroup(ctx, hash)
+	// Create or get content group (uses INSERT ON CONFLICT for concurrency safety)
+	groupID, isNew, err := h.getOrCreateGroup(ctx, hash)
 	if err != nil {
 		return fmt.Errorf("failed to create/get content group: %w", err)
 	}
@@ -114,46 +112,28 @@ func (h *Hasher) ProcessFile(ctx context.Context, fileID int64, filePath string)
 	return nil
 }
 
-// createOrGetGroup creates a new content group or returns existing one
-func (h *Hasher) createOrGetGroup(ctx context.Context, hash string) (int64, bool, error) {
-	// Try to get existing group
+// getOrCreateGroup atomically creates a new content group or returns the existing one.
+// Uses INSERT ... ON CONFLICT to avoid the TOCTOU race that would occur with a
+// separate SELECT-then-INSERT approach when multiple hashers process the same hash.
+func (h *Hasher) getOrCreateGroup(ctx context.Context, hash string) (int64, bool, error) {
 	var groupID int64
+	var isNew bool
+
 	err := h.db.QueryRow(ctx, `
-		SELECT id FROM content_groups WHERE content_hash = $1
-	`, hash).Scan(&groupID)
-
-	if err == nil {
-		// Group exists, increment total_copies
-		_, err = h.db.Exec(ctx, `
-			UPDATE content_groups 
-			SET total_copies = total_copies + 1 
-			WHERE id = $1
-		`, groupID)
-
-		if err != nil {
-			return 0, false, fmt.Errorf("failed to update total_copies: %w", err)
-		}
-
-		return groupID, false, nil
-	}
-
-	// Any error other than "not found" is a real DB problem
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, fmt.Errorf("failed to query content group: %w", err)
-	}
-
-	// Group doesn't exist, create it
-	err = h.db.QueryRow(ctx, `
-		INSERT INTO content_groups (content_hash, total_copies)
-		VALUES ($1, 1)
-		RETURNING id
-	`, hash).Scan(&groupID)
-
+		WITH ins AS (
+			INSERT INTO content_groups (content_hash, total_copies)
+			VALUES ($1, 1)
+			ON CONFLICT (content_hash) DO UPDATE
+				SET total_copies = content_groups.total_copies + 1
+			RETURNING id, (xmax = 0) AS is_new
+		)
+		SELECT id, is_new FROM ins
+	`, hash).Scan(&groupID, &isNew)
 	if err != nil {
-		return 0, false, fmt.Errorf("failed to create content group: %w", err)
+		return 0, false, fmt.Errorf("failed to upsert content group: %w", err)
 	}
 
-	return groupID, true, nil
+	return groupID, isNew, nil
 }
 
 // addMemberToGroup adds a file to a content group

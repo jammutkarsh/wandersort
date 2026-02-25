@@ -36,10 +36,12 @@ func (r *Repository) GetProgress(ctx context.Context, sessionID uuid.UUID) (*Has
 	}
 	p.CompletedAt = completedAt
 
-	r.db.QueryRow(ctx, `
+	if err := r.db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM file_registry
 		WHERE scan_session_id = $1 AND scan_status = 'ERROR'
-	`, sessionID).Scan(&p.FilesErrored)
+	`, sessionID).Scan(&p.FilesErrored); err != nil {
+		return nil, fmt.Errorf("query errored files: %w", err)
+	}
 
 	if p.FilesDiscovered > 0 {
 		p.PercentComplete = float64(p.FilesHashed) / float64(p.FilesDiscovered) * 100
