@@ -15,7 +15,7 @@ import (
 	_ "github.com/lib/pq"
 )
 
-func InitDB(ctx context.Context, cfg config.Postgres, log logger.Logger) *pgxpool.Pool {
+func InitDB(ctx context.Context, cfg config.Postgres, log logger.Logger) (*pgxpool.Pool, error) {
 	dbName := cfg.DB
 	if dbName == "" {
 		dbName = "wandersort"
@@ -24,31 +24,27 @@ func InitDB(ctx context.Context, cfg config.Postgres, log logger.Logger) *pgxpoo
 
 	poolConfig, err := pgxpool.ParseConfig(url)
 	if err != nil {
-		log.Error("unable to parse database config", "error", err)
-		return nil
+		return nil, fmt.Errorf("unable to parse database config: %w", err)
 	}
 	poolConfig.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName())
 
 	dbpool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
-		log.Error("unable to connect to database", "error", err)
-		return nil
+		return nil, fmt.Errorf("unable to connect to database: %w", err)
 	}
 	if err := dbpool.Ping(ctx); err != nil {
-		log.Error("unable to ping database", "error", err)
-		return nil
+		return nil, fmt.Errorf("unable to ping database: %w", err)
 	}
 
 	log.Info("Database connection established", "host", cfg.Host, "port", cfg.Port, "user", cfg.User)
 
 	// Run migrations using sql.DB
 	if err := runMigrations(cfg, log); err != nil {
-		log.Error("running migrations", "error", err)
-		return nil
+		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
 	log.Info("Successfully connected to postgres database")
-	return dbpool
+	return dbpool, nil
 }
 
 // runMigrations applies database migrations

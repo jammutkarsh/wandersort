@@ -11,6 +11,8 @@ type FileClassifier struct {
 	videoExtensions   map[string]bool
 	rawExtensions     map[string]bool
 	sidecarExtensions map[string]bool
+	ignoredFiles      map[string]bool
+	ignoredDirs       map[string]bool
 }
 
 // NewFileClassifier creates a new classifier with predefined rules
@@ -56,6 +58,21 @@ func NewFileClassifier() *FileClassifier {
 			".xmp": true, // Adobe metadata
 			".thm": true, // Thumbnail
 		},
+		ignoredFiles: map[string]bool{
+			".DS_Store":   true,
+			"Thumbs.db":   true,
+			"desktop.ini": true,
+			".picasa.ini": true,
+			".nomedia":    true,
+		},
+		ignoredDirs: map[string]bool{
+			".git":                      true,
+			".svn":                      true,
+			"node_modules":              true,
+			".Trash":                    true,
+			"$RECYCLE.BIN":              true,
+			"System Volume Information": true,
+		},
 	}
 }
 
@@ -99,27 +116,10 @@ func (fc *FileClassifier) NeedsTranscoding(mediaType string) bool {
 
 // ShouldIgnore checks for system files that should be skipped
 func (fc *FileClassifier) ShouldIgnore(name string) bool {
-	ignoredFiles := map[string]bool{
-		".DS_Store":   true,
-		"Thumbs.db":   true,
-		"desktop.ini": true,
-		".picasa.ini": true,
-		".nomedia":    true,
-	}
-
-	return ignoredFiles[name]
+	return fc.ignoredFiles[name]
 }
 
 // ShouldIgnoreDir checks if a directory should be skipped entirely
 func (fc *FileClassifier) ShouldIgnoreDir(name string) bool {
-	ignoredDirs := map[string]bool{
-		".git":                      true,
-		".svn":                      true,
-		"node_modules":              true,
-		".Trash":                    true,
-		"$RECYCLE.BIN":              true,
-		"System Volume Information": true,
-	}
-
-	return ignoredDirs[name]
+	return fc.ignoredDirs[name]
 }

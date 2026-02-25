@@ -9,7 +9,7 @@ RUN go mod download
 
 # Copy the rest and build
 COPY . .
-RUN go build -ldflags='-s -w' -o /server ./cmd/server
+RUN go build -ldflags='-s -w' -o /server ./cmd
 
 FROM alpine:3.18
 RUN addgroup -S app && adduser -S -G app app

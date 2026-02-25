@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -30,7 +31,7 @@ func Load() (*Configuration, error) {
 	outputPath := os.Getenv("OUTPUT_PATH")
 	if outputPath == "" {
 		home, _ := os.UserHomeDir()
-		outputPath = home + "/WanderSort_Library"
+		outputPath = filepath.Join(home, "WanderSort_Library")
 	}
 	logLevel := os.Getenv("LOG_LEVEL")
 	if logLevel == "" {
