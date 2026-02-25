@@ -17,9 +17,9 @@ import (
 
 // HashTaskArgs represents a file hashing job
 type HashTaskArgs struct {
-	SessionID string `json:"session_id"`
-	FileID    int64  `json:"file_id"`
-	FilePath  string `json:"file_path"`
+	SessionID string `json:"sessionId"`
+	FileID    int64  `json:"fileId"`
+	FilePath  string `json:"filePath"`
 }
 
 // Kind returns the job type name for River
@@ -53,7 +53,7 @@ func (w *HashTaskWorker) SetEnqueuer(e queue.Enqueuer) {
 func (w *HashTaskWorker) Work(ctx context.Context, job *river.Job[HashTaskArgs]) error {
 	args := job.Args
 
-	w.Hasher.log.Debug("Processing hash job",
+	w.Hasher.log.Info("Hash job started",
 		"job_id", job.ID,
 		"session_id", args.SessionID,
 		"file_id", args.FileID,
@@ -84,7 +84,7 @@ func (w *HashTaskWorker) Work(ctx context.Context, job *river.Job[HashTaskArgs])
 		}
 	}
 
-	w.Hasher.log.Debug("Hash job completed",
+	w.Hasher.log.Info("Hash job completed",
 		"job_id", job.ID,
 		"file_id", args.FileID)
 

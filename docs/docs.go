@@ -15,6 +15,75 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/internal/v1/admin/reset": {
+            "post": {
+                "description": "Deletes all scan sessions, file registry entries, content groups and group members in a single transaction. Irreversible.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "Reset all application data",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.ResetResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/v1/hash/progress": {
+            "get": {
+                "description": "Returns files_discovered, files_hashed, files_errored and percent_complete for the given session.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Hash"
+                ],
+                "summary": "Get hashing progress for a scan session",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Scan session UUID",
+                        "name": "session_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/hash.HashProgressResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/v1/hash/stats": {
+            "get": {
+                "description": "Returns aggregate counts across all content groups: total groups, duplicates, masters elected.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Hash"
+                ],
+                "summary": "Get overall content group statistics",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/hash.HashStatsResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/internal/v1/scans/cleanup-output": {
             "post": {
                 "description": "Checks every ORGANIZED entry in the file registry and removes those whose\nfiles no longer exist on disk. Does NOT re-index or re-sort any files.",
@@ -125,6 +194,72 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "admin.ResetResponse": {
+            "type": "object",
+            "properties": {
+                "contentGroupsDeleted": {
+                    "type": "integer"
+                },
+                "filesDeleted": {
+                    "type": "integer"
+                },
+                "groupMembersDeleted": {
+                    "type": "integer"
+                },
+                "scanSessionsDeleted": {
+                    "type": "integer"
+                }
+            }
+        },
+        "hash.HashProgressResponse": {
+            "type": "object",
+            "properties": {
+                "completedAt": {
+                    "type": "string"
+                },
+                "filesDiscovered": {
+                    "type": "integer"
+                },
+                "filesErrored": {
+                    "type": "integer"
+                },
+                "filesHashed": {
+                    "type": "integer"
+                },
+                "percentComplete": {
+                    "type": "number"
+                },
+                "sessionId": {
+                    "type": "string"
+                },
+                "startedAt": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "hash.HashStatsResponse": {
+            "type": "object",
+            "properties": {
+                "duplicateFiles": {
+                    "type": "integer"
+                },
+                "groupsWithDupes": {
+                    "type": "integer"
+                },
+                "mastersElected": {
+                    "type": "integer"
+                },
+                "totalFiles": {
+                    "type": "integer"
+                },
+                "totalGroups": {
+                    "type": "integer"
+                }
+            }
+        },
         "scanner.ScanSession": {
             "type": "object",
             "properties": {
