@@ -22,6 +22,4 @@ func (l *nullLogger) Warn(msg string, logItems ...any) {}
 
 func (l *nullLogger) Error(msg string, logItems ...any) {}
 
-func (l *nullLogger) Fatal(msg string, logItems ...any) {}
-
 func (l *nullLogger) Panic(msg string, logItems ...any) {}
