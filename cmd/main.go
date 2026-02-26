@@ -59,7 +59,10 @@ func main() {
 	wsLogger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile, cfg.OTelEnabled)
 
 	// Database
-	psql := db.InitDB(ctx, cfg.Postgres, wsLogger)
+	psql, err := db.InitDB(ctx, cfg.Postgres, wsLogger)
+	if err != nil {
+		log.Fatalf("failed to initialize database: %v", err)
+	}
 	defer psql.Close()
 
 	// Core services

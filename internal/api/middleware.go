@@ -37,7 +37,7 @@ func RecoveryMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if recover() != nil {
-				respondError(c, internalError("INTERNAL_ERROR", "unexpected server error", nil))
+				RespondError(c, InternalError("INTERNAL_ERROR", "unexpected server error", nil))
 				c.Abort()
 			}
 		}()

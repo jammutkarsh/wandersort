@@ -193,8 +193,12 @@ func (s *Scanner) executeScan(ctx context.Context, session *ScanSession, expande
 	// Write unsupported files report (walkers are all done at this point)
 	s.writeUnsupportedFiles(session.ID, st)
 
-	// Cleanup: Remove files that weren't seen in this scan (use original paths for matching)
-	cleanupErr := s.cleanupDeletedFiles(ctx, session.ID, session.RootPaths)
+	// Skip cleanup when context is cancelled — a partial scan would incorrectly
+	// delete registry entries for files that simply weren't visited yet.
+	var cleanupErr error
+	if ctx.Err() == nil {
+		cleanupErr = s.cleanupDeletedFiles(ctx, session.ID, session.RootPaths)
+	}
 
 	// Determine final status from the first significant error encountered.
 	walkErrMu.Lock()
@@ -216,7 +220,11 @@ func (s *Scanner) executeScan(ctx context.Context, session *ScanSession, expande
 		}
 	}
 
-	s.completeScan(ctx, session, finalStatus, lastError, st)
+	// Use a detached context so the final status is always persisted, even when
+	// the parent context has been cancelled (e.g. during graceful shutdown).
+	completeCtx, completeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer completeCancel()
+	s.completeScan(completeCtx, session, finalStatus, lastError, st)
 }
 
 // walkRoot walks expandedRoot and emits FileDiscovery records with relative paths.
@@ -355,6 +363,11 @@ func (s *Scanner) writeUnsupportedFiles(sessionID uuid.UUID, st *scanState) {
 			s.log.Error("Failed to write path to report", "path", p, "error", err)
 			return
 		}
+	}
+
+	// Flush to disk to ensure the report survives unexpected termination.
+	if err := f.Sync(); err != nil {
+		s.log.Error("Failed to sync unsupported files report", "error", err)
 	}
 
 	s.log.Info("Unsupported files report written", "path", reportPath, "count", len(paths))

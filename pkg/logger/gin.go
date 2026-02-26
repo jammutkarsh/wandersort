@@ -15,7 +15,7 @@ func GinLogger(l Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
 
-		if path == "/ping" || strings.HasPrefix(path, "/internal/v1/swagger/") || strings.HasPrefix(path, "/internal/v1/swagger/") {
+		if path == "/ping" || strings.HasPrefix(path, "/internal/v1/swagger/") {
 			c.Next()
 			return
 		}
