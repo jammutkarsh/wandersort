@@ -290,13 +290,16 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 		}
 
 		// Create discovery record with relative path
+		capture := DeriveCapture(d.Name(), strings.ToLower(filepath.Ext(path)), mediaType)
 		discovery := FileDiscovery{
-			Path:       relPath, // Relative to source root
-			Size:       info.Size(),
-			ModTime:    info.ModTime(),
-			Extension:  strings.ToLower(filepath.Ext(path)),
-			SourceRoot: originalRoot, // Store original (may contain ~)
-			MediaType:  mediaType,
+			Path:        relPath, // Relative to source root
+			Size:        info.Size(),
+			ModTime:     info.ModTime(),
+			Extension:   strings.ToLower(filepath.Ext(path)),
+			SourceRoot:  originalRoot, // Store original (may contain ~)
+			MediaType:   mediaType,
+			CaptureStem: capture.Stem,
+			CaptureRole: capture.Role,
 		}
 
 		atomic.AddInt64(&st.discovered, 1)
@@ -413,14 +416,17 @@ func (s *Scanner) insertBatch(ctx context.Context, sessionID uuid.UUID, batch []
 			INSERT INTO file_registry (
 				file_path, file_size, file_modified_at,
 				scan_session_id, source_root, media_type, file_extension,
-				scan_status, path_type, file_origin, discovered_at, last_seen_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+				scan_status, path_type, file_origin, capture_stem, capture_role,
+				discovered_at, last_seen_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
 			ON CONFLICT (file_path, source_root) DO UPDATE SET
 				last_seen_at = NOW(),
 				scan_session_id = EXCLUDED.scan_session_id,
 				file_origin = EXCLUDED.file_origin,
 				file_size = EXCLUDED.file_size,
 				file_modified_at = EXCLUDED.file_modified_at,
+				capture_stem = EXCLUDED.capture_stem,
+				capture_role = EXCLUDED.capture_role,
 				updated_at = NOW()
 			RETURNING (discovered_at = last_seen_at) AS is_new
 		`,
@@ -434,6 +440,8 @@ func (s *Scanner) insertBatch(ctx context.Context, sessionID uuid.UUID, batch []
 			ScanStatusDiscovered,
 			PathTypeRelative,
 			FileOriginSource, // Source scans always produce SOURCE-origin files
+			file.CaptureStem,
+			file.CaptureRole,
 		)
 	}
 

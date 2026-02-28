@@ -23,6 +23,10 @@ type FileRegistry struct {
 	FileExtension string `db:"file_extension"`
 	ScanStatus    string `db:"scan_status"`
 
+	// Capture grouping
+	CaptureStem *string `db:"capture_stem"`
+	CaptureRole *string `db:"capture_role"`
+
 	// Path storage
 	PathType   string `db:"path_type" json:"pathType"`     // RELATIVE or ABSOLUTE
 	FileOrigin string `db:"file_origin" json:"fileOrigin"` // SOURCE or ORGANIZED
@@ -81,12 +85,14 @@ func (fr *FileRegistry) NeedsTranscoding() bool {
 
 // FileDiscovery is the lightweight struct used during directory walking
 type FileDiscovery struct {
-	Path       string
-	Size       int64
-	ModTime    time.Time
-	Extension  string
-	SourceRoot string
-	MediaType  string
+	Path        string
+	Size        int64
+	ModTime     time.Time
+	Extension   string
+	SourceRoot  string
+	MediaType   string
+	CaptureStem string
+	CaptureRole string
 }
 
 type ScanSession struct {
