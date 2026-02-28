@@ -1,0 +1,1 @@
+ALTER TABLE content_groups DROP COLUMN IF EXISTS exif_metadata;
