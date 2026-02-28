@@ -1,4 +1,4 @@
-package scanner
+package classifier
 
 import (
 	"path/filepath"
@@ -22,41 +22,41 @@ func NewFileClassifier() *FileClassifier {
 			".jpg":  true,
 			".jpeg": true,
 			".png":  true,
-			".gif":  true,
 			".bmp":  true,
-			".tiff": true,
-			".tif":  true,
 			".heic": true,
-			".heif": true,
 			".webp": true,
+			//".gif":  true,
+			//".tiff": true,
+			//".tif":  true,
+			//".heif": true,
 		},
 		videoExtensions: map[string]bool{
-			".mp4":  true,
-			".mov":  true,
-			".avi":  true,
-			".mkv":  true,
-			".wmv":  true,
-			".flv":  true,
-			".webm": true,
-			".m4v":  true,
-			".3gp":  true,
+			".mp4": true,
+			".mov": true,
+			//".avi":  true,
+			//".mkv":  true,
+			//".wmv":  true,
+			//".flv":  true,
+			//".webm": true,
+			//".m4v":  true,
+			//".3gp":  true,
 		},
 		rawExtensions: map[string]bool{
-			".arw": true, // Sony
 			".cr2": true, // Canon
-			".cr3": true, // Canon
-			".nef": true, // Nikon
 			".dng": true, // Adobe/Universal
-			".orf": true, // Olympus
-			".rw2": true, // Panasonic
-			".pef": true, // Pentax
-			".raf": true, // Fujifilm
-			".raw": true, // Generic
+			//".arw": true, // Sony
+			//".cr3": true, // Canon
+			//".nef": true, // Nikon
+			//".orf": true, // Olympus
+			//".rw2": true, // Panasonic
+			//".pef": true, // Pentax
+			//".raf": true, // Fujifilm
+			//".raw": true, // Generic
 		},
 		sidecarExtensions: map[string]bool{
 			".aae": true, // iPhone edit sidecar
-			".xmp": true, // Adobe metadata
-			".thm": true, // Thumbnail
+			//".xmp": true, // Adobe metadata
+			//".thm": true, // Thumbnail
 		},
 		ignoredFiles: map[string]bool{
 			".DS_Store":   true,

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jammutkarsh/wandersort/pkg/core/classifier"
 )
 
 type FileRegistry struct {
@@ -43,6 +44,15 @@ const (
 	FileOriginUnknown   = "UNKNOWN"
 )
 
+const (
+	ScanStatusDiscovered = "DISCOVERED"
+	ScanStatusHashing    = "HASHING"
+	ScanStatusHashed     = "HASHED"
+	ScanStatusAnalyzing  = "ANALYZING"
+	ScanStatusAnalyzed   = "ANALYZED"
+	ScanStatusError      = "ERROR"
+)
+
 // GetAbsolutePath returns the full absolute path, expanding relative paths using source root.
 func (fr *FileRegistry) GetAbsolutePath(pathUtil *PathUtil) string {
 	if fr.PathType == PathTypeAbsolute {
@@ -55,7 +65,7 @@ func (fr *FileRegistry) GetAbsolutePath(pathUtil *PathUtil) string {
 // RAW files from a DSLR that has no paired JPG are still primary sources.
 func (fr *FileRegistry) IsPrimarySource() bool {
 	switch fr.MediaType {
-	case MediaTypeImage, MediaTypeRaw, MediaTypeVideo:
+	case classifier.MediaTypeImage, classifier.MediaTypeRaw, classifier.MediaTypeVideo:
 		return true
 	default:
 		return false
@@ -66,23 +76,8 @@ func (fr *FileRegistry) IsPrimarySource() bool {
 // being passed to downstream consumers such as AI inference pipelines.
 // RAW images cannot be used directly and must be converted first.
 func (fr *FileRegistry) NeedsTranscoding() bool {
-	return fr.MediaType == MediaTypeRaw
+	return fr.MediaType == classifier.MediaTypeRaw
 }
-
-const (
-	MediaTypeImage   = "IMAGE"
-	MediaTypeVideo   = "VIDEO"
-	MediaTypeSidecar = "SIDECAR"
-	MediaTypeRaw     = "RAW"
-	MediaTypeUnknown = "UNKNOWN"
-
-	ScanStatusDiscovered = "DISCOVERED"
-	ScanStatusHashing    = "HASHING"
-	ScanStatusHashed     = "HASHED"
-	ScanStatusAnalyzing  = "ANALYZING"
-	ScanStatusAnalyzed   = "ANALYZED"
-	ScanStatusError      = "ERROR"
-)
 
 // FileDiscovery is the lightweight struct used during directory walking
 type FileDiscovery struct {

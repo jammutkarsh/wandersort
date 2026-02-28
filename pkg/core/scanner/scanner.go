@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jammutkarsh/wandersort/pkg/core/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/queue"
 	"github.com/riverqueue/river"
@@ -28,7 +29,7 @@ import (
 // This makes concurrent scans safe without any locking on Scanner itself.
 type Scanner struct {
 	db         *pgxpool.Pool
-	classifier *FileClassifier
+	classifier *classifier.FileClassifier
 	log        logger.Logger
 	config     ScanConfig
 	pathUtil   *PathUtil
@@ -73,7 +74,7 @@ func NewScanner(db *pgxpool.Pool, log logger.Logger, outputPath string) *Scanner
 
 	return &Scanner{
 		db:         db,
-		classifier: NewFileClassifier(),
+		classifier: classifier.NewFileClassifier(),
 		log:        log,
 		pathUtil:   pathUtil,
 		outputPath: outputPath,

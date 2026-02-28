@@ -1,0 +1,1 @@
+ALTER TABLE content_groups ADD COLUMN exif_metadata JSONB;
