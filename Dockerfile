@@ -12,7 +12,8 @@ COPY . .
 RUN go build -ldflags='-s -w' -o /server ./cmd
 
 FROM alpine:3.18
-RUN addgroup -S app && adduser -S -G app app
+RUN apk add --no-cache exiftool && \
+    addgroup -S app && adduser -S -G app app
 COPY --from=builder /server /server
 RUN chmod +x /server
 USER app

@@ -8,23 +8,23 @@ import (
 )
 
 type Configuration struct {
-	ServerPort           string   `koanf:"port"`
-	Postgres             Postgres `koanf:"postgres"`
-	OutputPath           string   `koanf:"output_path"`
-	OTelEnabled          bool     `koanf:"otel_enabled"`
-	LogLevel             string   `koanf:"log_level"`
-	LogConsole           bool     `koanf:"log_console"`
-	LogFile              string   `koanf:"log_file"`
-	MaxConcurrentScans   int      `koanf:"max_concurrent_scans"`
-	MaxConcurrentHashers int      `koanf:"max_concurrent_hashers"`
+	ServerPort           string
+	Postgres             Postgres
+	OutputPath           string
+	OTelEnabled          bool
+	LogLevel             string
+	LogConsole           bool
+	LogFile              string
+	MaxConcurrentScans   int
+	MaxConcurrentHashers int
 }
 
 type Postgres struct {
-	User     string `koanf:"user"`
-	Password string `koanf:"password"`
-	Port     string `koanf:"port"`
-	Host     string `koanf:"host"`
-	DB       string `koanf:"db"`
+	User     string
+	Password string
+	Port     string
+	Host     string
+	DB       string
 }
 
 func Load() (*Configuration, error) {

@@ -18,7 +18,7 @@ type responseEnvelope struct {
 	Meta    responseMeta `json:"meta"`
 }
 
-func respondOK(c *gin.Context, status int, data any) {
+func RespondOK(c *gin.Context, status int, data any) {
 	c.JSON(status, responseEnvelope{
 		Success: true,
 		Data:    data,
@@ -26,20 +26,12 @@ func respondOK(c *gin.Context, status int, data any) {
 	})
 }
 
-func RespondOK(c *gin.Context, status int, data any) {
-	respondOK(c, status, data)
-}
-
-func respondError(c *gin.Context, apiErr APIError) {
+func RespondError(c *gin.Context, apiErr APIError) {
 	c.JSON(apiErr.Status, responseEnvelope{
 		Success: false,
 		Error:   &apiErr,
 		Meta:    buildMeta(c),
 	})
-}
-
-func RespondError(c *gin.Context, apiErr APIError) {
-	respondError(c, apiErr)
 }
 
 func buildMeta(c *gin.Context) responseMeta {

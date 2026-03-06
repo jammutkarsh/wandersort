@@ -6,12 +6,17 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
+// resetter is the persistence capability the Service needs.
+type resetter interface {
+	Reset(ctx context.Context) (ResetResponse, error)
+}
+
 type Service struct {
-	repo   *Repository
+	repo   resetter
 	logger logger.Logger
 }
 
-func NewService(log logger.Logger, repo *Repository) *Service {
+func NewService(log logger.Logger, repo resetter) *Service {
 	return &Service{repo: repo, logger: log}
 }
 

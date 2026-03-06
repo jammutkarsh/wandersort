@@ -17,10 +17,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jammutkarsh/wandersort/internal/jobtypes"
 	"github.com/jammutkarsh/wandersort/pkg/core/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/queue"
-	"github.com/riverqueue/river"
 )
 
 // Scanner handles file discovery and registry population.
@@ -62,8 +62,7 @@ type ScanConfig struct {
 }
 
 // NewScanner creates a new scanner instance.
-// The enqueuer is injected later via SetEnqueuer (see pkg/queue).
-func NewScanner(db *pgxpool.Pool, log logger.Logger, outputPath string) *Scanner {
+func NewScanner(db *pgxpool.Pool, log logger.Logger, outputPath string, enqueuer queue.Enqueuer) *Scanner {
 	pathUtil, err := NewPathUtil()
 	if err != nil {
 		log.Error("Failed to initialize path utility", "error", err)
@@ -78,6 +77,7 @@ func NewScanner(db *pgxpool.Pool, log logger.Logger, outputPath string) *Scanner
 		log:        log,
 		pathUtil:   pathUtil,
 		outputPath: outputPath,
+		jobQueue:   enqueuer,
 		config: ScanConfig{
 			MaxWalkers:       4,
 			WorkerBufferSize: 1000,
@@ -85,12 +85,6 @@ func NewScanner(db *pgxpool.Pool, log logger.Logger, outputPath string) *Scanner
 			ProgressInterval: 5 * time.Second,
 		},
 	}
-}
-
-// SetEnqueuer injects the Enqueuer after construction.
-// Called by queue.New so the scanner can dispatch jobs without importing the queue package.
-func (s *Scanner) SetEnqueuer(e queue.Enqueuer) {
-	s.jobQueue = e
 }
 
 // StartScan validates rootPaths, creates the scan_sessions DB row, enqueues a
@@ -580,23 +574,6 @@ func (s *Scanner) completeScan(ctx context.Context, session *ScanSession, finalS
 	}
 }
 
-// hashJobArgs is a local mirror of hasher.HashTaskArgs.
-// Defined here to avoid a circular import (scanner ← hasher).
-// The Kind() and JSON field names must stay in sync with hasher.HashTaskArgs.
-type hashJobArgs struct {
-	SessionID string `json:"sessionId"`
-	FileID    int64  `json:"fileId"`
-	FilePath  string `json:"filePath"`
-}
-
-func (hashJobArgs) Kind() string { return "hash_task" }
-
-// InsertOpts routes hash jobs to the dedicated hash queue, keeping them
-// separate from scan jobs so they can be throttled independently.
-func (hashJobArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{Queue: queue.HashQueue}
-}
-
 // enqueueHashJobs pages through all DISCOVERED files for the given session
 // and enqueues a HashTask job for each one. Running after the scan walk
 // is complete means zero I/O contention with the filesystem walk.
@@ -649,7 +626,7 @@ func (s *Scanner) enqueueHashJobs(ctx context.Context, sessionID uuid.UUID) {
 				absPath = s.pathUtil.MakeAbsolute(r.filePath, r.sourceRoot)
 			}
 
-			if err := s.jobQueue.Enqueue(ctx, hashJobArgs{
+			if err := s.jobQueue.Enqueue(ctx, jobtypes.HashTaskArgs{
 				SessionID: sessionID.String(),
 				FileID:    r.id,
 				FilePath:  absPath,
@@ -672,60 +649,83 @@ func (s *Scanner) enqueueHashJobs(ctx context.Context, sessionID uuid.UUID) {
 // CleanupOrganizedFiles checks every ORGANIZED entry in the registry and removes
 // those whose files no longer exist on disk. It does NOT re-index or re-classify
 // any files — it is a pure deletion pass for stale entries.
-// Returns the number of registry rows deleted.
+// Rows are processed in cursor-based pages so memory stays bounded regardless
+// of table size. Returns the number of registry rows deleted.
 func (s *Scanner) CleanupOrganizedFiles(ctx context.Context) (int64, error) {
-	type entry struct {
-		ID         int64
-		FilePath   string
-		SourceRoot string
-		PathType   string
-	}
+	const pageSize = 500
+	var lastID int64
+	var totalDeleted int64
 
-	rows, err := s.db.Query(ctx, `
-		SELECT id, file_path, source_root, path_type
-		FROM file_registry
-		WHERE file_origin = $1
-	`, FileOriginOrganized)
-	if err != nil {
-		return 0, fmt.Errorf("failed to query organized files: %w", err)
-	}
-	defer rows.Close()
-
-	var missing []int64
-	for rows.Next() {
-		var e entry
-		if err := rows.Scan(&e.ID, &e.FilePath, &e.SourceRoot, &e.PathType); err != nil {
-			return 0, fmt.Errorf("failed to scan row: %w", err)
+	for {
+		type entry struct {
+			ID         int64
+			FilePath   string
+			SourceRoot string
+			PathType   string
 		}
 
-		var absPath string
-		if e.PathType == PathTypeAbsolute {
-			absPath = e.FilePath
-		} else {
-			absPath = s.pathUtil.MakeAbsolute(e.FilePath, e.SourceRoot)
+		rows, err := s.db.Query(ctx, `
+			SELECT id, file_path, source_root, path_type
+			FROM file_registry
+			WHERE file_origin = $1 AND id > $2
+			ORDER BY id
+			LIMIT $3
+		`, FileOriginOrganized, lastID, pageSize)
+		if err != nil {
+			return totalDeleted, fmt.Errorf("failed to query organized files: %w", err)
 		}
 
-		if _, statErr := os.Stat(absPath); os.IsNotExist(statErr) {
-			missing = append(missing, e.ID)
+		var page []entry
+		for rows.Next() {
+			var e entry
+			if err := rows.Scan(&e.ID, &e.FilePath, &e.SourceRoot, &e.PathType); err != nil {
+				rows.Close()
+				return totalDeleted, fmt.Errorf("failed to scan row: %w", err)
+			}
+			page = append(page, e)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return totalDeleted, fmt.Errorf("row iteration error: %w", err)
+		}
+
+		if len(page) == 0 {
+			break
+		}
+
+		var missing []int64
+		for _, e := range page {
+			var absPath string
+			if e.PathType == PathTypeAbsolute {
+				absPath = e.FilePath
+			} else {
+				absPath = s.pathUtil.MakeAbsolute(e.FilePath, e.SourceRoot)
+			}
+			if _, statErr := os.Stat(absPath); os.IsNotExist(statErr) {
+				missing = append(missing, e.ID)
+			}
+		}
+
+		if len(missing) > 0 {
+			result, err := s.db.Exec(ctx, `
+				DELETE FROM file_registry WHERE id = ANY($1)
+			`, missing)
+			if err != nil {
+				return totalDeleted, fmt.Errorf("failed to delete stale organized entries: %w", err)
+			}
+			totalDeleted += result.RowsAffected()
+		}
+
+		lastID = page[len(page)-1].ID
+		if len(page) < pageSize {
+			break
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("row iteration error: %w", err)
-	}
 
-	if len(missing) == 0 {
+	if totalDeleted == 0 {
 		s.log.Info("Organized library cleanup: no stale entries found")
-		return 0, nil
+	} else {
+		s.log.Info("Organized library cleanup complete", "deleted", totalDeleted)
 	}
-
-	result, err := s.db.Exec(ctx, `
-		DELETE FROM file_registry WHERE id = ANY($1)
-	`, missing)
-	if err != nil {
-		return 0, fmt.Errorf("failed to delete stale organized entries: %w", err)
-	}
-
-	deleted := result.RowsAffected()
-	s.log.Info("Organized library cleanup complete", "deleted", deleted)
-	return deleted, nil
+	return totalDeleted, nil
 }

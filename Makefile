@@ -34,7 +34,7 @@ test:
 		exit $$rc
 
 swagger:
-	@which swag >/dev/null 2>&1 || (echo "Swag CLI not found. Install with 'go install github.com/swag/cmd/swag@latest'"; exit 1)
+	@which swag >/dev/null 2>&1 || (echo "Swag CLI not found. Install with 'go install github.com/swaggo/swag/cmd/swag@latest'"; exit 1)
 	swag init -g cmd/main.go -o docs
 
 lint:

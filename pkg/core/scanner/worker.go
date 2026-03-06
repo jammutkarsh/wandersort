@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jammutkarsh/wandersort/pkg/queue"
 	"github.com/riverqueue/river"
 )
 
@@ -25,24 +24,13 @@ func (ScanTaskArgs) Kind() string {
 
 // InsertOpts routes all scan jobs to the dedicated scan queue.
 func (ScanTaskArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{Queue: queue.ScanQueue}
+	return river.InsertOpts{Queue: "file_scanning"}
 }
 
 // ScanTaskWorker is the River worker that processes a scan_task job.
-// It implements queue.Worker so queue.New can register it and inject the enqueuer.
 type ScanTaskWorker struct {
 	river.WorkerDefaults[ScanTaskArgs]
 	Scanner *Scanner
-}
-
-// Register adds this worker to River's worker registry.
-func (w *ScanTaskWorker) Register(workers *river.Workers) {
-	river.AddWorker(workers, w)
-}
-
-// SetEnqueuer injects the live River client enqueuer into the Scanner.
-func (w *ScanTaskWorker) SetEnqueuer(e queue.Enqueuer) {
-	w.Scanner.SetEnqueuer(e)
 }
 
 // Work is called by River when a scan_task job is dequeued.

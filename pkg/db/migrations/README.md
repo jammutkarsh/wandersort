@@ -14,7 +14,7 @@ CREATE TABLE file_registry (
 ```sql
     -- Physical identity
     file_path TEXT NOT NULL,              
-    file_hash CHAR(64) NOT NULL,          
+    file_hash CHAR(64),          -- nullable: populated after hashing phase
     file_size BIGINT NOT NULL,
     file_modified_at TIMESTAMP NOT NULL,
 ```

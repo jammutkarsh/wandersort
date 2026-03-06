@@ -200,49 +200,21 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 // ---------------------------------------------------------------------------
-// ConsoleLogger – wraps PrettyHandler and satisfies the Logger interface
+// SlogAdapter – wraps any slog.Handler and satisfies the Logger interface
 // ---------------------------------------------------------------------------
 
-var _ Logger = (*ConsoleLogger)(nil)
+var _ Logger = (*SlogAdapter)(nil)
 
-// ConsoleLogger is a pretty, colourful logger intended for local development.
-type ConsoleLogger struct {
+// SlogAdapter wraps a standard library slog.Logger and satisfies the Logger
+// interface. Despite the file name, it is used for all handler combinations
+// (console, file, OTel) — not only pretty-printed console output.
+type SlogAdapter struct {
 	logger *slog.Logger
 	level  slog.Level
 }
 
-// NewConsoleLogger creates a new ConsoleLogger. The env string controls the
-// minimum log level using the same mapping as NewSlogLogger (e.g. "debug",
-// "info", "warn", "error", or environment names like "local", "dev", "prod").
-func NewConsoleLogger(env string) Logger {
-	level := getConsoleSlogLevel(strings.ToLower(env))
-	handler := NewPrettyHandler(&slog.HandlerOptions{
-		Level:     level,
-		AddSource: true,
-	})
-	return &ConsoleLogger{
-		logger: slog.New(handler),
-		level:  level,
-	}
-}
-
-func getConsoleSlogLevel(s string) slog.Level {
-	switch s {
-	case "local", "debug":
-		return slog.LevelDebug
-	case "info":
-		return slog.LevelInfo
-	case "dev", "warn":
-		return slog.LevelWarn
-	case "prod", "error":
-		return slog.LevelError
-	default:
-		return slog.LevelDebug
-	}
-}
-
 // log creates a record with the correct caller PC and dispatches it.
-func (l *ConsoleLogger) log(level slog.Level, msg string, attrs ...any) {
+func (l *SlogAdapter) log(level slog.Level, msg string, attrs ...any) {
 	if !l.logger.Handler().Enabled(context.TODO(), level) {
 		return
 	}
@@ -253,23 +225,23 @@ func (l *ConsoleLogger) log(level slog.Level, msg string, attrs ...any) {
 	_ = l.logger.Handler().Handle(context.TODO(), r)
 }
 
-func (l *ConsoleLogger) Debug(msg string, attrs ...any) {
+func (l *SlogAdapter) Debug(msg string, attrs ...any) {
 	l.log(slog.LevelDebug, msg, attrs...)
 }
 
-func (l *ConsoleLogger) Info(msg string, attrs ...any) {
+func (l *SlogAdapter) Info(msg string, attrs ...any) {
 	l.log(slog.LevelInfo, msg, attrs...)
 }
 
-func (l *ConsoleLogger) Warn(msg string, attrs ...any) {
+func (l *SlogAdapter) Warn(msg string, attrs ...any) {
 	l.log(slog.LevelWarn, msg, attrs...)
 }
 
-func (l *ConsoleLogger) Error(msg string, attrs ...any) {
+func (l *SlogAdapter) Error(msg string, attrs ...any) {
 	l.log(slog.LevelError, msg, attrs...)
 }
 
-func (l *ConsoleLogger) Panic(msg string, attrs ...any) {
+func (l *SlogAdapter) Panic(msg string, attrs ...any) {
 	l.log(slog.LevelError, msg, attrs...)
 	panic(msg)
 }

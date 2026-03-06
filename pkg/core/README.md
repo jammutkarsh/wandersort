@@ -19,7 +19,7 @@ The `pkg/` directory contains the core packages that power WanderSort's file dis
 
 ### Phase 1 — Submission (synchronous, returns immediately)
 
-1. The HTTP handler receives `POST /scans` with a list of `rootPaths`.
+1. The HTTP handler receives `POST /internal/v1/scans/start` with a list of `rootPaths`.
 2. `StartScan` expands each path (`~` → absolute) and checks it exists on disk.
 3. A `scan_sessions` row is inserted into PostgreSQL with `status = running` and a new `sessionID` (UUID).
 4. A `ScanTaskArgs` job (carrying the `sessionID` + paths) is enqueued into **River**. This call returns immediately — no filesystem work happens yet.
@@ -121,7 +121,7 @@ sequenceDiagram
     participant Ex as Extractor (exiftool)
     participant FS as Filesystem
 
-    Client->>H: POST /scans {rootPaths}
+    Client->>H: POST /internal/v1/scans/start {rootPaths}
     H->>Svc: StartScan(rootPaths)
     Svc->>Sc: StartScan(rootPaths)
 
@@ -168,8 +168,12 @@ sequenceDiagram
     end
 
     Sc->>Sc: writeUnsupportedFiles → OUTPUT_PATH/unsupported_files_<id>.txt
-    Sc->>DB: DELETE file_registry WHERE source_root in paths AND session != current
-    Sc->>DB: UPDATE scan_sessions (status=completed, final counters)
+
+    rect rgb(30,30,25)
+        note over Sc,DB: Phase 5 — post-walk cleanup
+        Sc->>DB: DELETE file_registry WHERE source_root in paths AND session != current
+        Sc->>DB: UPDATE scan_sessions (status=completed, final counters)
+    end
 
     rect rgb(25,30,35)
         note over Q,Ha: Phase 6 — hashing + content grouping (River hash queue)
@@ -198,7 +202,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    A([HTTP POST /scans]) --> B[StartScan]
+    A([HTTP POST /internal/v1/scans/start]) --> B[StartScan]
     B --> C{paths valid?}
     C -- no --> ERR1([return error])
     C -- yes --> D[INSERT scan_sessions status = running]
@@ -287,7 +291,7 @@ file_registry
 | --- | --- |
 | `Scanner` is stateless | All per-scan mutable state lives in `scanState`, allocated fresh per `executeScan` call. Multiple concurrent scans never share memory. |
 | `Enqueuer` interface on `Scanner` | `scanner` defines what it needs; `queue` provides it. No circular import. |
-| `queue.Worker` interface | Any package can register a worker by implementing `Register` + `SetEnqueuer`. `queue.New` handles wiring with zero knowledge of domain types. |
+| Explicit worker registration | Workers are registered via `river.AddWorker` in `cmd/main.go` where concrete types are known. `queue.New` receives the pre-built `*river.Workers` and returns an `Enqueuer` for job dispatch. |
 | Async via River | `StartScan` returns a `sessionID` immediately. Clients poll `GET /scans/:id`. The actual walk runs in a River worker goroutine, bounded by `MaxConcurrentScans`. |
 | pgx batch inserts | Sending all rows in a single round-trip via `pgx.Batch` is significantly faster than individual `INSERT` calls. |
 | Capture groups as columns, not a table | `capture_stem` + `capture_role` on `file_registry` avoids an extra join table. Querying `WHERE capture_stem = X AND source_root = Y` is fast with a composite index. |

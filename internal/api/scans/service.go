@@ -10,14 +10,26 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
+// scanStarter is the capability the Service needs from the scanner package.
+type scanStarter interface {
+	StartScan(ctx context.Context, rootPaths []string) (uuid.UUID, error)
+	CleanupOrganizedFiles(ctx context.Context) (int64, error)
+}
+
+// scanRepository is the persistence capability the Service needs.
+type scanRepository interface {
+	GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*scanner.ScanSession, error)
+	GetFileCount(ctx context.Context) (int64, error)
+}
+
 type Service struct {
-	scanner *scanner.Scanner
-	repo    *Repository
+	scanner scanStarter
+	repo    scanRepository
 	logger  logger.Logger
 }
 
 // NewService wires together the Scanner, Repository and logger.
-func NewService(log logger.Logger, sc *scanner.Scanner, repo *Repository) *Service {
+func NewService(log logger.Logger, sc scanStarter, repo scanRepository) *Service {
 	return &Service{
 		scanner: sc,
 		repo:    repo,

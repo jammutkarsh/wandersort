@@ -3,17 +3,21 @@ package db
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"fmt"
 
 	"github.com/exaring/otelpgx"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	_ "github.com/lib/pq"
 )
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 func InitDB(ctx context.Context, cfg config.Postgres, log logger.Logger) (*pgxpool.Pool, error) {
 	dbName := cfg.DB
@@ -47,7 +51,7 @@ func InitDB(ctx context.Context, cfg config.Postgres, log logger.Logger) (*pgxpo
 	return dbpool, nil
 }
 
-// runMigrations applies database migrations
+// runMigrations applies database migrations using embedded SQL files.
 func runMigrations(cfg config.Postgres, log logger.Logger) error {
 	dbName := cfg.DB
 	if dbName == "" {
@@ -67,15 +71,15 @@ func runMigrations(cfg config.Postgres, log logger.Logger) error {
 		return fmt.Errorf("creating migrate driver: %w", err)
 	}
 
-	// migrations are stored in pkg/db/migrations
-	migrationPath := "file://pkg/db/migrations"
+	// Use the embedded filesystem so migrations work identically in Docker
+	// and local builds — no filesystem path dependency.
+	source, err := iofs.New(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("creating iofs source: %w", err)
+	}
 
-	log.Info("Applying migrations", "path", migrationPath)
-	m, err := migrate.NewWithDatabaseInstance(
-		migrationPath,
-		"postgres",
-		driver,
-	)
+	log.Info("Applying embedded migrations")
+	m, err := migrate.NewWithInstance("iofs", source, "postgres", driver)
 	if err != nil {
 		return fmt.Errorf("creating migrate instance: %w", err)
 	}

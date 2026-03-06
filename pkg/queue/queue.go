@@ -26,31 +26,34 @@ type Config struct {
 	MaxConcurrentHashers int // Concurrent hash workers (default: 4)
 }
 
-// Enqueuer is the job-dispatch capability injected into workers after the client starts.
+// Enqueuer is the minimal job-dispatch capability.
+// Pass it to any service that needs to enqueue jobs (e.g. Scanner).
 type Enqueuer interface {
-	Enqueue(ctx context.Context, args interface{ Kind() string }) error
+	Enqueue(ctx context.Context, args river.JobArgs) error
 }
 
-// Worker is implemented by every job worker that wants to participate in the queue.
-// Register adds the worker to River's worker registry.
-// SetEnqueuer receives the live client so the worker's domain object can dispatch jobs.
-type Worker interface {
-	Register(workers *river.Workers)
-	SetEnqueuer(e Enqueuer)
-}
-
-// New wires up River completely:
+// New wires up River:
 //   - runs any pending schema migrations
-//   - registers all provided workers
-//   - creates and starts the River client
-//   - injects the enqueuer into each worker
+//   - creates and starts the River client with the provided workers
+//   - returns the client (for shutdown) and an Enqueuer (for dispatching jobs)
 //
-// The caller is only responsible for calling client.Stop(ctx) on shutdown.
-func New(ctx context.Context, pool *pgxpool.Pool, cfg Config, ww ...Worker) (*river.Client[pgx.Tx], error) {
+// The caller registers workers via river.AddWorker before calling New:
+//
+//	workers := river.NewWorkers()
+//	river.AddWorker(workers, &scanner.ScanTaskWorker{...})
+//	river.AddWorker(workers, &hasher.HashTaskWorker{...})
+//	client, enqueuer, err := queue.New(ctx, pool, cfg, workers)
+func New(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	cfg Config,
+	workers *river.Workers,
+) (*river.Client[pgx.Tx], Enqueuer, error) {
 	if err := migrate(ctx, pool); err != nil {
-		return nil, fmt.Errorf("river migration: %w", err)
+		return nil, nil, fmt.Errorf("river migration: %w", err)
 	}
-	// Set defaults
+
+	// Defaults
 	if cfg.MaxConcurrentScans == 0 {
 		cfg.MaxConcurrentScans = 5
 	}
@@ -58,35 +61,25 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg Config, ww ...Worker) (*ri
 		cfg.MaxConcurrentHashers = 4
 	}
 
-	riverWorkers := river.NewWorkers()
-	for _, w := range ww {
-		w.Register(riverWorkers)
-	}
-
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues: map[string]river.QueueConfig{
 			ScanQueue: {MaxWorkers: cfg.MaxConcurrentScans},
 			HashQueue: {MaxWorkers: cfg.MaxConcurrentHashers},
 		},
-		Workers: riverWorkers,
+		Workers: workers,
 	})
 	if err != nil {
-		return nil, err
-	}
-
-	enq := riverEnqueuer{client: client}
-	for _, w := range ww {
-		w.SetEnqueuer(enq)
+		return nil, nil, err
 	}
 
 	if err := client.Start(ctx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return client, nil
+	return client, &enqueuer{client: client}, nil
 }
 
-// migrate runs any pending River schema migrations (internal helper).
+// migrate runs any pending River schema migrations.
 func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
 	if err != nil {
@@ -102,13 +95,12 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-// riverEnqueuer wraps *river.Client. Exported as a value type so worker packages
-// can embed or store it without importing the full River client.
-type riverEnqueuer struct {
+// enqueuer wraps *river.Client[pgx.Tx] behind the Enqueuer interface.
+type enqueuer struct {
 	client *river.Client[pgx.Tx]
 }
 
-func (r riverEnqueuer) Enqueue(ctx context.Context, args interface{ Kind() string }) error {
-	_, err := r.client.Insert(ctx, args, nil)
+func (e *enqueuer) Enqueue(ctx context.Context, args river.JobArgs) error {
+	_, err := e.client.Insert(ctx, args, nil)
 	return err
 }

@@ -3,7 +3,10 @@ package api
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"runtime/debug"
 
 	"github.com/gin-gonic/gin"
 )
@@ -36,7 +39,12 @@ func CORSMiddleware() gin.HandlerFunc {
 func RecoveryMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
-			if recover() != nil {
+			if r := recover(); r != nil {
+				slog.Error("panic recovered",
+					"error", fmt.Sprintf("%v", r),
+					"stack", string(debug.Stack()),
+					"path", c.Request.URL.Path,
+				)
 				RespondError(c, InternalError("INTERNAL_ERROR", "unexpected server error", nil))
 				c.Abort()
 			}

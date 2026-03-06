@@ -23,6 +23,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/queue"
 	"github.com/jammutkarsh/wandersort/pkg/telemetry"
+	"github.com/riverqueue/river"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
@@ -65,21 +66,27 @@ func main() {
 	}
 	defer psql.Close()
 
-	// Core services
-	sc := scanner.NewScanner(psql, wsLogger, cfg.OutputPath)
+	// Core services — hasher is independent; scanner needs the enqueuer
+	// which we get from the queue, so we create it after queue setup.
 	h := hasher.NewHasher(psql, wsLogger)
 
-	// Background job queue
-	riverClient, err := queue.New(ctx, psql, queue.Config{
+	// Register River workers and start the queue.
+	workers := river.NewWorkers()
+	scanWorker := &scanner.ScanTaskWorker{} // Scanner assigned after construction
+	river.AddWorker(workers, scanWorker)
+	river.AddWorker(workers, &hasher.HashTaskWorker{Hasher: h})
+
+	riverClient, enqueuer, err := queue.New(ctx, psql, queue.Config{
 		MaxConcurrentScans:   cfg.MaxConcurrentScans,
 		MaxConcurrentHashers: cfg.MaxConcurrentHashers,
-	},
-		&scanner.ScanTaskWorker{Scanner: sc},
-		&hasher.HashTaskWorker{Hasher: h},
-	)
+	}, workers)
 	if err != nil {
 		log.Fatalf("failed to create river client: %v", err)
 	}
+
+	// Now that we have the enqueuer, build the scanner and wire it into the worker.
+	sc := scanner.NewScanner(psql, wsLogger, cfg.OutputPath, enqueuer)
+	scanWorker.Scanner = sc
 
 	// API handlers
 	adminHandler := admin.NewHandler(wsLogger, admin.NewService(wsLogger, admin.NewRepository(psql)))
@@ -87,29 +94,7 @@ func main() {
 	hashHandler := hash.NewHandler(wsLogger, hash.NewService(wsLogger, hash.NewRepository(psql)))
 
 	// Setup Gin router
-	router := gin.New()
-	if cfg.OTelEnabled {
-		router.Use(otelgin.Middleware("wandersort"))
-	}
-	router.Use(logger.GinLogger(wsLogger))
-	router.Use(api.RecoveryMiddleware())
-	router.Use(api.RequestIDMiddleware())
-	router.Use(api.CORSMiddleware())
-
-	// API routes
-	basePath := "/internal/v1"
-	v1 := router.Group(basePath)
-	admin.SetupRoutes(v1, adminHandler)
-	scans.SetupRoutes(v1, scansHandler)
-	hash.SetupRoutes(v1, hashHandler)
-
-	router.GET("/ping", func(c *gin.Context) {
-		c.JSON(200, gin.H{"message": "pong"})
-	})
-
-	// Swagger docs
-	docs.SwaggerInfo.Host = os.Getenv("HOST")
-	v1.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
+	router := setupRouter(cfg, wsLogger, adminHandler, scansHandler, hashHandler)
 
 	// HTTP server
 	port := cfg.ServerPort
@@ -118,8 +103,9 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: router,
+		Addr:              ":" + port,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Start server in a goroutine so it doesn't block the signal listener.
@@ -153,4 +139,41 @@ func main() {
 	}
 
 	wsLogger.Info("Server stopped")
+}
+
+// setupRouter creates and configures the Gin router with all middleware and routes.
+func setupRouter(
+	cfg *config.Configuration,
+	wsLogger logger.Logger,
+	adminHandler *admin.Handler,
+	scansHandler *scans.Handler,
+	hashHandler *hash.Handler,
+) *gin.Engine {
+	router := gin.New()
+
+	// Middleware stack
+	if cfg.OTelEnabled {
+		router.Use(otelgin.Middleware("wandersort"))
+	}
+	router.Use(logger.GinLogger(wsLogger))
+	router.Use(api.RecoveryMiddleware())
+	router.Use(api.RequestIDMiddleware())
+	router.Use(api.CORSMiddleware())
+
+	// API routes
+	const basePath = "/internal/v1"
+	v1 := router.Group(basePath)
+	admin.SetupRoutes(v1, adminHandler)
+	scans.SetupRoutes(v1, scansHandler)
+	hash.SetupRoutes(v1, hashHandler)
+
+	router.GET("/ping", func(c *gin.Context) {
+		c.JSON(200, gin.H{"message": "pong"})
+	})
+
+	// Swagger docs
+	docs.SwaggerInfo.Host = os.Getenv("HOST")
+	v1.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
+
+	return router
 }

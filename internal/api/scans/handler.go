@@ -34,7 +34,7 @@ func NewHandler(log logger.Logger, service *Service) *Handler {
 // @Accept json
 // @Produce json
 // @Param request body StartScanRequest true "Start Scan Request"
-// @Success 200 {object} StartScanResponse
+// @Success 202 {object} StartScanResponse
 // @Router /internal/v1/scans/start [post]
 func (h *Handler) HandleStartScan(c *gin.Context) {
 	var req StartScanRequest
@@ -69,7 +69,7 @@ func (h *Handler) HandleStartScan(c *gin.Context) {
 		Message:   "Scan started successfully",
 	}
 
-	api.RespondOK(c, http.StatusOK, resp)
+	api.RespondOK(c, http.StatusAccepted, resp)
 }
 
 // HandleGetScanStatus godoc
