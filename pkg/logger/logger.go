@@ -68,7 +68,7 @@ func New(logLvl string, console bool, logFile string, otel bool) Logger {
 		h = slogmulti.Fanout(handlers...)
 	}
 
-	return &ConsoleLogger{
+	return &SlogAdapter{
 		logger: slog.New(h),
 		level:  level,
 	}
