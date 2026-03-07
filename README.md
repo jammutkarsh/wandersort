@@ -12,7 +12,7 @@ Scan → Deduce → Review → Execute
 
 ### Database + Basic Scanning
 
-- [x] Set up PostgreSQL schema
+- [x] Set up SQLite schema
 - [x] Implement file_registry population
 - [x] Test incremental scanning (add/remove files)
 
@@ -24,9 +24,8 @@ Scan → Deduce → Review → Execute
 
 ### Relationships + Metadata
 
-- [ ] Sidecar file detection
-- [ ] EXIF extraction (images)
-- [ ] FFmpeg extraction (videos)
+- [x] Sidecar file detection
+- [x] EXIF extraction
 
 ### Inference + Organization
 
@@ -39,8 +38,3 @@ Scan → Deduce → Review → Execute
 - [ ] React UI for approval
 - [ ] Safe copy engine
 - [ ] Verification logging
-
-## Notes
-
-1. If we are going to use SQLite which is going to be a single writer, then do we need to Scanner and hasher workers?
-    > We can have Concurrent Worker for each process which send the data to a channel. Once the channel is full. It flushes the data into DB.

@@ -8,7 +8,7 @@ import (
 
 type PipelineStatus struct {
 	SessionID       uuid.UUID `json:"sessionId"`
-	Status          string    `json:"status"` // DISCOVERING, HASHING, COMPLETED, FAILED
+	Status          string    `json:"status"` // SCAN, HASH, SCORE, FAILED, CANCELLED
 	FilesDiscovered int64     `json:"filesDiscovered"`
 	FilesSkipped    int64     `json:"filesSkipped"`
 	FilesNew        int64     `json:"filesNew"`

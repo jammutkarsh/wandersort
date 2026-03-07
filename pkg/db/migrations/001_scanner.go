@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS scan_sessions (
     id TEXT PRIMARY KEY,
     started_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
-    status TEXT NOT NULL DEFAULT 'RUNNING',
+    status TEXT NOT NULL DEFAULT 'SCAN',
 
     root_paths TEXT NOT NULL,
 
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS scan_sessions (
     errors_encountered INTEGER DEFAULT 0,
     last_error         TEXT,
 
-    CHECK (status IN ('RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'))
+    CHECK (status IN ('SCAN', 'HASH', 'SCORE', 'FAILED', 'CANCELLED'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_scan_sessions_status  ON scan_sessions(status);

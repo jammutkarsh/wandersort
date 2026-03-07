@@ -38,13 +38,12 @@ func Load() (*Configuration, error) {
 		dbPath = filepath.Join(outputPath, ".wandersort.db")
 	}
 
-	var workers int
+	const defaultWorkers = 5
+	workers := defaultWorkers
 	if v := os.Getenv("WORKERS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			workers = n
 		}
-	} else {
-		workers = 5 // Default
 	}
 
 	return &Configuration{

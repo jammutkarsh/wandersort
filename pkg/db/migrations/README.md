@@ -58,11 +58,11 @@ Auto-created by the migration runner. Tracks which migrations have been applied.
     id TEXT PRIMARY KEY,
     started_at TEXT NOT NULL,
     completed_at TEXT,
-    status TEXT NOT NULL CHECK(status IN ('RUNNING','COMPLETED','FAILED','CANCELLED')),
+    status TEXT NOT NULL CHECK(status IN ('SCAN','HASH','SCORE','FAILED','CANCELLED')),
 ```
 
 - `id`: UUID as TEXT. **Why TEXT not INTEGER?** Sessions are created by the application before any DB insert (passed into workers). UUID avoids autoincrement coordination across goroutines.
-- `status`: State machine with CHECK constraint. **Why?** Lets you query "show me failed scans" and prevents invalid states. `CANCELLED` is separate from `FAILED` because a user-cancelled scan isn't an error — you might want different retry logic.
+- `status`: Phase/state machine. Success path is `SCAN -> HASH -> SCORE`; terminal failure states are `FAILED` and `CANCELLED`.
 
 ```sql
     root_paths TEXT NOT NULL,

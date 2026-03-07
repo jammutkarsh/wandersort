@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
+	"github.com/jammutkarsh/wandersort/internal/api"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
@@ -52,9 +52,16 @@ func (r *Repository) GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*S
 		return nil, fmt.Errorf("get scan status: %w", err)
 	}
 
-	session.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
+	parsedStartedAt, err := api.ParseDBTime(startedAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse started_at: %w", err)
+	}
+	session.StartedAt = parsedStartedAt
 	if completedAt != nil {
-		t, _ := time.Parse(time.RFC3339, *completedAt)
+		t, err := api.ParseDBTime(*completedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse completed_at: %w", err)
+		}
 		session.CompletedAt = &t
 	}
 

@@ -124,7 +124,7 @@ func (s *Scanner) PrepareSession(ctx context.Context, rootPaths []string) (uuid.
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO scan_sessions (id, started_at, status, root_paths)
 		VALUES (?, ?, ?, ?)
-	`, sessionID, startedAt.Format(time.RFC3339), ScanStatusRunning, string(rootPathsJSON))
+	`, sessionID, startedAt.Format(time.RFC3339), ScanStatusScan, string(rootPathsJSON))
 	if err != nil {
 		return uuid.Nil, nil, fmt.Errorf("failed to create scan session: %w", err)
 	}
@@ -178,7 +178,9 @@ func (s *Scanner) ScanSinglePath(ctx context.Context, sessionID uuid.UUID, expan
 }
 
 // MarkJobComplete decrements the pending job count for a session.
-// Once all jobs are complete, it finalizes the session (unsupported files report, status update).
+// Once all scan jobs are complete, it writes the unsupported-file report and
+// stops periodic scan-progress updates. Session finalization happens later,
+// after hash/score phases, via FinalizeSession.
 func (s *Scanner) MarkJobComplete(ctx context.Context, sessionID uuid.UUID, expandedRoot string) {
 	v, ok := s.activeSessions.Load(sessionID)
 	if !ok {
@@ -192,21 +194,12 @@ func (s *Scanner) MarkJobComplete(ctx context.Context, sessionID uuid.UUID, expa
 
 	if pending == 0 {
 		// All paths for this session have been processed.
-		s.log.Info("All jobs complete for session. Finalizing.", "session_id", sessionID)
+		s.log.Info("All scan jobs complete for session", "session_id", sessionID)
 
-		// Stop progress updater
+		// Stop progress updater; scan counters are now stable.
 		tracker.cancel()
-		s.activeSessions.Delete(sessionID)
 
 		s.writeUnsupportedFiles(sessionID, tracker)
-		s.completeScan(ctx, sessionID, ScanStatusCompleted, nil, tracker)
-
-		s.db.Writer.Write(func(dbCtx context.Context, tx *sql.Tx) error {
-			if _, err := tx.ExecContext(dbCtx, "PRAGMA incremental_vacuum"); err != nil {
-				s.log.Warn("Failed to run incremental_vacuum after scan session", "error", err)
-			}
-			return nil
-		})
 	}
 }
 
@@ -360,9 +353,27 @@ func (s *Scanner) writeUnsupportedFiles(sessionID uuid.UUID, tracker *scanSessio
 }
 
 func (s *Scanner) processDiscoveries(ctx context.Context, sessionID uuid.UUID, discoveries <-chan FileDiscovery, st *scanState, emitChan chan<- FileDiscovery) {
-	var pendingSends sync.WaitGroup
+	var pendingWrites sync.WaitGroup
+	var emitterWG sync.WaitGroup
+	emitJobs := make(chan FileDiscovery, s.config.WorkerBufferSize)
+
+	const emitWorkers = 4
+	for range emitWorkers {
+		emitterWG.Go(func() {
+			for file := range emitJobs {
+				select {
+				case emitChan <- file:
+				case <-ctx.Done():
+					return
+				}
+			}
+		})
+	}
+
 	defer func() {
-		pendingSends.Wait()
+		pendingWrites.Wait()
+		close(emitJobs)
+		emitterWG.Wait()
 		close(emitChan)
 	}()
 
@@ -387,12 +398,13 @@ func (s *Scanner) processDiscoveries(ctx context.Context, sessionID uuid.UUID, d
 
 	for discovery := range discoveries {
 		file := discovery // shadow for closure capturing
-		pendingSends.Add(1)
-		s.db.Writer.Write(func(dbCtx context.Context, tx *sql.Tx) error {
+		pendingWrites.Add(1)
+		if !s.db.Writer.Write(func(dbCtx context.Context, tx *sql.Tx) error {
+			defer pendingWrites.Done()
+
 			// Ensure we respect overall context
 			select {
 			case <-dbCtx.Done():
-				pendingSends.Done()
 				return dbCtx.Err()
 			default:
 			}
@@ -417,7 +429,6 @@ func (s *Scanner) processDiscoveries(ctx context.Context, sessionID uuid.UUID, d
 			if err != nil {
 				s.log.Warn("Failed to upsert file", "path", file.Path, "error", err)
 				st.tracker.errors.Add(1)
-				pendingSends.Done()
 				return nil // Don't block batch execution for one bad file
 			}
 
@@ -429,17 +440,19 @@ func (s *Scanner) processDiscoveries(ctx context.Context, sessionID uuid.UUID, d
 
 			file.ID = id
 
-			// Stream output to hasher asynchronously so DB writer isn't blocked
-			go func() {
-				defer pendingSends.Done()
-				select {
-				case emitChan <- file:
-				case <-ctx.Done():
-				}
-			}()
+			// Hand off discovered file IDs to a fixed-size emitter pool to avoid
+			// spawning one goroutine per discovery.
+			select {
+			case emitJobs <- file:
+			case <-ctx.Done():
+			}
 
 			return nil
-		})
+		}) {
+			pendingWrites.Done()
+			st.tracker.errors.Add(1)
+			s.log.Warn("Bulk writer closed; dropping discovery write", "path", file.Path, "session_id", sessionID)
+		}
 	}
 }
 
@@ -455,7 +468,7 @@ func (s *Scanner) cleanupDeletedFiles(ctx context.Context, sessionID uuid.UUID, 
 		  AND scan_session_id != ?
 	`, placeholders)
 
-	result, err := s.db.ExecContext(ctx, query, args...)
+	result, err := s.execWithBusyRetry(ctx, query, args...)
 	if err != nil {
 		s.log.Error("Failed to cleanup deleted files", "error", err)
 		return err
@@ -464,6 +477,34 @@ func (s *Scanner) cleanupDeletedFiles(ctx context.Context, sessionID uuid.UUID, 
 	deleted, _ := result.RowsAffected()
 	if deleted > 0 {
 		s.log.Info("Deleted files cleaned up", "count", deleted)
+	}
+	return nil
+}
+
+// CleanupDeletedFiles removes registry rows for files that were not observed in
+// the latest scan session for the provided roots.
+func (s *Scanner) CleanupDeletedFiles(ctx context.Context, sessionID uuid.UUID, rootPaths []string) error {
+	return s.cleanupDeletedFiles(ctx, sessionID, rootPaths)
+}
+
+// SetSessionStatus updates the current phase/status for a scan session.
+func (s *Scanner) SetSessionStatus(ctx context.Context, sessionID uuid.UUID, statusValue string) error {
+	_, err := s.execWithBusyRetry(ctx, `
+		UPDATE scan_sessions
+		SET status = ?
+		WHERE id = ?
+	`, statusValue, sessionID.String())
+	if err != nil {
+		return fmt.Errorf("set session status: %w", err)
+	}
+
+	if s.statusMgr != nil {
+		current := s.statusMgr.GetCurrent()
+		if current.SessionID != sessionID {
+			current = status.PipelineStatus{SessionID: sessionID}
+		}
+		current.Status = statusValue
+		s.statusMgr.Broadcast(current)
 	}
 	return nil
 }
@@ -477,10 +518,10 @@ func (s *Scanner) updateProgress(ctx context.Context, sessionID uuid.UUID, track
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_, err := s.db.ExecContext(ctx, `
-				UPDATE scan_sessions
-				SET files_discovered = ?,
-					files_skipped = ?,
+			_, err := s.execWithBusyRetry(ctx, `
+					UPDATE scan_sessions
+					SET files_discovered = ?,
+						files_skipped = ?,
 					files_new = ?,
 					files_modified = ?,
 					errors_encountered = ?
@@ -497,7 +538,7 @@ func (s *Scanner) updateProgress(ctx context.Context, sessionID uuid.UUID, track
 			if s.statusMgr != nil {
 				s.statusMgr.Broadcast(status.PipelineStatus{
 					SessionID:       sessionID,
-					Status:          ScanStatusRunning,
+					Status:          ScanStatusScan,
 					FilesDiscovered: tracker.discovered.Load(),
 					FilesSkipped:    tracker.skipped.Load(),
 					FilesNew:        tracker.newFiles.Load(),
@@ -512,45 +553,123 @@ func (s *Scanner) updateProgress(ctx context.Context, sessionID uuid.UUID, track
 	}
 }
 
-func (s *Scanner) completeScan(ctx context.Context, sessionID uuid.UUID, finalStatus string, lastError *string, tracker *scanSessionTracker) {
+func (s *Scanner) completeScan(ctx context.Context, sessionID uuid.UUID, finalStatus string, lastError *string, tracker *scanSessionTracker) error {
 	s.log.Info("Completing scan", "session_id", sessionID, "status", finalStatus)
 
-	s.db.Writer.Write(func(dbCtx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(dbCtx, `
-			UPDATE scan_sessions
-			SET completed_at = datetime('now'),
-				status = ?,
-				files_discovered = ?,
-				files_skipped = ?,
-				files_new = ?,
-				files_modified = ?,
-				errors_encountered = ?,
-				last_error = ?
-			WHERE id = ?
-		`,
-			finalStatus,
-			tracker.discovered.Load(),
-			tracker.skipped.Load(),
-			tracker.newFiles.Load(),
-			tracker.modified.Load(),
-			tracker.errors.Load(),
-			lastError,
-			sessionID.String(),
-		)
+	completedAt := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.execWithBusyRetry(ctx, `
+		UPDATE scan_sessions
+		SET completed_at = ?,
+			status = ?,
+			files_discovered = ?,
+			files_skipped = ?,
+			files_new = ?,
+			files_modified = ?,
+			errors_encountered = ?,
+			last_error = ?
+		WHERE id = ?
+	`,
+		completedAt,
+		finalStatus,
+		tracker.discovered.Load(),
+		tracker.skipped.Load(),
+		tracker.newFiles.Load(),
+		tracker.modified.Load(),
+		tracker.errors.Load(),
+		lastError,
+		sessionID.String(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to complete scan: %w", err)
+	}
 
+	if s.statusMgr != nil {
+		var filesHashed int64
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(files_hashed, 0) FROM scan_sessions WHERE id = ?`, sessionID.String()).Scan(&filesHashed); err != nil {
+			s.log.Warn("Failed to read files_hashed while broadcasting final status", "session_id", sessionID, "error", err)
+		}
+		s.statusMgr.Broadcast(status.PipelineStatus{
+			SessionID:       sessionID,
+			Status:          finalStatus,
+			FilesDiscovered: tracker.discovered.Load(),
+			FilesSkipped:    tracker.skipped.Load(),
+			FilesNew:        tracker.newFiles.Load(),
+			FilesHashed:     filesHashed,
+			Errors:          tracker.errors.Load(),
+		})
+	}
+
+	s.log.Info("Scan finished", "session_id", sessionID, "status", finalStatus,
+		"discovered", tracker.discovered.Load(),
+		"new", tracker.newFiles.Load(),
+		"skipped", tracker.skipped.Load(),
+		"modified", tracker.modified.Load(),
+		"errors", tracker.errors.Load())
+	return nil
+}
+
+// FinalizeSession marks a session terminally complete after all pipeline phases
+// (scan, hash, score) are done.
+func (s *Scanner) FinalizeSession(ctx context.Context, sessionID uuid.UUID, finalStatus string, lastError *string) error {
+	v, ok := s.activeSessions.Load(sessionID)
+	if !ok {
+		s.log.Warn("FinalizeSession called for unknown session", "session_id", sessionID)
+		completedAt := time.Now().UTC().Format(time.RFC3339)
+		_, err := s.execWithBusyRetry(ctx, `
+			UPDATE scan_sessions
+			SET completed_at = ?, status = ?, last_error = ?
+			WHERE id = ?
+		`, completedAt, finalStatus, lastError, sessionID.String())
 		if err != nil {
-			s.log.Error("Failed to complete scan", "error", err)
-			return nil
+			return fmt.Errorf("failed to finalize session without tracker: %w", err)
+		}
+		return nil
+	}
+
+	tracker := v.(*scanSessionTracker)
+	tracker.cancel()
+	s.activeSessions.Delete(sessionID)
+
+	return s.completeScan(ctx, sessionID, finalStatus, lastError, tracker)
+}
+
+func (s *Scanner) execWithBusyRetry(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	const maxAttempts = 12
+	backoff := 50 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		result, err := s.db.ExecContext(ctx, query, args...)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+
+		if !isSQLITEBusy(err) || attempt == maxAttempts {
+			return nil, err
 		}
 
-		s.log.Info("Scan finished", "session_id", sessionID, "status", finalStatus,
-			"discovered", tracker.discovered.Load(),
-			"new", tracker.newFiles.Load(),
-			"skipped", tracker.skipped.Load(),
-			"modified", tracker.modified.Load(),
-			"errors", tracker.errors.Load())
-		return nil
-	})
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+
+		// Exponential backoff capped to keep retries bounded.
+		if backoff < 500*time.Millisecond {
+			backoff *= 2
+		}
+	}
+
+	return nil, lastErr
+}
+
+func isSQLITEBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "database is locked")
 }
 
 // CleanupOrganizedFiles checks every ORGANIZED entry in the registry and removes

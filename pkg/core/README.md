@@ -2,6 +2,8 @@
 
 The `pkg/` directory contains the core packages that power WanderSort's file discovery, classification, hashing, metadata extraction, and capture-group correlation pipeline.
 
+> Implementation note: the current runtime uses embedded SQLite and an in-process Go pipeline. Older references to PostgreSQL/River below are historical and should be treated as conceptual background.
+
 ---
 
 ## Package overview

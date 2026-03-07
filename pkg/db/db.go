@@ -44,7 +44,6 @@ func New(dbPath string, log logger.Logger) (*DB, error) {
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA auto_vacuum=INCREMENTAL",
 		"PRAGMA journal_size_limit=67108864",
-		"PRAGMA locking_mode=EXCLUSIVE",
 		"PRAGMA wal_autocheckpoint=2000",
 
 		fmt.Sprintf("PRAGMA application_id=%d", appID),
@@ -57,9 +56,10 @@ func New(dbPath string, log logger.Logger) (*DB, error) {
 		}
 	}
 
-	// Connection pool: 1 writer + 3 readers (perfect for WAL)
-	sqlDB.SetMaxOpenConns(4)
-	sqlDB.SetMaxIdleConns(4)
+	// Single connection: SQLite is single-writer; one connection serializes all
+	// access at the Go level and avoids SQLITE_BUSY lock contention entirely.
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
 	sqlDB.SetConnMaxLifetime(0)
 
 	if err := sqlDB.Ping(); err != nil {
