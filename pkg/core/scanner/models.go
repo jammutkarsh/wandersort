@@ -120,8 +120,9 @@ type ScanSession struct {
 }
 
 const (
-	ScanStatusRunning   = "RUNNING"
-	ScanStatusCompleted = "COMPLETED"
+	ScanStatusScan      = "SCAN"
+	ScanStatusHash      = "HASH"
+	ScanStatusScore     = "SCORE"
 	ScanStatusFailed    = "FAILED"
 	ScanStatusCancelled = "CANCELLED"
 )

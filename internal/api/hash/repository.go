@@ -11,9 +11,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
+	"github.com/jammutkarsh/wandersort/internal/api"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
@@ -42,9 +42,16 @@ func (r *Repository) GetProgress(ctx context.Context, sessionID uuid.UUID) (*Has
 		return nil, fmt.Errorf("query session: %w", err)
 	}
 
-	p.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
+	parsedStartedAt, err := api.ParseDBTime(startedAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse started_at: %w", err)
+	}
+	p.StartedAt = parsedStartedAt
 	if completedAt != nil {
-		t, _ := time.Parse(time.RFC3339, *completedAt)
+		t, err := api.ParseDBTime(*completedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse completed_at: %w", err)
+		}
 		p.CompletedAt = &t
 	}
 

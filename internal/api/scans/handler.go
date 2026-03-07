@@ -73,7 +73,7 @@ func (h *Handler) HandleStartScan(c *gin.Context) {
 
 	resp := StartScanResponse{
 		SessionID: sessionID.String(),
-		Status:    "RUNNING",
+		Status:    "SCAN",
 		Message:   "Scan started successfully",
 	}
 
