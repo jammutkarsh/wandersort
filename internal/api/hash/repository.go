@@ -2,20 +2,20 @@ package hash
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
 type Repository struct {
-	db *pgxpool.Pool
+	db *db.DB
 }
 
-func NewRepository(db *pgxpool.Pool) *Repository {
+func NewRepository(db *db.DB) *Repository {
 	return &Repository{db: db}
 }
 
@@ -23,23 +23,29 @@ func (r *Repository) GetProgress(ctx context.Context, sessionID uuid.UUID) (*Has
 	var p HashProgressResponse
 	p.SessionID = sessionID.String()
 
-	var completedAt *time.Time
-	err := r.db.QueryRow(ctx, `
+	var completedAt *string
+	var startedAt string
+	err := r.db.QueryRowContext(ctx, `
 		SELECT status, files_discovered, COALESCE(files_hashed, 0), started_at, completed_at
-		FROM scan_sessions WHERE id = $1
-	`, sessionID).Scan(&p.Status, &p.FilesDiscovered, &p.FilesHashed, &p.StartedAt, &completedAt)
+		FROM scan_sessions WHERE id = ?
+	`, sessionID.String()).Scan(&p.Status, &p.FilesDiscovered, &p.FilesHashed, &startedAt, &completedAt)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("session not found")
 		}
 		return nil, fmt.Errorf("query session: %w", err)
 	}
-	p.CompletedAt = completedAt
 
-	if err := r.db.QueryRow(ctx, `
+	p.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
+	if completedAt != nil {
+		t, _ := time.Parse(time.RFC3339, *completedAt)
+		p.CompletedAt = &t
+	}
+
+	if err := r.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM file_registry
-		WHERE scan_session_id = $1 AND scan_status = 'ERROR'
-	`, sessionID).Scan(&p.FilesErrored); err != nil {
+		WHERE scan_session_id = ? AND scan_status = 'ERROR'
+	`, sessionID.String()).Scan(&p.FilesErrored); err != nil {
 		return nil, fmt.Errorf("query errored files: %w", err)
 	}
 
@@ -52,22 +58,27 @@ func (r *Repository) GetProgress(ctx context.Context, sessionID uuid.UUID) (*Has
 
 func (r *Repository) GetStats(ctx context.Context) (*HashStatsResponse, error) {
 	var s HashStatsResponse
-	err := r.db.QueryRow(ctx, `
+	err := r.db.QueryRowContext(ctx, `
 		WITH
 			group_stats AS (
 				SELECT
-					COUNT(*)                                            AS total_groups,
-					COUNT(*) FILTER (WHERE total_copies > 1)            AS groups_with_dupes,
-					COUNT(*) FILTER (WHERE master_file_id IS NOT NULL)  AS masters_elected
+					COUNT(*)                                                       AS total_groups,
+					SUM(CASE WHEN total_copies > 1 THEN 1 ELSE 0 END)             AS groups_with_dupes,
+					SUM(CASE WHEN master_file_id IS NOT NULL THEN 1 ELSE 0 END)    AS masters_elected
 				FROM content_groups
 			),
 			member_stats AS (
 				SELECT
-					COUNT(*)                                            AS total_files,
-					COUNT(*) FILTER (WHERE is_master = FALSE)           AS duplicate_files
+					COUNT(*)                                              AS total_files,
+					SUM(CASE WHEN is_master = 0 THEN 1 ELSE 0 END)       AS duplicate_files
 				FROM content_group_members
 			)
-		SELECT total_groups, groups_with_dupes, masters_elected, total_files, duplicate_files
+		SELECT
+			COALESCE(total_groups, 0),
+			COALESCE(groups_with_dupes, 0),
+			COALESCE(masters_elected, 0),
+			COALESCE(total_files, 0),
+			COALESCE(duplicate_files, 0)
 		FROM group_stats, member_stats
 	`).Scan(
 		&s.TotalGroups,

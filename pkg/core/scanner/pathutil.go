@@ -59,3 +59,15 @@ func (pu *PathUtil) MakeAbsolute(relPath, sourceRoot string) string {
 	absRoot := pu.ExpandPath(sourceRoot)
 	return filepath.Join(absRoot, relPath)
 }
+
+// ResolveAbsolute is a package-level convenience that expands ~ in sourceRoot
+// and joins it with relPath. Use when you don't have a PathUtil instance.
+func ResolveAbsolute(relPath, sourceRoot string) string {
+	root := sourceRoot
+	if strings.HasPrefix(root, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			root = filepath.Join(home, root[2:])
+		}
+	}
+	return filepath.Join(root, relPath)
+}

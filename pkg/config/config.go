@@ -1,77 +1,60 @@
 package config
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 )
 
 type Configuration struct {
-	ServerPort           string
-	Postgres             Postgres
-	OutputPath           string
-	OTelEnabled          bool
-	LogLevel             string
-	LogConsole           bool
-	LogFile              string
-	MaxConcurrentScans   int
-	MaxConcurrentHashers int
-}
-
-type Postgres struct {
-	User     string
-	Password string
-	Port     string
-	Host     string
-	DB       string
+	ServerPort   string
+	DatabasePath string
+	OutputPath   string
+	OTelEnabled  bool
+	LogLevel     string
+	LogConsole   bool
+	LogFile      string
+	Workers      int
 }
 
 func Load() (*Configuration, error) {
-	outputPath := os.Getenv("OUTPUT_PATH")
+	outputPath, logPath := os.Getenv("OUTPUT_PATH"), os.Getenv("LOG_FILE")
 	if outputPath == "" {
 		home, _ := os.UserHomeDir()
 		outputPath = filepath.Join(home, "WanderSort_Library")
 	}
+
+	if logPath == "" {
+		logPath = filepath.Join(outputPath, ".wandersort.log")
+	}
+
 	logLevel := os.Getenv("LOG_LEVEL")
 	if logLevel == "" {
 		logLevel = "info"
 	}
 
-	pg := Postgres{
-		User:     os.Getenv("POSTGRES_USER"),
-		Password: os.Getenv("POSTGRES_PASSWORD"),
-		Port:     os.Getenv("POSTGRES_PORT"),
-		Host:     os.Getenv("POSTGRES_HOST"),
-		DB:       os.Getenv("POSTGRES_DB"),
-	}
-	if pg.User == "" || pg.Password == "" || pg.Host == "" || pg.Port == "" || pg.DB == "" {
-		return nil, errors.New("config: missing required Postgres credentials (POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB)")
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = filepath.Join(outputPath, ".wandersort.db")
 	}
 
-	var maxConcurrentScans int
-	if v := os.Getenv("MAX_CONCURRENT_SCANS"); v != "" {
+	var workers int
+	if v := os.Getenv("WORKERS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			maxConcurrentScans = n
+			workers = n
 		}
-	}
-
-	var maxConcurrentHashers int
-	if v := os.Getenv("MAX_CONCURRENT_HASHERS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			maxConcurrentHashers = n
-		}
+	} else {
+		workers = 5 // Default
 	}
 
 	return &Configuration{
-		ServerPort:           os.Getenv("PORT"),
-		OutputPath:           outputPath,
-		OTelEnabled:          os.Getenv("OTEL_ENABLED") == "true",
-		LogLevel:             logLevel,
-		LogConsole:           true, // console logging is always enabled at minimum
-		LogFile:              os.Getenv("LOG_FILE"),
-		Postgres:             pg,
-		MaxConcurrentScans:   maxConcurrentScans,
-		MaxConcurrentHashers: maxConcurrentHashers,
+		ServerPort:   os.Getenv("PORT"),
+		OutputPath:   outputPath,
+		OTelEnabled:  os.Getenv("OTEL_ENABLED") == "true",
+		LogLevel:     logLevel,
+		LogFile:      logPath,
+		LogConsole:   true,
+		DatabasePath: dbPath,
+		Workers:      workers,
 	}, nil
 }

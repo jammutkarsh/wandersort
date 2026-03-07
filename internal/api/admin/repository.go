@@ -4,52 +4,59 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
 type Repository struct {
-	db *pgxpool.Pool
+	db *db.DB
 }
 
-func NewRepository(db *pgxpool.Pool) *Repository {
+func NewRepository(db *db.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// Reset deletes all application data in FK-safe order in a single CTE statement.
+// Reset deletes all application data in FK-safe order within a transaction.
 func (r *Repository) Reset(ctx context.Context) (ResetResponse, error) {
 	var resp ResetResponse
 
-	err := r.db.QueryRow(ctx, `
-		WITH
-			del_members AS (
-				DELETE FROM content_group_members
-				RETURNING 1
-			),
-			del_groups AS (
-				DELETE FROM content_groups
-				RETURNING 1
-			),
-			del_files AS (
-				DELETE FROM file_registry
-				RETURNING 1
-			),
-			del_sessions AS (
-				DELETE FROM scan_sessions
-				RETURNING 1
-			)
-		SELECT
-			(SELECT COUNT(*) FROM del_members)  AS group_members_deleted,
-			(SELECT COUNT(*) FROM del_groups)   AS content_groups_deleted,
-			(SELECT COUNT(*) FROM del_files)    AS files_deleted,
-			(SELECT COUNT(*) FROM del_sessions) AS scan_sessions_deleted
-	`).Scan(
-		&resp.GroupMembersDeleted,
-		&resp.ContentGroupsDeleted,
-		&resp.FilesDeleted,
-		&resp.ScanSessionsDeleted,
-	)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return ResetResponse{}, fmt.Errorf("reset: %w", err)
+		return ResetResponse{}, fmt.Errorf("reset: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var count int64
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM content_group_members`)
+	if err != nil {
+		return ResetResponse{}, fmt.Errorf("reset: delete members: %w", err)
+	}
+	count, _ = result.RowsAffected()
+	resp.GroupMembersDeleted = count
+
+	result, err = tx.ExecContext(ctx, `DELETE FROM content_groups`)
+	if err != nil {
+		return ResetResponse{}, fmt.Errorf("reset: delete groups: %w", err)
+	}
+	count, _ = result.RowsAffected()
+	resp.ContentGroupsDeleted = count
+
+	result, err = tx.ExecContext(ctx, `DELETE FROM file_registry`)
+	if err != nil {
+		return ResetResponse{}, fmt.Errorf("reset: delete files: %w", err)
+	}
+	count, _ = result.RowsAffected()
+	resp.FilesDeleted = count
+
+	result, err = tx.ExecContext(ctx, `DELETE FROM scan_sessions`)
+	if err != nil {
+		return ResetResponse{}, fmt.Errorf("reset: delete sessions: %w", err)
+	}
+	count, _ = result.RowsAffected()
+	resp.ScanSessionsDeleted = count
+
+	if err := tx.Commit(); err != nil {
+		return ResetResponse{}, fmt.Errorf("reset: commit: %w", err)
 	}
 
 	return resp, nil

@@ -2,8 +2,11 @@
 package logger
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 
 	slogmulti "github.com/samber/slog-multi"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
@@ -27,7 +30,7 @@ type Logger interface {
 //     (call after telemetry.Setup() has registered the provider)
 //
 // Passing console=false, logFile="", otel=false returns a no-op logger.
-func New(logLvl string, console bool, logFile string, otel bool) Logger {
+func New(logLvl string, otel, console bool, logFile string) Logger {
 	if !console && logFile == "" && !otel {
 		return NewNoopLogger()
 	}
@@ -41,14 +44,21 @@ func New(logLvl string, console bool, logFile string, otel bool) Logger {
 	}
 
 	if logFile != "" {
+		// Ensure the log file's parent directory exists.
+		if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: failed to create log directory %s: %v\n", filepath.Dir(logFile), err)
+		}
 		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
-			f = os.Stderr
+			// Skip the JSON file handler entirely instead of falling back to
+			// stderr, which would interleave JSON with the pretty console output.
+			fmt.Fprintf(os.Stderr, "warn: failed to open log file %s: %v (file logging disabled)\n", logFile, err)
+		} else {
+			handlers = append(handlers, slog.NewJSONHandler(f, &slog.HandlerOptions{
+				Level:     level,
+				AddSource: true,
+			}))
 		}
-		handlers = append(handlers, slog.NewJSONHandler(f, &slog.HandlerOptions{
-			Level:     level,
-			AddSource: true,
-		}))
 	}
 
 	if otel {
@@ -65,5 +75,20 @@ func New(logLvl string, console bool, logFile string, otel bool) Logger {
 	return &SlogAdapter{
 		logger: slog.New(h),
 		level:  level,
+	}
+}
+
+func getSlogLevel(s string) slog.Level {
+	switch strings.ToLower(s) {
+	case "local", "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "dev", "warn":
+		return slog.LevelWarn
+	case "prod", "error":
+		return slog.LevelError
+	default:
+		return slog.LevelDebug
 	}
 }

@@ -3,91 +3,145 @@ package db
 import (
 	"context"
 	"database/sql"
-	"embed"
+	"encoding/binary"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
-	"github.com/exaring/otelpgx"
-	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/postgres"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/db/migrations"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	_ "github.com/lib/pq"
+	_ "modernc.org/sqlite"
 )
 
-//go:embed migrations/*.sql
-var migrationsFS embed.FS
+// DB wraps the standard sql.DB connection.
+type DB struct {
+	SQL    *sql.DB
+	Writer *BulkWriter
+	log    logger.Logger
+}
 
-func InitDB(ctx context.Context, cfg config.Postgres, log logger.Logger) (*pgxpool.Pool, error) {
-	dbName := cfg.DB
-	if dbName == "" {
-		dbName = "wandersort"
+// New creates and initializes a new DB instance.
+func New(dbPath string, log logger.Logger) (*DB, error) {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return nil, fmt.Errorf("creating database directory: %w", err)
 	}
-	url := fmt.Sprintf("postgres://%s:%s@%s:%s/%s", cfg.User, cfg.Password, cfg.Host, cfg.Port, dbName)
 
-	poolConfig, err := pgxpool.ParseConfig(url)
+	sqlDB, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("unable to parse database config: %w", err)
+		return nil, fmt.Errorf("unable to open database: %w", err)
 	}
-	poolConfig.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName())
 
-	dbpool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-	if err != nil {
-		return nil, fmt.Errorf("unable to connect to database: %w", err)
+	appID := appIDFromTag()
+	pragmas := []string{
+		"PRAGMA page_size=32768",
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=NORMAL",
+		"PRAGMA cache_size=-256000",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA temp_store=MEMORY",
+		"PRAGMA mmap_size=1073741824",
+		"PRAGMA foreign_keys=ON",
+		"PRAGMA auto_vacuum=INCREMENTAL",
+		"PRAGMA journal_size_limit=67108864",
+		"PRAGMA locking_mode=EXCLUSIVE",
+		"PRAGMA wal_autocheckpoint=2000",
+
+		fmt.Sprintf("PRAGMA application_id=%d", appID),
 	}
-	if err := dbpool.Ping(ctx); err != nil {
+
+	for _, p := range pragmas {
+		if _, err := sqlDB.Exec(p); err != nil {
+			sqlDB.Close()
+			return nil, fmt.Errorf("setting pragma %q: %w", p, err)
+		}
+	}
+
+	// Connection pool: 1 writer + 3 readers (perfect for WAL)
+	sqlDB.SetMaxOpenConns(4)
+	sqlDB.SetMaxIdleConns(4)
+	sqlDB.SetConnMaxLifetime(0)
+
+	if err := sqlDB.Ping(); err != nil {
+		sqlDB.Close()
 		return nil, fmt.Errorf("unable to ping database: %w", err)
 	}
 
-	log.Info("Database connection established", "host", cfg.Host, "port", cfg.Port, "user", cfg.User)
+	log.Info("Database connection established", "path", dbPath)
 
-	// Run migrations using sql.DB
-	if err := runMigrations(cfg, log); err != nil {
+	if err := migrations.Run(sqlDB); err != nil {
+		sqlDB.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
-	log.Info("Successfully connected to postgres database")
-	return dbpool, nil
+	log.Info("Successfully connected to sqlite database", "path", dbPath)
+	d := &DB{SQL: sqlDB, log: log}
+	d.Writer = NewBulkWriter(sqlDB, log)
+	return d, nil
 }
 
-// runMigrations applies database migrations using embedded SQL files.
-func runMigrations(cfg config.Postgres, log logger.Logger) error {
-	dbName := cfg.DB
-	if dbName == "" {
-		dbName = "wandersort"
+// Close safely closes the database after running optimization routines.
+// Call this instead of db.SQL.Close() during application shutdown.
+func (db *DB) Close() error {
+	if db.Writer != nil {
+		db.Writer.Close()
 	}
 
-	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, dbName)
-	db, err := sql.Open("postgres", connStr)
-	if err != nil {
-		return fmt.Errorf("opening database for migrations: %w", err)
+	// PRAGMA optimize runs an analysis to update query planner statistics.
+	// It's highly recommended to run this just before closing the database.
+	if _, err := db.SQL.Exec("PRAGMA optimize"); err != nil {
+		return fmt.Errorf("pragma optimize failed: %w", err)
 	}
-	defer db.Close()
+	return db.SQL.Close()
+}
 
-	driver, err := postgres.WithInstance(db, &postgres.Config{})
-	if err != nil {
-		return fmt.Errorf("creating migrate driver: %w", err)
+func (db *DB) Optimize(ctx context.Context) error {
+	// reclaim space safely after large delete operations.
+	if _, err := db.SQL.ExecContext(ctx, "PRAGMA incremental_vacuum"); err != nil {
+		return fmt.Errorf("incremental vacuum failed: %w", err)
 	}
-
-	// Use the embedded filesystem so migrations work identically in Docker
-	// and local builds — no filesystem path dependency.
-	source, err := iofs.New(migrationsFS, "migrations")
-	if err != nil {
-		return fmt.Errorf("creating iofs source: %w", err)
+	// free as much SQLite internal memory as possible.
+	// Useful after massive batch operations.
+	if _, err := db.SQL.ExecContext(ctx, "PRAGMA shrink_memory"); err != nil {
+		return fmt.Errorf("shrink memory failed: %w", err)
 	}
-
-	log.Info("Applying embedded migrations")
-	m, err := migrate.NewWithInstance("iofs", source, "postgres", driver)
-	if err != nil {
-		return fmt.Errorf("creating migrate instance: %w", err)
-	}
-
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		return fmt.Errorf("applying migrations: %w", err)
-	}
-
-	log.Info("All database migrations applied successfully")
 	return nil
+}
+
+// BeginTx starts a new transaction.
+func (db *DB) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	return db.SQL.BeginTx(ctx, opts)
+}
+
+// ExecContext executes a query without returning any rows.
+func (db *DB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return db.SQL.ExecContext(ctx, query, args...)
+}
+
+// QueryContext executes a query that returns rows.
+func (db *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return db.SQL.QueryContext(ctx, query, args...)
+}
+
+// QueryRowContext executes a query that is expected to return at most one row.
+func (db *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return db.SQL.QueryRowContext(ctx, query, args...)
+}
+
+// InClause builds a placeholder string "?,?,?..." with n question marks and
+// returns a slice of interface{} values suitable for use with sql.Query.
+// Example: InClause(ids) where ids is []int64 → ("?,?,?", []any{1,2,3})
+func InClause[T any](vals []T) (string, []any) {
+	args := make([]any, len(vals))
+	marks := make([]string, len(vals))
+	for i, v := range vals {
+		args[i] = v
+		marks[i] = "?"
+	}
+	return strings.Join(marks, ","), args
+}
+
+func appIDFromTag() int32 {
+	const tag = "WAND"
+	return int32(binary.BigEndian.Uint32([]byte(tag)))
 }

@@ -152,8 +152,8 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
+                    "202": {
+                        "description": "Accepted",
                         "schema": {
                             "$ref": "#/definitions/scans.StartScanResponse"
                         }
@@ -186,7 +186,27 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/scanner.ScanSession"
+                            "$ref": "#/definitions/scans.ScanSession"
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/v1/scans/stream": {
+            "get": {
+                "description": "Stream the unified scan status using Server-Sent Events (SSE). Keep-alive.",
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "Scans"
+                ],
+                "summary": "Stream scan status via SSE",
+                "responses": {
+                    "200": {
+                        "description": "SSE Event Stream",
+                        "schema": {
+                            "type": "string"
                         }
                     }
                 }
@@ -260,48 +280,6 @@ const docTemplate = `{
                 }
             }
         },
-        "scanner.ScanSession": {
-            "type": "object",
-            "properties": {
-                "completedAt": {
-                    "type": "string"
-                },
-                "errorsEncountered": {
-                    "type": "integer"
-                },
-                "filesDiscovered": {
-                    "type": "integer"
-                },
-                "filesModified": {
-                    "type": "integer"
-                },
-                "filesNew": {
-                    "type": "integer"
-                },
-                "filesSkipped": {
-                    "type": "integer"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "lastError": {
-                    "type": "string"
-                },
-                "rootPaths": {
-                    "description": "JSONB in DB",
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "startedAt": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                }
-            }
-        },
         "scans.CleanupOutputResponse": {
             "type": "object",
             "properties": {
@@ -318,6 +296,47 @@ const docTemplate = `{
             "properties": {
                 "totalFiles": {
                     "type": "integer"
+                }
+            }
+        },
+        "scans.ScanSession": {
+            "type": "object",
+            "properties": {
+                "completed_at": {
+                    "type": "string"
+                },
+                "errors_encountered": {
+                    "type": "integer"
+                },
+                "files_discovered": {
+                    "type": "integer"
+                },
+                "files_modified": {
+                    "type": "integer"
+                },
+                "files_new": {
+                    "type": "integer"
+                },
+                "files_skipped": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_error": {
+                    "type": "string"
+                },
+                "root_paths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "started_at": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
                 }
             }
         },

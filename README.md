@@ -39,3 +39,8 @@ Scan → Deduce → Review → Execute
 - [ ] React UI for approval
 - [ ] Safe copy engine
 - [ ] Verification logging
+
+## Notes
+
+1. If we are going to use SQLite which is going to be a single writer, then do we need to Scanner and hasher workers?
+    > We can have Concurrent Worker for each process which send the data to a channel. Once the channel is full. It flushes the data into DB.

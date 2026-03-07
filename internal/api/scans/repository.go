@@ -2,38 +2,40 @@ package scans
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
+	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
 type Repository struct {
-	db *pgxpool.Pool
+	db *db.DB
 }
 
-func NewRepository(db *pgxpool.Pool) *Repository {
+func NewRepository(db *db.DB) *Repository {
 	return &Repository{db: db}
 }
 
-func (r *Repository) GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*scanner.ScanSession, error) {
-	var session scanner.ScanSession
-	var rootPathsJSON []byte
+func (r *Repository) GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*ScanSession, error) {
+	var session ScanSession
+	var rootPathsJSON string
+	var startedAt string
+	var completedAt *string
 
-	err := r.db.QueryRow(ctx, `
+	err := r.db.QueryRowContext(ctx, `
 		SELECT id, started_at, completed_at, status, root_paths,
 		       files_discovered, files_skipped, files_new, files_modified,
 		       errors_encountered, last_error
 		FROM scan_sessions
-		WHERE id = $1
-	`, sessionID).Scan(
+		WHERE id = ?
+	`, sessionID.String()).Scan(
 		&session.ID,
-		&session.StartedAt,
-		&session.CompletedAt,
+		&startedAt,
+		&completedAt,
 		&session.Status,
 		&rootPathsJSON,
 		&session.FilesDiscovered,
@@ -44,13 +46,19 @@ func (r *Repository) GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*s
 		&session.LastError,
 	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("scan session not found")
 		}
 		return nil, fmt.Errorf("get scan status: %w", err)
 	}
 
-	if err := json.Unmarshal(rootPathsJSON, &session.RootPaths); err != nil {
+	session.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
+	if completedAt != nil {
+		t, _ := time.Parse(time.RFC3339, *completedAt)
+		session.CompletedAt = &t
+	}
+
+	if err := json.Unmarshal([]byte(rootPathsJSON), &session.RootPaths); err != nil {
 		return nil, fmt.Errorf("unmarshal root paths: %w", err)
 	}
 
@@ -59,6 +67,6 @@ func (r *Repository) GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*s
 
 func (r *Repository) GetFileCount(ctx context.Context) (int64, error) {
 	var count int64
-	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM file_registry`).Scan(&count)
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM file_registry`).Scan(&count)
 	return count, err
 }

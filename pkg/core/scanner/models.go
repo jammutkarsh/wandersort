@@ -85,6 +85,7 @@ func (fr *FileRegistry) NeedsTranscoding() bool {
 
 // FileDiscovery is the lightweight struct used during directory walking
 type FileDiscovery struct {
+	ID          int64
 	Path        string
 	Size        int64
 	ModTime     time.Time

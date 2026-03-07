@@ -17,13 +17,10 @@ import (
 	"github.com/jammutkarsh/wandersort/internal/api/hash"
 	"github.com/jammutkarsh/wandersort/internal/api/scans"
 	"github.com/jammutkarsh/wandersort/pkg/config"
-	"github.com/jammutkarsh/wandersort/pkg/core/hasher"
-	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
+	"github.com/jammutkarsh/wandersort/pkg/core"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/queue"
 	"github.com/jammutkarsh/wandersort/pkg/telemetry"
-	"github.com/riverqueue/river"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
@@ -57,44 +54,37 @@ func main() {
 	}
 
 	// Logger
-	wsLogger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile, cfg.OTelEnabled)
+	logger := logger.New(cfg.LogLevel, cfg.OTelEnabled, cfg.LogConsole, cfg.LogFile)
 
-	// Database
-	psql, err := db.InitDB(ctx, cfg.Postgres, wsLogger)
+	// Database (SQLite)
+	sqliteDB, err := db.New(cfg.DatabasePath, logger)
 	if err != nil {
 		log.Fatalf("failed to initialize database: %v", err)
 	}
-	defer psql.Close()
 
-	// Core services — hasher is independent; scanner needs the enqueuer
-	// which we get from the queue, so we create it after queue setup.
-	h := hasher.NewHasher(psql, wsLogger)
+	// Ensure the DB is closed on ANY exit path — including unrecovered panics.
+	// With locking_mode=EXCLUSIVE, a missing Close leaves the WAL/SHM files
+	// locked and prevents the server from restarting.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("panic recovered during shutdown: %v", r)
+		}
+		logger.Info("Closing database")
+		if err := sqliteDB.Close(); err != nil {
+			log.Printf("error closing database: %v", err)
+		}
+	}()
 
-	// Register River workers and start the queue.
-	workers := river.NewWorkers()
-	scanWorker := &scanner.ScanTaskWorker{} // Scanner assigned after construction
-	river.AddWorker(workers, scanWorker)
-	river.AddWorker(workers, &hasher.HashTaskWorker{Hasher: h})
-
-	riverClient, enqueuer, err := queue.New(ctx, psql, queue.Config{
-		MaxConcurrentScans:   cfg.MaxConcurrentScans,
-		MaxConcurrentHashers: cfg.MaxConcurrentHashers,
-	}, workers)
-	if err != nil {
-		log.Fatalf("failed to create river client: %v", err)
-	}
-
-	// Now that we have the enqueuer, build the scanner and wire it into the worker.
-	sc := scanner.NewScanner(psql, wsLogger, cfg.OutputPath, enqueuer)
-	scanWorker.Scanner = sc
+	// Create the unified pipeline orchestrator
+	p := core.NewPipeline(ctx, sqliteDB, logger, cfg)
 
 	// API handlers
-	adminHandler := admin.NewHandler(wsLogger, admin.NewService(wsLogger, admin.NewRepository(psql)))
-	scansHandler := scans.NewHandler(wsLogger, scans.NewService(wsLogger, sc, scans.NewRepository(psql)))
-	hashHandler := hash.NewHandler(wsLogger, hash.NewService(wsLogger, hash.NewRepository(psql)))
+	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(sqliteDB)))
+	scansHandler := scans.NewHandler(logger, scans.NewService(logger, p, scans.NewRepository(sqliteDB)))
+	hashHandler := hash.NewHandler(logger, hash.NewService(logger, hash.NewRepository(sqliteDB)))
 
 	// Setup Gin router
-	router := setupRouter(cfg, wsLogger, adminHandler, scansHandler, hashHandler)
+	router := setupRouter(cfg, logger, adminHandler, scansHandler, hashHandler)
 
 	// HTTP server
 	port := cfg.ServerPort
@@ -110,7 +100,7 @@ func main() {
 
 	// Start server in a goroutine so it doesn't block the signal listener.
 	go func() {
-		wsLogger.Info("Server starting", "port", port, "otel", cfg.OTelEnabled)
+		logger.Info("Server starting", "port", port, "otel", cfg.OTelEnabled)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
 		}
@@ -120,25 +110,23 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
-	wsLogger.Info("Shutting down", "signal", sig.String())
+	logger.Info("Shutting down", "signal", sig.String())
 
 	// Cancel the root context to stop any background goroutines.
 	cancel()
+
+	// Wait for pipeline workers to finish before closing the DB.
+	p.Close()
 
 	// Give in-flight requests up to 30 s to complete.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
-	// Stop River first so in-flight jobs complete before we close the DB pool.
-	if err := riverClient.Stop(shutdownCtx); err != nil {
-		log.Printf("warn: river stop error: %v", err)
-	}
-
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("forced shutdown: %v", err)
 	}
 
-	wsLogger.Info("Server stopped")
+	logger.Info("Server stopped")
 }
 
 // setupRouter creates and configures the Gin router with all middleware and routes.

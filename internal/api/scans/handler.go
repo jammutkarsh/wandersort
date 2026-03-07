@@ -1,6 +1,7 @@
 package scans
 
 import (
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -13,6 +14,7 @@ func SetupRoutes(v1 *gin.RouterGroup, handler *Handler) {
 	scans := v1.Group("/scans")
 	scans.POST("/start", handler.HandleStartScan)
 	scans.GET("/status", handler.HandleGetScanStatus)
+	scans.GET("/stream", handler.HandleStreamStatus)
 	scans.GET("/count", handler.HandleGetFileCount)
 	scans.POST("/cleanup-output", handler.HandleCleanupOutput)
 }
@@ -80,7 +82,7 @@ func (h *Handler) HandleStartScan(c *gin.Context) {
 // @Accept json
 // @Produce json
 // @Param ScanStatusRequest query ScanStatusRequest true "Scan Status Request"
-// @Success 200 {object} scanner.ScanSession
+// @Success 200 {object} ScanSession
 // @Router /internal/v1/scans/status [get]
 func (h *Handler) HandleGetScanStatus(c *gin.Context) {
 	var req ScanStatusRequest
@@ -104,6 +106,36 @@ func (h *Handler) HandleGetScanStatus(c *gin.Context) {
 	}
 
 	api.RespondOK(c, http.StatusOK, session)
+}
+
+// HandleStreamStatus godoc
+// @Summary Stream scan status via SSE
+// @Schemes http https
+// @Description Stream the unified scan status using Server-Sent Events (SSE). Keep-alive.
+// @Tags Scans
+// @Produce text/event-stream
+// @Success 200 {string} string "SSE Event Stream"
+// @Router /internal/v1/scans/stream [get]
+func (h *Handler) HandleStreamStatus(c *gin.Context) {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+
+	ch := h.service.SubscribeStatus()
+	defer h.service.UnsubscribeStatus(ch)
+
+	c.Stream(func(w io.Writer) bool {
+		select {
+		case <-c.Request.Context().Done():
+			return false
+		case msg, ok := <-ch:
+			if !ok {
+				return false
+			}
+			c.SSEvent("message", msg)
+			return true
+		}
+	})
 }
 
 // HandleGetFileCount godoc

@@ -4,7 +4,7 @@ import (
 	"context"
 	"regexp"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -24,12 +24,12 @@ var genericDirNames = map[string]bool{
 
 // Scorer handles master file selection within content groups
 type Scorer struct {
-	db  *pgxpool.Pool
+	db  *db.DB
 	log logger.Logger
 }
 
 // NewScorer creates a new scorer instance
-func NewScorer(db *pgxpool.Pool, log logger.Logger) *Scorer {
+func NewScorer(db *db.DB, log logger.Logger) *Scorer {
 	return &Scorer{
 		db:  db,
 		log: log,

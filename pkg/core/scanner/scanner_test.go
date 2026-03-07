@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -182,7 +181,7 @@ func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 	}
 
 	filesChan := make(chan FileDiscovery, 200)
-	st := &scanState{}
+	st := &scanState{tracker: &scanSessionTracker{}}
 
 	err := sc.walkRoot(context.Background(), root, root, filesChan, st)
 	close(filesChan)
@@ -207,12 +206,12 @@ func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 	}
 
 	// Verify counters
-	discovered := atomic.LoadInt64(&st.discovered)
+	discovered := st.tracker.discovered.Load()
 	if discovered != 5 {
 		t.Errorf("discovered = %d, want 5", discovered)
 	}
 
-	unsupported := atomic.LoadInt64(&st.unsupported)
+	unsupported := st.tracker.unsupported
 	if unsupported != 1 { // readme.txt
 		t.Errorf("unsupported = %d, want 1", unsupported)
 	}
@@ -228,7 +227,7 @@ func TestWalkRoot_SkipsIgnoredDirs(t *testing.T) {
 	}}
 
 	filesChan := make(chan FileDiscovery, 200)
-	st := &scanState{}
+	st := &scanState{tracker: &scanSessionTracker{}}
 	_ = sc.walkRoot(context.Background(), root, root, filesChan, st)
 	close(filesChan)
 
@@ -252,7 +251,7 @@ func TestWalkRoot_ContextCancellation(t *testing.T) {
 	cancel() // cancel immediately
 
 	filesChan := make(chan FileDiscovery, 200)
-	st := &scanState{}
+	st := &scanState{tracker: &scanSessionTracker{}}
 	err := sc.walkRoot(ctx, root, root, filesChan, st)
 	close(filesChan)
 
@@ -386,25 +385,6 @@ func TestFileRegistry_NeedsTranscoding(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ScanTaskArgs
-// ---------------------------------------------------------------------------
-
-func TestScanTaskArgs_Kind(t *testing.T) {
-	args := ScanTaskArgs{SessionID: "test-session-id", OriginalPaths: []string{"~/Photos"}}
-	if args.Kind() != "scan_task" {
-		t.Errorf("Kind() = %q, want %q", args.Kind(), "scan_task")
-	}
-}
-
-func TestScanTaskArgs_InsertOpts(t *testing.T) {
-	args := ScanTaskArgs{}
-	opts := args.InsertOpts()
-	if opts.Queue != "file_scanning" {
-		t.Errorf("InsertOpts().Queue = %q, want %q", opts.Queue, "file_scanning")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Concurrent walkRoot — multiple goroutines walking same tree
 // ---------------------------------------------------------------------------
 
@@ -419,15 +399,13 @@ func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 
 	const walkers = 4
 	filesChan := make(chan FileDiscovery, 1000)
-	st := &scanState{}
+	st := &scanState{tracker: &scanSessionTracker{}}
 
 	var wg sync.WaitGroup
 	for range walkers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_ = sc.walkRoot(context.Background(), root, root, filesChan, st)
-		}()
+		})
 	}
 
 	go func() {
@@ -447,7 +425,7 @@ func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 	}
 
 	// Atomic counter should also match
-	discovered := atomic.LoadInt64(&st.discovered)
+	discovered := st.tracker.discovered.Load()
 	if discovered != int64(expected) {
 		t.Errorf("discovered counter = %d, want %d", discovered, expected)
 	}

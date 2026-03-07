@@ -5,20 +5,21 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-
-	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/status"
 )
 
-// scanStarter is the capability the Service needs from the scanner package.
+// scanStarter is the capability the Service needs from the pipeline package.
 type scanStarter interface {
-	StartScan(ctx context.Context, rootPaths []string) (uuid.UUID, error)
+	SubmitScan(ctx context.Context, rootPaths []string) (uuid.UUID, error)
 	CleanupOrganizedFiles(ctx context.Context) (int64, error)
+	StatusStream() chan status.PipelineStatus
+	UnsubscribeStatus(ch chan status.PipelineStatus)
 }
 
 // scanRepository is the persistence capability the Service needs.
 type scanRepository interface {
-	GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*scanner.ScanSession, error)
+	GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*ScanSession, error)
 	GetFileCount(ctx context.Context) (int64, error)
 }
 
@@ -38,10 +39,10 @@ func NewService(log logger.Logger, sc scanStarter, repo scanRepository) *Service
 }
 
 func (s *Service) StartScan(ctx context.Context, rootPaths []string) (uuid.UUID, error) {
-	return s.scanner.StartScan(ctx, rootPaths)
+	return s.scanner.SubmitScan(ctx, rootPaths)
 }
 
-func (s *Service) GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*scanner.ScanSession, error) {
+func (s *Service) GetScanStatus(ctx context.Context, sessionID uuid.UUID) (*ScanSession, error) {
 	return s.repo.GetScanStatus(ctx, sessionID)
 }
 
@@ -64,4 +65,12 @@ func (s *Service) CleanupOrganizedFiles(ctx context.Context) (CleanupOutputRespo
 		DeletedCount: deleted,
 		Message:      fmt.Sprintf("Removed %d stale entries from the organized library registry", deleted),
 	}, nil
+}
+
+func (s *Service) SubscribeStatus() chan status.PipelineStatus {
+	return s.scanner.StatusStream()
+}
+
+func (s *Service) UnsubscribeStatus(ch chan status.PipelineStatus) {
+	s.scanner.UnsubscribeStatus(ch)
 }
