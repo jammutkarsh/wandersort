@@ -20,10 +20,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/telemetry"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 )
 
 // @title           WanderSort API
@@ -39,22 +37,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// OTEL
-	if cfg.OTelEnabled {
-		shutdown, err := telemetry.Setup(ctx)
-		if err != nil {
-			log.Printf("warn: failed to initialise OpenTelemetry: %v", err)
-		} else {
-			defer func() {
-				if err := shutdown(ctx); err != nil {
-					log.Printf("warn: OTel shutdown error: %v", err)
-				}
-			}()
-		}
-	}
-
 	// Logger
-	logger := logger.New(cfg.LogLevel, cfg.OTelEnabled, cfg.LogConsole, cfg.LogFile)
+	logger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile)
 
 	// Database (SQLite)
 	sqliteDB, err := db.New(cfg.DatabasePath, logger)
@@ -76,31 +60,26 @@ func main() {
 	}()
 
 	// Create the unified pipeline orchestrator
-	p := core.NewPipeline(ctx, sqliteDB, logger, cfg)
+	pipeline := core.NewPipeline(ctx, sqliteDB, logger, cfg)
 
 	// API handlers
 	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(sqliteDB)))
-	scansHandler := scans.NewHandler(logger, scans.NewService(logger, p, scans.NewRepository(sqliteDB)))
+	scansHandler := scans.NewHandler(logger, scans.NewService(logger, pipeline, scans.NewRepository(sqliteDB)))
 	hashHandler := hash.NewHandler(logger, hash.NewService(logger, hash.NewRepository(sqliteDB)))
 
 	// Setup Gin router
-	router := setupRouter(cfg, logger, adminHandler, scansHandler, hashHandler)
+	router := setupRouter(logger, adminHandler, scansHandler, hashHandler, cfg.Host)
 
 	// HTTP server
-	port := cfg.ServerPort
-	if port == "" {
-		port = "8080"
-	}
-
 	srv := &http.Server{
-		Addr:              ":" + port,
+		Addr:              ":" + cfg.ServerPort,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Start server in a goroutine so it doesn't block the signal listener.
 	go func() {
-		logger.Info("Server starting", "port", port, "otel", cfg.OTelEnabled)
+		logger.Info("Starting Server on", "port", cfg.ServerPort)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
 		}
@@ -116,7 +95,7 @@ func main() {
 	cancel()
 
 	// Wait for pipeline workers to finish before closing the DB.
-	p.Close()
+	pipeline.Close()
 
 	// Give in-flight requests up to 30 s to complete.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -130,20 +109,10 @@ func main() {
 }
 
 // setupRouter creates and configures the Gin router with all middleware and routes.
-func setupRouter(
-	cfg *config.Configuration,
-	wsLogger logger.Logger,
-	adminHandler *admin.Handler,
-	scansHandler *scans.Handler,
-	hashHandler *hash.Handler,
-) *gin.Engine {
+func setupRouter(l logger.Logger, aH *admin.Handler, sH *scans.Handler, hH *hash.Handler, host string) *gin.Engine {
 	router := gin.New()
 
-	// Middleware stack
-	if cfg.OTelEnabled {
-		router.Use(otelgin.Middleware("wandersort"))
-	}
-	router.Use(logger.GinLogger(wsLogger))
+	router.Use(logger.GinLogger(l))
 	router.Use(api.RecoveryMiddleware())
 	router.Use(api.RequestIDMiddleware())
 	router.Use(api.CORSMiddleware())
@@ -151,17 +120,20 @@ func setupRouter(
 	// API routes
 	const basePath = "/internal/v1"
 	v1 := router.Group(basePath)
-	admin.SetupRoutes(v1, adminHandler)
-	scans.SetupRoutes(v1, scansHandler)
-	hash.SetupRoutes(v1, hashHandler)
+	admin.SetupRoutes(v1, aH)
+	scans.SetupRoutes(v1, sH)
+	hash.SetupRoutes(v1, hH)
 
 	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "pong"})
 	})
 
 	// Swagger docs
-	docs.SwaggerInfo.Host = os.Getenv("HOST")
+	docs.SwaggerInfo.Host = host
 	v1.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
+	for _, v := range router.Routes() {
+		l.Info("Registered Route", v.Method, v.Path)
+	}
 
 	return router
 }

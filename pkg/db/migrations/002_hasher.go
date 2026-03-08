@@ -1,5 +1,11 @@
 package migrations
 
+var schema002 = Migration{
+	Version:     002,
+	Description: "hasher_schema",
+	SQL:         hasherSQL,
+}
+
 const hasherSQL = `
 -- Track hashed file count on scan sessions
 ALTER TABLE scan_sessions ADD COLUMN files_hashed INTEGER DEFAULT 0;

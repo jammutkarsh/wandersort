@@ -70,15 +70,13 @@ func (p *Pipeline) Close() {
 
 // SubmitScan creates a new scan session and kicks off the three-phase
 // pipeline in a background goroutine.
-func (p *Pipeline) SubmitScan(_ context.Context, rootPaths []string) (uuid.UUID, error) {
+func (p *Pipeline) SubmitScan(rootPaths []string) (uuid.UUID, error) {
 	select {
 	case <-p.ctx.Done():
 		return uuid.Nil, context.Canceled
 	default:
 	}
 
-	// Intentionally decouple long-running scan lifecycle from HTTP request
-	// cancellation: once accepted, the background session lives under pipeline ctx.
 	sessionID, expandedRoots, err := p.scanner.PrepareSession(p.ctx, rootPaths)
 	if err != nil {
 		return uuid.Nil, err
@@ -266,9 +264,4 @@ func (p *Pipeline) hashSessionFiles(ctx context.Context, sessionID uuid.UUID) (i
 	}
 
 	return total, nil
-}
-
-// CleanupOrganizedFiles is a pass-through to the scanner's cleanup method.
-func (p *Pipeline) CleanupOrganizedFiles(ctx context.Context) (int64, error) {
-	return p.scanner.CleanupOrganizedFiles(ctx)
 }

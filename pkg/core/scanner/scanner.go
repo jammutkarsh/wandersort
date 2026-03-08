@@ -115,6 +115,7 @@ func (s *Scanner) PrepareSession(ctx context.Context, rootPaths []string) (uuid.
 	startedAt := time.Now()
 
 	// Convert root paths to JSON for storage
+	// !Do we need to convert it to JSON?
 	rootPathsJSON, err := json.Marshal(rootPaths)
 	if err != nil {
 		return uuid.Nil, nil, fmt.Errorf("failed to marshal root paths: %w", err)
@@ -456,37 +457,6 @@ func (s *Scanner) processDiscoveries(ctx context.Context, sessionID uuid.UUID, d
 	}
 }
 
-func (s *Scanner) cleanupDeletedFiles(ctx context.Context, sessionID uuid.UUID, rootPaths []string) error {
-	s.log.Info("Cleaning up deleted files")
-
-	placeholders, args := db.InClause(rootPaths)
-	args = append(args, sessionID.String())
-
-	query := fmt.Sprintf(`
-		DELETE FROM file_registry
-		WHERE source_root IN (%s)
-		  AND scan_session_id != ?
-	`, placeholders)
-
-	result, err := s.execWithBusyRetry(ctx, query, args...)
-	if err != nil {
-		s.log.Error("Failed to cleanup deleted files", "error", err)
-		return err
-	}
-
-	deleted, _ := result.RowsAffected()
-	if deleted > 0 {
-		s.log.Info("Deleted files cleaned up", "count", deleted)
-	}
-	return nil
-}
-
-// CleanupDeletedFiles removes registry rows for files that were not observed in
-// the latest scan session for the provided roots.
-func (s *Scanner) CleanupDeletedFiles(ctx context.Context, sessionID uuid.UUID, rootPaths []string) error {
-	return s.cleanupDeletedFiles(ctx, sessionID, rootPaths)
-}
-
 // SetSessionStatus updates the current phase/status for a scan session.
 func (s *Scanner) SetSessionStatus(ctx context.Context, sessionID uuid.UUID, statusValue string) error {
 	_, err := s.execWithBusyRetry(ctx, `
@@ -670,89 +640,4 @@ func isSQLITEBusy(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "database is locked")
-}
-
-// CleanupOrganizedFiles checks every ORGANIZED entry in the registry and removes
-// those whose files no longer exist on disk. It does NOT re-index or re-classify
-// any files — it is a pure deletion pass for stale entries.
-// Rows are processed in cursor-based pages so memory stays bounded regardless
-// of table size. Returns the number of registry rows deleted.
-func (s *Scanner) CleanupOrganizedFiles(ctx context.Context) (int64, error) {
-	const pageSize = 500
-	var lastID int64
-	var totalDeleted int64
-
-	for {
-		type entry struct {
-			ID         int64
-			FilePath   string
-			SourceRoot string
-			PathType   string
-		}
-
-		rows, err := s.db.QueryContext(ctx, `
-			SELECT id, file_path, source_root, path_type
-			FROM file_registry
-			WHERE file_origin = ? AND id > ?
-			ORDER BY id
-			LIMIT ?
-		`, FileOriginOrganized, lastID, pageSize)
-		if err != nil {
-			return totalDeleted, fmt.Errorf("failed to query organized files: %w", err)
-		}
-
-		var page []entry
-		for rows.Next() {
-			var e entry
-			if err := rows.Scan(&e.ID, &e.FilePath, &e.SourceRoot, &e.PathType); err != nil {
-				rows.Close()
-				return totalDeleted, fmt.Errorf("failed to scan row: %w", err)
-			}
-			page = append(page, e)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return totalDeleted, fmt.Errorf("row iteration error: %w", err)
-		}
-
-		if len(page) == 0 {
-			break
-		}
-
-		var missing []int64
-		for _, e := range page {
-			var absPath string
-			if e.PathType == PathTypeAbsolute {
-				absPath = e.FilePath
-			} else {
-				absPath = s.pathUtil.MakeAbsolute(e.FilePath, e.SourceRoot)
-			}
-			if _, statErr := os.Stat(absPath); os.IsNotExist(statErr) {
-				missing = append(missing, e.ID)
-			}
-		}
-
-		if len(missing) > 0 {
-			placeholders, args := db.InClause(missing)
-			query := fmt.Sprintf(`DELETE FROM file_registry WHERE id IN (%s)`, placeholders)
-			result, err := s.db.ExecContext(ctx, query, args...)
-			if err != nil {
-				return totalDeleted, fmt.Errorf("failed to delete stale organized entries: %w", err)
-			}
-			deleted, _ := result.RowsAffected()
-			totalDeleted += deleted
-		}
-
-		lastID = page[len(page)-1].ID
-		if len(page) < pageSize {
-			break
-		}
-	}
-
-	if totalDeleted == 0 {
-		s.log.Info("Organized library cleanup: no stale entries found")
-	} else {
-		s.log.Info("Organized library cleanup complete", "deleted", totalDeleted)
-	}
-	return totalDeleted, nil
 }

@@ -127,7 +127,7 @@ func (bw *BulkWriter) start() {
 }
 
 func (bw *BulkWriter) executeBatch(batch []DBOperation) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	tx, err := bw.sqlDB.BeginTx(ctx, nil)

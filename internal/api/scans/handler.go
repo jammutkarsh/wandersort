@@ -3,6 +3,7 @@ package scans
 import (
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -16,7 +17,6 @@ func SetupRoutes(v1 *gin.RouterGroup, handler *Handler) {
 	scans.GET("/status", handler.HandleGetScanStatus)
 	scans.GET("/stream", handler.HandleStreamStatus)
 	scans.GET("/count", handler.HandleGetFileCount)
-	scans.POST("/cleanup-output", handler.HandleCleanupOutput)
 }
 
 type Handler struct {
@@ -51,14 +51,15 @@ func (h *Handler) HandleStartScan(c *gin.Context) {
 		return
 	}
 
-	for i, path := range req.RootPaths {
-		if path == "" {
-			api.RespondError(c, api.BadRequest("VALIDATION_ERROR", "Empty root path provided", map[string]any{"error": "Root paths cannot be empty", "index": i}))
-			return
+	var paths = []string{}
+	for _, p := range req.RootPaths {
+		path := strings.TrimSpace(p)
+		if path != "" {
+			paths = append(paths, path)
 		}
 	}
 
-	sessionID, err := h.service.StartScan(c.Request.Context(), req.RootPaths)
+	sessionID, err := h.service.StartScan(paths)
 	if err != nil {
 		h.logger.Error("Failed to start scan", "error", err)
 		api.RespondError(c, api.InternalError("SCAN_START_FAILED", err.Error(), nil))
@@ -152,26 +153,6 @@ func (h *Handler) HandleGetFileCount(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("Failed to get file count", "error", err)
 		api.RespondError(c, api.InternalError("FILE_COUNT_ERROR", "Failed to get file count", nil))
-		return
-	}
-
-	api.RespondOK(c, http.StatusOK, resp)
-}
-
-// HandleCleanupOutput godoc
-// @Summary Clean up stale organized-library entries
-// @Schemes http https
-// @Description Checks every ORGANIZED entry in the file registry and removes those whose
-// @Description files no longer exist on disk. Does NOT re-index or re-sort any files.
-// @Tags Scans
-// @Produce json
-// @Success 200 {object} CleanupOutputResponse
-// @Router /internal/v1/scans/cleanup-output [post]
-func (h *Handler) HandleCleanupOutput(c *gin.Context) {
-	resp, err := h.service.CleanupOrganizedFiles(c.Request.Context())
-	if err != nil {
-		h.logger.Error("Failed to cleanup organized files", "error", err)
-		api.RespondError(c, api.InternalError("CLEANUP_FAILED", err.Error(), nil))
 		return
 	}
 

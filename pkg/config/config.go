@@ -8,9 +8,9 @@ import (
 
 type Configuration struct {
 	ServerPort   string
+	Host         string
 	DatabasePath string
 	OutputPath   string
-	OTelEnabled  bool
 	LogLevel     string
 	LogConsole   bool
 	LogFile      string
@@ -18,42 +18,52 @@ type Configuration struct {
 }
 
 func Load() (*Configuration, error) {
-	outputPath, logPath := os.Getenv("OUTPUT_PATH"), os.Getenv("LOG_FILE")
+	const defaultWorkers = 5
+	var (
+		outputPath  = os.Getenv("OUTPUT_PATH")
+		logPath     = os.Getenv("LOG_FILE")
+		logLevel    = os.Getenv("LOG_LEVEL")
+		dbPath      = os.Getenv("DB_PATH")
+		workers     = os.Getenv("WORKERS")
+		port        = os.Getenv("PORT")
+		host        = os.Getenv("HOST")
+		workerCount = defaultWorkers
+	)
+
 	if outputPath == "" {
 		home, _ := os.UserHomeDir()
-		outputPath = filepath.Join(home, "WanderSort_Library")
+		outputPath = filepath.Join(home, "WanderSortLibrary")
 	}
 
 	if logPath == "" {
 		logPath = filepath.Join(outputPath, ".wandersort.log")
 	}
 
-	logLevel := os.Getenv("LOG_LEVEL")
 	if logLevel == "" {
 		logLevel = "info"
 	}
 
-	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
 		dbPath = filepath.Join(outputPath, ".wandersort.db")
 	}
 
-	const defaultWorkers = 5
-	workers := defaultWorkers
-	if v := os.Getenv("WORKERS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			workers = n
+	if workers != "" {
+		if n, err := strconv.Atoi(workers); err == nil && n > 0 {
+			workerCount = n
 		}
+	}
+	if port == "" {
+		port = "8080"
 	}
 
 	return &Configuration{
-		ServerPort:   os.Getenv("PORT"),
+		ServerPort:   port,
+		Host:         host,
 		OutputPath:   outputPath,
-		OTelEnabled:  os.Getenv("OTEL_ENABLED") == "true",
 		LogLevel:     logLevel,
 		LogFile:      logPath,
 		LogConsole:   true,
 		DatabasePath: dbPath,
-		Workers:      workers,
+		Workers:      workerCount,
 	}, nil
 }

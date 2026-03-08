@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,33 +17,69 @@ import (
 const (
 	ansiReset = "\033[0m"
 
-	ansiBlack        = 30
-	ansiRed          = 31
-	ansiGreen        = 32
-	ansiYellow       = 33
-	ansiBlue         = 34
-	ansiMagenta      = 35
-	ansiCyan         = 36
-	ansiLightGray    = 37
-	ansiDarkGray     = 90
-	ansiLightRed     = 91
-	ansiLightGreen   = 92
-	ansiLightYellow  = 93
-	ansiLightBlue    = 94
+	// ansiBlack        = 30
+	// ansiRed          = 31
+	// ansiGreen        = 32
+	// ansiYellow       = 33
+	// ansiBlue         = 34
+	// ansiMagenta      = 35
+	ansiCyan = 36
+	// ansiLightGray    = 37
+	ansiDarkGray = 90
+	ansiLightRed = 91
+	// ansiLightGreen   = 92
+	ansiLightYellow = 93
+	// ansiLightBlue    = 94
 	ansiLightMagenta = 95
-	ansiLightCyan    = 96
-	ansiWhite        = 97
+	// ansiLightCyan    = 96
+	ansiWhite = 97
 )
 
-const prettyTimeFormat = "[15:04:05.000]"
+const timeFormat = "[15:04:05.000]"
 
 func colorize(colorCode int, v string) string {
-	return fmt.Sprintf("\033[%sm%s%s", strconv.Itoa(colorCode), v, ansiReset)
+	return fmt.Sprintf("\033[%dm%s%s", colorCode, v, ansiReset)
 }
 
-// ---------------------------------------------------------------------------
-// PrettyHandler – a colorful slog.Handler for local development
-// ---------------------------------------------------------------------------
+type SlogAdapter struct {
+	logger *slog.Logger
+	level  slog.Level
+}
+
+var _ Logger = &SlogAdapter{}
+
+// log creates a record with the correct caller PC and dispatches it.
+func (l *SlogAdapter) log(level slog.Level, msg string, attrs ...any) {
+	if !l.logger.Handler().Enabled(context.TODO(), level) {
+		return
+	}
+	var pcs [1]uintptr
+	runtime.Callers(3, pcs[:])
+	r := slog.NewRecord(time.Now(), level, msg, pcs[0])
+	r.Add(attrs...)
+	_ = l.logger.Handler().Handle(context.TODO(), r)
+}
+
+func (l *SlogAdapter) Debug(msg string, attrs ...any) {
+	l.log(slog.LevelDebug, msg, attrs...)
+}
+
+func (l *SlogAdapter) Info(msg string, attrs ...any) {
+	l.log(slog.LevelInfo, msg, attrs...)
+}
+
+func (l *SlogAdapter) Warn(msg string, attrs ...any) {
+	l.log(slog.LevelWarn, msg, attrs...)
+}
+
+func (l *SlogAdapter) Error(msg string, attrs ...any) {
+	l.log(slog.LevelError, msg, attrs...)
+}
+
+func (l *SlogAdapter) Panic(msg string, attrs ...any) {
+	l.log(slog.LevelError, msg, attrs...)
+	panic(msg)
+}
 
 // PrettyHandler wraps a slog.JSONHandler, captures its output into a buffer,
 // and re-formats it as a human-readable, coloured log line.
@@ -185,7 +220,7 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 	}
 
 	// [TS] | LEVEL: | Message | [K: V | K: V]    file:line funcName
-	line := colorize(ansiWhite, r.Time.Format(prettyTimeFormat))
+	line := colorize(ansiWhite, r.Time.Format(timeFormat))
 	line += sep + level
 	line += sep + colorize(ansiWhite, r.Message)
 	if len(attrParts) > 0 {
@@ -197,51 +232,4 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	fmt.Fprintln(os.Stderr, line)
 	return nil
-}
-
-// ---------------------------------------------------------------------------
-// SlogAdapter – wraps any slog.Handler and satisfies the Logger interface
-// ---------------------------------------------------------------------------
-
-var _ Logger = (*SlogAdapter)(nil)
-
-// SlogAdapter wraps a standard library slog.Logger and satisfies the Logger
-// interface. Despite the file name, it is used for all handler combinations
-// (console, file, OTel) — not only pretty-printed console output.
-type SlogAdapter struct {
-	logger *slog.Logger
-	level  slog.Level
-}
-
-// log creates a record with the correct caller PC and dispatches it.
-func (l *SlogAdapter) log(level slog.Level, msg string, attrs ...any) {
-	if !l.logger.Handler().Enabled(context.TODO(), level) {
-		return
-	}
-	var pcs [1]uintptr
-	runtime.Callers(3, pcs[:])
-	r := slog.NewRecord(time.Now(), level, msg, pcs[0])
-	r.Add(attrs...)
-	_ = l.logger.Handler().Handle(context.TODO(), r)
-}
-
-func (l *SlogAdapter) Debug(msg string, attrs ...any) {
-	l.log(slog.LevelDebug, msg, attrs...)
-}
-
-func (l *SlogAdapter) Info(msg string, attrs ...any) {
-	l.log(slog.LevelInfo, msg, attrs...)
-}
-
-func (l *SlogAdapter) Warn(msg string, attrs ...any) {
-	l.log(slog.LevelWarn, msg, attrs...)
-}
-
-func (l *SlogAdapter) Error(msg string, attrs ...any) {
-	l.log(slog.LevelError, msg, attrs...)
-}
-
-func (l *SlogAdapter) Panic(msg string, attrs ...any) {
-	l.log(slog.LevelError, msg, attrs...)
-	panic(msg)
 }

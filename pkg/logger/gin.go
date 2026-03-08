@@ -8,16 +8,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// GinLogger returns a gin middleware that logs requests via the provided
-// `Logger` but skips logging for health and swagger asset routes and any
-// requests that result in a 404 response.
+var ignoredPaths []string = []string{
+	"/ping",
+	"/internal/v1/swagger/",
+}
+
 func GinLogger(l Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
 
-		if path == "/ping" || strings.HasPrefix(path, "/internal/v1/swagger/") {
-			c.Next()
-			return
+		for _, ignore := range ignoredPaths {
+			if strings.HasPrefix(path, ignore) {
+				c.Next()
+				return
+			}
 		}
 
 		start := time.Now()

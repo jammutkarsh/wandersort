@@ -34,19 +34,19 @@ func New(dbPath string, log logger.Logger) (*DB, error) {
 
 	appID := appIDFromTag()
 	pragmas := []string{
-		"PRAGMA page_size=32768",
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA cache_size=-256000",
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA temp_store=MEMORY",
-		"PRAGMA mmap_size=1073741824",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA auto_vacuum=INCREMENTAL",
-		"PRAGMA journal_size_limit=67108864",
-		"PRAGMA wal_autocheckpoint=2000",
+		"PRAGMA page_size=32768",             //  32KB for better I/O efficiency.
+		"PRAGMA journal_mode=WAL",            // Better concurrency and durability.
+		"PRAGMA synchronous=NORMAL",          // Reduces fsync frequency to improve write performance with acceptable safety.
+		"PRAGMA cache_size=-256000",          // ~256MB page cache in memory (negative = size in KB).
+		"PRAGMA busy_timeout=5000",           // Wait 5s in database lock before failing.
+		"PRAGMA temp_store=MEMORY",           // Stores temporary tables and indices in RAM instead of disk.
+		"PRAGMA mmap_size=1073741824",        // 1GB memory-mapped I/O to reduce system calls.
+		"PRAGMA foreign_keys=ON",             // Enforces foreign key constraints.
+		"PRAGMA auto_vacuum=INCREMENTAL",     // Enables incremental space reclamation.
+		"PRAGMA journal_size_limit=67108864", // Limits WAL file size to ~64MB before truncation.
+		"PRAGMA wal_autocheckpoint=2000",     // Automatically checkpoints WAL after 2000 pages written.
 
-		fmt.Sprintf("PRAGMA application_id=%d", appID),
+		fmt.Sprintf("PRAGMA application_id=%d", appID), // Unique identifier for the application.
 	}
 
 	for _, p := range pragmas {
@@ -69,11 +69,13 @@ func New(dbPath string, log logger.Logger) (*DB, error) {
 
 	log.Info("Database connection established", "path", dbPath)
 
-	if err := migrations.Run(sqlDB); err != nil {
+	var count int
+	if count, err = migrations.Run(sqlDB); err != nil {
 		sqlDB.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
+	log.Info("Migration Completed", "migrations", count)
 	log.Info("Successfully connected to sqlite database", "path", dbPath)
 	d := &DB{SQL: sqlDB, log: log}
 	d.Writer = NewBulkWriter(sqlDB, log)

@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	slogmulti "github.com/samber/slog-multi"
-	"go.opentelemetry.io/contrib/bridges/otelslog"
 )
 
 // Logger is the shared logging interface used throughout the application.
@@ -26,12 +25,11 @@ type Logger interface {
 //   - logLvl:  minimum log level ("debug", "info", "warn", "error")
 //   - console: emit colourful logs to stderr
 //   - logFile: path of the JSON log file; empty string disables file logging
-//   - otel:    forward log records to the global OTel LoggerProvider
 //     (call after telemetry.Setup() has registered the provider)
 //
 // Passing console=false, logFile="", otel=false returns a no-op logger.
-func New(logLvl string, otel, console bool, logFile string) Logger {
-	if !console && logFile == "" && !otel {
+func New(logLvl string, console bool, logFile string) Logger {
+	if !console && logFile == "" {
 		return NewNoopLogger()
 	}
 
@@ -39,41 +37,29 @@ func New(logLvl string, otel, console bool, logFile string) Logger {
 
 	var handlers []slog.Handler
 
+	// Enable ConsoleLogger if provided
 	if console {
-		handlers = append(handlers, NewPrettyHandler(&slog.HandlerOptions{Level: level}))
+		consoleH := NewPrettyHandler(&slog.HandlerOptions{Level: level})
+		handlers = append(handlers, consoleH)
 	}
 
+	// Enable FileLogger if provided
 	if logFile != "" {
-		// Ensure the log file's parent directory exists.
 		if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "warn: failed to create log directory %s: %v\n", filepath.Dir(logFile), err)
+			fmt.Fprintf(os.Stderr, "WARN: failed to create log directory %s: %v\n", filepath.Dir(logFile), err)
 		}
-		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+
+		file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
-			// Skip the JSON file handler entirely instead of falling back to
-			// stderr, which would interleave JSON with the pretty console output.
-			fmt.Fprintf(os.Stderr, "warn: failed to open log file %s: %v (file logging disabled)\n", logFile, err)
+			fmt.Fprintf(os.Stderr, "WARN: failed to open log file %s: %v (file logging disabled)\n", logFile, err)
 		} else {
-			handlers = append(handlers, slog.NewJSONHandler(f, &slog.HandlerOptions{
-				Level:     level,
-				AddSource: true,
-			}))
+			jsonH := slog.NewJSONHandler(file, &slog.HandlerOptions{Level: level, AddSource: true})
+			handlers = append(handlers, jsonH)
 		}
-	}
-
-	if otel {
-		handlers = append(handlers, otelslog.NewHandler("wandersort"))
-	}
-
-	var h slog.Handler
-	if len(handlers) == 1 {
-		h = handlers[0]
-	} else {
-		h = slogmulti.Fanout(handlers...)
 	}
 
 	return &SlogAdapter{
-		logger: slog.New(h),
+		logger: slog.New(slogmulti.Fanout(handlers...)),
 		level:  level,
 	}
 }
