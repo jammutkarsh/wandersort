@@ -6,6 +6,12 @@
 
 package migrations
 
+var schema001 = Migration{
+	Version:     001,
+	Description: "scanner_schema",
+	SQL:         scannerSQL,
+}
+
 const scannerSQL = `
 -- Scan sessions table (tracks each scan operation)
 CREATE TABLE IF NOT EXISTS scan_sessions (
