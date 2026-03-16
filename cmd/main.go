@@ -14,8 +14,7 @@ import (
 	"github.com/jammutkarsh/wandersort/docs"
 	"github.com/jammutkarsh/wandersort/internal/api"
 	"github.com/jammutkarsh/wandersort/internal/api/admin"
-	"github.com/jammutkarsh/wandersort/internal/api/hash"
-	"github.com/jammutkarsh/wandersort/internal/api/scans"
+	"github.com/jammutkarsh/wandersort/internal/api/pipeline"
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core"
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -60,15 +59,14 @@ func main() {
 	}()
 
 	// Create the unified pipeline orchestrator
-	pipeline := core.NewPipeline(ctx, sqliteDB, logger, cfg)
+	corePipeline := core.NewPipeline(ctx, sqliteDB, logger, cfg)
 
 	// API handlers
 	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(sqliteDB)))
-	scansHandler := scans.NewHandler(logger, scans.NewService(logger, pipeline, scans.NewRepository(sqliteDB)))
-	hashHandler := hash.NewHandler(logger, hash.NewService(logger, hash.NewRepository(sqliteDB)))
+	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, corePipeline, pipeline.NewRepository(sqliteDB)))
 
 	// Setup Gin router
-	router := setupRouter(logger, adminHandler, scansHandler, hashHandler, cfg.Host)
+	router := setupRouter(logger, adminHandler, pipelineHandler, cfg.Host)
 
 	// HTTP server
 	srv := &http.Server{
@@ -95,7 +93,7 @@ func main() {
 	cancel()
 
 	// Wait for pipeline workers to finish before closing the DB.
-	pipeline.Close()
+	corePipeline.Close()
 
 	// Give in-flight requests up to 30 s to complete.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -109,7 +107,7 @@ func main() {
 }
 
 // setupRouter creates and configures the Gin router with all middleware and routes.
-func setupRouter(l logger.Logger, aH *admin.Handler, sH *scans.Handler, hH *hash.Handler, host string) *gin.Engine {
+func setupRouter(l logger.Logger, aH *admin.Handler, pH *pipeline.Handler, host string) *gin.Engine {
 	router := gin.New()
 
 	router.Use(logger.GinLogger(l))
@@ -121,8 +119,7 @@ func setupRouter(l logger.Logger, aH *admin.Handler, sH *scans.Handler, hH *hash
 	const basePath = "/internal/v1"
 	v1 := router.Group(basePath)
 	admin.SetupRoutes(v1, aH)
-	scans.SetupRoutes(v1, sH)
-	hash.SetupRoutes(v1, hH)
+	pipeline.SetupRoutes(v1, pH)
 
 	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "pong"})

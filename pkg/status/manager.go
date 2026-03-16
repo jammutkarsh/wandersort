@@ -23,12 +23,15 @@ type StatusManager struct {
 	currentStatus PipelineStatus
 }
 
+// The NewStatusManager function creates a new StatusManager instance with an empty map of subscribers.
 func NewStatusManager() *StatusManager {
 	return &StatusManager{
 		subscribers: make(map[chan PipelineStatus]struct{}),
 	}
 }
 
+// Subscribe allows a caller to receive status updates. It returns a channel that will receive PipelineStatus updates.
+// The channel is buffered to prevent blocking the broadcaster, and the current status is sent immediately upon subscription.
 func (sm *StatusManager) Subscribe() chan PipelineStatus {
 	ch := make(chan PipelineStatus, 100)
 	sm.mu.Lock()
