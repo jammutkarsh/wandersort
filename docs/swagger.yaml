@@ -10,78 +10,14 @@ definitions:
       scanSessionsDeleted:
         type: integer
     type: object
-  hash.HashProgressResponse:
+  pipeline.FileCountResponse:
     properties:
-      completedAt:
-        type: string
-      filesDiscovered:
-        type: integer
-      filesErrored:
-        type: integer
       filesHashed:
         type: integer
-      percentComplete:
-        type: number
-      sessionId:
-        type: string
-      startedAt:
-        type: string
-      status:
-        type: string
-    type: object
-  hash.HashStatsResponse:
-    properties:
-      duplicateFiles:
-        type: integer
-      groupsWithDupes:
-        type: integer
-      mastersElected:
-        type: integer
-      totalFiles:
-        type: integer
-      totalGroups:
+      filesScanned:
         type: integer
     type: object
-  scans.CleanupOutputResponse:
-    properties:
-      deletedCount:
-        type: integer
-      message:
-        type: string
-    type: object
-  scans.FileCountResponse:
-    properties:
-      totalFiles:
-        type: integer
-    type: object
-  scans.ScanSession:
-    properties:
-      completed_at:
-        type: string
-      errors_encountered:
-        type: integer
-      files_discovered:
-        type: integer
-      files_modified:
-        type: integer
-      files_new:
-        type: integer
-      files_skipped:
-        type: integer
-      id:
-        type: string
-      last_error:
-        type: string
-      root_paths:
-        items:
-          type: string
-        type: array
-      started_at:
-        type: string
-      status:
-        type: string
-    type: object
-  scans.StartScanRequest:
+  pipeline.StartScanRequest:
     properties:
       rootPaths:
         items:
@@ -90,7 +26,7 @@ definitions:
     required:
     - rootPaths
     type: object
-  scans.StartScanResponse:
+  pipeline.StartScanResponse:
     properties:
       message:
         type: string
@@ -119,124 +55,52 @@ paths:
       summary: Reset all application data
       tags:
       - Admin
-  /internal/v1/hash/progress:
+  /internal/v1/pipeline/count:
     get:
-      description: Returns files_discovered, files_hashed, files_errored and percent_complete
-        for the given session.
-      parameters:
-      - description: Scan session UUID
-        in: query
-        name: session_id
-        required: true
-        type: string
+      description: Returns the number of files discovered by the scanner and the number
+        hashed.
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/hash.HashProgressResponse'
-      summary: Get hashing progress for a scan session
+            $ref: '#/definitions/pipeline.FileCountResponse'
+      summary: Get combined file counts
       tags:
-      - Hash
-  /internal/v1/hash/stats:
-    get:
-      description: 'Returns aggregate counts across all content groups: total groups,
-        duplicates, masters elected.'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/hash.HashStatsResponse'
-      summary: Get overall content group statistics
-      tags:
-      - Hash
-  /internal/v1/scans/cleanup-output:
-    post:
-      description: |-
-        Checks every ORGANIZED entry in the file registry and removes those whose
-        files no longer exist on disk. Does NOT re-index or re-sort any files.
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/scans.CleanupOutputResponse'
-      summary: Clean up stale organized-library entries
-      tags:
-      - Scans
-  /internal/v1/scans/count:
-    get:
-      consumes:
-      - application/json
-      description: Get the total number of files scanned across all sessions
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: Total file count
-          schema:
-            $ref: '#/definitions/scans.FileCountResponse'
-      summary: Get total file count
-      tags:
-      - Scans
-  /internal/v1/scans/start:
+      - Pipeline
+  /internal/v1/pipeline/start:
     post:
       consumes:
       - application/json
-      description: Start a new scan session with specified root paths
+      description: Submit root paths to the pipeline. Scanning and hashing run automatically.
       parameters:
       - description: Start Scan Request
         in: body
         name: request
         required: true
         schema:
-          $ref: '#/definitions/scans.StartScanRequest'
+          $ref: '#/definitions/pipeline.StartScanRequest'
       produces:
       - application/json
       responses:
         "202":
           description: Accepted
           schema:
-            $ref: '#/definitions/scans.StartScanResponse'
-      summary: Start a new scan session
+            $ref: '#/definitions/pipeline.StartScanResponse'
+      summary: Start a new pipeline scan
       tags:
-      - Scans
-  /internal/v1/scans/status:
+      - Pipeline
+  /internal/v1/pipeline/ws:
     get:
-      consumes:
-      - application/json
-      description: Get the status of a scan session
-      parameters:
-      - in: query
-        name: sessionId
-        required: true
-        type: string
-      produces:
-      - application/json
+      description: Opens a WebSocket connection that pushes PipelineStatus JSON messages
+        in real time.
       responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/scans.ScanSession'
-      summary: Get scan status
-      tags:
-      - Scans
-  /internal/v1/scans/stream:
-    get:
-      description: Stream the unified scan status using Server-Sent Events (SSE).
-        Keep-alive.
-      produces:
-      - text/event-stream
-      responses:
-        "200":
-          description: SSE Event Stream
+        "101":
+          description: Switching Protocols
           schema:
             type: string
-      summary: Stream scan status via SSE
+      summary: Stream pipeline status via WebSocket
       tags:
-      - Scans
+      - Pipeline
 swagger: "2.0"

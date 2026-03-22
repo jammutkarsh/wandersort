@@ -70,28 +70,28 @@ func (p *Pipeline) Close() {
 
 // SubmitScan creates a new scan session and kicks off the three-phase
 // pipeline in a background goroutine.
-func (p *Pipeline) SubmitScan(rootPaths []string) (uuid.UUID, error) {
+func (p *Pipeline) SubmitScan(paths []string) (uuid.UUID, error) {
 	select {
 	case <-p.ctx.Done():
 		return uuid.Nil, context.Canceled
 	default:
 	}
 
-	sessionID, expandedRoots, err := p.scanner.PrepareSession(p.ctx, rootPaths)
+	sessionID, path, err := p.scanner.PrepareSession(p.ctx, paths)
 	if err != nil {
 		return uuid.Nil, err
 	}
 
 	p.wg.Go(func() {
-		p.runSession(sessionID, rootPaths, expandedRoots)
+		p.runSession(sessionID, path)
 	})
 
 	return sessionID, nil
 }
 
 // runSession executes the three sequential phases for a single scan session.
-func (p *Pipeline) runSession(sessionID uuid.UUID, originalRoots, expandedRoots []string) {
-	finalStatus := scanner.ScanStatusScore
+func (p *Pipeline) runSession(sessionID uuid.UUID, paths []string) {
+	finalStatus := status.PipelineStatusScore
 	var finalErr *string
 
 	defer func() {
@@ -107,80 +107,31 @@ func (p *Pipeline) runSession(sessionID uuid.UUID, originalRoots, expandedRoots 
 	p.log.Info("Pipeline session started", "session_id", sessionID, "phases", "scan → hash → score")
 
 	// ─── Phase 1: Scan All ──────────────────────────────────────────────
-	if err := p.scanner.SetSessionStatus(p.ctx, sessionID, scanner.ScanStatusScan); err != nil {
-		msg := fmt.Sprintf("failed to set SCAN status: %v", err)
-		finalStatus = scanner.ScanStatusFailed
-		finalErr = &msg
-		return
-	}
-
-	p.log.Info("Phase 1/3: Scanning all paths", "session_id", sessionID, "root_count", len(expandedRoots))
-	totalFiles := 0
-	var firstScanErr error
-
-	for i, expanded := range expandedRoots {
-		original := originalRoots[i]
-
-		// Check context before starting each root
-		select {
-		case <-p.ctx.Done():
-			p.log.Info("Pipeline cancelled during scan phase", "session_id", sessionID)
+	totalFiles, err := p.runScanPhase(sessionID, paths)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
 			msg := "pipeline cancelled during scan phase"
-			finalStatus = scanner.ScanStatusCancelled
+			finalStatus = status.PipelineStatusCancelled
 			finalErr = &msg
-			return
-		default:
+		} else {
+			msg := err.Error()
+			finalStatus = status.PipelineStatusFail
+			finalErr = &msg
 		}
-
-		discoveredChan, err := p.scanner.ScanSinglePath(p.ctx, sessionID, expanded, original)
-		if err != nil {
-			p.log.Error("Failed to scan path", "session_id", sessionID, "path", expanded, "error", err)
-			if firstScanErr == nil {
-				firstScanErr = fmt.Errorf("scan failed for %s: %w", expanded, err)
-			}
-			p.scanner.MarkJobComplete(p.ctx, sessionID, expanded)
-			continue
-		}
-
-		// Drain discovered records; DB upserts happen in scanner.
-		for range discoveredChan {
-			totalFiles++
-		}
-
-		p.scanner.MarkJobComplete(p.ctx, sessionID, expanded)
-		p.log.Info("Scanned path", "session_id", sessionID, "path", expanded)
-	}
-
-	p.log.Info("Phase 1 complete: all paths scanned",
-		"session_id", sessionID,
-		"total_files_collected", totalFiles,
-	)
-
-	if firstScanErr != nil {
-		msg := firstScanErr.Error()
-		finalStatus = scanner.ScanStatusFailed
-		finalErr = &msg
 		return
 	}
+	p.log.Info("Phase 1 complete: all paths scanned", "session_id", sessionID, "total_files_collected", totalFiles)
 
 	// ─── Phase 2: Hash All ──────────────────────────────────────────────
-	if err := p.scanner.SetSessionStatus(p.ctx, sessionID, scanner.ScanStatusHash); err != nil {
-		msg := fmt.Sprintf("failed to set HASH status: %v", err)
-		finalStatus = scanner.ScanStatusFailed
-		finalErr = &msg
-		return
-	}
-	p.log.Info("Phase 2/3: Hashing all files", "session_id", sessionID)
-
-	hashed, err := p.hashSessionFiles(p.ctx, sessionID)
+	hashed, err := p.runHashPhase(sessionID, paths)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			msg := "pipeline cancelled during hash phase"
-			finalStatus = scanner.ScanStatusCancelled
+			finalStatus = status.PipelineStatusCancelled
 			finalErr = &msg
 		} else {
 			msg := fmt.Sprintf("hash phase failed: %v", err)
-			finalStatus = scanner.ScanStatusFailed
+			finalStatus = status.PipelineStatusFail
 			finalErr = &msg
 		}
 		return
@@ -188,80 +139,107 @@ func (p *Pipeline) runSession(sessionID uuid.UUID, originalRoots, expandedRoots 
 	p.log.Info("Phase 2 complete: all files hashed", "session_id", sessionID, "file_count", hashed)
 
 	// ─── Phase 3: Score All ─────────────────────────────────────────────
-	if err := p.scanner.SetSessionStatus(p.ctx, sessionID, scanner.ScanStatusScore); err != nil {
+	if err := p.runScorePhase(sessionID, paths); err != nil {
 		msg := fmt.Sprintf("failed to set SCORE status: %v", err)
-		finalStatus = scanner.ScanStatusFailed
+		finalStatus = status.PipelineStatusFail
 		finalErr = &msg
 		return
 	}
-	p.log.Info("Phase 3/3: Scoring all groups", "session_id", sessionID)
-
-	p.hasher.ScoreAll(p.ctx, p.workers)
-
 	p.log.Info("Phase 3 complete: scoring done", "session_id", sessionID)
 }
 
-func (p *Pipeline) hashSessionFiles(ctx context.Context, sessionID uuid.UUID) (int, error) {
-	const pageSize = 1000
-	var lastID int64
-	var total int
+func (p *Pipeline) runScanPhase(sessionID uuid.UUID, paths []string) (int, error) {
+	if err := p.scanner.SetSessionStatus(p.ctx, sessionID, status.PipelineStatusScan); err != nil {
+		return 0, fmt.Errorf("failed to set SCAN status: %w", err)
+	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return total, ctx.Err()
-		default:
-		}
+	p.log.Info("Phase 1/3: Scanning all paths", "session_id", sessionID, "path_count", len(paths))
+	type scanResult struct {
+		count int
+		err   error
+	}
 
-		rows, err := p.db.QueryContext(ctx, `
-			SELECT id, file_path, source_root, path_type
-			FROM file_registry
-			WHERE scan_session_id = ? AND id > ?
-			  AND scan_status NOT IN ('HASHED', 'ANALYZED', 'ANALYZING')
-			ORDER BY id
-			LIMIT ?
-		`, sessionID.String(), lastID, pageSize)
-		if err != nil {
-			return total, fmt.Errorf("query hash batch: %w", err)
-		}
+	jobs := make(chan string, len(paths))
+	results := make(chan scanResult, len(paths))
+	workerCount := p.phaseWorkerCount(paths)
 
-		batch := make([]hasher.FileRecord, 0, pageSize)
-		for rows.Next() {
-			var (
-				id         int64
-				filePath   string
-				sourceRoot string
-				pathType   string
-			)
-			if err := rows.Scan(&id, &filePath, &sourceRoot, &pathType); err != nil {
-				rows.Close()
-				return total, fmt.Errorf("scan hash batch row: %w", err)
+	var workers sync.WaitGroup
+	for range workerCount {
+		workers.Go(func() {
+			for path := range jobs {
+				count, err := p.scanPath(sessionID, path)
+				results <- scanResult{count: count, err: err}
 			}
+		})
+	}
 
-			absPath := filePath
-			if pathType != scanner.PathTypeAbsolute {
-				absPath = scanner.ResolveAbsolute(filePath, sourceRoot)
-			}
+	for _, path := range paths {
+		jobs <- path
+	}
+	close(jobs)
+	workers.Wait()
+	close(results)
 
-			batch = append(batch, hasher.FileRecord{ID: id, AbsPath: absPath})
-			lastID = id
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return total, fmt.Errorf("iterate hash batch rows: %w", err)
-		}
-
-		if len(batch) == 0 {
-			break
-		}
-
-		p.hasher.HashAll(ctx, sessionID, batch, p.workers)
-		total += len(batch)
-
-		if len(batch) < pageSize {
-			break
+	totalFiles := 0
+	var firstScanErr error
+	for result := range results {
+		totalFiles += result.count
+		if result.err != nil && firstScanErr == nil {
+			firstScanErr = result.err
 		}
 	}
 
-	return total, nil
+	return totalFiles, firstScanErr
+}
+
+func (p *Pipeline) runHashPhase(sessionID uuid.UUID, paths []string) (int, error) {
+	if err := p.scanner.SetSessionStatus(p.ctx, sessionID, status.PipelineStatusHash); err != nil {
+		return 0, fmt.Errorf("failed to set HASH status: %w", err)
+	}
+	p.log.Info("Phase 2/3: Hashing all files", "session_id", sessionID)
+
+	return p.hasher.HashPaths(p.ctx, sessionID, paths, p.phaseWorkerCount(paths), p.workers)
+}
+
+func (p *Pipeline) runScorePhase(sessionID uuid.UUID, paths []string) error {
+	if err := p.scanner.SetSessionStatus(p.ctx, sessionID, status.PipelineStatusScore); err != nil {
+		return err
+	}
+	p.log.Info("Phase 3/3: Scoring all groups", "session_id", sessionID)
+
+	_, err := p.hasher.ScorePaths(p.ctx, sessionID, paths, p.phaseWorkerCount(paths))
+	return err
+}
+
+func (p *Pipeline) phaseWorkerCount(paths []string) int {
+	workerCount := max(len(paths), p.workers)
+	if workerCount <= 0 {
+		return 1
+	}
+	return workerCount
+}
+
+func (p *Pipeline) scanPath(sessionID uuid.UUID, path string) (int, error) {
+	select {
+	case <-p.ctx.Done():
+		p.log.Info("Pipeline cancelled during scan phase", "session_id", sessionID)
+		return 0, p.ctx.Err()
+	default:
+	}
+
+	discoveredChan, err := p.scanner.ScanSinglePath(p.ctx, sessionID, path)
+	if err != nil {
+		p.log.Error("Failed to scan path", "session_id", sessionID, "path", path, "error", err)
+		p.scanner.MarkJobComplete(p.ctx, sessionID, path)
+		return 0, fmt.Errorf("scan failed for %s: %w", path, err)
+	}
+
+	count := 0
+	for range discoveredChan {
+		count++
+	}
+
+	p.scanner.MarkJobComplete(p.ctx, sessionID, path)
+	p.log.Info("Scanned path", "session_id", sessionID, "path", path, "files_discovered", count)
+	return count, nil
 }

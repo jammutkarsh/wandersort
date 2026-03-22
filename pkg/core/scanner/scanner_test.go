@@ -10,6 +10,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/core/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/util"
 )
 
 // ---------------------------------------------------------------------------
@@ -22,7 +23,7 @@ func TestPathUtil_ExpandPath(t *testing.T) {
 		t.Skipf("cannot determine home dir: %v", err)
 	}
 
-	pu := &PathUtil{homeDir: home}
+	pu := &util.Util{HomeDir: home}
 
 	tests := []struct {
 		input string
@@ -45,7 +46,7 @@ func TestPathUtil_ExpandPath(t *testing.T) {
 }
 
 func TestPathUtil_ContractPath(t *testing.T) {
-	pu := &PathUtil{homeDir: "/home/testuser"}
+	pu := &util.Util{HomeDir: "/home/testuser"}
 
 	tests := []struct {
 		input string
@@ -66,9 +67,19 @@ func TestPathUtil_ContractPath(t *testing.T) {
 }
 
 func TestPathUtil_MakeRelative(t *testing.T) {
-	pu := &PathUtil{homeDir: "/home/testuser"}
+	root := t.TempDir()
+	photosRoot := filepath.Join(root, "Photos")
+	imgPath := filepath.Join(photosRoot, "2023", "img.jpg")
+	if err := os.MkdirAll(filepath.Dir(imgPath), 0o755); err != nil {
+		t.Fatalf("mkdir temp tree: %v", err)
+	}
+	if err := os.WriteFile(imgPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
 
-	rel, err := pu.MakeRelative("/home/testuser/Photos/2023/img.jpg", "/home/testuser/Photos")
+	pu := &util.Util{HomeDir: root}
+
+	rel, err := pu.MakeRelative(imgPath, photosRoot)
 	if err != nil {
 		t.Fatalf("MakeRelative: %v", err)
 	}
@@ -78,7 +89,7 @@ func TestPathUtil_MakeRelative(t *testing.T) {
 }
 
 func TestPathUtil_MakeAbsolute(t *testing.T) {
-	pu := &PathUtil{homeDir: "/home/testuser"}
+	pu := &util.Util{HomeDir: "/home/testuser"}
 	got := pu.MakeAbsolute("2023/img.jpg", "~/Photos")
 	want := "/home/testuser/Photos/2023/img.jpg"
 	if got != want {
@@ -87,13 +98,16 @@ func TestPathUtil_MakeAbsolute(t *testing.T) {
 }
 
 func TestPathUtil_RoundTrip(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skipf("cannot determine home dir: %v", err)
-	}
-	pu := &PathUtil{homeDir: home}
-
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
 	absPath := filepath.Join(home, "Photos", "2023", "img.jpg")
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatalf("mkdir temp tree: %v", err)
+	}
+	if err := os.WriteFile(absPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	pu := &util.Util{HomeDir: home}
 	sourceRoot := filepath.Join(home, "Photos")
 
 	relative, err := pu.MakeRelative(absPath, sourceRoot)
@@ -160,14 +174,12 @@ func createTestTree(t *testing.T) string {
 	return root
 }
 
-// fakeEnqueuer is unused in current tests but available for mocking.
-
 func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 	root := createTestTree(t)
 	log := logger.NewNoopLogger()
 	fc := classifier.NewFileClassifier()
 
-	pu := &PathUtil{homeDir: "/tmp"}
+	pu := &util.Util{HomeDir: "/tmp"}
 	sc := &Scanner{
 		classifier: fc,
 		log:        log,
@@ -183,7 +195,7 @@ func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 	filesChan := make(chan FileDiscovery, 200)
 	st := &scanState{tracker: &scanSessionTracker{}}
 
-	err := sc.walkRoot(context.Background(), root, root, filesChan, st)
+	err := sc.walkRoot(context.Background(), root, filesChan, st)
 	close(filesChan)
 	if err != nil {
 		t.Fatalf("walkRoot: %v", err)
@@ -221,14 +233,14 @@ func TestWalkRoot_SkipsIgnoredDirs(t *testing.T) {
 	root := createTestTree(t)
 	log := logger.NewNoopLogger()
 	fc := classifier.NewFileClassifier()
-	pu := &PathUtil{homeDir: "/tmp"}
+	pu := &util.Util{HomeDir: "/tmp"}
 	sc := &Scanner{classifier: fc, log: log, pathUtil: pu, config: ScanConfig{
 		WorkerBufferSize: 100,
 	}}
 
 	filesChan := make(chan FileDiscovery, 200)
 	st := &scanState{tracker: &scanSessionTracker{}}
-	_ = sc.walkRoot(context.Background(), root, root, filesChan, st)
+	_ = sc.walkRoot(context.Background(), root, filesChan, st)
 	close(filesChan)
 
 	for d := range filesChan {
@@ -242,7 +254,7 @@ func TestWalkRoot_ContextCancellation(t *testing.T) {
 	root := createTestTree(t)
 	log := logger.NewNoopLogger()
 	fc := classifier.NewFileClassifier()
-	pu := &PathUtil{homeDir: "/tmp"}
+	pu := &util.Util{HomeDir: "/tmp"}
 	sc := &Scanner{classifier: fc, log: log, pathUtil: pu, config: ScanConfig{
 		WorkerBufferSize: 100,
 	}}
@@ -252,44 +264,11 @@ func TestWalkRoot_ContextCancellation(t *testing.T) {
 
 	filesChan := make(chan FileDiscovery, 200)
 	st := &scanState{tracker: &scanSessionTracker{}}
-	err := sc.walkRoot(ctx, root, root, filesChan, st)
+	err := sc.walkRoot(ctx, root, filesChan, st)
 	close(filesChan)
 
 	if err == nil {
 		t.Error("walkRoot should return an error when context is cancelled")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// processDiscoveries — pure channel-processing logic
-// ---------------------------------------------------------------------------
-
-func TestProcessDiscoveries_BatchAccumulation(t *testing.T) {
-	// We can't easily test processDiscoveries without a DB. Instead, test that
-	// the batching logic sends the right number of items by measuring atomic
-	// counters on scanState.
-	//
-	// Since insertBatch requires a DB transaction, we test the feeding pattern:
-	// N discoveries → channel → consumer drains all N.
-	const total = 1237 // not a multiple of batch size
-	ch := make(chan FileDiscovery, total)
-	for i := range total {
-		ch <- FileDiscovery{
-			Path:      filepath.Join("dir", "file_"+string(rune('A'+i%26))+".jpg"),
-			Size:      int64(i * 100),
-			ModTime:   time.Now(),
-			Extension: ".jpg",
-			MediaType: "IMAGE",
-		}
-	}
-	close(ch)
-
-	var count int
-	for range ch {
-		count++
-	}
-	if count != total {
-		t.Errorf("drained %d, want %d", count, total)
 	}
 }
 
@@ -326,7 +305,7 @@ func TestFileDiscoveryCaptureStemAndRole(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFileRegistry_GetAbsolutePath(t *testing.T) {
-	pu := &PathUtil{homeDir: "/home/user"}
+	pu := &util.Util{HomeDir: "/home/user"}
 
 	tests := []struct {
 		name string
@@ -392,7 +371,7 @@ func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 	root := createTestTree(t)
 	log := logger.NewNoopLogger()
 	fc := classifier.NewFileClassifier()
-	pu := &PathUtil{homeDir: "/tmp"}
+	pu := &util.Util{HomeDir: "/tmp"}
 	sc := &Scanner{classifier: fc, log: log, pathUtil: pu, config: ScanConfig{
 		WorkerBufferSize: 500,
 	}}
@@ -404,7 +383,7 @@ func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 	var wg sync.WaitGroup
 	for range walkers {
 		wg.Go(func() {
-			_ = sc.walkRoot(context.Background(), root, root, filesChan, st)
+			_ = sc.walkRoot(context.Background(), root, filesChan, st)
 		})
 	}
 

@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
+	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/status"
@@ -33,6 +35,13 @@ type Hasher struct {
 	statusMgr *status.StatusManager
 }
 
+type hashSessionTracker struct {
+	sessionID uuid.UUID
+	hashed    atomic.Int64
+	errors    atomic.Int64
+	pending   atomic.Int32
+}
+
 // NewHasher creates a new hasher instance
 func NewHasher(appCtx context.Context, db *db.DB, log logger.Logger, sm *status.StatusManager) *Hasher {
 	if appCtx == nil {
@@ -46,6 +55,11 @@ func NewHasher(appCtx context.Context, db *db.DB, log logger.Logger, sm *status.
 		scorer:    NewScorer(db, log),
 		statusMgr: sm,
 	}
+}
+
+func (h *Hasher) ScorePaths(ctx context.Context, sessionID uuid.UUID, paths []string, workers int) (int, error) {
+	h.scorer.statusMgr = h.statusMgr
+	return h.scorer.ScorePaths(ctx, sessionID, paths, workers)
 }
 
 // HashFile computes the BLAKE3 hash of a file
@@ -153,7 +167,7 @@ func (h *Hasher) addMemberToGroup(ctx context.Context, tx *sql.Tx, groupID, file
 }
 
 // HashAll hashes every file in the slice using a fixed-size worker pool.
-func (h *Hasher) HashAll(ctx context.Context, sessionID uuid.UUID, files []FileRecord, workers int) {
+func (h *Hasher) HashAll(ctx context.Context, sessionID uuid.UUID, files []FileRecord, workers int, tracker *hashSessionTracker) int {
 	// Hashing must be tied to application lifecycle, not a request-scoped ctx.
 	workCtx := h.appCtx
 	if workCtx == nil {
@@ -171,7 +185,7 @@ func (h *Hasher) HashAll(ctx context.Context, sessionID uuid.UUID, files []FileR
 	var wg sync.WaitGroup
 	jobs := make(chan FileRecord)
 
-	var sessionHashed uint64
+	var batchHashed uint64
 	var mu sync.Mutex
 
 	for range workers {
@@ -191,14 +205,22 @@ func (h *Hasher) HashAll(ctx context.Context, sessionID uuid.UUID, files []FileR
 						if isContextDone(err) {
 							return
 						}
+						if tracker != nil {
+							tracker.errors.Add(1)
+						}
 						h.log.Warn("HashAll: failed to process file", "session_id", sessionID, "file_id", f.ID, "error", err)
 						continue
 					}
 
 					mu.Lock()
-					sessionHashed++
-					n := sessionHashed
+					batchHashed++
+					n := batchHashed
 					mu.Unlock()
+
+					if tracker != nil {
+						current := tracker.hashed.Add(1)
+						h.broadcastHashProgress(sessionID, current)
+					}
 
 					if n%1000 == 0 {
 						h.log.Info("Hashing milestone", "session_id", sessionID, "files_hashed", n)
@@ -222,6 +244,186 @@ enqueue:
 	// Flush all enqueued writes before returning so the next pipeline phase
 	// sees fully committed data.
 	h.db.Writer.Flush()
+
+	return int(batchHashed)
+}
+
+// HashPaths fans out hashing work by source root and waits for every path job
+// to finish before the pipeline advances to the next phase.
+func (h *Hasher) HashPaths(ctx context.Context, sessionID uuid.UUID, paths []string, pathWorkers, fileWorkers int) (int, error) {
+	if len(paths) == 0 {
+		return 0, nil
+	}
+	if pathWorkers <= 0 {
+		pathWorkers = 1
+	}
+
+	tracker := &hashSessionTracker{sessionID: sessionID}
+	tracker.pending.Store(int32(len(paths)))
+
+	type hashResult struct {
+		count int
+		err   error
+	}
+
+	jobs := make(chan string, len(paths))
+	results := make(chan hashResult, len(paths))
+
+	var workers sync.WaitGroup
+	for range pathWorkers {
+		workers.Go(func() {
+			for path := range jobs {
+				count, err := h.HashPath(ctx, sessionID, path, fileWorkers, tracker)
+				h.markJobComplete(sessionID, path, tracker)
+				results <- hashResult{count: count, err: err}
+			}
+		})
+	}
+
+	for _, path := range paths {
+		jobs <- path
+	}
+	close(jobs)
+	workers.Wait()
+	close(results)
+
+	total := 0
+	var firstErr error
+	for result := range results {
+		total += result.count
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+		}
+	}
+
+	return total, firstErr
+}
+
+// HashPath fetches all hashable files for a source root in pages and executes
+// hashing in bounded worker pools.
+func (h *Hasher) HashPath(ctx context.Context, sessionID uuid.UUID, path string, workers int, tracker *hashSessionTracker) (int, error) {
+	const pageSize = 1000
+	var lastID int64
+	var total int
+
+	h.log.Info("Hashing path", "session_id", sessionID, "path", path)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return total, ctx.Err()
+		default:
+		}
+
+		rows, err := h.db.QueryContext(ctx, `
+			SELECT id, file_path, source_root, path_type
+			FROM file_registry
+			WHERE scan_session_id = ? AND id > ?
+			  AND source_root = ?
+			  AND scan_status NOT IN ('HASHED', 'ANALYZED', 'ANALYZING')
+			ORDER BY id
+			LIMIT ?
+		`, sessionID.String(), lastID, path, pageSize)
+		if err != nil {
+			return total, fmt.Errorf("query hash batch: %w", err)
+		}
+
+		batch := make([]FileRecord, 0, pageSize)
+		for rows.Next() {
+			var (
+				id         int64
+				filePath   string
+				sourceRoot string
+				pathType   string
+			)
+			if err := rows.Scan(&id, &filePath, &sourceRoot, &pathType); err != nil {
+				rows.Close()
+				return total, fmt.Errorf("scan hash batch row: %w", err)
+			}
+
+			absPath := filePath
+			if pathType != scanner.PathTypeAbsolute {
+				absPath = scanner.ResolveAbsolute(filePath, sourceRoot)
+			}
+
+			batch = append(batch, FileRecord{ID: id, AbsPath: absPath})
+			lastID = id
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return total, fmt.Errorf("iterate hash batch rows: %w", err)
+		}
+
+		if len(batch) == 0 {
+			break
+		}
+
+		total += h.HashAll(ctx, sessionID, batch, workers, tracker)
+
+		if len(batch) < pageSize {
+			break
+		}
+	}
+
+	h.log.Info("Hashed path", "session_id", sessionID, "path", path, "files_hashed", total)
+	return total, nil
+}
+
+// HashSessionFiles keeps the old session-oriented entry point as a convenience
+// for callers that do not need per-path fan-out.
+func (h *Hasher) HashSessionFiles(ctx context.Context, sessionID uuid.UUID, workers int) (int, error) {
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT DISTINCT source_root
+		FROM file_registry
+		WHERE scan_session_id = ?
+		ORDER BY source_root
+	`, sessionID.String())
+	if err != nil {
+		return 0, fmt.Errorf("query session source roots: %w", err)
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return 0, fmt.Errorf("scan session source root: %w", err)
+		}
+		paths = append(paths, path)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate session source roots: %w", err)
+	}
+
+	pathWorkers := workers
+	if len(paths) > pathWorkers {
+		pathWorkers = len(paths)
+	}
+
+	return h.HashPaths(ctx, sessionID, paths, pathWorkers, workers)
+}
+
+func (h *Hasher) markJobComplete(sessionID uuid.UUID, path string, tracker *hashSessionTracker) {
+	pending := tracker.pending.Add(-1)
+	h.log.Debug("Hash job completed", "session_id", sessionID, "path", path, "pending_jobs_remaining", pending)
+	if pending == 0 {
+		h.log.Info("All hash jobs complete for session", "session_id", sessionID)
+		h.broadcastHashProgress(sessionID, tracker.hashed.Load())
+	}
+}
+
+func (h *Hasher) broadcastHashProgress(sessionID uuid.UUID, filesHashed int64) {
+	if h.statusMgr == nil {
+		return
+	}
+
+	current := h.statusMgr.GetCurrent()
+	if current.SessionID != sessionID {
+		current = status.PipelineStatus{SessionID: sessionID}
+	}
+	current.Status = status.PipelineStatusHash
+	current.FilesHashed = filesHashed
+	h.statusMgr.Broadcast(current)
 }
 
 func (h *Hasher) markFileError(fileID int64) {

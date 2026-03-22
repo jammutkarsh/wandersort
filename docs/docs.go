@@ -35,78 +35,29 @@ const docTemplate = `{
                 }
             }
         },
-        "/internal/v1/hash/progress": {
+        "/internal/v1/pipeline/count": {
             "get": {
-                "description": "Returns files_discovered, files_hashed, files_errored and percent_complete for the given session.",
+                "description": "Returns the number of files discovered by the scanner and the number hashed.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Hash"
+                    "Pipeline"
                 ],
-                "summary": "Get hashing progress for a scan session",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Scan session UUID",
-                        "name": "session_id",
-                        "in": "query",
-                        "required": true
-                    }
-                ],
+                "summary": "Get combined file counts",
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/hash.HashProgressResponse"
+                            "$ref": "#/definitions/pipeline.FileCountResponse"
                         }
                     }
                 }
             }
         },
-        "/internal/v1/hash/stats": {
-            "get": {
-                "description": "Returns aggregate counts across all content groups: total groups, duplicates, masters elected.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Hash"
-                ],
-                "summary": "Get overall content group statistics",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/hash.HashStatsResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/internal/v1/scans/cleanup-output": {
+        "/internal/v1/pipeline/start": {
             "post": {
-                "description": "Checks every ORGANIZED entry in the file registry and removes those whose\nfiles no longer exist on disk. Does NOT re-index or re-sort any files.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Scans"
-                ],
-                "summary": "Clean up stale organized-library entries",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/scans.CleanupOutputResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/internal/v1/scans/count": {
-            "get": {
-                "description": "Get the total number of files scanned across all sessions",
+                "description": "Submit root paths to the pipeline. Scanning and hashing run automatically.",
                 "consumes": [
                     "application/json"
                 ],
@@ -114,32 +65,9 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "Scans"
+                    "Pipeline"
                 ],
-                "summary": "Get total file count",
-                "responses": {
-                    "200": {
-                        "description": "Total file count",
-                        "schema": {
-                            "$ref": "#/definitions/scans.FileCountResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/internal/v1/scans/start": {
-            "post": {
-                "description": "Start a new scan session with specified root paths",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Scans"
-                ],
-                "summary": "Start a new scan session",
+                "summary": "Start a new pipeline scan",
                 "parameters": [
                     {
                         "description": "Start Scan Request",
@@ -147,7 +75,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/scans.StartScanRequest"
+                            "$ref": "#/definitions/pipeline.StartScanRequest"
                         }
                     }
                 ],
@@ -155,56 +83,22 @@ const docTemplate = `{
                     "202": {
                         "description": "Accepted",
                         "schema": {
-                            "$ref": "#/definitions/scans.StartScanResponse"
+                            "$ref": "#/definitions/pipeline.StartScanResponse"
                         }
                     }
                 }
             }
         },
-        "/internal/v1/scans/status": {
+        "/internal/v1/pipeline/ws": {
             "get": {
-                "description": "Get the status of a scan session",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
+                "description": "Opens a WebSocket connection that pushes PipelineStatus JSON messages in real time.",
                 "tags": [
-                    "Scans"
+                    "Pipeline"
                 ],
-                "summary": "Get scan status",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "name": "sessionId",
-                        "in": "query",
-                        "required": true
-                    }
-                ],
+                "summary": "Stream pipeline status via WebSocket",
                 "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/scans.ScanSession"
-                        }
-                    }
-                }
-            }
-        },
-        "/internal/v1/scans/stream": {
-            "get": {
-                "description": "Stream the unified scan status using Server-Sent Events (SSE). Keep-alive.",
-                "produces": [
-                    "text/event-stream"
-                ],
-                "tags": [
-                    "Scans"
-                ],
-                "summary": "Stream scan status via SSE",
-                "responses": {
-                    "200": {
-                        "description": "SSE Event Stream",
+                    "101": {
+                        "description": "Switching Protocols",
                         "schema": {
                             "type": "string"
                         }
@@ -231,116 +125,18 @@ const docTemplate = `{
                 }
             }
         },
-        "hash.HashProgressResponse": {
+        "pipeline.FileCountResponse": {
             "type": "object",
             "properties": {
-                "completedAt": {
-                    "type": "string"
-                },
-                "filesDiscovered": {
-                    "type": "integer"
-                },
-                "filesErrored": {
-                    "type": "integer"
-                },
                 "filesHashed": {
                     "type": "integer"
                 },
-                "percentComplete": {
-                    "type": "number"
-                },
-                "sessionId": {
-                    "type": "string"
-                },
-                "startedAt": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                }
-            }
-        },
-        "hash.HashStatsResponse": {
-            "type": "object",
-            "properties": {
-                "duplicateFiles": {
-                    "type": "integer"
-                },
-                "groupsWithDupes": {
-                    "type": "integer"
-                },
-                "mastersElected": {
-                    "type": "integer"
-                },
-                "totalFiles": {
-                    "type": "integer"
-                },
-                "totalGroups": {
+                "filesScanned": {
                     "type": "integer"
                 }
             }
         },
-        "scans.CleanupOutputResponse": {
-            "type": "object",
-            "properties": {
-                "deletedCount": {
-                    "type": "integer"
-                },
-                "message": {
-                    "type": "string"
-                }
-            }
-        },
-        "scans.FileCountResponse": {
-            "type": "object",
-            "properties": {
-                "totalFiles": {
-                    "type": "integer"
-                }
-            }
-        },
-        "scans.ScanSession": {
-            "type": "object",
-            "properties": {
-                "completed_at": {
-                    "type": "string"
-                },
-                "errors_encountered": {
-                    "type": "integer"
-                },
-                "files_discovered": {
-                    "type": "integer"
-                },
-                "files_modified": {
-                    "type": "integer"
-                },
-                "files_new": {
-                    "type": "integer"
-                },
-                "files_skipped": {
-                    "type": "integer"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "last_error": {
-                    "type": "string"
-                },
-                "root_paths": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "started_at": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                }
-            }
-        },
-        "scans.StartScanRequest": {
+        "pipeline.StartScanRequest": {
             "type": "object",
             "required": [
                 "rootPaths"
@@ -354,7 +150,7 @@ const docTemplate = `{
                 }
             }
         },
-        "scans.StartScanResponse": {
+        "pipeline.StartScanResponse": {
             "type": "object",
             "properties": {
                 "message": {

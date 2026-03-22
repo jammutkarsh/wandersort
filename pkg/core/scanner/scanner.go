@@ -3,7 +3,6 @@ package scanner
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -19,6 +18,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/status"
+	"github.com/jammutkarsh/wandersort/pkg/util"
 )
 
 // Scanner handles file discovery and registry population.
@@ -31,7 +31,7 @@ type Scanner struct {
 	log        logger.Logger
 	statusMgr  *status.StatusManager
 	config     ScanConfig
-	pathUtil   *PathUtil
+	pathUtil   *util.Util
 	outputPath string
 
 	// activeSessions tracks the state of ongoing multi-directory scans
@@ -72,20 +72,12 @@ type ScanConfig struct {
 
 // NewScanner creates a new scanner instance.
 func NewScanner(db *db.DB, log logger.Logger, outputPath string, sm *status.StatusManager) *Scanner {
-	pathUtil, err := NewPathUtil()
-	if err != nil {
-		log.Error("Failed to initialize path utility", "error", err)
-		// Fallback: use HOME env var
-		homeDir, _ := os.UserHomeDir()
-		pathUtil = &PathUtil{homeDir: homeDir}
-	}
-
 	return &Scanner{
 		db:         db,
 		classifier: classifier.NewFileClassifier(),
 		log:        log,
 		statusMgr:  sm,
-		pathUtil:   pathUtil,
+		pathUtil:   util.NewUtil(),
 		outputPath: outputPath,
 		config: ScanConfig{
 			MaxWalkers:       4,
@@ -96,41 +88,31 @@ func NewScanner(db *db.DB, log logger.Logger, outputPath string, sm *status.Stat
 	}
 }
 
-// PrepareSession validates rootPaths, creates the scan_sessions DB row, and
-// returns the sessionID and expanded (absolute) root paths.
+// PrepareSession creates the scan_sessions DB row, and returns the sessionID.
 // It initializes the shared tracker for all jobs in this session.
-func (s *Scanner) PrepareSession(ctx context.Context, rootPaths []string) (uuid.UUID, []string, error) {
-	// Expand and validate root paths
-	expandedRoots := make([]string, len(rootPaths))
-	for i, root := range rootPaths {
-		expanded := s.pathUtil.ExpandPath(root)
-		if _, err := os.Stat(expanded); os.IsNotExist(err) {
-			return uuid.Nil, nil, fmt.Errorf("root path does not exist: %s (expanded from %s)", expanded, root)
+func (s *Scanner) PrepareSession(ctx context.Context, paths []string) (uuid.UUID, []string, error) {
+	normalizedPaths := make([]string, 0, len(paths))
+	for _, p := range paths {
+		cleanPath := filepath.Clean(p)
+		if filepath.IsAbs(cleanPath) {
+			normalizedPaths = append(normalizedPaths, s.pathUtil.ContractPath(cleanPath))
+			continue
 		}
-		expandedRoots[i] = expanded
+		normalizedPaths = append(normalizedPaths, cleanPath)
 	}
 
 	// Create scan session
 	sessionID := uuid.New()
-	startedAt := time.Now()
-
-	// Convert root paths to JSON for storage
-	// !Do we need to convert it to JSON?
-	rootPathsJSON, err := json.Marshal(rootPaths)
-	if err != nil {
-		return uuid.Nil, nil, fmt.Errorf("failed to marshal root paths: %w", err)
-	}
-
-	// Insert session into DB
-	_, err = s.db.ExecContext(ctx, `
+	startedAt := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO scan_sessions (id, started_at, status, root_paths)
 		VALUES (?, ?, ?, ?)
-	`, sessionID, startedAt.Format(time.RFC3339), ScanStatusScan, string(rootPathsJSON))
+	`, sessionID, startedAt.Format(time.RFC3339), status.PipelineStatusScan, strings.Join(normalizedPaths, ","))
 	if err != nil {
 		return uuid.Nil, nil, fmt.Errorf("failed to create scan session: %w", err)
 	}
 
-	s.log.Info("Scan session created", "session_id", sessionID, "root_paths", rootPaths)
+	s.log.Info("Scan session created", "session_id", sessionID, "root_paths", normalizedPaths)
 
 	// Initialize the shared state tracker for this session
 	progressCtx, cancelProgress := context.WithCancel(ctx)
@@ -139,18 +121,18 @@ func (s *Scanner) PrepareSession(ctx context.Context, rootPaths []string) (uuid.
 		ctx:       progressCtx,
 		cancel:    cancelProgress,
 	}
-	tracker.pendingJobs.Store(int32(len(rootPaths)))
+	tracker.pendingJobs.Store(int32(len(normalizedPaths)))
 	s.activeSessions.Store(sessionID, tracker)
 
 	// Start the periodic progress updater for this session
 	go s.updateProgress(progressCtx, sessionID, tracker)
 
-	return sessionID, expandedRoots, nil
+	return sessionID, normalizedPaths, nil
 }
 
 // ScanSinglePath executes a scan for a single directory path and returns a channel
 // of discovered files. It's meant to be called by worker goroutines asynchronously.
-func (s *Scanner) ScanSinglePath(ctx context.Context, sessionID uuid.UUID, expandedRoot, originalRoot string) (<-chan FileDiscovery, error) {
+func (s *Scanner) ScanSinglePath(ctx context.Context, sessionID uuid.UUID, path string) (<-chan FileDiscovery, error) {
 	v, ok := s.activeSessions.Load(sessionID)
 	if !ok {
 		return nil, fmt.Errorf("scan session %s not found or already completed", sessionID)
@@ -165,8 +147,8 @@ func (s *Scanner) ScanSinglePath(ctx context.Context, sessionID uuid.UUID, expan
 	go func() {
 		defer close(filesChan)
 
-		if err := s.walkRoot(ctx, expandedRoot, originalRoot, filesChan, st); err != nil {
-			s.log.Error("Walk root failed during ScanSinglePath", "path", expandedRoot, "error", err)
+		if err := s.walkRoot(ctx, path, filesChan, st); err != nil {
+			s.log.Error("Walk root failed during ScanSinglePath", "path", path, "error", err)
 		}
 	}()
 
@@ -182,16 +164,16 @@ func (s *Scanner) ScanSinglePath(ctx context.Context, sessionID uuid.UUID, expan
 // Once all scan jobs are complete, it writes the unsupported-file report and
 // stops periodic scan-progress updates. Session finalization happens later,
 // after hash/score phases, via FinalizeSession.
-func (s *Scanner) MarkJobComplete(ctx context.Context, sessionID uuid.UUID, expandedRoot string) {
+func (s *Scanner) MarkJobComplete(ctx context.Context, sessionID uuid.UUID, path string) {
 	v, ok := s.activeSessions.Load(sessionID)
 	if !ok {
-		s.log.Warn("MarkJobComplete called for unknown session", "session_id", sessionID, "path", expandedRoot)
+		s.log.Warn("MarkJobComplete called for unknown session", "session_id", sessionID, "path", path)
 		return
 	}
 	tracker := v.(*scanSessionTracker)
 
 	pending := tracker.pendingJobs.Add(-1)
-	s.log.Debug("Job completed", "session_id", sessionID, "path", expandedRoot, "pending_jobs_remaining", pending)
+	s.log.Debug("Job completed", "session_id", sessionID, "path", path, "pending_jobs_remaining", pending)
 
 	if pending == 0 {
 		// All paths for this session have been processed.
@@ -204,12 +186,19 @@ func (s *Scanner) MarkJobComplete(ctx context.Context, sessionID uuid.UUID, expa
 	}
 }
 
-// walkRoot walks expandedRoot and emits FileDiscovery records with relative paths.
-// expandedRoot is the absolute filesystem path; originalRoot is the stored path (may use ~).
-func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot string, output chan<- FileDiscovery, st *scanState) error {
-	s.log.Info("Starting walk", "root", expandedRoot)
+// walkRoot walks absPath and emits FileDiscovery records with relative paths.
+// absPath is the absolute filesystem path.
+func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileDiscovery, st *scanState) error {
+	absRoot, err := s.pathUtil.RealPath(path)
+	if err != nil {
+		s.log.Error("Failed to resolve root path", "input_path", path, "error", err)
+		return err
+	}
 
-	err := filepath.WalkDir(expandedRoot, func(path string, d fs.DirEntry, err error) error {
+	rootDisplayPath := s.pathUtil.ContractPath(absRoot)
+	s.log.Info("Starting walk", "input_path", rootDisplayPath)
+
+	err = filepath.WalkDir(absRoot, func(p string, d fs.DirEntry, err error) error {
 		// Check for context cancellation
 		select {
 		case <-ctx.Done():
@@ -219,7 +208,7 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 
 		// Handle errors (permission denied, etc.)
 		if err != nil {
-			s.log.Warn("Walk error", "path", path, "error", err)
+			s.log.Warn("Walk error", "input_path", rootDisplayPath, "walking_path", s.pathUtil.ContractPath(p), "error", err)
 			st.tracker.errors.Add(1)
 			return nil // Continue walking
 		}
@@ -227,7 +216,6 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 		// Skip ignored directories
 		if d.IsDir() {
 			if s.classifier.ShouldIgnoreDir(d.Name()) {
-				s.log.Debug("Skipping ignored directory", "path", path)
 				return filepath.SkipDir
 			}
 			return nil
@@ -238,13 +226,21 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 			return nil
 		}
 
+		// Resolve path for classification and any operation that requires an
+		// absolute location.
+		realPath, err := s.pathUtil.RealPath(p)
+		if err != nil {
+			s.log.Warn("Failed to resolve file path", "input_path", rootDisplayPath, "walking_path", s.pathUtil.ContractPath(p), "error", err)
+			st.tracker.errors.Add(1)
+			return nil
+		}
+
 		// Classify file
-		mediaType, shouldProcess := s.classifier.Classify(path)
+		mediaType, shouldProcess := s.classifier.Classify(realPath)
 		if !shouldProcess {
-			s.log.Debug("Unsupported file type, skipping", "path", path)
 			atomic.AddInt64(&st.tracker.unsupported, 1)
 			st.tracker.unsupportedMu.Lock()
-			st.tracker.unsupportedPaths = append(st.tracker.unsupportedPaths, path)
+			st.tracker.unsupportedPaths = append(st.tracker.unsupportedPaths, s.pathUtil.ContractPath(realPath))
 			st.tracker.unsupportedMu.Unlock()
 			return nil
 		}
@@ -252,30 +248,29 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 		// Get file info
 		info, err := d.Info()
 		if err != nil {
-			s.log.Warn("Failed to get file info", "path", path, "error", err)
+			s.log.Warn("Failed to get file info", "input_path", rootDisplayPath, "walking_path", s.pathUtil.ContractPath(p), "error", err)
 			st.tracker.errors.Add(1)
 			return nil
 		}
 
-		// Make path relative to the expanded root
-		relPath, err := s.pathUtil.MakeRelative(path, expandedRoot)
+		relPath, err := filepath.Rel(absRoot, p)
 		if err != nil {
-			s.log.Warn("Failed to make path relative", "path", path, "error", err)
+			s.log.Warn("Failed to make path relative", "input_path", rootDisplayPath, "walking_path", s.pathUtil.ContractPath(p), "error", err)
 			st.tracker.errors.Add(1)
 			return nil
 		}
 
-		// Create discovery record with relative path
-		capture := DeriveCapture(d.Name(), strings.ToLower(filepath.Ext(path)), mediaType)
+		// Persist file path relative to source root for portability.
+		capture := DeriveCapture(d.Name(), strings.ToLower(filepath.Ext(p)), mediaType)
 		discovery := FileDiscovery{
-			Path:        relPath, // Relative to source root
+			Path:        relPath,
 			Size:        info.Size(),
 			ModTime:     info.ModTime(),
-			Extension:   strings.ToLower(filepath.Ext(path)),
-			SourceRoot:  originalRoot, // Store original (may contain ~)
+			Extension:   strings.ToLower(filepath.Ext(p)),
+			SourceRoot:  rootDisplayPath,
 			MediaType:   mediaType,
-			CaptureStem: capture.Stem,
-			CaptureRole: capture.Role,
+			CaptureStem: capture.Stem, // Derived from filename
+			CaptureRole: capture.Role, // Derived from filename and media type
 		}
 
 		st.tracker.discovered.Add(1)
@@ -291,7 +286,7 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 	})
 
 	if err != nil {
-		s.log.Error("Walk failed", "root", expandedRoot, "error", err)
+		s.log.Error("Walk failed", "root", rootDisplayPath, "error", err)
 		return err
 	}
 	return nil
@@ -299,7 +294,7 @@ func (s *Scanner) walkRoot(ctx context.Context, expandedRoot, originalRoot strin
 
 // writeUnsupportedFiles writes all paths with unsupported extensions that were
 // collected during the scan to <outputPath>/unsupported_files_<sessionID>.txt,
-// one absolute path per line, sorted alphabetically.
+// one human-readable (home-contracted) path per line, sorted alphabetically.
 // No file is created when every scanned file had a recognised extension.
 func (s *Scanner) writeUnsupportedFiles(sessionID uuid.UUID, tracker *scanSessionTracker) {
 	tracker.unsupportedMu.Lock()
@@ -508,7 +503,7 @@ func (s *Scanner) updateProgress(ctx context.Context, sessionID uuid.UUID, track
 			if s.statusMgr != nil {
 				s.statusMgr.Broadcast(status.PipelineStatus{
 					SessionID:       sessionID,
-					Status:          ScanStatusScan,
+					Status:          status.PipelineStatusScan,
 					FilesDiscovered: tracker.discovered.Load(),
 					FilesSkipped:    tracker.skipped.Load(),
 					FilesNew:        tracker.newFiles.Load(),
