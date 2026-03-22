@@ -12,6 +12,14 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	PipelineStatusScan      = "SCAN"
+	PipelineStatusHash      = "HASH"
+	PipelineStatusScore     = "SCORE"
+	PipelineStatusFail      = "FAILED"
+	PipelineStatusCancelled = "CANCELLED"
+)
+
 type PipelineStatus struct {
 	SessionID       uuid.UUID `json:"sessionId"`
 	Status          string    `json:"status"` // SCAN, HASH, SCORE, FAILED, CANCELLED

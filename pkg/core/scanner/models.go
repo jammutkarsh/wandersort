@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/core/classifier"
+	"github.com/jammutkarsh/wandersort/pkg/util"
 )
 
 type FileRegistry struct {
@@ -64,7 +65,7 @@ const (
 )
 
 // GetAbsolutePath returns the full absolute path, expanding relative paths using source root.
-func (fr *FileRegistry) GetAbsolutePath(pathUtil *PathUtil) string {
+func (fr *FileRegistry) GetAbsolutePath(pathUtil *util.Util) string {
 	if fr.PathType == PathTypeAbsolute {
 		return fr.FilePath
 	}
@@ -118,11 +119,3 @@ type ScanSession struct {
 	ErrorsEncountered int     `db:"errors_encountered"`
 	LastError         *string `db:"last_error"`
 }
-
-const (
-	ScanStatusScan      = "SCAN"
-	ScanStatusHash      = "HASH"
-	ScanStatusScore     = "SCORE"
-	ScanStatusFailed    = "FAILED"
-	ScanStatusCancelled = "CANCELLED"
-)
