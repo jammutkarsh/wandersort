@@ -16,6 +16,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/status"
+	"github.com/jammutkarsh/wandersort/pkg/util"
 	"lukechampine.com/blake3"
 )
 
@@ -33,6 +34,7 @@ type Hasher struct {
 	log       logger.Logger
 	scorer    *Scorer
 	statusMgr *status.StatusManager
+	util      *util.Util
 }
 
 type hashSessionTracker struct {
@@ -54,6 +56,7 @@ func NewHasher(appCtx context.Context, db *db.DB, log logger.Logger, sm *status.
 		log:       log,
 		scorer:    NewScorer(db, log),
 		statusMgr: sm,
+		util:      util.NewUtil(),
 	}
 }
 
@@ -343,7 +346,7 @@ func (h *Hasher) HashPath(ctx context.Context, sessionID uuid.UUID, path string,
 
 			absPath := filePath
 			if pathType != scanner.PathTypeAbsolute {
-				absPath = scanner.ResolveAbsolute(filePath, sourceRoot)
+				absPath = h.util.MakeAbsolute(filePath, sourceRoot)
 			}
 
 			batch = append(batch, FileRecord{ID: id, AbsPath: absPath})
