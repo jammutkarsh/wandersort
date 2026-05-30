@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/status"
+	"github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
 // Pre-compiled date patterns for filename matching.
@@ -30,7 +30,7 @@ var genericDirNames = map[string]bool{
 type Scorer struct {
 	db        *db.DB
 	log       logger.Logger
-	statusMgr *status.StatusManager
+	statusMgr *statusmanager.StatusManager
 }
 
 type scoreSessionTracker struct {
@@ -126,8 +126,8 @@ func (s *Scorer) broadcastScoreProgress(sessionID uuid.UUID) {
 
 	current := s.statusMgr.GetCurrent()
 	if current.SessionID != sessionID {
-		current = status.PipelineStatus{SessionID: sessionID}
+		current = statusmanager.WorkflowStatus{SessionID: sessionID}
 	}
-	current.Status = status.PipelineStatusScore
+	current.Status = statusmanager.WorkflowStatusScore
 	s.statusMgr.Broadcast(current)
 }

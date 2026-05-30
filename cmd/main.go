@@ -16,7 +16,7 @@ import (
 	"github.com/jammutkarsh/wandersort/internal/api/admin"
 	"github.com/jammutkarsh/wandersort/internal/api/pipeline"
 	"github.com/jammutkarsh/wandersort/pkg/config"
-	"github.com/jammutkarsh/wandersort/pkg/core"
+	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	swaggerfiles "github.com/swaggo/files"
@@ -58,12 +58,12 @@ func main() {
 		}
 	}()
 
-	// Create the unified pipeline orchestrator
-	corePipeline := core.NewPipeline(ctx, sqliteDB, logger, cfg)
+	// Create the unified workflow orchestrator
+	workflow := workflow.NewWorkflow(ctx, sqliteDB, logger, cfg)
 
 	// API handlers
 	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(sqliteDB)))
-	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, corePipeline, pipeline.NewRepository(sqliteDB)))
+	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, workflow, pipeline.NewRepository(sqliteDB)))
 
 	// Setup Gin router
 	router := setupRouter(logger, cfg.Host, adminHandler, pipelineHandler)
@@ -96,7 +96,7 @@ func main() {
 	cancel()
 
 	// Wait for pipeline workers to finish before closing the DB.
-	corePipeline.Close()
+	workflow.Close()
 
 	// Give in-flight requests up to 30 s to complete.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)

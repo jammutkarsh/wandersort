@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/db/migrations"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -128,6 +129,47 @@ func (db *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql
 // QueryRowContext executes a query that is expected to return at most one row.
 func (db *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	return db.SQL.QueryRowContext(ctx, query, args...)
+}
+
+// ExecRetry executes a query with exponential backoff if the database is busy.
+// This is useful for multi-threaded SQLite environments.
+func (db *DB) ExecRetry(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	const maxAttempts = 12
+	backoff := 50 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		result, err := db.SQL.ExecContext(ctx, query, args...)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+
+		if !isSQLITEBusy(err) || attempt == maxAttempts {
+			return nil, err
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+
+		// Exponential backoff capped to keep retries bounded.
+		if backoff < 500*time.Millisecond {
+			backoff *= 2
+		}
+	}
+
+	return nil, lastErr
+}
+
+func isSQLITEBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "database is locked")
 }
 
 // InClause builds a placeholder string "?,?,?..." with n question marks and

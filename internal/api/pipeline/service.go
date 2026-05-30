@@ -5,22 +5,22 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/jammutkarsh/wandersort/pkg/core"
+	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
-	"github.com/jammutkarsh/wandersort/pkg/status"
+	"github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
 // Service orchestrates both scan submission and status streaming.
 type Service struct {
-	pipeline *core.Pipeline
+	pipeline *workflow.Workflow
 	repo     *Repository
 	logger   logger.Logger
 	path     *path.Resolver
 }
 
-func NewService(log logger.Logger, pipeline *core.Pipeline, repo *Repository) *Service {
-	return &Service{pipeline: pipeline, repo: repo, logger: log, path: path.New()}
+func NewService(log logger.Logger, workflow *workflow.Workflow, repo *Repository) *Service {
+	return &Service{pipeline: workflow, repo: repo, logger: log, path: path.New()}
 }
 
 func (s *Service) StartScan(paths []string) (uuid.UUID, error) {
@@ -41,11 +41,11 @@ func (s *Service) StartScan(paths []string) (uuid.UUID, error) {
 	return s.pipeline.SubmitScan(paths)
 }
 
-func (s *Service) SubscribeStatus() chan status.PipelineStatus {
+func (s *Service) SubscribeStatus() chan statusmanager.WorkflowStatus {
 	return s.pipeline.StatusStream()
 }
 
-func (s *Service) UnsubscribeStatus(ch chan status.PipelineStatus) {
+func (s *Service) UnsubscribeStatus(ch chan statusmanager.WorkflowStatus) {
 	s.pipeline.UnsubscribeStatus(ch)
 }
 

@@ -5,12 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,7 +15,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
-	"github.com/jammutkarsh/wandersort/pkg/status"
+	"github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
 // Scanner handles file discovery and registry population.
@@ -29,36 +26,12 @@ type Scanner struct {
 	db         *db.DB
 	classifier *classifier.FileClassifier
 	log        logger.Logger
-	statusMgr  *status.StatusManager
 	config     ScanConfig
 	path       *path.Resolver
-	outputPath string
-
-	// activeSessions tracks the state of ongoing multi-directory scans
-	activeSessions sync.Map // map[uuid.UUID]*scanSessionTracker
-}
-
-// scanSessionTracker tracks the progress of a multi-directory scan session.
-type scanSessionTracker struct {
-	sessionID uuid.UUID
-
-	discovered atomic.Int64
-	skipped    atomic.Int64
-	newFiles   atomic.Int64
-	modified   atomic.Int64
-	errors     atomic.Int64
-
-	unsupported      int64
-	unsupportedMu    sync.Mutex
-	unsupportedPaths []string
-
-	pendingJobs atomic.Int32
-	ctx         context.Context
-	cancel      context.CancelFunc
 }
 
 type scanState struct {
-	tracker *scanSessionTracker
+	tracker *statusmanager.SessionTracker
 }
 
 // ScanConfig holds scanner configuration
@@ -71,14 +44,12 @@ type ScanConfig struct {
 }
 
 // NewScanner creates a new scanner instance.
-func NewScanner(db *db.DB, log logger.Logger, outputPath string, sm *status.StatusManager) *Scanner {
+func NewScanner(db *db.DB, log logger.Logger) *Scanner {
 	return &Scanner{
 		db:         db,
 		classifier: classifier.NewFileClassifier(),
 		log:        log,
-		statusMgr:  sm,
 		path:       path.New(),
-		outputPath: outputPath,
 		config: ScanConfig{
 			MaxWalkers:       4,
 			WorkerBufferSize: 1000,
@@ -88,56 +59,9 @@ func NewScanner(db *db.DB, log logger.Logger, outputPath string, sm *status.Stat
 	}
 }
 
-// PrepareSession creates the scan_sessions DB row, and returns the sessionID.
-// It initializes the shared tracker for all jobs in this session.
-func (s *Scanner) PrepareSession(ctx context.Context, paths []string) (uuid.UUID, []string, error) {
-	normalizedPaths := make([]string, 0, len(paths))
-	for _, p := range paths {
-		cleanPath := filepath.Clean(p)
-		if filepath.IsAbs(cleanPath) {
-			normalizedPaths = append(normalizedPaths, s.path.ContractPath(cleanPath))
-			continue
-		}
-		normalizedPaths = append(normalizedPaths, cleanPath)
-	}
-
-	// Create scan session
-	sessionID := uuid.New()
-	startedAt := time.Now().UTC()
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO scan_sessions (id, started_at, status, root_paths)
-		VALUES (?, ?, ?, ?)
-	`, sessionID, startedAt.Format(time.RFC3339), status.PipelineStatusScan, strings.Join(normalizedPaths, ","))
-	if err != nil {
-		return uuid.Nil, nil, fmt.Errorf("failed to create scan session: %w", err)
-	}
-
-	s.log.Info("Scan session created", "session_id", sessionID, "root_paths", normalizedPaths)
-
-	// Initialize the shared state tracker for this session
-	progressCtx, cancelProgress := context.WithCancel(ctx)
-	tracker := &scanSessionTracker{
-		sessionID: sessionID,
-		ctx:       progressCtx,
-		cancel:    cancelProgress,
-	}
-	tracker.pendingJobs.Store(int32(len(normalizedPaths)))
-	s.activeSessions.Store(sessionID, tracker)
-
-	// Start the periodic progress updater for this session
-	go s.updateProgress(progressCtx, sessionID, tracker)
-
-	return sessionID, normalizedPaths, nil
-}
-
 // ScanSinglePath executes a scan for a single directory path and returns a channel
 // of discovered files. It's meant to be called by worker goroutines asynchronously.
-func (s *Scanner) ScanSinglePath(ctx context.Context, sessionID uuid.UUID, path string) (<-chan FileDiscovery, error) {
-	v, ok := s.activeSessions.Load(sessionID)
-	if !ok {
-		return nil, fmt.Errorf("scan session %s not found or already completed", sessionID)
-	}
-	tracker := v.(*scanSessionTracker)
+func (s *Scanner) ScanSinglePath(ctx context.Context, tracker *statusmanager.SessionTracker, path string) (<-chan FileDiscovery, error) {
 	st := &scanState{tracker: tracker}
 
 	// Channel for discovered files
@@ -154,35 +78,24 @@ func (s *Scanner) ScanSinglePath(ctx context.Context, sessionID uuid.UUID, path 
 
 	// Process discovered files in the background and pipe them to outChan
 	go func() {
-		s.processDiscoveries(ctx, sessionID, filesChan, st, outChan)
+		s.processDiscoveries(ctx, tracker.SessionID, filesChan, st, outChan)
 	}()
 
 	return outChan, nil
 }
 
 // MarkJobComplete decrements the pending job count for a session.
-// Once all scan jobs are complete, it writes the unsupported-file report and
-// stops periodic scan-progress updates. Session finalization happens later,
-// after hash/score phases, via FinalizeSession.
-func (s *Scanner) MarkJobComplete(ctx context.Context, sessionID uuid.UUID, path string) {
-	v, ok := s.activeSessions.Load(sessionID)
-	if !ok {
-		s.log.Warn("MarkJobComplete called for unknown session", "session_id", sessionID, "path", path)
-		return
-	}
-	tracker := v.(*scanSessionTracker)
-
-	pending := tracker.pendingJobs.Add(-1)
-	s.log.Debug("Job completed", "session_id", sessionID, "path", path, "pending_jobs_remaining", pending)
+// Once all scan jobs are complete, it stops periodic scan-progress updates.
+func (s *Scanner) MarkJobComplete(ctx context.Context, tracker *statusmanager.SessionTracker, path string) {
+	pending := tracker.PendingJobs.Add(-1)
+	s.log.Debug("Job completed", "session_id", tracker.SessionID, "path", path, "pending_jobs_remaining", pending)
 
 	if pending == 0 {
 		// All paths for this session have been processed.
-		s.log.Info("All scan jobs complete for session", "session_id", sessionID)
+		s.log.Info("All scan jobs complete for session", "session_id", tracker.SessionID)
 
 		// Stop progress updater; scan counters are now stable.
-		tracker.cancel()
-
-		s.writeUnsupportedFiles(sessionID, tracker)
+		tracker.Cancel()
 	}
 }
 
@@ -209,7 +122,7 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 		// Handle errors (permission denied, etc.)
 		if err != nil {
 			s.log.Warn("Walk error", "input_path", rootDisplayPath, "walking_path", s.path.ContractPath(p), "error", err)
-			st.tracker.errors.Add(1)
+			st.tracker.Errors.Add(1)
 			return nil // Continue walking
 		}
 
@@ -231,17 +144,17 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 		realPath, err := s.path.RealPath(p)
 		if err != nil {
 			s.log.Warn("Failed to resolve file path", "input_path", rootDisplayPath, "walking_path", s.path.ContractPath(p), "error", err)
-			st.tracker.errors.Add(1)
+			st.tracker.Errors.Add(1)
 			return nil
 		}
 
 		// Classify file
 		mediaType, shouldProcess := s.classifier.Classify(realPath)
 		if !shouldProcess {
-			atomic.AddInt64(&st.tracker.unsupported, 1)
-			st.tracker.unsupportedMu.Lock()
-			st.tracker.unsupportedPaths = append(st.tracker.unsupportedPaths, s.path.ContractPath(realPath))
-			st.tracker.unsupportedMu.Unlock()
+			st.tracker.Unsupported.Add(1)
+			st.tracker.UnsupportedMu.Lock()
+			st.tracker.UnsupportedPaths = append(st.tracker.UnsupportedPaths, s.path.ContractPath(realPath))
+			st.tracker.UnsupportedMu.Unlock()
 			return nil
 		}
 
@@ -249,14 +162,14 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 		info, err := d.Info()
 		if err != nil {
 			s.log.Warn("Failed to get file info", "input_path", rootDisplayPath, "walking_path", s.path.ContractPath(p), "error", err)
-			st.tracker.errors.Add(1)
+			st.tracker.Errors.Add(1)
 			return nil
 		}
 
 		relPath, err := filepath.Rel(absRoot, p)
 		if err != nil {
 			s.log.Warn("Failed to make path relative", "input_path", rootDisplayPath, "walking_path", s.path.ContractPath(p), "error", err)
-			st.tracker.errors.Add(1)
+			st.tracker.Errors.Add(1)
 			return nil
 		}
 
@@ -273,7 +186,7 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 			CaptureRole: capture.Role, // Derived from filename and media type
 		}
 
-		st.tracker.discovered.Add(1)
+		st.tracker.Discovered.Add(1)
 
 		// Send to processing channel
 		select {
@@ -292,60 +205,67 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 	return nil
 }
 
-// writeUnsupportedFiles writes all paths with unsupported extensions that were
-// collected during the scan to <outputPath>/unsupported_files_<sessionID>.txt,
-// one human-readable (home-contracted) path per line, sorted alphabetically.
-// No file is created when every scanned file had a recognised extension.
-func (s *Scanner) writeUnsupportedFiles(sessionID uuid.UUID, tracker *scanSessionTracker) {
-	tracker.unsupportedMu.Lock()
-	paths := make([]string, len(tracker.unsupportedPaths))
-	copy(paths, tracker.unsupportedPaths)
-	tracker.unsupportedMu.Unlock()
-
-	if len(paths) == 0 {
-		s.log.Debug("No unsupported files found; skipping report")
-		return
+func (s *Scanner) RunPhase(ctx context.Context, sessionID uuid.UUID, tracker *statusmanager.SessionTracker, paths []string) (int, error) {
+	s.log.Info("Scanner Phase: Processing all paths", "session_id", sessionID, "path_count", len(paths))
+	type scanResult struct {
+		count int
+		err   error
 	}
 
-	sort.Strings(paths)
+	jobs := make(chan string, len(paths))
+	results := make(chan scanResult, len(paths))
 
-	if err := os.MkdirAll(s.outputPath, 0o755); err != nil {
-		s.log.Error("Failed to create output directory for unsupported report", "error", err)
-		return
+	// Determine worker count based on path count, but capped at MaxWalkers
+	workerCount := len(paths)
+	if workerCount > s.config.MaxWalkers {
+		workerCount = s.config.MaxWalkers
+	}
+	if workerCount <= 0 {
+		workerCount = 1
 	}
 
-	reportPath := filepath.Join(s.outputPath, fmt.Sprintf("unsupported_files_%s.txt", sessionID))
-	f, err := os.Create(reportPath)
-	if err != nil {
-		s.log.Error("Failed to create unsupported files report", "path", reportPath, "error", err)
-		return
-	}
-	defer f.Close()
+	var workers sync.WaitGroup
+	for range workerCount {
+		workers.Go(func() {
+			for path := range jobs {
+				// Scan the individual path
+				discoveredChan, err := s.ScanSinglePath(ctx, tracker, path)
+				if err != nil {
+					s.log.Error("Failed to scan path", "session_id", sessionID, "path", path, "error", err)
+					s.MarkJobComplete(ctx, tracker, path)
+					results <- scanResult{count: 0, err: fmt.Errorf("scan failed for %s: %w", path, err)}
+					continue
+				}
 
-	header := fmt.Sprintf(
-		"# Unsupported files found during scan %s\n"+
-			"# These file types are not yet supported by WanderSort.\n"+
-			"# Please raise a feature request at https://github.com/jammutkarsh/wandersort/issues\n\n",
-		sessionID,
-	)
-	if _, err := fmt.Fprint(f, header); err != nil {
-		s.log.Error("Failed to write report header", "error", err)
-		return
+				count := 0
+				for range discoveredChan {
+					count++
+				}
+
+				s.MarkJobComplete(ctx, tracker, path)
+				s.log.Info("Scanned path", "session_id", sessionID, "path", path, "files_discovered", count)
+				results <- scanResult{count: count, err: nil}
+			}
+		})
 	}
 
-	for _, p := range paths {
-		if _, err := fmt.Fprintln(f, p); err != nil {
-			s.log.Error("Failed to write path to report", "path", p, "error", err)
-			return
+	for _, path := range paths {
+		jobs <- path
+	}
+	close(jobs)
+	workers.Wait()
+	close(results)
+
+	totalFiles := 0
+	var firstScanErr error
+	for result := range results {
+		totalFiles += result.count
+		if result.err != nil && firstScanErr == nil {
+			firstScanErr = result.err
 		}
 	}
 
-	// Flush to disk to ensure the report survives unexpected termination.
-	if err := f.Sync(); err != nil {
-		s.log.Error("Failed to sync unsupported files report", "error", err)
-	}
-
-	s.log.Info("Unsupported files report written", "path", reportPath, "count", len(paths))
+	return totalFiles, firstScanErr
 }
 
 func (s *Scanner) processDiscoveries(ctx context.Context, sessionID uuid.UUID, discoveries <-chan FileDiscovery, st *scanState, emitChan chan<- FileDiscovery) {
@@ -405,9 +325,10 @@ func (s *Scanner) processDiscoveries(ctx context.Context, sessionID uuid.UUID, d
 			default:
 			}
 
+			var err error
 			var id int64
 			var isNew int
-			err := tx.QueryRowContext(dbCtx, upsertQuery,
+			err = tx.QueryRowContext(dbCtx, upsertQuery,
 				file.Path,
 				file.Size,
 				file.ModTime.Format(time.RFC3339),
@@ -424,14 +345,14 @@ func (s *Scanner) processDiscoveries(ctx context.Context, sessionID uuid.UUID, d
 
 			if err != nil {
 				s.log.Warn("Failed to upsert file", "path", file.Path, "error", err)
-				st.tracker.errors.Add(1)
+				st.tracker.Errors.Add(1)
 				return nil // Don't block batch execution for one bad file
 			}
 
 			if isNew == 1 {
-				st.tracker.newFiles.Add(1)
+				st.tracker.NewFiles.Add(1)
 			} else {
-				st.tracker.skipped.Add(1) // Technically it might be modified
+				st.tracker.Skipped.Add(1) // Technically it might be modified
 			}
 
 			file.ID = id
@@ -446,193 +367,8 @@ func (s *Scanner) processDiscoveries(ctx context.Context, sessionID uuid.UUID, d
 			return nil
 		}) {
 			pendingWrites.Done()
-			st.tracker.errors.Add(1)
+			st.tracker.Errors.Add(1)
 			s.log.Warn("Bulk writer closed; dropping discovery write", "path", file.Path, "session_id", sessionID)
 		}
 	}
-}
-
-// SetSessionStatus updates the current phase/status for a scan session.
-func (s *Scanner) SetSessionStatus(ctx context.Context, sessionID uuid.UUID, statusValue string) error {
-	_, err := s.execWithBusyRetry(ctx, `
-		UPDATE scan_sessions
-		SET status = ?
-		WHERE id = ?
-	`, statusValue, sessionID.String())
-	if err != nil {
-		return fmt.Errorf("set session status: %w", err)
-	}
-
-	if s.statusMgr != nil {
-		current := s.statusMgr.GetCurrent()
-		if current.SessionID != sessionID {
-			current = status.PipelineStatus{SessionID: sessionID}
-		}
-		current.Status = statusValue
-		s.statusMgr.Broadcast(current)
-	}
-	return nil
-}
-
-func (s *Scanner) updateProgress(ctx context.Context, sessionID uuid.UUID, tracker *scanSessionTracker) {
-	ticker := time.NewTicker(s.config.ProgressInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			_, err := s.execWithBusyRetry(ctx, `
-					UPDATE scan_sessions
-					SET files_discovered = ?,
-						files_skipped = ?,
-					files_new = ?,
-					files_modified = ?,
-					errors_encountered = ?
-				WHERE id = ?
-			`,
-				tracker.discovered.Load(),
-				tracker.skipped.Load(),
-				tracker.newFiles.Load(),
-				tracker.modified.Load(),
-				tracker.errors.Load(),
-				sessionID.String(),
-			)
-
-			if s.statusMgr != nil {
-				s.statusMgr.Broadcast(status.PipelineStatus{
-					SessionID:       sessionID,
-					Status:          status.PipelineStatusScan,
-					FilesDiscovered: tracker.discovered.Load(),
-					FilesSkipped:    tracker.skipped.Load(),
-					FilesNew:        tracker.newFiles.Load(),
-					Errors:          tracker.errors.Load(),
-				})
-			}
-
-			if err != nil {
-				s.log.Warn("Failed to update progress", "error", err)
-			}
-		}
-	}
-}
-
-func (s *Scanner) completeScan(ctx context.Context, sessionID uuid.UUID, finalStatus string, lastError *string, tracker *scanSessionTracker) error {
-	s.log.Info("Completing scan", "session_id", sessionID, "status", finalStatus)
-
-	completedAt := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.execWithBusyRetry(ctx, `
-		UPDATE scan_sessions
-		SET completed_at = ?,
-			status = ?,
-			files_discovered = ?,
-			files_skipped = ?,
-			files_new = ?,
-			files_modified = ?,
-			errors_encountered = ?,
-			last_error = ?
-		WHERE id = ?
-	`,
-		completedAt,
-		finalStatus,
-		tracker.discovered.Load(),
-		tracker.skipped.Load(),
-		tracker.newFiles.Load(),
-		tracker.modified.Load(),
-		tracker.errors.Load(),
-		lastError,
-		sessionID.String(),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to complete scan: %w", err)
-	}
-
-	if s.statusMgr != nil {
-		var filesHashed int64
-		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(files_hashed, 0) FROM scan_sessions WHERE id = ?`, sessionID.String()).Scan(&filesHashed); err != nil {
-			s.log.Warn("Failed to read files_hashed while broadcasting final status", "session_id", sessionID, "error", err)
-		}
-		s.statusMgr.Broadcast(status.PipelineStatus{
-			SessionID:       sessionID,
-			Status:          finalStatus,
-			FilesDiscovered: tracker.discovered.Load(),
-			FilesSkipped:    tracker.skipped.Load(),
-			FilesNew:        tracker.newFiles.Load(),
-			FilesHashed:     filesHashed,
-			Errors:          tracker.errors.Load(),
-		})
-	}
-
-	s.log.Info("Scan finished", "session_id", sessionID, "status", finalStatus,
-		"discovered", tracker.discovered.Load(),
-		"new", tracker.newFiles.Load(),
-		"skipped", tracker.skipped.Load(),
-		"modified", tracker.modified.Load(),
-		"errors", tracker.errors.Load())
-	return nil
-}
-
-// FinalizeSession marks a session terminally complete after all pipeline phases
-// (scan, hash, score) are done.
-func (s *Scanner) FinalizeSession(ctx context.Context, sessionID uuid.UUID, finalStatus string, lastError *string) error {
-	v, ok := s.activeSessions.Load(sessionID)
-	if !ok {
-		s.log.Warn("FinalizeSession called for unknown session", "session_id", sessionID)
-		completedAt := time.Now().UTC().Format(time.RFC3339)
-		_, err := s.execWithBusyRetry(ctx, `
-			UPDATE scan_sessions
-			SET completed_at = ?, status = ?, last_error = ?
-			WHERE id = ?
-		`, completedAt, finalStatus, lastError, sessionID.String())
-		if err != nil {
-			return fmt.Errorf("failed to finalize session without tracker: %w", err)
-		}
-		return nil
-	}
-
-	tracker := v.(*scanSessionTracker)
-	tracker.cancel()
-	s.activeSessions.Delete(sessionID)
-
-	return s.completeScan(ctx, sessionID, finalStatus, lastError, tracker)
-}
-
-func (s *Scanner) execWithBusyRetry(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	const maxAttempts = 12
-	backoff := 50 * time.Millisecond
-
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		result, err := s.db.ExecContext(ctx, query, args...)
-		if err == nil {
-			return result, nil
-		}
-		lastErr = err
-
-		if !isSQLITEBusy(err) || attempt == maxAttempts {
-			return nil, err
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(backoff):
-		}
-
-		// Exponential backoff capped to keep retries bounded.
-		if backoff < 500*time.Millisecond {
-			backoff *= 2
-		}
-	}
-
-	return nil, lastErr
-}
-
-func isSQLITEBusy(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "database is locked")
 }

@@ -75,16 +75,14 @@ func TestDeriveCaptureConcurrent(t *testing.T) {
 	errs := make(chan string, goroutines*len(inputs))
 
 	for range goroutines {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for _, in := range inputs {
 				got := DeriveCapture(in.filename, in.ext, in.mediaType)
 				if got.Stem != in.wantStem || got.Role != in.wantRole {
 					errs <- in.filename + ": unexpected result"
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
