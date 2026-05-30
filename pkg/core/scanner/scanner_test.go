@@ -16,7 +16,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/core/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/util"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 // ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ func TestPathUtil_ExpandPath(t *testing.T) {
 		t.Skipf("cannot determine home dir: %v", err)
 	}
 
-	pu := &util.Util{HomeDir: home}
+	pu := &path.Resolver{HomeDir: home}
 
 	tests := []struct {
 		input string
@@ -52,7 +52,7 @@ func TestPathUtil_ExpandPath(t *testing.T) {
 }
 
 func TestPathUtil_ContractPath(t *testing.T) {
-	pu := &util.Util{HomeDir: "/home/testuser"}
+	pu := &path.Resolver{HomeDir: "/home/testuser"}
 
 	tests := []struct {
 		input string
@@ -83,7 +83,7 @@ func TestPathUtil_MakeRelative(t *testing.T) {
 		t.Fatalf("write temp file: %v", err)
 	}
 
-	pu := &util.Util{HomeDir: root}
+	pu := &path.Resolver{HomeDir: root}
 
 	rel, err := pu.MakeRelative(imgPath, photosRoot)
 	if err != nil {
@@ -95,7 +95,7 @@ func TestPathUtil_MakeRelative(t *testing.T) {
 }
 
 func TestPathUtil_MakeAbsolute(t *testing.T) {
-	pu := &util.Util{HomeDir: "/home/testuser"}
+	pu := &path.Resolver{HomeDir: "/home/testuser"}
 	got := pu.MakeAbsolute("2023/img.jpg", "~/Photos")
 	want := "/home/testuser/Photos/2023/img.jpg"
 	if got != want {
@@ -113,7 +113,7 @@ func TestPathUtil_RoundTrip(t *testing.T) {
 	if err := os.WriteFile(absPath, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write temp file: %v", err)
 	}
-	pu := &util.Util{HomeDir: home}
+	pu := &path.Resolver{HomeDir: home}
 	sourceRoot := filepath.Join(home, "Photos")
 
 	relative, err := pu.MakeRelative(absPath, sourceRoot)
@@ -185,11 +185,11 @@ func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 	log := logger.NewNoopLogger()
 	fc := classifier.NewFileClassifier()
 
-	pu := &util.Util{HomeDir: "/tmp"}
+	pu := &path.Resolver{HomeDir: "/tmp"}
 	sc := &Scanner{
 		classifier: fc,
 		log:        log,
-		pathUtil:   pu,
+		path:       pu,
 		config: ScanConfig{
 			MaxWalkers:       1,
 			WorkerBufferSize: 100,
@@ -239,8 +239,8 @@ func TestWalkRoot_SkipsIgnoredDirs(t *testing.T) {
 	root := createTestTree(t)
 	log := logger.NewNoopLogger()
 	fc := classifier.NewFileClassifier()
-	pu := &util.Util{HomeDir: "/tmp"}
-	sc := &Scanner{classifier: fc, log: log, pathUtil: pu, config: ScanConfig{
+	pu := &path.Resolver{HomeDir: "/tmp"}
+	sc := &Scanner{classifier: fc, log: log, path: pu, config: ScanConfig{
 		WorkerBufferSize: 100,
 	}}
 
@@ -260,8 +260,8 @@ func TestWalkRoot_ContextCancellation(t *testing.T) {
 	root := createTestTree(t)
 	log := logger.NewNoopLogger()
 	fc := classifier.NewFileClassifier()
-	pu := &util.Util{HomeDir: "/tmp"}
-	sc := &Scanner{classifier: fc, log: log, pathUtil: pu, config: ScanConfig{
+	pu := &path.Resolver{HomeDir: "/tmp"}
+	sc := &Scanner{classifier: fc, log: log, path: pu, config: ScanConfig{
 		WorkerBufferSize: 100,
 	}}
 
@@ -311,7 +311,7 @@ func TestFileDiscoveryCaptureStemAndRole(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFileRegistry_GetAbsolutePath(t *testing.T) {
-	pu := &util.Util{HomeDir: "/home/user"}
+	pu := &path.Resolver{HomeDir: "/home/user"}
 
 	tests := []struct {
 		name string
@@ -377,8 +377,8 @@ func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 	root := createTestTree(t)
 	log := logger.NewNoopLogger()
 	fc := classifier.NewFileClassifier()
-	pu := &util.Util{HomeDir: "/tmp"}
-	sc := &Scanner{classifier: fc, log: log, pathUtil: pu, config: ScanConfig{
+	pu := &path.Resolver{HomeDir: "/tmp"}
+	sc := &Scanner{classifier: fc, log: log, path: pu, config: ScanConfig{
 		WorkerBufferSize: 500,
 	}}
 

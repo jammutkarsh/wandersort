@@ -33,7 +33,7 @@ type Pipeline struct {
 	statusMgr *status.StatusManager
 	log       logger.Logger
 	workers   int
-	wg        sync.WaitGroup // tracks in-flight runSession goroutines
+	wg        sync.WaitGroup // tracks in-flight runSession(s)
 }
 
 // NewPipeline creates a new pipeline instance.

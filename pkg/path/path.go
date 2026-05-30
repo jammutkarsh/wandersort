@@ -4,16 +4,29 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package util
+package path
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
+type Resolver struct {
+	HomeDir string
+}
+
+func New() *Resolver {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Panic("Failed to get user home directory", "error", err)
+	}
+	return &Resolver{HomeDir: home}
+}
+
 // IsDirectory checks if a path string points to a directory.
-func (u *Util) IsDirectory(path string) (bool, error) {
+func (u *Resolver) IsDirectory(path string) (bool, error) {
 	if p, err := u.RealPath(path); err != nil {
 		return false, err
 	} else {
@@ -27,7 +40,7 @@ func (u *Util) IsDirectory(path string) (bool, error) {
 	return fileInfo.IsDir(), nil
 }
 
-func (u *Util) RealPath(p string) (string, error) {
+func (u *Resolver) RealPath(p string) (string, error) {
 	p = u.ExpandPath(p)
 	resolved, err := filepath.EvalSymlinks(p)
 	if err != nil {
@@ -42,13 +55,13 @@ func (u *Util) RealPath(p string) (string, error) {
 
 // ExpandPath expands a leading "~/" to the user's home directory.
 // Non-home-relative paths are returned unchanged.
-func (u *Util) ExpandPath(path string) string {
+func (u *Resolver) ExpandPath(path string) string {
 	return u.resolveHomePath(path)
 }
 
 // ContractPath converts an absolute path under the user's home directory to a
 // human-readable "~" form.
-func (u *Util) ContractPath(path string) string {
+func (u *Resolver) ContractPath(path string) string {
 	cleanPath := filepath.Clean(path)
 	home := filepath.Clean(u.HomeDir)
 
@@ -65,7 +78,7 @@ func (u *Util) ContractPath(path string) string {
 }
 
 // MakeRelative returns filePath relative to sourceRoot.
-func (u *Util) MakeRelative(filePath, sourceRoot string) (string, error) {
+func (u *Resolver) MakeRelative(filePath, sourceRoot string) (string, error) {
 	absFile, err := u.RealPath(filePath)
 	if err != nil {
 		return "", err
@@ -85,7 +98,7 @@ func (u *Util) MakeRelative(filePath, sourceRoot string) (string, error) {
 
 // MakeAbsolute returns an absolute path for filePath using sourceRoot if
 // filePath is not already absolute.
-func (u *Util) MakeAbsolute(filePath, sourceRoot string) string {
+func (u *Resolver) MakeAbsolute(filePath, sourceRoot string) string {
 	if filepath.IsAbs(filePath) {
 		return filepath.Clean(filePath)
 	}
@@ -104,7 +117,7 @@ func (u *Util) MakeAbsolute(filePath, sourceRoot string) string {
 
 // resolveHomePath converts ~/path to absolute path.
 // Example: "~/Photos/2023" -> "/home/username/Photos/2023"
-func (u *Util) resolveHomePath(path string) string {
+func (u *Resolver) resolveHomePath(path string) string {
 	if strings.HasPrefix(path, "~/") {
 		return filepath.Join(u.HomeDir, path[2:])
 	}
