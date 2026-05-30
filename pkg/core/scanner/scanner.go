@@ -17,8 +17,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/status"
-	"github.com/jammutkarsh/wandersort/pkg/util"
 )
 
 // Scanner handles file discovery and registry population.
@@ -31,7 +31,7 @@ type Scanner struct {
 	log        logger.Logger
 	statusMgr  *status.StatusManager
 	config     ScanConfig
-	pathUtil   *util.Util
+	path       *path.Resolver
 	outputPath string
 
 	// activeSessions tracks the state of ongoing multi-directory scans
@@ -77,7 +77,7 @@ func NewScanner(db *db.DB, log logger.Logger, outputPath string, sm *status.Stat
 		classifier: classifier.NewFileClassifier(),
 		log:        log,
 		statusMgr:  sm,
-		pathUtil:   util.NewUtil(),
+		path:       path.New(),
 		outputPath: outputPath,
 		config: ScanConfig{
 			MaxWalkers:       4,
@@ -95,7 +95,7 @@ func (s *Scanner) PrepareSession(ctx context.Context, paths []string) (uuid.UUID
 	for _, p := range paths {
 		cleanPath := filepath.Clean(p)
 		if filepath.IsAbs(cleanPath) {
-			normalizedPaths = append(normalizedPaths, s.pathUtil.ContractPath(cleanPath))
+			normalizedPaths = append(normalizedPaths, s.path.ContractPath(cleanPath))
 			continue
 		}
 		normalizedPaths = append(normalizedPaths, cleanPath)
@@ -189,13 +189,13 @@ func (s *Scanner) MarkJobComplete(ctx context.Context, sessionID uuid.UUID, path
 // walkRoot walks absPath and emits FileDiscovery records with relative paths.
 // absPath is the absolute filesystem path.
 func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileDiscovery, st *scanState) error {
-	absRoot, err := s.pathUtil.RealPath(path)
+	absRoot, err := s.path.RealPath(path)
 	if err != nil {
 		s.log.Error("Failed to resolve root path", "input_path", path, "error", err)
 		return err
 	}
 
-	rootDisplayPath := s.pathUtil.ContractPath(absRoot)
+	rootDisplayPath := s.path.ContractPath(absRoot)
 	s.log.Info("Starting walk", "input_path", rootDisplayPath)
 
 	err = filepath.WalkDir(absRoot, func(p string, d fs.DirEntry, err error) error {
@@ -208,7 +208,7 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 
 		// Handle errors (permission denied, etc.)
 		if err != nil {
-			s.log.Warn("Walk error", "input_path", rootDisplayPath, "walking_path", s.pathUtil.ContractPath(p), "error", err)
+			s.log.Warn("Walk error", "input_path", rootDisplayPath, "walking_path", s.path.ContractPath(p), "error", err)
 			st.tracker.errors.Add(1)
 			return nil // Continue walking
 		}
@@ -228,9 +228,9 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 
 		// Resolve path for classification and any operation that requires an
 		// absolute location.
-		realPath, err := s.pathUtil.RealPath(p)
+		realPath, err := s.path.RealPath(p)
 		if err != nil {
-			s.log.Warn("Failed to resolve file path", "input_path", rootDisplayPath, "walking_path", s.pathUtil.ContractPath(p), "error", err)
+			s.log.Warn("Failed to resolve file path", "input_path", rootDisplayPath, "walking_path", s.path.ContractPath(p), "error", err)
 			st.tracker.errors.Add(1)
 			return nil
 		}
@@ -240,7 +240,7 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 		if !shouldProcess {
 			atomic.AddInt64(&st.tracker.unsupported, 1)
 			st.tracker.unsupportedMu.Lock()
-			st.tracker.unsupportedPaths = append(st.tracker.unsupportedPaths, s.pathUtil.ContractPath(realPath))
+			st.tracker.unsupportedPaths = append(st.tracker.unsupportedPaths, s.path.ContractPath(realPath))
 			st.tracker.unsupportedMu.Unlock()
 			return nil
 		}
@@ -248,14 +248,14 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 		// Get file info
 		info, err := d.Info()
 		if err != nil {
-			s.log.Warn("Failed to get file info", "input_path", rootDisplayPath, "walking_path", s.pathUtil.ContractPath(p), "error", err)
+			s.log.Warn("Failed to get file info", "input_path", rootDisplayPath, "walking_path", s.path.ContractPath(p), "error", err)
 			st.tracker.errors.Add(1)
 			return nil
 		}
 
 		relPath, err := filepath.Rel(absRoot, p)
 		if err != nil {
-			s.log.Warn("Failed to make path relative", "input_path", rootDisplayPath, "walking_path", s.pathUtil.ContractPath(p), "error", err)
+			s.log.Warn("Failed to make path relative", "input_path", rootDisplayPath, "walking_path", s.path.ContractPath(p), "error", err)
 			st.tracker.errors.Add(1)
 			return nil
 		}

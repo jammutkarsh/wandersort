@@ -8,18 +8,20 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-func SetupRoutes(v1 *gin.RouterGroup, handler *Handler) {
-	adminGroup := v1.Group("/admin")
-	adminGroup.POST("/reset", handler.HandleReset)
-}
-
 type Handler struct {
 	service *Service
 	logger  logger.Logger
 }
 
+var _ api.Handlers = (*Handler)(nil)
+
 func NewHandler(log logger.Logger, service *Service) *Handler {
 	return &Handler{service: service, logger: log}
+}
+
+func (h *Handler) SetupRoutes(v1 *gin.RouterGroup) {
+	adminGroup := v1.Group("/admin")
+	adminGroup.POST("/reset", h.HandleReset)
 }
 
 // HandleReset godoc

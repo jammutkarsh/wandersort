@@ -14,12 +14,7 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-func SetupRoutes(v1 *gin.RouterGroup, handler *Handler) {
-	g := v1.Group("/pipeline")
-	g.POST("/start", handler.HandleStartScan)
-	g.GET("/ws", handler.HandleWebSocket)
-	g.GET("/count", handler.HandleGetFileCount)
-}
+var _ api.Handlers = (*Handler)(nil)
 
 type Handler struct {
 	service *Service
@@ -28,6 +23,13 @@ type Handler struct {
 
 func NewHandler(log logger.Logger, service *Service) *Handler {
 	return &Handler{service: service, logger: log}
+}
+
+func (h *Handler) SetupRoutes(v1 *gin.RouterGroup) {
+	g := v1.Group("/pipeline")
+	g.POST("/start", h.HandleStartScan)
+	g.GET("/ws", h.HandleWebSocket)
+	g.GET("/count", h.HandleGetFileCount)
 }
 
 // HandleStartScan godoc

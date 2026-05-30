@@ -27,13 +27,13 @@ func Run(db *sql.DB) (int, error) {
 			run_at  TEXT NOT NULL DEFAULT (datetime('now'))
 		)
 	`); err != nil {
-		return 0, fmt.Errorf("creating schema_migrations table: %w", err)
+		return 0, fmt.Errorf("error creating schema_migrations table: %w", err)
 	}
 
 	var current uint
 	row := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`)
 	if err := row.Scan(&current); err != nil {
-		return 0, fmt.Errorf("reading current migration version: %w", err)
+		return 0, fmt.Errorf("error reading current migration version: %w", err)
 	}
 
 	for _, schema := range schemas {
@@ -43,12 +43,12 @@ func Run(db *sql.DB) (int, error) {
 
 		tx, err := db.Begin()
 		if err != nil {
-			return 0, fmt.Errorf("migration v%d: begin tx: %w", schema.Version, err)
+			return 0, fmt.Errorf("migration v%d: error beginning transaction: %w", schema.Version, err)
 		}
 
 		if _, err := tx.Exec(schema.SQL); err != nil {
 			tx.Rollback()
-			return 0, fmt.Errorf("migration v%d (%s): %w", schema.Version, schema.Description, err)
+			return 0, fmt.Errorf("migration v%d (%s): error executing SQL: %w", schema.Version, schema.Description, err)
 		}
 
 		if _, err := tx.Exec(
@@ -56,16 +56,16 @@ func Run(db *sql.DB) (int, error) {
 			schema.Version, time.Now().UTC().Format(time.RFC3339),
 		); err != nil {
 			tx.Rollback()
-			return 0, fmt.Errorf("migration v%d: recording version: %w", schema.Version, err)
+			return 0, fmt.Errorf("migration v%d: error recording version: %w", schema.Version, err)
 		}
 
 		if err := tx.Commit(); err != nil {
-			return 0, fmt.Errorf("migration v%d: commit: %w", schema.Version, err)
+			return 0, fmt.Errorf("migration v%d: error committing transaction: %w", schema.Version, err)
 		}
 	}
 
 	if _, err := db.Exec("PRAGMA optimize"); err != nil {
-		return 0, fmt.Errorf("optimizing database: %w", err)
+		return 0, fmt.Errorf("error optimizing database: %w", err)
 	}
 
 	return len(schemas) - int(current), nil

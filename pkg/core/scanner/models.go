@@ -5,7 +5,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/core/classifier"
-	"github.com/jammutkarsh/wandersort/pkg/util"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 type FileRegistry struct {
@@ -59,11 +59,11 @@ const (
 )
 
 // GetAbsolutePath returns the full absolute path, expanding relative paths using source root.
-func (fr *FileRegistry) GetAbsolutePath(pathUtil *util.Util) string {
+func (fr *FileRegistry) GetAbsolutePath(path *path.Resolver) string {
 	if fr.PathType == PathTypeAbsolute {
 		return fr.FilePath
 	}
-	return pathUtil.MakeAbsolute(fr.FilePath, fr.SourceRoot)
+	return path.MakeAbsolute(fr.FilePath, fr.SourceRoot)
 }
 
 // IsPrimarySource reports whether this registry entry is an original/canonical file.

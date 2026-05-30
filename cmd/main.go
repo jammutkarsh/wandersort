@@ -45,7 +45,7 @@ func main() {
 		log.Fatalf("failed to initialize database: %v", err)
 	}
 
-	// Ensure the DB is closed on ANY exit path — including unrecovered panics.
+	// Ensure the DB get closed on any exit path — including unrecovered panics.
 	// With locking_mode=EXCLUSIVE, a missing Close leaves the WAL/SHM files
 	// locked and prevents the server from restarting.
 	defer func() {
@@ -66,10 +66,10 @@ func main() {
 	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, corePipeline, pipeline.NewRepository(sqliteDB)))
 
 	// Setup Gin router
-	router := setupRouter(logger, adminHandler, pipelineHandler, cfg.Host)
+	router := setupRouter(logger, cfg.Host, adminHandler, pipelineHandler)
 
 	// HTTP server
-	srv := &http.Server{
+	server := &http.Server{
 		Addr:              ":" + cfg.ServerPort,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -78,7 +78,8 @@ func main() {
 	// Start server in a goroutine so it doesn't block the signal listener.
 	go func() {
 		logger.Info("Starting Server on", "port", cfg.ServerPort)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		err := server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
 		}
 	}()
@@ -90,6 +91,8 @@ func main() {
 	logger.Info("Shutting down", "signal", sig.String())
 
 	// Cancel the root context to stop any background goroutines.
+	// The explicit call ensures  the shutdown sequence happens
+	// in the right order: cancel pipeline → wait for sessions → close DB → shutdown server.
 	cancel()
 
 	// Wait for pipeline workers to finish before closing the DB.
@@ -99,7 +102,7 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("forced shutdown: %v", err)
 	}
 
@@ -107,19 +110,19 @@ func main() {
 }
 
 // setupRouter creates and configures the Gin router with all middleware and routes.
-func setupRouter(l logger.Logger, aH *admin.Handler, pH *pipeline.Handler, host string) *gin.Engine {
+func setupRouter(l logger.Logger, host string, handlers ...api.Handlers) *gin.Engine {
 	router := gin.New()
 
+	// Global middleware
 	router.Use(logger.GinLogger(l))
 	router.Use(api.RecoveryMiddleware())
 	router.Use(api.RequestIDMiddleware())
 	router.Use(api.CORSMiddleware())
 
-	// API routes
-	const basePath = "/internal/v1"
-	v1 := router.Group(basePath)
-	admin.SetupRoutes(v1, aH)
-	pipeline.SetupRoutes(v1, pH)
+	v1 := router.Group("/internal/v1")
+	for _, handler := range handlers {
+		handler.SetupRoutes(v1)
+	}
 
 	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "pong"})
