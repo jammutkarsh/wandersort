@@ -17,6 +17,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
+	"github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
 // ---------------------------------------------------------------------------
@@ -199,7 +200,7 @@ func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 	}
 
 	filesChan := make(chan FileDiscovery, 200)
-	st := &scanState{tracker: &scanSessionTracker{}}
+	st := &scanState{tracker: &statusmanager.SessionTracker{}}
 
 	err := sc.walkRoot(context.Background(), root, filesChan, st)
 	close(filesChan)
@@ -224,12 +225,12 @@ func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 	}
 
 	// Verify counters
-	discovered := st.tracker.discovered.Load()
+	discovered := st.tracker.Discovered.Load()
 	if discovered != 5 {
 		t.Errorf("discovered = %d, want 5", discovered)
 	}
 
-	unsupported := st.tracker.unsupported
+	unsupported := st.tracker.Unsupported.Load()
 	if unsupported != 1 { // readme.txt
 		t.Errorf("unsupported = %d, want 1", unsupported)
 	}
@@ -245,7 +246,7 @@ func TestWalkRoot_SkipsIgnoredDirs(t *testing.T) {
 	}}
 
 	filesChan := make(chan FileDiscovery, 200)
-	st := &scanState{tracker: &scanSessionTracker{}}
+	st := &scanState{tracker: &statusmanager.SessionTracker{}}
 	_ = sc.walkRoot(context.Background(), root, filesChan, st)
 	close(filesChan)
 
@@ -269,7 +270,7 @@ func TestWalkRoot_ContextCancellation(t *testing.T) {
 	cancel() // cancel immediately
 
 	filesChan := make(chan FileDiscovery, 200)
-	st := &scanState{tracker: &scanSessionTracker{}}
+	st := &scanState{tracker: &statusmanager.SessionTracker{}}
 	err := sc.walkRoot(ctx, root, filesChan, st)
 	close(filesChan)
 
@@ -384,7 +385,7 @@ func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 
 	const walkers = 4
 	filesChan := make(chan FileDiscovery, 1000)
-	st := &scanState{tracker: &scanSessionTracker{}}
+	st := &scanState{tracker: &statusmanager.SessionTracker{}}
 
 	var wg sync.WaitGroup
 	for range walkers {
@@ -410,7 +411,7 @@ func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 	}
 
 	// Atomic counter should also match
-	discovered := st.tracker.discovered.Load()
+	discovered := st.tracker.Discovered.Load()
 	if discovered != int64(expected) {
 		t.Errorf("discovered counter = %d, want %d", discovered, expected)
 	}
