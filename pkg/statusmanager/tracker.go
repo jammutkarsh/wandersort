@@ -2,7 +2,8 @@ package statusmanager
 
 import (
 	"context"
-	"sync"
+	"sort"
+	"strings"
 	"sync/atomic"
 
 	"github.com/google/uuid"
@@ -28,24 +29,58 @@ type WorkflowStatus struct {
 	LastError       string    `json:"lastError,omitempty"`
 }
 
-// SessionTracker tracks the progress of a multi-directory scan/hash/score session.
-type SessionTracker struct {
+// Tracker tracks the progress of a multi-directory scan/hash/score session.
+type Tracker struct {
 	SessionID uuid.UUID
 
 	Status atomic.Value // Stores string (e.g. status.WorkflowStatusScan)
 
-	Discovered atomic.Int64
-	Skipped    atomic.Int64
-	NewFiles   atomic.Int64
-	Modified   atomic.Int64
-	Hashed     atomic.Int64
-	Errors     atomic.Int64
-
+	Discovered       atomic.Int64
+	Skipped          atomic.Int64
+	NewFiles         atomic.Int64
+	Modified         atomic.Int64
+	Hashed           atomic.Int64
+	Errors           atomic.Int64
 	Unsupported      atomic.Int64
-	UnsupportedMu    sync.Mutex
-	UnsupportedPaths []string
+	UnsupportedPaths atomic.Value // Stores comma-separated string
 
 	PendingJobs atomic.Int32
 	Ctx         context.Context
 	Cancel      context.CancelFunc
+}
+
+// AddUnsupportedPath adds a path to the list of unsupported files in a thread-safe way.
+func (t *Tracker) AddUnsupportedPath(path string) {
+	for {
+		v := t.UnsupportedPaths.Load()
+		oldStr := ""
+		if v != nil {
+			oldStr = v.(string)
+		}
+
+		newStr := path
+		if oldStr != "" {
+			newStr = oldStr + "," + path
+		}
+
+		if t.UnsupportedPaths.CompareAndSwap(v, newStr) {
+			t.Unsupported.Add(1)
+			return
+		}
+	}
+}
+
+// GetUnsupportedPaths returns a sorted slice of the unsupported paths.
+func (t *Tracker) GetUnsupportedPaths() []string {
+	v := t.UnsupportedPaths.Load()
+	if v == nil {
+		return nil
+	}
+	s := v.(string)
+	if s == "" {
+		return nil
+	}
+	paths := strings.Split(s, ",")
+	sort.Strings(paths)
+	return paths
 }

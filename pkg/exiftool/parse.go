@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jammutkarsh/wandersort/pkg/core/classifier"
+	"github.com/jammutkarsh/wandersort/pkg/classifier"
 )
 
 // extractFirst unwraps the JSON array that exiftool always emits and returns

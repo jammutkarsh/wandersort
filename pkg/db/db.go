@@ -136,6 +136,7 @@ func (db *DB) QueryRowContext(ctx context.Context, query string, args ...any) *s
 func (db *DB) ExecRetry(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	const maxAttempts = 12
 	backoff := 50 * time.Millisecond
+	// Max time: 50ms * (2^12 - 1) = ~3.4s total retry time before giving up.
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {

@@ -8,7 +8,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
-	"github.com/jammutkarsh/wandersort/pkg/statusmanager"
+	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
 // Service orchestrates both scan submission and status streaming.
@@ -41,11 +41,11 @@ func (s *Service) StartScan(paths []string) (uuid.UUID, error) {
 	return s.pipeline.SubmitScan(paths)
 }
 
-func (s *Service) SubscribeStatus() chan statusmanager.WorkflowStatus {
+func (s *Service) SubscribeStatus() chan sm.WorkflowStatus {
 	return s.pipeline.StatusStream()
 }
 
-func (s *Service) UnsubscribeStatus(ch chan statusmanager.WorkflowStatus) {
+func (s *Service) UnsubscribeStatus(ch chan sm.WorkflowStatus) {
 	s.pipeline.UnsubscribeStatus(ch)
 }
 

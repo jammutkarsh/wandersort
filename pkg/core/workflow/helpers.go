@@ -2,65 +2,76 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jammutkarsh/wandersort/pkg/statusmanager"
+	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
 /*-------------------- EXPORTED FUNCTION --------------------*/
 
 // StatusStream returns a new channel subscribed to pipeline progress updates.
-func (p *Workflow) StatusStream() chan statusmanager.WorkflowStatus {
-	return p.statusMgr.Subscribe()
+func (wf *Workflow) StatusStream() chan sm.WorkflowStatus {
+	return wf.statusMgr.Subscribe()
 }
 
 // UnsubscribeStatus removes a subscriber from progress updates.
-func (p *Workflow) UnsubscribeStatus(ch chan statusmanager.WorkflowStatus) {
-	p.statusMgr.Unsubscribe(ch)
+func (wf *Workflow) UnsubscribeStatus(ch chan sm.WorkflowStatus) {
+	wf.statusMgr.Unsubscribe(ch)
 }
 
 // Close gracefully waits for all in-flight sessions to finish.
 // Call this before closing the database to prevent panics.
-func (p *Workflow) Close() {
-	p.wg.Wait()
+func (wf *Workflow) Close() {
+	wf.wg.Wait()
 }
 
 /*-------------------- STATUS UPDATES --------------------*/
 
-func (p *Workflow) finalizeSession(sessionID uuid.UUID, finalStatus string, finalErr *string) {
-	// Root context for finalization should be independent of session cancellation
-	// but bound by a safety timeout.
-	finalizeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+func (wf *Workflow) finalizeSession(sessionID uuid.UUID, finalStatus string, finalErr *string) {
+	// We select a context based on whether the pipeline was interrupted.
+	// 1. If CANCELLED: The session context is already dead; use a detached one for the final write.
+	// 2. If COMPLETED/FAILED: The pipeline was running without interruption; use the app context.
+	// 3. If App Shutdown: Falling back to detached even for success to ensure the state is persisted.
+	finalizeCtx, cancel := context.WithCancel(wf.ctx)
+
+	if finalStatus != sm.WorkflowStatusCancelled && wf.ctx.Err() == nil {
+		// Pipeline was running without interruption and app is not shutting down
+		finalizeCtx, cancel = context.WithTimeout(wf.ctx, wf.finalTimeout)
+	}
 	defer cancel()
 
-	v, ok := p.activeSessions.LoadAndDelete(sessionID)
+	session, ok := wf.activeSessions.LoadAndDelete(sessionID)
 	if !ok {
-		p.log.Warn("finalizeSession called for unknown session", "session_id", sessionID)
+		wf.log.Warn("finalizeSession called for unknown session", "session_id", sessionID)
 		completedAt := time.Now().UTC().Format(time.RFC3339)
-		_, err := p.db.ExecRetry(finalizeCtx, `
+		_, err := wf.db.ExecRetry(finalizeCtx, `
 			UPDATE scan_sessions
 			SET completed_at = ?, status = ?, last_error = ?
 			WHERE id = ?
 		`, completedAt, finalStatus, finalErr, sessionID.String())
 		if err != nil {
-			p.log.Error("Failed to finalize session without tracker", "session_id", sessionID, "error", err)
+			if errors.Is(err, context.DeadlineExceeded) {
+				wf.log.Error("Finalization timed out", "session_id", sessionID, "timeout", wf.finalTimeout)
+				return
+			}
+			wf.log.Error("Failed to finalize session without tracker", "session_id", sessionID, "error", err)
 		}
 		return
 	}
-	tracker := v.(*statusmanager.SessionTracker)
+	tracker := session.(*sm.Tracker)
 
 	// Stop progress updater and clear resources.
 	tracker.Cancel()
 
-	p.log.Info("Completing pipeline session", "session_id", sessionID, "status", finalStatus)
+	wf.log.Info("Completing pipeline session", "session_id", sessionID, "status", finalStatus)
 	completedAt := time.Now().UTC().Format(time.RFC3339)
 
-	_, err := p.db.ExecRetry(finalizeCtx, `
+	_, err := wf.db.ExecRetry(finalizeCtx, `
 		UPDATE scan_sessions
 		SET completed_at = ?,
 			status = ?,
@@ -68,6 +79,7 @@ func (p *Workflow) finalizeSession(sessionID uuid.UUID, finalStatus string, fina
 			files_skipped = ?,
 			files_new = ?,
 			files_modified = ?,
+			files_hashed = ?,
 			errors_encountered = ?,
 			last_error = ?
 		WHERE id = ?
@@ -78,35 +90,37 @@ func (p *Workflow) finalizeSession(sessionID uuid.UUID, finalStatus string, fina
 		tracker.Skipped.Load(),
 		tracker.NewFiles.Load(),
 		tracker.Modified.Load(),
+		tracker.Hashed.Load(),
 		tracker.Errors.Load(),
 		finalErr,
 		sessionID.String(),
 	)
 
 	if err != nil {
-		p.log.Error("Failed to update final session state", "session_id", sessionID, "error", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			wf.log.Error("Finalization timed out while updating state", "session_id", sessionID, "timeout", wf.finalTimeout)
+			return
+		}
+		wf.log.Error("Failed to update final session state", "session_id", sessionID, "error", err)
+		return
 	}
 
-	var filesHashed int64
-	if err := p.db.QueryRowContext(finalizeCtx, `SELECT COALESCE(files_hashed, 0) FROM scan_sessions WHERE id = ?`, sessionID.String()).Scan(&filesHashed); err != nil {
-		p.log.Warn("Failed to read files_hashed while broadcasting final status", "session_id", sessionID, "error", err)
-	}
-	p.statusMgr.Broadcast(statusmanager.WorkflowStatus{
+	wf.statusMgr.Broadcast(sm.WorkflowStatus{
 		SessionID:       sessionID,
 		Status:          finalStatus,
 		FilesDiscovered: tracker.Discovered.Load(),
 		FilesSkipped:    tracker.Skipped.Load(),
 		FilesNew:        tracker.NewFiles.Load(),
-		FilesHashed:     filesHashed,
+		FilesHashed:     tracker.Hashed.Load(),
 		Errors:          tracker.Errors.Load(),
 	})
 
-	p.log.Info("Pipeline session finished", "session_id", sessionID, "status", finalStatus)
+	wf.log.Info("Pipeline session finished", "session_id", sessionID, "status", finalStatus)
 }
 
 // setSessionStatus updates the current phase/status for a scan session.
-func (p *Workflow) setSessionStatus(ctx context.Context, sessionID uuid.UUID, statusValue string) error {
-	_, err := p.db.ExecRetry(ctx, `
+func (wf *Workflow) setSessionStatus(ctx context.Context, sessionID uuid.UUID, statusValue string) error {
+	_, err := wf.db.ExecRetry(ctx, `
 		UPDATE scan_sessions
 		SET status = ?
 		WHERE id = ?
@@ -115,20 +129,20 @@ func (p *Workflow) setSessionStatus(ctx context.Context, sessionID uuid.UUID, st
 		return fmt.Errorf("set session status: %w", err)
 	}
 
-	if v, ok := p.activeSessions.Load(sessionID); ok {
-		if tracker, ok := v.(*statusmanager.SessionTracker); ok {
+	if session, ok := wf.activeSessions.Load(sessionID); ok {
+		if tracker, ok := session.(*sm.Tracker); ok {
 			tracker.Status.Store(statusValue)
 		}
 	}
 
-	if p.statusMgr != nil {
-		current := p.statusMgr.GetCurrent()
-		if current.SessionID != sessionID {
-			current = statusmanager.WorkflowStatus{SessionID: sessionID}
-		}
-		current.Status = statusValue
-		p.statusMgr.Broadcast(current)
+	// TODO: Do deep review of the code below
+	// Why is this being done?
+	status := wf.statusMgr.LastStatus()
+	if status.SessionID != sessionID {
+		status = sm.WorkflowStatus{SessionID: sessionID}
 	}
+	status.Status = statusValue
+	wf.statusMgr.Broadcast(status)
 	return nil
 }
 
@@ -136,61 +150,56 @@ func (p *Workflow) setSessionStatus(ctx context.Context, sessionID uuid.UUID, st
 // collected during the scan to <outputPath>/unsupported_files_<sessionID>.txt,
 // one human-readable (home-contracted) path per line, sorted alphabetically.
 // No file is created when every scanned file had a recognised extension.
-func (p *Workflow) writeUnsupportedFiles(sessionID uuid.UUID, tracker *statusmanager.SessionTracker) {
-	tracker.UnsupportedMu.Lock()
-	paths := make([]string, len(tracker.UnsupportedPaths))
-	copy(paths, tracker.UnsupportedPaths)
-	tracker.UnsupportedMu.Unlock()
+func (wf *Workflow) writeUnsupportedFiles(sessionID uuid.UUID, tracker *sm.Tracker) {
+	paths := tracker.GetUnsupportedPaths()
 
 	if len(paths) == 0 {
-		p.log.Debug("No unsupported files found; skipping report")
+		wf.log.Debug("No unsupported files found; skipping report")
 		return
 	}
 
-	sort.Strings(paths)
-
-	if err := os.MkdirAll(p.outputPath, 0o755); err != nil {
-		p.log.Error("Failed to create output directory for unsupported report", "error", err)
+	if err := os.MkdirAll(wf.outputPath, 0o755); err != nil {
+		wf.log.Error("Failed to create output directory for unsupported report", "error", err)
 		return
 	}
 
-	reportPath := filepath.Join(p.outputPath, fmt.Sprintf("unsupported_files_%s.txt", sessionID))
-	f, err := os.Create(reportPath)
+	reportPath := filepath.Join(wf.outputPath, fmt.Sprintf("unsupported_files_%s.txt", sessionID))
+	file, err := os.Create(reportPath)
 	if err != nil {
-		p.log.Error("Failed to create unsupported files report", "path", reportPath, "error", err)
+		wf.log.Error("Failed to create unsupported files report", "path", reportPath, "error", err)
 		return
 	}
-	defer f.Close()
+	defer file.Close()
 
 	header := fmt.Sprintf(
 		"# Unsupported files found during scan %s\n"+
 			"# These file types are not yet supported by WanderSort.\n"+
-			"# Please raise a feature request at https://github.com/jammutkarsh/wandersort/issues\n\n",
+			"# Please raise a support request at https://github.com/jammutkarsh/wandersort/issues\n\n",
 		sessionID,
 	)
-	if _, err := fmt.Fprint(f, header); err != nil {
-		p.log.Error("Failed to write report header", "error", err)
+	if _, err := fmt.Fprint(file, header); err != nil {
+		wf.log.Error("Failed to write report header", "error", err)
 		return
 	}
 
 	for _, path := range paths {
-		if _, err := fmt.Fprintln(f, path); err != nil {
-			p.log.Error("Failed to write path to report", "path", path, "error", err)
+		if _, err := fmt.Fprintln(file, path); err != nil {
+			wf.log.Error("Failed to write path to report", "path", path, "error", err)
 			return
 		}
 	}
 
 	// Flush to disk to ensure the report survives unexpected termination.
-	if err := f.Sync(); err != nil {
-		p.log.Error("Failed to sync unsupported files report", "error", err)
+	if err := file.Sync(); err != nil {
+		wf.log.Error("Failed to sync unsupported files report", "error", err)
 	}
 
-	p.log.Info("Unsupported files report written", "path", reportPath, "count", len(paths))
+	wf.log.Info("Unsupported files report written", "path", reportPath, "count", len(paths))
 }
 
 // updateProgress periodically syncs in-memory counters to the database and broadcasts status.
-func (p *Workflow) updateProgress(ctx context.Context, sessionID uuid.UUID, tracker *statusmanager.SessionTracker) {
-	ticker := time.NewTicker(5 * time.Second) // Default interval
+func (wf *Workflow) updateProgress(ctx context.Context, sessionID uuid.UUID, t *sm.Tracker) {
+	ticker := time.NewTicker(wf.updateInterval)
 	defer ticker.Stop()
 
 	for {
@@ -198,7 +207,7 @@ func (p *Workflow) updateProgress(ctx context.Context, sessionID uuid.UUID, trac
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_, err := p.db.ExecRetry(ctx, `
+			_, err := wf.db.ExecRetry(ctx, `
 					UPDATE scan_sessions
 					SET files_discovered = ?,
 						files_skipped = ?,
@@ -208,30 +217,28 @@ func (p *Workflow) updateProgress(ctx context.Context, sessionID uuid.UUID, trac
 						errors_encountered = ?
 					WHERE id = ?
 			`,
-				tracker.Discovered.Load(),
-				tracker.Skipped.Load(),
-				tracker.NewFiles.Load(),
-				tracker.Modified.Load(),
-				tracker.Hashed.Load(),
-				tracker.Errors.Load(),
+				t.Discovered.Load(),
+				t.Skipped.Load(),
+				t.NewFiles.Load(),
+				t.Modified.Load(),
+				t.Hashed.Load(),
+				t.Errors.Load(),
 				sessionID.String(),
 			)
 
-			if p.statusMgr != nil {
-				currentStatus, _ := tracker.Status.Load().(string)
-				p.statusMgr.Broadcast(statusmanager.WorkflowStatus{
-					SessionID:       sessionID,
-					Status:          currentStatus,
-					FilesDiscovered: tracker.Discovered.Load(),
-					FilesSkipped:    tracker.Skipped.Load(),
-					FilesNew:        tracker.NewFiles.Load(),
-					FilesHashed:     tracker.Hashed.Load(),
-					Errors:          tracker.Errors.Load(),
-				})
-			}
+			currentStatus, _ := t.Status.Load().(string)
+			wf.statusMgr.Broadcast(sm.WorkflowStatus{
+				SessionID:       sessionID,
+				Status:          currentStatus,
+				FilesDiscovered: t.Discovered.Load(),
+				FilesSkipped:    t.Skipped.Load(),
+				FilesNew:        t.NewFiles.Load(),
+				FilesHashed:     t.Hashed.Load(),
+				Errors:          t.Errors.Load(),
+			})
 
 			if err != nil {
-				p.log.Warn("Failed to update progress", "error", err)
+				wf.log.Warn("Failed to update progress", "error", err)
 			}
 		}
 	}

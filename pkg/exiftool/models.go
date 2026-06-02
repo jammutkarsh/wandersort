@@ -3,7 +3,7 @@ package exiftool
 import (
 	"time"
 
-	"github.com/jammutkarsh/wandersort/pkg/core/classifier"
+	"github.com/jammutkarsh/wandersort/pkg/classifier"
 )
 
 // Config controls how the Extractor runs.

@@ -4,30 +4,35 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 )
 
 type Configuration struct {
-	ServerPort   string
-	Host         string
-	DatabasePath string
-	OutputPath   string
-	LogLevel     string
-	LogConsole   bool
-	LogFile      string
-	Workers      int
+	ServerPort      string
+	Host            string
+	DatabasePath    string
+	OutputPath      string
+	LogLevel        string
+	LogConsole      bool
+	LogFile         string
+	Workers         int
+	UpdateInterval  time.Duration
+	FinalizeTimeout time.Duration
 }
 
 func Load() (*Configuration, error) {
 	const defaultWorkers = 5
 	var (
-		outputPath  = os.Getenv("OUTPUT_PATH")
-		logPath     = os.Getenv("LOG_FILE")
-		logLevel    = os.Getenv("LOG_LEVEL")
-		dbPath      = os.Getenv("DB_PATH")
-		workers     = os.Getenv("WORKERS")
-		port        = os.Getenv("PORT")
-		host        = os.Getenv("HOST")
-		workerCount = defaultWorkers
+		outputPath         = os.Getenv("OUTPUT_PATH")
+		logPath            = os.Getenv("LOG_FILE")
+		logLevel           = os.Getenv("LOG_LEVEL")
+		dbPath             = os.Getenv("DB_PATH")
+		workers            = os.Getenv("WORKERS")
+		port               = os.Getenv("PORT")
+		host               = os.Getenv("HOST")
+		updateIntervalStr  = os.Getenv("UPDATE_INTERVAL")
+		finalizeTimeoutStr = os.Getenv("FINALIZE_TIMEOUT")
+		workerCount        = defaultWorkers
 	)
 
 	if outputPath == "" {
@@ -56,14 +61,32 @@ func Load() (*Configuration, error) {
 		port = "8080"
 	}
 
+	if updateIntervalStr == "" {
+		updateIntervalStr = "5s"
+	}
+	updateInterval, err := time.ParseDuration(updateIntervalStr)
+	if err != nil {
+		return nil, err
+	}
+
+	if finalizeTimeoutStr == "" {
+		finalizeTimeoutStr = "15s"
+	}
+	finalizeTimeout, err := time.ParseDuration(finalizeTimeoutStr)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Configuration{
-		ServerPort:   port,
-		Host:         host,
-		OutputPath:   outputPath,
-		LogLevel:     logLevel,
-		LogFile:      logPath,
-		LogConsole:   true,
-		DatabasePath: dbPath,
-		Workers:      workerCount,
+		ServerPort:      port,
+		Host:            host,
+		OutputPath:      outputPath,
+		LogLevel:        logLevel,
+		LogFile:         logPath,
+		LogConsole:      true,
+		DatabasePath:    dbPath,
+		Workers:         workerCount,
+		UpdateInterval:  updateInterval,
+		FinalizeTimeout: finalizeTimeout,
 	}, nil
 }

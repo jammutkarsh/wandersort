@@ -53,9 +53,9 @@ func (u *Resolver) ExpandPath(path string) string {
 	return u.resolveHomePath(path)
 }
 
-// ContractPath converts an absolute path under the user's home directory to a
-// human-readable "~" form.
-func (u *Resolver) ContractPath(path string) string {
+// RelativeToHome converts an absolute path to
+// a path relative wrt user's home directory if it is under the home directory.
+func (u *Resolver) RelativeToHome(path string) string {
 	cleanPath := filepath.Clean(path)
 	home := filepath.Clean(u.HomeDir)
 

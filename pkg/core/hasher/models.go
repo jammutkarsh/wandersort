@@ -23,10 +23,3 @@ type ContentGroupMember struct {
 	MetadataScore int       `json:"metadataScore"`
 	CreatedAt     time.Time `json:"createdAt"`
 }
-
-// ScoringCriteria defines what makes a file a good master candidate
-type ScoringCriteria struct {
-	HasEXIF          bool // +10 points
-	HasDatePattern   bool // +5 points (filename like 20230520_...)
-	HasMeaningfulDir bool // +2 points (not "New Folder", "DCIM", etc.)
-}

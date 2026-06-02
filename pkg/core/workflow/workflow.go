@@ -13,10 +13,11 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/hasher"
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
+	"github.com/jammutkarsh/wandersort/pkg/core/scorer"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
-	"github.com/jammutkarsh/wandersort/pkg/statusmanager"
+	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
 // Workflow orchestrates scan, hash and score workflow for each session.
@@ -28,86 +29,108 @@ type Workflow struct {
 	outputPath string
 	log        logger.Logger
 
-	// Utilities
+	/* Utilities */
 	path      *path.Resolver
-	statusMgr *statusmanager.StatusManager
+	statusMgr *sm.StatusManager
 
-	// Pipeline components
+	/* Pipeline components */
 	scanner *scanner.Scanner
 	hasher  *hasher.Hasher
+	scorer  *scorer.Scorer
 
-	// Concurreny settings
-	workers        int
-	wg             sync.WaitGroup // tracks in-flight runSession(s)
-	activeSessions sync.Map       // map[uuid.UUID]*status.SessionTracker
+	/* Concurreny settings */
+	// For a session at any given time,
+	// only one phase runs (scan OR hash OR score)
+	// and it uses up to this many workers.
+	workers int
+
+	updateInterval time.Duration
+	finalTimeout   time.Duration
+
+	// tracks in-flight runSession(s)
+	wg sync.WaitGroup
+
+	// map[uuid.UUID]*status.SessionTracker
+	activeSessions sync.Map
 }
 
 // NewWorkflow creates a new workflow instance.
 func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.Configuration) *Workflow {
-	sm := statusmanager.NewStatusManager()
+	sm := sm.NewStatusManager()
 	sc := scanner.NewScanner(db, log)
 	h := hasher.NewHasher(ctx, db, log, sm)
+	s := scorer.NewScorer(db, log, sm)
+	p := path.New()
 
 	return &Workflow{
-		ctx:        ctx,
-		db:         db,
-		scanner:    sc,
-		hasher:     h,
-		statusMgr:  sm,
-		log:        log,
-		workers:    cfg.Workers,
-		path:       path.New(),
-		outputPath: cfg.OutputPath,
+		ctx:            ctx,
+		db:             db,
+		scanner:        sc,
+		hasher:         h,
+		scorer:         s,
+		statusMgr:      sm,
+		log:            log,
+		workers:        cfg.Workers,
+		path:           p,
+		outputPath:     cfg.OutputPath,
+		updateInterval: cfg.UpdateInterval,
+		finalTimeout:   cfg.FinalizeTimeout,
 	}
 }
 
 // SubmitScan creates a new scan session and kicks off the three-phase
 // workflow in a background goroutine.
-func (p *Workflow) SubmitScan(paths []string) (uuid.UUID, error) {
+func (wf *Workflow) SubmitScan(paths []string) (uuid.UUID, error) {
 	select {
-	case <-p.ctx.Done():
+	case <-wf.ctx.Done():
 		return uuid.Nil, context.Canceled
 	default:
 	}
 
-	sessionID, path, tracker, err := p.prepareSession(p.ctx, paths)
+	sessionID, path, tracker, err := wf.prepareSession(wf.ctx, paths)
 	if err != nil {
 		return uuid.Nil, err
 	}
 
-	p.activeSessions.Store(sessionID, tracker)
+	wf.activeSessions.Store(sessionID, tracker)
 
-	p.wg.Go(func() {
-		p.runSession(sessionID, tracker, path)
+	wf.wg.Go(func() {
+		wf.background(sessionID, tracker, path)
 	})
 
 	return sessionID, nil
 }
 
 // prepareSession creates the scan_sessions DB row, and returns a fresh tracker.
-func (p *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UUID, []string, *statusmanager.SessionTracker, error) {
-	normalizedPaths := make([]string, 0, len(paths))
-	// Convert to absolute paths and contract home dir for readability in DB and logs
-	for _, path := range paths {
-		cleanPath := filepath.Clean(path)
-		if filepath.IsAbs(cleanPath) {
-			normalizedPaths = append(normalizedPaths, p.path.ContractPath(cleanPath))
-			continue
+func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UUID, []string, *sm.Tracker, error) {
+	cleanPaths := make([]string, 0, len(paths))
+	// Path convention:
+	// 1) Resolve every input to a canonical absolute path.
+	// 2) Store/log only the home-relative display form ("~/...") when under $HOME;
+	//    keep absolute form otherwise.
+	// This keeps DB rows portable across machines where the username/home prefix
+	// can change while preserving stable locations outside $HOME.
+	for _, inputPath := range paths {
+		resolvedAbs, err := wf.path.RealPath(filepath.Clean(inputPath))
+		if err != nil {
+			wf.log.Error("invalid path", "path", inputPath, "error", err)
+			return uuid.Nil, nil, nil, fmt.Errorf("path is not a directory: %s", inputPath)
 		}
-		normalizedPaths = append(normalizedPaths, cleanPath)
+
+		cleanPaths = append(cleanPaths, wf.path.RelativeToHome(resolvedAbs))
 	}
 
-	p.log.Info("Preparing scan session", "paths", normalizedPaths)
+	wf.log.Info("Preparing scan session", "paths", cleanPaths)
 
 	// Validate all paths before creating the session to fail fast on invalid input.
-	for _, path := range normalizedPaths {
-		if ok, err := p.path.IsDirectory(path); err != nil || !ok {
-			p.log.Error("invalid path, not a directory", "path", path, "error", err)
+	for _, path := range cleanPaths {
+		if ok, err := wf.path.IsDirectory(path); err != nil || !ok {
+			wf.log.Error("invalid path, not a directory", "path", path, "error", err)
 			return uuid.Nil, nil, nil, fmt.Errorf("path is not a directory: %s", path)
 		}
 	}
 
-	p.log.Info("All paths validated successfully", "paths", normalizedPaths)
+	wf.log.Info("All paths validated successfully", "paths", cleanPaths)
 
 	// Create scan session
 	sessionID, _ := uuid.NewV7()
@@ -116,111 +139,105 @@ func (p *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UUI
 		sessionID = uuid.New()
 	}
 	startedAt := time.Now().UTC()
-	_, err := p.db.ExecContext(ctx, `
+	_, err := wf.db.ExecContext(ctx, `
 		INSERT INTO scan_sessions (id, started_at, status, root_paths)
 		VALUES (?, ?, ?, ?)
-	`, sessionID, startedAt.Format(time.RFC3339), statusmanager.WorkflowStatusStarted, strings.Join(normalizedPaths, ","))
+	`, sessionID, startedAt.Format(time.RFC3339), sm.WorkflowStatusStarted, strings.Join(cleanPaths, ","))
 	if err != nil {
 		return uuid.Nil, nil, nil, fmt.Errorf("failed to create scan session: %w", err)
 	}
 
-	p.log.Info("Scan session created", "session_id", sessionID, "root_paths", normalizedPaths)
+	wf.log.Info("Scan session created", "session_id", sessionID, "root_paths", cleanPaths)
 
 	// Initialize the shared state tracker for this session
 	progressCtx, cancelProgress := context.WithCancel(ctx)
-	tracker := &statusmanager.SessionTracker{
+	tracker := &sm.Tracker{
 		SessionID: sessionID,
 		Ctx:       progressCtx,
 		Cancel:    cancelProgress,
 	}
-	tracker.Status.Store(statusmanager.WorkflowStatusStarted)
-	tracker.PendingJobs.Store(int32(len(normalizedPaths)))
+	tracker.Status.Store(sm.WorkflowStatusStarted)
+	tracker.UnsupportedPaths.Store("")
+	tracker.PendingJobs.Store(int32(len(cleanPaths)))
 
 	// Start the periodic progress updater for this session
-	go p.updateProgress(progressCtx, sessionID, tracker)
+	go wf.updateProgress(progressCtx, sessionID, tracker)
 
-	return sessionID, normalizedPaths, tracker, nil
+	return sessionID, cleanPaths, tracker, nil
 }
 
-// runSession executes the three sequential phases for a single scan session.
-func (p *Workflow) runSession(sessionID uuid.UUID, tracker *statusmanager.SessionTracker, paths []string) {
+// background executes the three sequential phases for a single scan session.
+func (wf *Workflow) background(sessionID uuid.UUID, tracker *sm.Tracker, paths []string) {
 	var finalStatus string
 	var finalErr *string
 
 	defer func() {
-		p.finalizeSession(sessionID, finalStatus, finalErr)
+		wf.finalizeSession(sessionID, finalStatus, finalErr)
 	}()
 
-	p.log.Info("Pipeline session started", "session_id", sessionID, "phases", "scan → hash → score")
+	wf.log.Info("Workflow session started", "session_id", sessionID, "phases", "scan → hash → score")
 
-	// ─── Phase 1: Scan All ──────────────────────────────────────────────
-	totalFiles, err := p.scanner.RunPhase(p.ctx, sessionID, tracker, paths)
+	// ─── Phase 1: Scan ────────────────────────────────────────────────
+	count, status, errStr, ok := wf.run(sessionID, tracker, sm.WorkflowStatusScan, func() (int, error) {
+		return wf.scanner.Run(wf.ctx, sessionID, tracker, paths, wf.workerCount(paths))
+	})
+	finalStatus, finalErr = status, errStr
+	if !ok {
+		return
+	}
+	wf.writeUnsupportedFiles(sessionID, tracker)
+	wf.log.Info("Phase 1 complete: all paths scanned", "session_id", sessionID, "files_collected", count)
+
+	// ─── Phase 2: Hash ────────────────────────────────────────────────
+	count, status, errStr, ok = wf.run(sessionID, tracker, sm.WorkflowStatusHash, func() (int, error) {
+		return wf.hasher.Run(wf.ctx, sessionID, tracker, paths, wf.workerCount(paths), wf.workers)
+	})
+	finalStatus, finalErr = status, errStr
+	if !ok {
+		return
+	}
+	wf.log.Info("Phase 2 complete: all files hashed", "session_id", sessionID, "files_hashed", count)
+
+	// ─── Phase 3: Score ───────────────────────────────────────────────
+	count, status, errStr, ok = wf.run(sessionID, tracker, sm.WorkflowStatusScore, func() (int, error) {
+		return wf.scorer.RunScorePhase(wf.ctx, sessionID, tracker, paths, wf.workerCount(paths))
+	})
+	finalStatus, finalErr = status, errStr
+	if !ok {
+		return
+	}
+	wf.log.Info("Phase 3 complete: all groups scored", "session_id", sessionID, "files_scored", count)
+}
+
+// run runs a single workflow phase (Scan, Hash, or Score), handles logging,
+// status updates, and consistent error reporting. Returns the result count,
+// final status, error message (if any), and a boolean indicating success.
+func (wf *Workflow) run(sessionID uuid.UUID, tracker *sm.Tracker, phaseStatus string, phaseFunc func() (int, error)) (int, string, *string, bool) {
+	success := true
+	tracker.Status.Store(phaseStatus)
+	if err := wf.setSessionStatus(wf.ctx, sessionID, phaseStatus); err != nil {
+		msg := fmt.Errorf("failed to set %s status: %w", phaseStatus, err).Error()
+		return 0, sm.WorkflowStatusFail, &msg, !success
+	}
+
+	wf.log.Info("Starting phase", "session_id", sessionID, "phase", phaseStatus)
+	count, err := phaseFunc()
 	if err != nil {
+		var finalStatus string
+		var finalErr string
 		if errors.Is(err, context.Canceled) {
-			msg := "pipeline cancelled during scan phase"
-			finalStatus = statusmanager.WorkflowStatusCancelled
-			finalErr = &msg
+			finalStatus = sm.WorkflowStatusCancelled
+			finalErr = fmt.Sprintf("pipeline cancelled during %s phase", phaseStatus)
 		} else {
-			msg := err.Error()
-			finalStatus = statusmanager.WorkflowStatusFail
-			finalErr = &msg
+			finalStatus = sm.WorkflowStatusFail
+			finalErr = fmt.Sprintf("%s phase failed: %v", phaseStatus, err)
 		}
-		return
+		return count, finalStatus, &finalErr, !success
 	}
-	p.writeUnsupportedFiles(sessionID, tracker)
-	p.log.Info("Phase 1 complete: all paths scanned", "session_id", sessionID, "total_files_collected", totalFiles)
 
-	// ─── Phase 2: Hash All ──────────────────────────────────────────────
-	hashed, err := p.runHashPhase(sessionID, paths, tracker)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			msg := "pipeline cancelled during hash phase"
-			finalStatus = statusmanager.WorkflowStatusCancelled
-			finalErr = &msg
-		} else {
-			msg := fmt.Sprintf("hash phase failed: %v", err)
-			finalStatus = statusmanager.WorkflowStatusFail
-			finalErr = &msg
-		}
-		return
-	}
-	p.log.Info("Phase 2 complete: all files hashed", "session_id", sessionID, "file_count", hashed)
-
-	// ─── Phase 3: Score All ─────────────────────────────────────────────
-	if err := p.runScorePhase(sessionID, paths, tracker); err != nil {
-		msg := fmt.Sprintf("failed to set SCORE status: %v", err)
-		finalStatus = statusmanager.WorkflowStatusFail
-		finalErr = &msg
-		return
-	}
-	p.log.Info("Phase 3 complete: scoring done", "session_id", sessionID)
+	return count, phaseStatus, nil, success
 }
 
-func (p *Workflow) runHashPhase(sessionID uuid.UUID, paths []string, tracker *statusmanager.SessionTracker) (int, error) {
-	tracker.Status.Store(statusmanager.WorkflowStatusHash)
-	if err := p.setSessionStatus(p.ctx, sessionID, statusmanager.WorkflowStatusHash); err != nil {
-		return 0, fmt.Errorf("failed to set HASH status: %w", err)
-	}
-	p.log.Info("Phase 2/3: Hashing all files", "session_id", sessionID)
-
-	return p.hasher.HashPaths(p.ctx, sessionID, paths, p.phaseWorkerCount(paths), p.workers, tracker)
-}
-
-func (p *Workflow) runScorePhase(sessionID uuid.UUID, paths []string, tracker *statusmanager.SessionTracker) error {
-	tracker.Status.Store(statusmanager.WorkflowStatusScore)
-	if err := p.setSessionStatus(p.ctx, sessionID, statusmanager.WorkflowStatusScore); err != nil {
-		return err
-	}
-	p.log.Info("Phase 3/3: Scoring all groups", "session_id", sessionID)
-
-	_, err := p.hasher.ScorePaths(p.ctx, sessionID, paths, p.phaseWorkerCount(paths))
-	return err
-}
-
-func (p *Workflow) phaseWorkerCount(paths []string) int {
-	workerCount := max(len(paths), p.workers)
-	if workerCount <= 0 {
-		return 1
-	}
-	return workerCount
+func (wf *Workflow) workerCount(paths []string) int {
+	return max(len(paths), wf.workers)
 }
