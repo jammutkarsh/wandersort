@@ -355,6 +355,8 @@ type Cr2 struct {
 	ZoomTargetWidth            int     `json:"ZoomTargetWidth"`
 }
 
+var _ Metadata = Cr2{}
+
 func (Cr2) MediaType() string { return MediaTypeRaw }
 
 func (c Cr2) ToCommon() CommonMetadata {

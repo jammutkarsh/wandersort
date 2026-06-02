@@ -214,6 +214,8 @@ type Aae struct {
 	VersionInfoSchemaRevision                                                             int       `json:"VersionInfoSchemaRevision"`
 }
 
+var _ Metadata = Aae{}
+
 func (Aae) MediaType() string { return MediaTypeSidecar }
 
 func (a Aae) ToCommon() CommonMetadata {
