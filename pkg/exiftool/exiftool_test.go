@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jammutkarsh/wandersort/pkg/core/classifier"
+	"github.com/jammutkarsh/wandersort/pkg/classifier"
 )
 
 func TestExtractFirst_ValidArray(t *testing.T) {
