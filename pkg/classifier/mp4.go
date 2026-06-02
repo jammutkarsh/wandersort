@@ -274,6 +274,8 @@ type Mp4 struct {
 	YResolution                                     int      `json:"YResolution"`
 }
 
+var _ Metadata = Mp4{}
+
 func (Mp4) MediaType() string { return MediaTypeVideo }
 
 func (m Mp4) ToCommon() CommonMetadata {

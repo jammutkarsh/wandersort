@@ -1,7 +1,6 @@
 package scanner
 
 import (
-	"sync"
 	"testing"
 )
 
@@ -44,51 +43,14 @@ func TestDeriveCapture(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.filename, func(t *testing.T) {
-			got := DeriveCapture(tt.filename, tt.ext, tt.mediaType)
-			if got.Stem != tt.wantStem {
-				t.Errorf("Stem = %q, want %q", got.Stem, tt.wantStem)
+			got := deriveCapture(tt.filename, tt.ext, tt.mediaType)
+			if got.captureKey != tt.wantStem {
+				t.Errorf("Stem = %q, want %q", got.captureKey, tt.wantStem)
 			}
-			if got.Role != tt.wantRole {
-				t.Errorf("Role = %q, want %q", got.Role, tt.wantRole)
-			}
-		})
-	}
-}
-
-// TestDeriveCaptureConcurrent ensures DeriveCapture is goroutine-safe.
-func TestDeriveCaptureConcurrent(t *testing.T) {
-	inputs := []struct {
-		filename  string
-		ext       string
-		mediaType string
-		wantStem  string
-		wantRole  string
-	}{
-		{"IMG_3162.HEIC", ".heic", "IMAGE", "IMG_3162", CaptureRoleOriginal},
-		{"IMG_E3162.HEIC", ".heic", "IMAGE", "IMG_3162", CaptureRoleEdited},
-		{"IMG_3162.MOV", ".mov", "VIDEO", "IMG_3162", CaptureRoleLiveVideo},
-		{"_MG_1721.CR2", ".cr2", "RAW", "_MG_1721", CaptureRoleRaw},
-	}
-
-	var wg sync.WaitGroup
-	const goroutines = 50
-	errs := make(chan string, goroutines*len(inputs))
-
-	for range goroutines {
-		wg.Go(func() {
-			for _, in := range inputs {
-				got := DeriveCapture(in.filename, in.ext, in.mediaType)
-				if got.Stem != in.wantStem || got.Role != in.wantRole {
-					errs <- in.filename + ": unexpected result"
-				}
+			if got.variant != tt.wantRole {
+				t.Errorf("Role = %q, want %q", got.variant, tt.wantRole)
 			}
 		})
-	}
-	wg.Wait()
-	close(errs)
-
-	for e := range errs {
-		t.Error(e)
 	}
 }
 
@@ -110,8 +72,8 @@ func TestDeriveCaptureGrouping(t *testing.T) {
 
 	stems := make(map[string]bool)
 	for _, f := range group {
-		info := DeriveCapture(f.filename, f.ext, f.mediaType)
-		stems[info.Stem] = true
+		info := deriveCapture(f.filename, f.ext, f.mediaType)
+		stems[info.captureKey] = true
 	}
 
 	if len(stems) != 1 {

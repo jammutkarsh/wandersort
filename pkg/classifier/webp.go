@@ -54,6 +54,8 @@ type Webp struct {
 	WebPFlags                 int     `json:"WebP_Flags"`
 }
 
+var _ Metadata = Webp{}
+
 func (Webp) MediaType() string { return MediaTypeImage }
 
 func (w Webp) ToCommon() CommonMetadata {

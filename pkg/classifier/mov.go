@@ -356,6 +356,8 @@ type Mov struct {
 	ZoomTargetWidth                                 int      `json:"ZoomTargetWidth"`
 }
 
+var _ Metadata = Mov{}
+
 func (Mov) MediaType() string { return MediaTypeVideo }
 
 func (m Mov) ToCommon() CommonMetadata {

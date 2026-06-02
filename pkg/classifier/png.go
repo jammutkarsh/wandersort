@@ -216,6 +216,8 @@ type Png struct {
 	YResolution                       int       `json:"YResolution"`
 }
 
+var _ Metadata = Png{}
+
 func (Png) MediaType() string { return MediaTypeImage }
 
 func (p Png) ToCommon() CommonMetadata {

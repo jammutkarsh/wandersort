@@ -1315,6 +1315,8 @@ type Jpg struct {
 	ZoomTargetWidth                                    int       `json:"ZoomTargetWidth"`
 }
 
+var _ Metadata = Jpg{}
+
 func (Jpg) MediaType() string { return MediaTypeImage }
 
 func (j Jpg) ToCommon() CommonMetadata {

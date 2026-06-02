@@ -76,21 +76,26 @@ func NewFileClassifier() *FileClassifier {
 	}
 }
 
-// Classify determines the media type and whether to process the file
-func (fc *FileClassifier) Classify(filePath string) (mediaType string, shouldProcess bool) {
-	ext := strings.ToLower(filepath.Ext(filePath))
+// ClassifyName classifies a file name and reports if it should be ignored.
+// This combines ignore and media checks so callers can make a single decision.
+func (fc *FileClassifier) ClassifyName(name string) (mediaType string, shouldProcess bool, shouldIgnore bool) {
+	if fc.ignoredFiles[name] {
+		return MediaTypeUnknown, false, true
+	}
+
+	ext := strings.ToLower(filepath.Ext(name))
 
 	switch {
 	case fc.imageExtensions[ext]:
-		return MediaTypeImage, true
+		return MediaTypeImage, true, false
 	case fc.videoExtensions[ext]:
-		return MediaTypeVideo, true
+		return MediaTypeVideo, true, false
 	case fc.rawExtensions[ext]:
-		return MediaTypeRaw, true
+		return MediaTypeRaw, true, false
 	case fc.sidecarExtensions[ext]:
-		return MediaTypeSidecar, true
+		return MediaTypeSidecar, true, false
 	default:
-		return MediaTypeUnknown, false
+		return MediaTypeUnknown, false, false
 	}
 }
 
@@ -112,11 +117,6 @@ func (fc *FileClassifier) IsPrimarySource(mediaType string) bool {
 // RAW files cannot be fed directly to most models and must be decoded first.
 func (fc *FileClassifier) NeedsTranscoding(mediaType string) bool {
 	return mediaType == MediaTypeRaw
-}
-
-// ShouldIgnore checks for system files that should be skipped
-func (fc *FileClassifier) ShouldIgnore(name string) bool {
-	return fc.ignoredFiles[name]
 }
 
 // ShouldIgnoreDir checks if a directory should be skipped entirely

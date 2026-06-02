@@ -413,6 +413,8 @@ type Dng struct {
 	YCbCrSubSampling                                   string   `json:"YCbCrSubSampling"`
 }
 
+var _ Metadata = Dng{}
+
 func (Dng) MediaType() string { return MediaTypeRaw }
 
 func (d Dng) ToCommon() CommonMetadata {

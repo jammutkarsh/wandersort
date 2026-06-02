@@ -439,6 +439,8 @@ type Heic struct {
 	YResolution                                        int       `json:"YResolution"`
 }
 
+var _ Metadata = Heic{}
+
 func (Heic) MediaType() string { return MediaTypeImage }
 
 func (h Heic) ToCommon() CommonMetadata {

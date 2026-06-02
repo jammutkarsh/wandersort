@@ -28,6 +28,8 @@ type Bmp struct {
 	SourceFile          string  `json:"SourceFile"`
 }
 
+var _ Metadata = Bmp{}
+
 func (Bmp) MediaType() string { return MediaTypeImage }
 
 func (b Bmp) ToCommon() CommonMetadata {
