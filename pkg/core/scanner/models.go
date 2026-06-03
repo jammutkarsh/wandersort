@@ -86,15 +86,14 @@ func (fr *FileRegistry) NeedsTranscoding() bool {
 
 // FileDiscovery is the lightweight struct used during directory walking
 type FileDiscovery struct {
-	ID          int64
-	Path        string
-	Size        int64
-	ModTime     time.Time
-	Extension   string
-	SourceRoot  string
-	MediaType   string
-	CaptureStem string
-	CaptureRole string
+	ID         int64
+	Path       string
+	Size       int64
+	ModTime    time.Time
+	Extension  string
+	SourceRoot string
+	MediaType  string
+	Capture    CaptureInfo
 }
 
 type ScanSession struct {
@@ -112,4 +111,10 @@ type ScanSession struct {
 
 	ErrorsEncountered int     `db:"errors_encountered"`
 	LastError         *string `db:"last_error"`
+}
+
+// CaptureInfo holds the derived capture-group fields for a single file.
+type CaptureInfo struct {
+	captureKey string // e.g. "IMG_3162", "_MG_1721"
+	variant    string // one of the CaptureRole* constants
 }

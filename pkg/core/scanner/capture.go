@@ -16,16 +16,10 @@ const (
 	CaptureRoleOriginalSidecar = "ORIGINAL_SIDECAR"
 )
 
-// captureInfo holds the derived capture-group fields for a single file.
-type captureInfo struct {
-	captureKey string // e.g. "IMG_3162", "_MG_1721"
-	variant    string // one of the CaptureRole* constants
-}
-
 // variantPrefix maps known iPhone variant prefixes to a normalisation rule.
 // The key is the prefix (e.g. "IMG_E"), the value is the canonical prefix
 // that replaces it (e.g. "IMG_") to recover the original capture stem.
-var variantPrefixes = []captureInfo{
+var variantPrefixes = []CaptureInfo{
 	{variant: "IMG_E", captureKey: "IMG_"}, // Edited version of an original photo or video
 	{variant: "IMG_O", captureKey: "IMG_"}, // Original-state sidecar (e.g. AAE edits without a paired HEIC)
 }
@@ -39,7 +33,7 @@ var variantPrefixes = []captureInfo{
 // Commonly found in iPhone images and videos, this logic is designed to group related files together
 // (e.g. RAW + JPG pairs, edited + original variants) while distinguishing different capture groups
 // (e.g. separate shoots or different devices) that happen to share the same filename.
-func deriveCapture(filename, ext, mediaType string) captureInfo {
+func deriveCapture(filename, ext, mediaType string) CaptureInfo {
 	base := strings.TrimSuffix(filename, filepath.Ext(filename)) // strip extension preserving case
 
 	variant := ""
@@ -59,7 +53,7 @@ func deriveCapture(filename, ext, mediaType string) captureInfo {
 
 	role := deriveRole(variant, ext, mediaType)
 
-	return captureInfo{captureKey: base, variant: role}
+	return CaptureInfo{captureKey: base, variant: role}
 }
 
 func deriveRole(variant, ext, mediaType string) string {
