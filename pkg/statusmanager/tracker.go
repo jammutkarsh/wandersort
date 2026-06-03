@@ -44,9 +44,8 @@ type Tracker struct {
 	Unsupported      atomic.Int64
 	UnsupportedPaths atomic.Value // Stores comma-separated string
 
-	PendingJobs atomic.Int32
-	Ctx         context.Context
-	Cancel      context.CancelFunc
+	Ctx    context.Context
+	Cancel context.CancelFunc
 }
 
 // AddUnsupportedPath adds a path to the list of unsupported files in a thread-safe way.

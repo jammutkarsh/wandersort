@@ -83,3 +83,25 @@ func TestDeriveCaptureGrouping(t *testing.T) {
 		t.Errorf("Expected stem IMG_3162, got %v", stems)
 	}
 }
+
+func TestFileDiscoveryCaptureStemAndRole(t *testing.T) {
+	filename := "IMG_E3162.HEIC"
+	ext := ".heic"
+	mediaType := "IMAGE"
+	capture := deriveCapture(filename, ext, mediaType)
+
+	fd := FileDiscovery{
+		Path:      "Photos/IMG_E3162.HEIC",
+		Size:      2048,
+		Extension: ext,
+		MediaType: mediaType,
+		Capture:   capture,
+	}
+
+	if fd.Capture.captureKey != "IMG_3162" {
+		t.Errorf("CaptureStem = %q, want IMG_3162", fd.Capture.captureKey)
+	}
+	if fd.Capture.variant != CaptureRoleEdited {
+		t.Errorf("CaptureRole = %q, want %q", fd.Capture.variant, CaptureRoleEdited)
+	}
+}

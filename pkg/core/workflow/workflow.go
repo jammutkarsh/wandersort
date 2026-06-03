@@ -158,7 +158,6 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UU
 	}
 	tracker.Status.Store(sm.WorkflowStatusStarted)
 	tracker.UnsupportedPaths.Store("")
-	tracker.PendingJobs.Store(int32(len(cleanPaths)))
 
 	// Start the periodic progress updater for this session
 	go wf.updateProgress(progressCtx, sessionID, tracker)

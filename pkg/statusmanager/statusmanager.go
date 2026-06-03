@@ -5,8 +5,11 @@ import (
 )
 
 type StatusManager struct {
-	mu            sync.RWMutex
-	subscribers   map[chan WorkflowStatus]struct{}
+	mu          sync.RWMutex
+	subscribers map[chan WorkflowStatus]struct{}
+	// TODO: FIX One caveat: since StatusManager stores only one currentStatus globally
+	// concurrent sessions can still overwrite each other’s “latest” snapshot.
+	// This check prevents mixed payloads, but it does not provide true per-session status history.
 	currentStatus WorkflowStatus
 }
 
@@ -52,8 +55,8 @@ func (sm *StatusManager) Broadcast(status WorkflowStatus) {
 	}
 }
 
-// GetCurrent returns the latest broadcasted status.
-func (sm *StatusManager) GetCurrent() WorkflowStatus {
+// LastStatus returns the latest broadcasted status.
+func (sm *StatusManager) LastStatus() WorkflowStatus {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.currentStatus
