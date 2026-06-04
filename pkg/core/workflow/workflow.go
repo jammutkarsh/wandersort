@@ -54,6 +54,12 @@ type Workflow struct {
 	activeSessions sync.Map
 }
 
+type workflowPhase struct {
+	status    string
+	run       func() (int, error)
+	onSuccess func(count int)
+}
+
 // NewWorkflow creates a new workflow instance.
 func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.Configuration) *Workflow {
 	sm := sm.NewStatusManager()
@@ -87,22 +93,22 @@ func (wf *Workflow) SubmitScan(paths []string) (uuid.UUID, error) {
 	default:
 	}
 
-	sessionID, path, tracker, err := wf.prepareSession(wf.ctx, paths)
+	cleanPaths, tracker, err := wf.prepareSession(wf.ctx, paths)
 	if err != nil {
 		return uuid.Nil, err
 	}
 
-	wf.activeSessions.Store(sessionID, tracker)
+	wf.activeSessions.Store(tracker.SessionID, tracker)
 
 	wf.wg.Go(func() {
-		wf.background(sessionID, tracker, path)
+		wf.background(tracker, cleanPaths)
 	})
 
-	return sessionID, nil
+	return tracker.SessionID, nil
 }
 
 // prepareSession creates the scan_sessions DB row, and returns a fresh tracker.
-func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UUID, []string, *sm.Tracker, error) {
+func (wf *Workflow) prepareSession(ctx context.Context, paths []string) ([]string, *sm.Tracker, error) {
 	cleanPaths := make([]string, 0, len(paths))
 	// Path convention:
 	// 1) Resolve every input to a canonical absolute path.
@@ -114,7 +120,7 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UU
 		resolvedAbs, err := wf.path.RealPath(filepath.Clean(inputPath))
 		if err != nil {
 			wf.log.Error("invalid path", "path", inputPath, "error", err)
-			return uuid.Nil, nil, nil, fmt.Errorf("path is not a directory: %s", inputPath)
+			return nil, nil, fmt.Errorf("path is not a directory: %s", inputPath)
 		}
 
 		cleanPaths = append(cleanPaths, wf.path.RelativeToHome(resolvedAbs))
@@ -126,7 +132,7 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UU
 	for _, path := range cleanPaths {
 		if ok, err := wf.path.IsDirectory(path); err != nil || !ok {
 			wf.log.Error("invalid path, not a directory", "path", path, "error", err)
-			return uuid.Nil, nil, nil, fmt.Errorf("path is not a directory: %s", path)
+			return nil, nil, fmt.Errorf("path is not a directory: %s", path)
 		}
 	}
 
@@ -144,7 +150,7 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UU
 		VALUES (?, ?, ?, ?)
 	`, sessionID, startedAt.Format(time.RFC3339), sm.WorkflowStatusStarted, strings.Join(cleanPaths, ","))
 	if err != nil {
-		return uuid.Nil, nil, nil, fmt.Errorf("failed to create scan session: %w", err)
+		return nil, nil, fmt.Errorf("failed to create scan session: %w", err)
 	}
 
 	wf.log.Info("Scan session created", "session_id", sessionID, "root_paths", cleanPaths)
@@ -162,64 +168,80 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UU
 	// Start the periodic progress updater for this session
 	go wf.updateProgress(progressCtx, sessionID, tracker)
 
-	return sessionID, cleanPaths, tracker, nil
+	return cleanPaths, tracker, nil
 }
 
 // background executes the three sequential phases for a single scan session.
-func (wf *Workflow) background(sessionID uuid.UUID, tracker *sm.Tracker, paths []string) {
+func (wf *Workflow) background(tracker *sm.Tracker, paths []string) {
 	var finalStatus string
 	var finalErr *string
+	workers := wf.workerCount(paths)
 
 	defer func() {
-		wf.finalizeSession(sessionID, finalStatus, finalErr)
+		wf.finalizeSession(tracker.SessionID, finalStatus, finalErr)
 	}()
 
-	wf.log.Info("Workflow session started", "session_id", sessionID, "phases", "scan → hash → score")
+	wf.log.Info("Workflow session started", "session_id", tracker.SessionID, "phases", "scan → hash → score")
 
-	// ─── Phase 1: Scan ────────────────────────────────────────────────
-	count, status, errStr, ok := wf.run(sessionID, tracker, sm.WorkflowStatusScan, func() (int, error) {
-		return wf.scanner.Run(wf.ctx, sessionID, tracker, paths, wf.workerCount(paths))
-	})
-	finalStatus, finalErr = status, errStr
-	if !ok {
-		return
-	}
-	wf.writeUnsupportedFiles(sessionID, tracker)
-	wf.log.Info("Phase 1 complete: all paths scanned", "session_id", sessionID, "files_collected", count)
+	phases := wf.workflowPhases(tracker, paths, workers)
 
-	// ─── Phase 2: Hash ────────────────────────────────────────────────
-	count, status, errStr, ok = wf.run(sessionID, tracker, sm.WorkflowStatusHash, func() (int, error) {
-		return wf.hasher.Run(wf.ctx, sessionID, tracker, paths, wf.workerCount(paths), wf.workers)
-	})
-	finalStatus, finalErr = status, errStr
-	if !ok {
-		return
+	for _, phase := range phases {
+		count, status, errStr, ok := wf.run(tracker, phase.status, phase.run)
+		finalStatus, finalErr = status, errStr
+		if !ok {
+			return
+		}
+		if phase.onSuccess != nil {
+			phase.onSuccess(count)
+		}
 	}
-	wf.log.Info("Phase 2 complete: all files hashed", "session_id", sessionID, "files_hashed", count)
+}
 
-	// ─── Phase 3: Score ───────────────────────────────────────────────
-	count, status, errStr, ok = wf.run(sessionID, tracker, sm.WorkflowStatusScore, func() (int, error) {
-		return wf.scorer.RunScorePhase(wf.ctx, sessionID, tracker, paths, wf.workerCount(paths))
-	})
-	finalStatus, finalErr = status, errStr
-	if !ok {
-		return
+func (wf *Workflow) workflowPhases(tracker *sm.Tracker, paths []string, workers int) []workflowPhase {
+	return []workflowPhase{
+		{
+			status: sm.WorkflowStatusScan,
+			run: func() (int, error) {
+				return wf.scanner.Run(wf.ctx, tracker, paths, workers)
+			},
+			onSuccess: func(count int) {
+				wf.writeUnsupportedFiles(tracker)
+				wf.log.Info("Phase 1 complete: all paths scanned", "session_id", tracker.SessionID, "files_collected", count)
+			},
+		},
+		{
+			status: sm.WorkflowStatusHash,
+			run: func() (int, error) {
+				return wf.hasher.Run(wf.ctx, tracker, workers)
+			},
+			onSuccess: func(count int) {
+				wf.log.Info("Phase 2 complete: all files hashed", "session_id", tracker.SessionID, "files_hashed", count)
+			},
+		},
+		{
+			status: sm.WorkflowStatusScore,
+			run: func() (int, error) {
+				return wf.scorer.Run(wf.ctx, tracker, paths, workers)
+			},
+			onSuccess: func(count int) {
+				wf.log.Info("Phase 3 complete: all groups scored", "session_id", tracker.SessionID, "files_scored", count)
+			},
+		},
 	}
-	wf.log.Info("Phase 3 complete: all groups scored", "session_id", sessionID, "files_scored", count)
 }
 
 // run runs a single workflow phase (Scan, Hash, or Score), handles logging,
 // status updates, and consistent error reporting. Returns the result count,
 // final status, error message (if any), and a boolean indicating success.
-func (wf *Workflow) run(sessionID uuid.UUID, tracker *sm.Tracker, phaseStatus string, phaseFunc func() (int, error)) (int, string, *string, bool) {
+func (wf *Workflow) run(tracker *sm.Tracker, phaseStatus string, phaseFunc func() (int, error)) (int, string, *string, bool) {
 	success := true
 	tracker.Status.Store(phaseStatus)
-	if err := wf.setSessionStatus(wf.ctx, sessionID, phaseStatus); err != nil {
+	if err := wf.setSessionStatus(wf.ctx, tracker.SessionID, phaseStatus); err != nil {
 		msg := fmt.Errorf("failed to set %s status: %w", phaseStatus, err).Error()
 		return 0, sm.WorkflowStatusFail, &msg, !success
 	}
 
-	wf.log.Info("Starting phase", "session_id", sessionID, "phase", phaseStatus)
+	wf.log.Info("Starting phase", "session_id", tracker.SessionID, "phase", phaseStatus)
 	count, err := phaseFunc()
 	if err != nil {
 		var finalStatus string

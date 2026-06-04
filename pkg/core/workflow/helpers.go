@@ -150,7 +150,7 @@ func (wf *Workflow) setSessionStatus(ctx context.Context, sessionID uuid.UUID, s
 // collected during the scan to <outputPath>/unsupported_files_<sessionID>.txt,
 // one human-readable (home-contracted) path per line, sorted alphabetically.
 // No file is created when every scanned file had a recognised extension.
-func (wf *Workflow) writeUnsupportedFiles(sessionID uuid.UUID, tracker *sm.Tracker) {
+func (wf *Workflow) writeUnsupportedFiles(tracker *sm.Tracker) {
 	paths := tracker.GetUnsupportedPaths()
 
 	if len(paths) == 0 {
@@ -163,7 +163,7 @@ func (wf *Workflow) writeUnsupportedFiles(sessionID uuid.UUID, tracker *sm.Track
 		return
 	}
 
-	reportPath := filepath.Join(wf.outputPath, fmt.Sprintf("unsupported_files_%s.txt", sessionID))
+	reportPath := filepath.Join(wf.outputPath, fmt.Sprintf("unsupported_files_%s.txt", tracker.SessionID))
 	file, err := os.Create(reportPath)
 	if err != nil {
 		wf.log.Error("Failed to create unsupported files report", "path", reportPath, "error", err)
@@ -175,7 +175,7 @@ func (wf *Workflow) writeUnsupportedFiles(sessionID uuid.UUID, tracker *sm.Track
 		"# Unsupported files found during scan %s\n"+
 			"# These file types are not yet supported by WanderSort.\n"+
 			"# Please raise a support request at https://github.com/jammutkarsh/wandersort/issues\n\n",
-		sessionID,
+		tracker.SessionID,
 	)
 	if _, err := fmt.Fprint(file, header); err != nil {
 		wf.log.Error("Failed to write report header", "error", err)
