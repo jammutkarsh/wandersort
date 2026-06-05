@@ -49,6 +49,7 @@ const (
 	FileOriginUnknown   = "UNKNOWN"
 )
 
+// TODO: Take a look these states and move them to a common place.
 const (
 	ScanStatusDiscovered = "DISCOVERED"
 	ScanStatusHashing    = "HASHING"

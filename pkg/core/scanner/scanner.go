@@ -42,8 +42,8 @@ func NewScanner(db *db.DB, log logger.Logger) *Scanner {
 	}
 }
 
-func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, tracker *sm.Tracker, paths []string, workerCount int) (int, error) {
-	s.log.Info("Scanner Phase: Processing all paths", "session_id", sessionID, "path_count", len(paths))
+func (s *Scanner) Run(ctx context.Context, tracker *sm.Tracker, paths []string, workerCount int) (int, error) {
+	s.log.Info("Scanner Phase: Processing all paths", "session_id", tracker.SessionID, "path_count", len(paths))
 
 	type scanResult struct {
 		count int
@@ -67,21 +67,21 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, tracker *sm.Trac
 	for range workerCount {
 		workers.Go(func() {
 			for path := range jobs {
-				discoveredChan, err := s.scanPath(ctx, path)
+				discoveredChan, err := s.scan(ctx, path)
 				if err != nil {
-					s.log.Error("Failed to scan path", "session_id", sessionID, "path", path, "error", err)
+					s.log.Error("Failed to scan path", "session_id", tracker.SessionID, "path", path, "error", err)
 					results <- scanResult{err: fmt.Errorf("scan failed for %s: %w", path, err)}
 					continue
 				}
 
 				count := 0
 				// Drain the channel to both count stored discoveries and wait until
-				// scanPath/store has fully finished this path.
+				// scan/store has fully finished this path.
 				for range discoveredChan {
 					count++
 				}
 
-				s.log.Info("Scanned path", "session_id", sessionID, "path", path, "files_discovered", count)
+				s.log.Info("Scanned path", "session_id", tracker.SessionID, "path", path, "files_discovered", count)
 				results <- scanResult{count: count}
 			}
 		})
@@ -103,9 +103,9 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, tracker *sm.Trac
 	return totalFiles, firstScanErr
 }
 
-// scanPath executes a scan for a single directory path and returns a channel
+// scan executes a scan for a single directory path and returns a channel
 // of discovered files. It's meant to be called by worker goroutines asynchronously.
-func (s *Scanner) scanPath(ctx context.Context, path string) (<-chan FileDiscovery, error) {
+func (s *Scanner) scan(ctx context.Context, path string) (<-chan FileDiscovery, error) {
 	// Channel for discovered files
 	fileDiscoveryChannel := make(chan FileDiscovery, s.scanBuffer) // In
 	scanResultsChannel := make(chan FileDiscovery, s.scanBuffer)   // Out
@@ -254,7 +254,7 @@ func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-
 
 	for file := range discoveries {
 		dbWritesWG.Add(1)
-		operation := s.newStoreOperation(ctx, sessionID, &dbWritesWG, emitQueue, file)
+		operation := s.storeScan(ctx, sessionID, &dbWritesWG, emitQueue, file)
 		enqueued := s.db.Writer.Write(operation)
 		if !enqueued {
 			dbWritesWG.Done()
@@ -264,7 +264,7 @@ func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-
 	}
 }
 
-// newStoreOperation builds the DB callback consumed by BulkWriter.Write.
+// storeScan builds the DB callback consumed by BulkWriter.Write.
 //
 // Why these captured values are part of this closure:
 //   - ctx: needed to stop emit handoff promptly when the scan is canceled.
@@ -276,7 +276,7 @@ func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-
 // cannot return fileID directly to the caller of Write at enqueue time.
 // Instead, we compute (id, isNew) during execution and mutate the local file
 // copy before emitting it downstream.
-func (s *Scanner) newStoreOperation(ctx context.Context, sessionID uuid.UUID, dbWritesWG *sync.WaitGroup, emitQueue chan<- FileDiscovery, file FileDiscovery) db.DBOperation {
+func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG *sync.WaitGroup, emitQueue chan<- FileDiscovery, file FileDiscovery) db.DBOperation {
 	const query = `
 		INSERT INTO file_registry (
 			file_path, file_size, file_modified_at,
@@ -343,6 +343,7 @@ func (s *Scanner) newStoreOperation(ctx context.Context, sessionID uuid.UUID, db
 		select {
 		case emitQueue <- file:
 		case <-ctx.Done():
+			return ctx.Err()
 		}
 
 		return nil
