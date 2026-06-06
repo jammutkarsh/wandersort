@@ -22,10 +22,12 @@ The `pkg/` directory contains the core packages that power WanderSort's file dis
 ### Phase 1 — Submission (synchronous, returns immediately)
 
 1. The HTTP handler receives `POST /internal/v1/scans/start` with a list of `rootPaths`.
-2. `StartScan` expands each path (`~` → absolute) and checks it exists on disk.
-3. A `scan_sessions` row is inserted into PostgreSQL with `status = running` and a new `sessionID` (UUID).
-4. A `ScanTaskArgs` job (carrying the `sessionID` + paths) is enqueued into **River**. This call returns immediately — no filesystem work happens yet.
-5. The `sessionID` is returned to the caller as a `202 Accepted` so they can poll for status.
+2. The API resolves every submitted path to a canonical directory, removes exact duplicates, and drops child paths when their parent directory is also present.
+3. The response includes the final `scanPaths` list so the caller can see exactly what will be scanned.
+4. `StartScan` checks the final directory list exists on disk.
+5. A `scan_sessions` row is inserted into PostgreSQL with `status = running` and a new `sessionID` (UUID).
+6. A `ScanTaskArgs` job (carrying the `sessionID` + effective scan paths) is enqueued into **River**. This call returns immediately — no filesystem work happens yet.
+7. The `sessionID` and effective scan paths are returned to the caller as a `202 Accepted` so they can poll for status.
 
 ---
 

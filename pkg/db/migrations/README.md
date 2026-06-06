@@ -179,7 +179,7 @@ Auto-created by the migration runner. Tracks which migrations have been applied.
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
 ```
 
-- `created_at` / `updated_at`: Row timestamps. `updated_at` is auto-maintained by a trigger that fires on UPDATE. **Why a trigger?** Application code doesn't need to remember to set it — the DB handles it automatically, preventing stale timestamps.
+- `created_at` / `updated_at`: Row timestamps. `updated_at` defaults on insert and is explicitly set by each application update path. **Why not a trigger?** The write paths are narrow and explicit, which avoids hidden write amplification from self-updating triggers.
 
 **Indexes:**
 

@@ -20,22 +20,20 @@ import (
 
 // Hasher handles file hashing and content group management
 type Hasher struct {
-	ctx       context.Context
-	db        *db.DB
-	log       logger.Logger
-	statusMgr *sm.StatusManager
-	path      *path.Resolver
+	ctx  context.Context
+	db   *db.DB
+	log  logger.Logger
+	path *path.Resolver
 }
 
 // NewHasher creates a new hasher instance
-func NewHasher(ctx context.Context, db *db.DB, log logger.Logger, sm *sm.StatusManager) *Hasher {
+func NewHasher(ctx context.Context, db *db.DB, log logger.Logger) *Hasher {
 
 	return &Hasher{
-		ctx:       ctx,
-		db:        db,
-		log:       log,
-		statusMgr: sm,
-		path:      path.New(),
+		ctx:  ctx,
+		db:   db,
+		log:  log,
+		path: path.New(),
 	}
 }
 
@@ -109,7 +107,7 @@ func (h *Hasher) getFile(ctx context.Context, sessionStr string) (fileRecord, bo
 	var filePath, sourceRoot string
 	query := `
 	UPDATE file_registry
-	SET scan_status = ?
+	SET scan_status = ?, updated_at = datetime('now')
 	WHERE id = (
 		SELECT id
 		FROM file_registry
@@ -229,7 +227,7 @@ func (h *Hasher) storeHash(ctx context.Context, tx *sql.Tx, fileID int64, hash s
 	// Update Hash and Status
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE file_registry
-		SET file_hash = ?, scan_status = 'HASHED'
+		SET file_hash = ?, scan_status = 'HASHED', updated_at = datetime('now')
 		WHERE id = ?
 	`, hash, fileID); err != nil {
 		return fmt.Errorf("failed to update file registry: %w", err)
@@ -264,7 +262,7 @@ func (h *Hasher) markFileError(fileID int64) {
 	h.db.Writer.Write(func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE file_registry
-			SET scan_status = 'ERROR'
+			SET scan_status = 'ERROR', updated_at = datetime('now')
 			WHERE id = ?
 		`, fileID)
 		return err

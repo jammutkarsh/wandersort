@@ -54,17 +54,46 @@ type Workflow struct {
 }
 
 type workflowPhase struct {
-	status    string
+	kind      workflowPhaseKind
 	run       func() (int, error)
 	onSuccess func(count int)
+}
+
+type workflowPhaseKind string
+
+const (
+	workflowPhaseScan workflowPhaseKind = "scan"
+	workflowPhaseHash workflowPhaseKind = "hash"
+)
+
+func (kind workflowPhaseKind) inProgressStatus() string {
+	switch kind {
+	case workflowPhaseScan:
+		return sm.WorkflowStatusScanning
+	case workflowPhaseHash:
+		return sm.WorkflowStatusHashing
+	default:
+		return sm.WorkflowStatusFailed
+	}
+}
+
+func (kind workflowPhaseKind) completedStatus() string {
+	switch kind {
+	case workflowPhaseScan:
+		return sm.WorkflowStatusScanned
+	case workflowPhaseHash:
+		return sm.WorkflowStatusHashed
+	default:
+		return sm.WorkflowStatusFailed
+	}
 }
 
 // NewWorkflow creates a new workflow instance.
 func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.Configuration) *Workflow {
 	sm := sm.NewStatusManager()
 	sc := scanner.NewScanner(db, log)
-	h := hasher.NewHasher(ctx, db, log, sm)
-	s := scorer.NewScorer(db, log, sm)
+	h := hasher.NewHasher(ctx, db, log)
+	s := scorer.NewScorer(db, log)
 	p := path.New()
 
 	return &Workflow{
@@ -83,7 +112,7 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 	}
 }
 
-// SubmitScan creates a new scan session and kicks off the three-phase
+// SubmitScan creates a new scan session and kicks off the workflow
 // workflow in a background goroutine.
 func (wf *Workflow) SubmitScan(paths []string) (uuid.UUID, error) {
 	select {
@@ -143,8 +172,8 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (*sm.Tra
 		Ctx:       progressCtx,
 		Cancel:    cancelProgress,
 	}
-	tracker.Status.Store(sm.WorkflowStatusStarted)
 	tracker.UnsupportedPaths.Store("")
+	wf.publishStatus(tracker, sm.WorkflowStatusStarted, nil)
 
 	// Start the periodic progress updater for this session
 	go wf.updateProgress(progressCtx, sessionID, tracker)
@@ -162,12 +191,12 @@ func (wf *Workflow) background(tracker *sm.Tracker, paths []string) {
 		wf.finalizeSession(tracker.SessionID, finalStatus, finalErr)
 	}()
 
-	wf.log.Info("Workflow session started", "session_id", tracker.SessionID, "phases", "scan → hash → score")
+	wf.log.Info("Workflow session started", "session_id", tracker.SessionID, "phases", "scanning → hashing")
 
 	phases := wf.workflowPhases(tracker, paths, workers)
 
 	for _, phase := range phases {
-		count, status, errStr, ok := wf.run(tracker, phase.status, phase.run)
+		count, status, errStr, ok := wf.run(tracker, phase.kind, phase.run)
 		finalStatus, finalErr = status, errStr
 		if !ok {
 			return
@@ -176,12 +205,20 @@ func (wf *Workflow) background(tracker *sm.Tracker, paths []string) {
 			phase.onSuccess(count)
 		}
 	}
+
+	if err := wf.setSessionStatus(wf.ctx, tracker.SessionID, sm.WorkflowStatusCompleted); err != nil {
+		msg := fmt.Errorf("failed to set %s status: %w", sm.WorkflowStatusCompleted, err).Error()
+		finalStatus = sm.WorkflowStatusFailed
+		finalErr = &msg
+		return
+	}
+	finalStatus = sm.WorkflowStatusCompleted
 }
 
 func (wf *Workflow) workflowPhases(tracker *sm.Tracker, paths []string, workers int) []workflowPhase {
 	return []workflowPhase{
 		{
-			status: sm.WorkflowStatusScan,
+			kind: workflowPhaseScan,
 			run: func() (int, error) {
 				return wf.scanner.Run(wf.ctx, tracker, paths, workers)
 			},
@@ -191,7 +228,7 @@ func (wf *Workflow) workflowPhases(tracker *sm.Tracker, paths []string, workers 
 			},
 		},
 		{
-			status: sm.WorkflowStatusHash,
+			kind: workflowPhaseHash,
 			run: func() (int, error) {
 				return wf.hasher.Run(wf.ctx, tracker, workers)
 			},
@@ -199,45 +236,42 @@ func (wf *Workflow) workflowPhases(tracker *sm.Tracker, paths []string, workers 
 				wf.log.Info("Phase 2 complete: all files hashed", "session_id", tracker.SessionID, "files_hashed", count)
 			},
 		},
-		{
-			status: sm.WorkflowStatusScore,
-			run: func() (int, error) {
-				return wf.scorer.Run(wf.ctx, tracker, paths, workers)
-			},
-			onSuccess: func(count int) {
-				wf.log.Info("Phase 3 complete: all groups scored", "session_id", tracker.SessionID, "files_scored", count)
-			},
-		},
 	}
 }
 
-// run runs a single workflow phase (Scan, Hash, or Score), handles logging,
+// run runs a single workflow phase, handles logging,
 // status updates, and consistent error reporting. Returns the result count,
 // final status, error message (if any), and a boolean indicating success.
-func (wf *Workflow) run(tracker *sm.Tracker, phaseStatus string, phaseFunc func() (int, error)) (int, string, *string, bool) {
+func (wf *Workflow) run(tracker *sm.Tracker, phase workflowPhaseKind, phaseFunc func() (int, error)) (int, string, *string, bool) {
 	success := true
-	tracker.Status.Store(phaseStatus)
-	if err := wf.setSessionStatus(wf.ctx, tracker.SessionID, phaseStatus); err != nil {
-		msg := fmt.Errorf("failed to set %s status: %w", phaseStatus, err).Error()
-		return 0, sm.WorkflowStatusFail, &msg, !success
+	inProgressStatus := phase.inProgressStatus()
+	if err := wf.setSessionStatus(wf.ctx, tracker.SessionID, inProgressStatus); err != nil {
+		msg := fmt.Errorf("failed to set %s status: %w", inProgressStatus, err).Error()
+		return 0, sm.WorkflowStatusFailed, &msg, !success
 	}
 
-	wf.log.Info("Starting phase", "session_id", tracker.SessionID, "phase", phaseStatus)
+	wf.log.Info("Starting phase", "session_id", tracker.SessionID, "phase", inProgressStatus)
 	count, err := phaseFunc()
 	if err != nil {
 		var finalStatus string
 		var finalErr string
 		if errors.Is(err, context.Canceled) {
 			finalStatus = sm.WorkflowStatusCancelled
-			finalErr = fmt.Sprintf("pipeline cancelled during %s phase", phaseStatus)
+			finalErr = fmt.Sprintf("pipeline cancelled during %s phase", inProgressStatus)
 		} else {
-			finalStatus = sm.WorkflowStatusFail
-			finalErr = fmt.Sprintf("%s phase failed: %v", phaseStatus, err)
+			finalStatus = sm.WorkflowStatusFailed
+			finalErr = fmt.Sprintf("%s phase failed: %v", inProgressStatus, err)
 		}
 		return count, finalStatus, &finalErr, !success
 	}
 
-	return count, phaseStatus, nil, success
+	completedStatus := phase.completedStatus()
+	if err := wf.setSessionStatus(wf.ctx, tracker.SessionID, completedStatus); err != nil {
+		msg := fmt.Errorf("failed to set %s status: %w", completedStatus, err).Error()
+		return count, sm.WorkflowStatusFailed, &msg, !success
+	}
+
+	return count, completedStatus, nil, success
 }
 
 func (wf *Workflow) workerCount(paths []string) int {

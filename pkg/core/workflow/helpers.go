@@ -105,15 +105,7 @@ func (wf *Workflow) finalizeSession(sessionID uuid.UUID, finalStatus string, fin
 		return
 	}
 
-	wf.statusMgr.Broadcast(sm.WorkflowStatus{
-		SessionID:       sessionID,
-		Status:          finalStatus,
-		FilesDiscovered: tracker.Discovered.Load(),
-		FilesSkipped:    tracker.Skipped.Load(),
-		FilesNew:        tracker.NewFiles.Load(),
-		FilesHashed:     tracker.Hashed.Load(),
-		Errors:          tracker.Errors.Load(),
-	})
+	wf.publishStatus(tracker, finalStatus, finalErr)
 
 	wf.log.Info("Pipeline session finished", "session_id", sessionID, "status", finalStatus)
 }
@@ -131,19 +123,29 @@ func (wf *Workflow) setSessionStatus(ctx context.Context, sessionID uuid.UUID, s
 
 	if session, ok := wf.activeSessions.Load(sessionID); ok {
 		if tracker, ok := session.(*sm.Tracker); ok {
-			tracker.Status.Store(statusValue)
+			wf.publishStatus(tracker, statusValue, nil)
 		}
 	}
-
-	// TODO: Do deep review of the code below
-	// Why is this being done?
-	status := wf.statusMgr.LastStatus()
-	if status.SessionID != sessionID {
-		status = sm.WorkflowStatus{SessionID: sessionID}
-	}
-	status.Status = statusValue
-	wf.statusMgr.Broadcast(status)
 	return nil
+}
+
+func (wf *Workflow) publishStatus(tracker *sm.Tracker, status string, lastErr *string) {
+	tracker.Status.Store(status)
+
+	payload := sm.WorkflowStatus{
+		SessionID:       tracker.SessionID,
+		Status:          status,
+		FilesDiscovered: tracker.Discovered.Load(),
+		FilesSkipped:    tracker.Skipped.Load(),
+		FilesNew:        tracker.NewFiles.Load(),
+		FilesHashed:     tracker.Hashed.Load(),
+		Errors:          tracker.Errors.Load(),
+	}
+	if lastErr != nil {
+		payload.LastError = *lastErr
+	}
+
+	wf.statusMgr.Broadcast(payload)
 }
 
 // writeUnsupportedFiles writes all paths with unsupported extensions that were
@@ -227,15 +229,7 @@ func (wf *Workflow) updateProgress(ctx context.Context, sessionID uuid.UUID, t *
 			)
 
 			currentStatus, _ := t.Status.Load().(string)
-			wf.statusMgr.Broadcast(sm.WorkflowStatus{
-				SessionID:       sessionID,
-				Status:          currentStatus,
-				FilesDiscovered: t.Discovered.Load(),
-				FilesSkipped:    t.Skipped.Load(),
-				FilesNew:        t.NewFiles.Load(),
-				FilesHashed:     t.Hashed.Load(),
-				Errors:          t.Errors.Load(),
-			})
+			wf.publishStatus(t, currentStatus, nil)
 
 			if err != nil {
 				wf.log.Warn("Failed to update progress", "error", err)

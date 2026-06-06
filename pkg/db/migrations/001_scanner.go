@@ -1,18 +1,28 @@
 package migrations
 
+import (
+	"fmt"
+	"strings"
+
+	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
+)
+
 var schema001 = Migration{
 	Version:     001,
 	Description: "scanner_schema",
-	SQL:         scannerSQL,
+	SQL: []string{
+		scanSessions,
+		fileRegistry,
+	},
 }
 
-const scannerSQL = `
--- Scan sessions table (tracks each scan operation)
+// scan_sessions table with indexes
+var scanSessions = fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS scan_sessions (
     id TEXT PRIMARY KEY,
     started_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
-    status TEXT NOT NULL DEFAULT 'SCAN',
+    status TEXT NOT NULL DEFAULT '%s',
 
     root_paths TEXT NOT NULL,
 
@@ -21,18 +31,21 @@ CREATE TABLE IF NOT EXISTS scan_sessions (
     files_skipped    INTEGER DEFAULT 0,
     files_new        INTEGER DEFAULT 0,
     files_modified   INTEGER DEFAULT 0,
+    files_hashed     INTEGER DEFAULT 0,
 
     -- Error tracking
     errors_encountered INTEGER DEFAULT 0,
     last_error         TEXT,
 
-    CHECK (status IN ('SCAN', 'HASH', 'SCORE', 'FAILED', 'CANCELLED'))
+    CHECK (status IN (%s))
 );
 
 CREATE INDEX IF NOT EXISTS idx_scan_sessions_status  ON scan_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_scan_sessions_started ON scan_sessions(started_at DESC);
+`, sm.WorkflowStatusStarted, quotedStatuses())
 
--- File registry table (the census of all files)
+// file_registry table with indexes
+const fileRegistry = `
 CREATE TABLE IF NOT EXISTS file_registry (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
@@ -82,12 +95,22 @@ CREATE INDEX IF NOT EXISTS idx_file_registry_media_type  ON file_registry(media_
 CREATE INDEX IF NOT EXISTS idx_file_registry_origin      ON file_registry(file_origin);
 CREATE INDEX IF NOT EXISTS idx_file_registry_capture     ON file_registry(capture_stem, source_root)
     WHERE capture_stem IS NOT NULL;
-
--- Trigger: auto-update updated_at on file_registry changes
-CREATE TRIGGER IF NOT EXISTS update_file_registry_updated_at
-    AFTER UPDATE ON file_registry
-    FOR EACH ROW
-BEGIN
-    UPDATE file_registry SET updated_at = datetime('now') WHERE id = OLD.id;
-END;
 `
+
+func quotedStatuses() string {
+	statuses := []string{
+		sm.WorkflowStatusStarted,
+		sm.WorkflowStatusScanning,
+		sm.WorkflowStatusScanned,
+		sm.WorkflowStatusHashing,
+		sm.WorkflowStatusHashed,
+		sm.WorkflowStatusCompleted,
+		sm.WorkflowStatusFailed,
+		sm.WorkflowStatusCancelled,
+	}
+	quoted := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		quoted = append(quoted, fmt.Sprintf("'%s'", status))
+	}
+	return strings.Join(quoted, ", ")
+}

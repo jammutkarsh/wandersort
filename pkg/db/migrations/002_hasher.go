@@ -3,14 +3,14 @@ package migrations
 var schema002 = Migration{
 	Version:     002,
 	Description: "hasher_schema",
-	SQL:         hasherSQL,
+	SQL: []string{
+		contentGroups,
+		contentGroupMembers,
+	},
 }
 
-const hasherSQL = `
--- Track hashed file count on scan sessions
-ALTER TABLE scan_sessions ADD COLUMN files_hashed INTEGER DEFAULT 0;
-
--- Content groups (one per unique hash)
+// content_groups table with indexes and trigger
+const contentGroups = `
 CREATE TABLE IF NOT EXISTS content_groups (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     content_hash TEXT UNIQUE NOT NULL,
@@ -23,7 +23,20 @@ CREATE TABLE IF NOT EXISTS content_groups (
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
--- Membership table
+CREATE INDEX IF NOT EXISTS idx_content_groups_hash   ON content_groups(content_hash);
+CREATE INDEX IF NOT EXISTS idx_content_groups_master ON content_groups(master_file_id)
+    WHERE master_file_id IS NOT NULL;
+
+CREATE TRIGGER IF NOT EXISTS update_content_groups_updated_at
+    AFTER UPDATE ON content_groups
+    FOR EACH ROW
+BEGIN
+    UPDATE content_groups SET updated_at = datetime('now') WHERE id = OLD.id;
+END;
+`
+
+// content_group_members table with indexes
+const contentGroupMembers = `
 CREATE TABLE IF NOT EXISTS content_group_members (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER NOT NULL REFERENCES content_groups(id) ON DELETE CASCADE,
@@ -37,21 +50,8 @@ CREATE TABLE IF NOT EXISTS content_group_members (
     UNIQUE(group_id, file_id)
 );
 
--- Indexes
-CREATE INDEX IF NOT EXISTS idx_content_groups_hash   ON content_groups(content_hash);
-CREATE INDEX IF NOT EXISTS idx_content_groups_master ON content_groups(master_file_id)
-    WHERE master_file_id IS NOT NULL;
-
 CREATE INDEX IF NOT EXISTS idx_content_group_members_group  ON content_group_members(group_id);
 CREATE INDEX IF NOT EXISTS idx_content_group_members_file   ON content_group_members(file_id);
 CREATE INDEX IF NOT EXISTS idx_content_group_members_master ON content_group_members(group_id, is_master)
     WHERE is_master = 1;
-
--- Trigger: auto-update updated_at on content_groups changes
-CREATE TRIGGER IF NOT EXISTS update_content_groups_updated_at
-    AFTER UPDATE ON content_groups
-    FOR EACH ROW
-BEGIN
-    UPDATE content_groups SET updated_at = datetime('now') WHERE id = OLD.id;
-END;
 `

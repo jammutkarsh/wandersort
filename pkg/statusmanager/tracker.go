@@ -10,17 +10,22 @@ import (
 )
 
 const (
+	// WorkflowStatus values represent the overall state of a scan/hash/score session.
 	WorkflowStatusStarted   = "STARTED"
-	WorkflowStatusScan      = "SCAN"
-	WorkflowStatusHash      = "HASH"
-	WorkflowStatusScore     = "SCORE"
-	WorkflowStatusFail      = "FAILED"
+	WorkflowStatusCompleted = "COMPLETED"
+	WorkflowStatusFailed    = "FAILED"
 	WorkflowStatusCancelled = "CANCELLED"
+
+	// Phase-specific statuses for more granular progress reporting
+	WorkflowStatusScanning = "SCANNING"
+	WorkflowStatusScanned  = "SCANNED"
+	WorkflowStatusHashing  = "HASHING"
+	WorkflowStatusHashed   = "HASHED"
 )
 
 type WorkflowStatus struct {
 	SessionID       uuid.UUID `json:"sessionId"`
-	Status          string    `json:"status"` // SCAN, HASH, SCORE, FAILED, CANCELLED
+	Status          string    `json:"status"`
 	FilesDiscovered int64     `json:"filesDiscovered"`
 	FilesSkipped    int64     `json:"filesSkipped"`
 	FilesNew        int64     `json:"filesNew"`
@@ -33,11 +38,11 @@ type WorkflowStatus struct {
 type Tracker struct {
 	SessionID uuid.UUID
 
-	Status atomic.Value // Stores string (e.g. status.WorkflowStatusScan)
+	Status atomic.Value // Stores string
 
 	Discovered       atomic.Int64
 	Skipped          atomic.Int64
-	NewFiles         atomic.Int64
+	NewFiles         atomic.Int64 // Useful for re-scans
 	Modified         atomic.Int64
 	Hashed           atomic.Int64
 	Errors           atomic.Int64
