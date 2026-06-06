@@ -78,11 +78,10 @@ func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 		path:       pu,
 		scanBuffer: 50,
 	}
+	tracker := &sm.Tracker{}
 
 	filesChan := make(chan FileDiscovery, 200)
-	sc.tracker = &sm.Tracker{}
-
-	err := sc.walkRoot(context.Background(), root, filesChan)
+	err := sc.walkRoot(context.Background(), root, filesChan, tracker)
 	close(filesChan)
 	if err != nil {
 		t.Fatalf("walkRoot: %v", err)
@@ -105,12 +104,12 @@ func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 	}
 
 	// Verify counters
-	discovered := sc.tracker.Discovered.Load()
+	discovered := tracker.Discovered.Load()
 	if discovered != 5 {
 		t.Errorf("discovered = %d, want 5", discovered)
 	}
 
-	unsupported := sc.tracker.Unsupported.Load()
+	unsupported := tracker.Unsupported.Load()
 	if unsupported != 1 { // readme.txt
 		t.Errorf("unsupported = %d, want 1", unsupported)
 	}
@@ -127,8 +126,8 @@ func TestWalkRoot_ContextCancellation(t *testing.T) {
 	cancel() // cancel immediately
 
 	filesChan := make(chan FileDiscovery, 200)
-	sc.tracker = &sm.Tracker{}
-	err := sc.walkRoot(ctx, root, filesChan)
+	tracker := &sm.Tracker{}
+	err := sc.walkRoot(ctx, root, filesChan, tracker)
 	close(filesChan)
 
 	if err == nil {
@@ -149,12 +148,12 @@ func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 
 	const walkers = 4
 	filesChan := make(chan FileDiscovery, 1000)
-	sc.tracker = &sm.Tracker{}
+	tracker := &sm.Tracker{}
 
 	var wg sync.WaitGroup
 	for range walkers {
 		wg.Go(func() {
-			_ = sc.walkRoot(context.Background(), root, filesChan)
+			_ = sc.walkRoot(context.Background(), root, filesChan, tracker)
 		})
 	}
 
@@ -175,7 +174,7 @@ func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 	}
 
 	// Atomic counter should also match
-	discovered := sc.tracker.Discovered.Load()
+	discovered := tracker.Discovered.Load()
 	if discovered != int64(expected) {
 		t.Errorf("discovered counter = %d, want %d", discovered, expected)
 	}

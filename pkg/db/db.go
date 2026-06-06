@@ -173,19 +173,6 @@ func isSQLITEBusy(err error) bool {
 	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "database is locked")
 }
 
-// InClause builds a placeholder string "?,?,?..." with n question marks and
-// returns a slice of interface{} values suitable for use with sql.Query.
-// Example: InClause(ids) where ids is []int64 → ("?,?,?", []any{1,2,3})
-func InClause[T any](vals []T) (string, []any) {
-	args := make([]any, len(vals))
-	marks := make([]string, len(vals))
-	for i, v := range vals {
-		args[i] = v
-		marks[i] = "?"
-	}
-	return strings.Join(marks, ","), args
-}
-
 func appIDFromTag() int32 {
 	const tag = "WAND"
 	return int32(binary.BigEndian.Uint32([]byte(tag)))

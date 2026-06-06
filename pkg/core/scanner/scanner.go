@@ -27,7 +27,6 @@ type Scanner struct {
 	classifier *classifier.FileClassifier
 	log        logger.Logger
 	path       *path.Resolver
-	tracker    *sm.Tracker
 	scanBuffer int // Channel buffer size
 }
 
@@ -67,7 +66,7 @@ func (s *Scanner) Run(ctx context.Context, tracker *sm.Tracker, paths []string, 
 	for range workerCount {
 		workers.Go(func() {
 			for path := range jobs {
-				discoveredChan, err := s.scan(ctx, path)
+				discoveredChan, err := s.scan(ctx, path, tracker)
 				if err != nil {
 					s.log.Error("Failed to scan path", "session_id", tracker.SessionID, "path", path, "error", err)
 					results <- scanResult{err: fmt.Errorf("scan failed for %s: %w", path, err)}
@@ -105,7 +104,7 @@ func (s *Scanner) Run(ctx context.Context, tracker *sm.Tracker, paths []string, 
 
 // scan executes a scan for a single directory path and returns a channel
 // of discovered files. It's meant to be called by worker goroutines asynchronously.
-func (s *Scanner) scan(ctx context.Context, path string) (<-chan FileDiscovery, error) {
+func (s *Scanner) scan(ctx context.Context, path string, tracker *sm.Tracker) (<-chan FileDiscovery, error) {
 	// Channel for discovered files
 	fileDiscoveryChannel := make(chan FileDiscovery, s.scanBuffer) // In
 	scanResultsChannel := make(chan FileDiscovery, s.scanBuffer)   // Out
@@ -117,14 +116,14 @@ func (s *Scanner) scan(ctx context.Context, path string) (<-chan FileDiscovery, 
 	go func() {
 		defer close(scanResultsChannel)
 
-		if err := s.walkRoot(ctx, path, scanResultsChannel); err != nil {
+		if err := s.walkRoot(ctx, path, scanResultsChannel, tracker); err != nil {
 			s.log.Error("Walk root failed during scanPath", "path", path, "error", err)
 		}
 	}()
 
 	// Consumer
 	go func() {
-		s.store(ctx, s.tracker.SessionID, scanResultsChannel, fileDiscoveryChannel)
+		s.store(ctx, tracker.SessionID, scanResultsChannel, fileDiscoveryChannel, tracker)
 	}()
 
 	return fileDiscoveryChannel, nil
@@ -132,7 +131,7 @@ func (s *Scanner) scan(ctx context.Context, path string) (<-chan FileDiscovery, 
 
 // walkRoot walks absPath and emits FileDiscovery records with relative paths.
 // absPath is the absolute filesystem path.
-func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileDiscovery) error {
+func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileDiscovery, tracker *sm.Tracker) error {
 	absRoot, err := s.path.RealPath(path)
 	if err != nil {
 		s.log.Error("Failed to resolve root path", "input_path", path, "error", err)
@@ -150,7 +149,7 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 		// Handle errors (permission denied, etc.)
 		if err != nil {
 			s.log.Error("Walk error", "input_path", path, "walking_path", s.path.RelativeToHome(p), "error", err)
-			s.tracker.Errors.Add(1)
+			tracker.Errors.Add(1)
 			return nil // Continue walking
 		}
 
@@ -167,11 +166,11 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 		switch {
 		case shouldIgnore:
 			s.log.Debug("Ignoring file", "input_path", path, "walking_path", s.path.RelativeToHome(p))
-			s.tracker.Skipped.Add(1)
+			tracker.Skipped.Add(1)
 			return nil
 		case !shouldProcess:
 			s.log.Debug("Unsupported file type", "input_path", path, "walking_path", s.path.RelativeToHome(p))
-			s.tracker.AddUnsupportedPath(s.path.RelativeToHome(p))
+			tracker.AddUnsupportedPath(s.path.RelativeToHome(p))
 			return nil
 		}
 
@@ -179,7 +178,7 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 		info, err := d.Info()
 		if err != nil {
 			s.log.Warn("Failed to get file info", "input_path", path, "walking_path", s.path.RelativeToHome(p), "error", err)
-			s.tracker.Errors.Add(1)
+			tracker.Errors.Add(1)
 			return nil
 		}
 
@@ -189,7 +188,7 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 		relativeToSource, err := filepath.Rel(absRoot, p)
 		if err != nil {
 			s.log.Warn("Failed to make path relative", "input_path", path, "walking_path", s.path.RelativeToHome(p), "error", err)
-			s.tracker.Errors.Add(1)
+			tracker.Errors.Add(1)
 			return nil
 		}
 
@@ -205,7 +204,7 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 			Capture:    capture,
 		}
 
-		s.tracker.Discovered.Add(1)
+		tracker.Discovered.Add(1)
 
 		// Send to processing channel
 		select {
@@ -224,7 +223,7 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 	return nil
 }
 
-func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-chan FileDiscovery, storedFiles chan<- FileDiscovery) {
+func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-chan FileDiscovery, storedFiles chan<- FileDiscovery, tracker *sm.Tracker) {
 	var dbWritesWG sync.WaitGroup
 	var emittersWG sync.WaitGroup
 	emitQueue := make(chan FileDiscovery, s.scanBuffer)
@@ -254,11 +253,11 @@ func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-
 
 	for file := range discoveries {
 		dbWritesWG.Add(1)
-		operation := s.storeScan(ctx, sessionID, &dbWritesWG, emitQueue, file)
+		operation := s.storeScan(ctx, sessionID, &dbWritesWG, emitQueue, file, tracker)
 		enqueued := s.db.Writer.Write(operation)
 		if !enqueued {
 			dbWritesWG.Done()
-			s.tracker.Errors.Add(1)
+			tracker.Errors.Add(1)
 			s.log.Warn("Bulk writer closed; dropping discovery write", "path", file.Path, "session_id", sessionID)
 		}
 	}
@@ -276,7 +275,7 @@ func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-
 // cannot return fileID directly to the caller of Write at enqueue time.
 // Instead, we compute (id, isNew) during execution and mutate the local file
 // copy before emitting it downstream.
-func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG *sync.WaitGroup, emitQueue chan<- FileDiscovery, file FileDiscovery) db.DBOperation {
+func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG *sync.WaitGroup, emitQueue chan<- FileDiscovery, file FileDiscovery, tracker *sm.Tracker) db.DBOperation {
 	const query = `
 		INSERT INTO file_registry (
 			file_path, file_size, file_modified_at,
@@ -328,16 +327,16 @@ func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG
 		fileID, isNew, err := queryFileState(dbCtx, tx)
 		if err != nil {
 			s.log.Warn("Failed to upsert file", "path", file.Path, "error", err)
-			s.tracker.Errors.Add(1)
+			tracker.Errors.Add(1)
 			return nil // Continue processing other files in batch.
 		}
 
 		file.ID = fileID
 
 		if isNew == 1 {
-			s.tracker.NewFiles.Add(1)
+			tracker.NewFiles.Add(1)
 		} else {
-			s.tracker.Skipped.Add(1)
+			tracker.Skipped.Add(1)
 		}
 
 		select {
