@@ -7,9 +7,10 @@ type StartScanRequest struct {
 
 // StartScanResponse is returned after a scan is successfully submitted.
 type StartScanResponse struct {
-	SessionID string `json:"sessionId"`
-	Status    string `json:"status"`
-	Message   string `json:"message"`
+	SessionID string   `json:"sessionId"`
+	Status    string   `json:"status"`
+	Message   string   `json:"message"`
+	ScanPaths []string `json:"scanPaths"`
 }
 
 // FileCountResponse contains the combined file counts for the whole pipeline.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -93,7 +92,7 @@ func (wf *Workflow) SubmitScan(paths []string) (uuid.UUID, error) {
 	default:
 	}
 
-	cleanPaths, tracker, err := wf.prepareSession(wf.ctx, paths)
+	tracker, err := wf.prepareSession(wf.ctx, paths)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -101,42 +100,24 @@ func (wf *Workflow) SubmitScan(paths []string) (uuid.UUID, error) {
 	wf.activeSessions.Store(tracker.SessionID, tracker)
 
 	wf.wg.Go(func() {
-		wf.background(tracker, cleanPaths)
+		wf.background(tracker, paths)
 	})
 
 	return tracker.SessionID, nil
 }
 
-// prepareSession creates the scan_sessions DB row, and returns a fresh tracker.
-func (wf *Workflow) prepareSession(ctx context.Context, paths []string) ([]string, *sm.Tracker, error) {
-	cleanPaths := make([]string, 0, len(paths))
-	// Path convention:
-	// 1) Resolve every input to a canonical absolute path.
-	// 2) Store/log only the home-relative display form ("~/...") when under $HOME;
-	//    keep absolute form otherwise.
-	// This keeps DB rows portable across machines where the username/home prefix
-	// can change while preserving stable locations outside $HOME.
-	for _, inputPath := range paths {
-		resolvedAbs, err := wf.path.RealPath(filepath.Clean(inputPath))
-		if err != nil {
-			wf.log.Error("invalid path", "path", inputPath, "error", err)
-			return nil, nil, fmt.Errorf("path is not a directory: %s", inputPath)
-		}
-
-		cleanPaths = append(cleanPaths, wf.path.RelativeToHome(resolvedAbs))
+// prepareSession creates the scan_sessions DB row and returns a fresh tracker.
+//
+// The incoming paths are expected to already be canonical, validated scan roots.
+// API-level preparation resolves, deduplicates, and prunes overlapping paths
+// before this method runs.
+func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (*sm.Tracker, error) {
+	storedPaths := make([]string, 0, len(paths))
+	for _, path := range paths {
+		storedPaths = append(storedPaths, wf.path.RelativeToHome(path))
 	}
 
-	wf.log.Info("Preparing scan session", "paths", cleanPaths)
-
-	// Validate all paths before creating the session to fail fast on invalid input.
-	for _, path := range cleanPaths {
-		if ok, err := wf.path.IsDirectory(path); err != nil || !ok {
-			wf.log.Error("invalid path, not a directory", "path", path, "error", err)
-			return nil, nil, fmt.Errorf("path is not a directory: %s", path)
-		}
-	}
-
-	wf.log.Info("All paths validated successfully", "paths", cleanPaths)
+	wf.log.Info("Preparing scan session", "paths", storedPaths)
 
 	// Create scan session
 	sessionID, _ := uuid.NewV7()
@@ -148,12 +129,12 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) ([]strin
 	_, err := wf.db.ExecContext(ctx, `
 		INSERT INTO scan_sessions (id, started_at, status, root_paths)
 		VALUES (?, ?, ?, ?)
-	`, sessionID, startedAt.Format(time.RFC3339), sm.WorkflowStatusStarted, strings.Join(cleanPaths, ","))
+	`, sessionID, startedAt.Format(time.RFC3339), sm.WorkflowStatusStarted, strings.Join(storedPaths, ","))
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create scan session: %w", err)
+		return nil, fmt.Errorf("failed to create scan session: %w", err)
 	}
 
-	wf.log.Info("Scan session created", "session_id", sessionID, "root_paths", cleanPaths)
+	wf.log.Info("Scan session created", "session_id", sessionID, "root_paths", storedPaths)
 
 	// Initialize the shared state tracker for this session
 	progressCtx, cancelProgress := context.WithCancel(ctx)
@@ -168,7 +149,7 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) ([]strin
 	// Start the periodic progress updater for this session
 	go wf.updateProgress(progressCtx, sessionID, tracker)
 
-	return cleanPaths, tracker, nil
+	return tracker, nil
 }
 
 // background executes the three sequential phases for a single scan session.
