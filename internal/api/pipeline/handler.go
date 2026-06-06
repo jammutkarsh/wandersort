@@ -41,7 +41,7 @@ func (h *Handler) SetupRoutes(v1 *gin.RouterGroup) {
 // HandleStartScan godoc
 // @Summary Start a new pipeline scan
 // @Schemes http https
-// @Description Submit root paths to the pipeline. Scanning and hashing run automatically.
+// @Description Submit root paths to the pipeline. The API validates directories, removes overlapping child paths, returns the effective scanPaths, and then starts scanning immediately.
 // @Tags Pipeline
 // @Accept json
 // @Produce json
@@ -68,7 +68,7 @@ func (h *Handler) HandleStartScan(c *gin.Context) {
 		}
 	}
 
-	sessionID, err := h.service.StartScan(paths)
+	sessionID, scanPaths, err := h.service.StartScan(paths)
 	if err != nil {
 		h.logger.Error("Failed to start scan", "error", err)
 		api.RespondError(c, api.InternalError("SCAN_START_FAILED", err.Error(), nil))
@@ -79,6 +79,7 @@ func (h *Handler) HandleStartScan(c *gin.Context) {
 		SessionID: sessionID.String(),
 		Status:    "SCAN",
 		Message:   "Scan started successfully",
+		ScanPaths: scanPaths,
 	})
 }
 
