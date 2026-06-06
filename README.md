@@ -62,13 +62,7 @@ If Google Photos or iCloud works for you — genuinely, no judgement — this is
 
 WanderSort processes your media through a multi-stage pipeline. You point it at one or more directories, and it does the rest.
 
-```text
-┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
- │            | SCAN │────────▶│ CLASSIFY │────────▶│ HASH │────────▶│ SCORE │────────▶│ ORGANISE │      │
-└──────────┘     └──────────┘     └──────────┘     └──────────┘     └──────────┘
-  Discover                                             Identify                                    Fingerprint                                 Rank                               Build the
-  every file                                            what it is                                  every byte                                  the best copy                folder tree
-```
+![WanderSort Pipeline](assets/diagram.svg)
 
 ### Stage 1 — Scan
 
@@ -77,7 +71,7 @@ Point WanderSort at any directory (or many). It recursively walks every path, di
 Every file gets classified into one of four types:
 
 | Type | What It Means | Formats |
-|------|---------------|---------|
+| --- | --- | --- |
 | **Image** | Standard photos | `.jpg` `.jpeg` `.png` `.heic` `.bmp` `.webp` |
 | **Video** | Video recordings | `.mp4` `.mov` |
 | **RAW** | Camera originals | `.cr2` `.dng` |
@@ -142,7 +136,7 @@ WanderSort never touches your files until you tell it to. The entire pipeline is
 WanderSort extracts deep EXIF metadata from your files using [ExifTool](https://exiftool.org/) — and it understands 11 different file format structures natively:
 
 | Data | What WanderSort Reads |
-|------|-----------------------|
+| --- | --- |
 | **Camera** | Make, Model, Lens, Software |
 | **Timestamps** | Original capture date, modification date, file system dates |
 | **Exposure** | ISO, Aperture, Shutter Speed, Focal Length, Flash, Metering Mode |
@@ -173,7 +167,7 @@ WanderSort runs as a local server with an API-driven architecture. The backend i
 WanderSort is under active development. Here's what's built and what's coming:
 
 | Stage | Status |
-|-------|--------|
+| --- | --- |
 | File scanner with concurrent directory walking | ✅ Done |
 | File classifier (13 media formats, 4 categories) | ✅ Done |
 | Capture group detection (iPhone & DSLR patterns) | ✅ Done |

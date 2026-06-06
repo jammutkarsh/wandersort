@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 844.0989999999999 150.7" width="844.0989999999999" height="150.7" style="--bg: #1a1b26; --fg: #a9b1d6; --line: #3d59a1; --accent: #7aa2f7; --muted: #565f89; background: var(--bg); width: 844.099px; height: 150.7px;">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 85%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="arrowhead" markerWidth="8" markerHeight="5" refX="7" refY="2.5" orient="auto">
+    <polygon points="0 0, 8 2.5, 0 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round"/>
+  </marker>
+  <marker id="arrowhead-start" markerWidth="8" markerHeight="5" refX="1" refY="2.5" orient="auto-start-reverse">
+    <polygon points="8 0, 0 2.5, 8 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round"/>
+  </marker>
+</defs>
+<polyline class="edge" data-from="A" data-to="B" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="136.784,75.35 184.784,75.35" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)"/>
+<polyline class="edge" data-from="B" data-to="C" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="316.395,75.35 364.395,75.35" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)"/>
+<polyline class="edge" data-from="C" data-to="D" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="473.03499999999997,75.35 521.035,75.35" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)"/>
+<polyline class="edge" data-from="D" data-to="E" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="631.8979999999999,75.35 679.8979999999999,75.35" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)"/>
+<g class="node" data-id="A" data-label="🔍 SCAN&#10;Discover&#10;every file" data-shape="rectangle">
+  <rect x="40" y="40" width="96.78399999999999" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75"/>
+  <text x="88.392" y="75.35" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="88.392" dy="-12.350000000000001">🔍 SCAN</tspan><tspan x="88.392" dy="16.900000000000002">Discover</tspan><tspan x="88.392" dy="16.900000000000002">every file</tspan></text>
+</g>
+<g class="node" data-id="B" data-label="🏷️ CLASSIFY&#10;Identify&#10;what it is" data-shape="rectangle">
+  <rect x="184.784" y="40" width="131.611" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75"/>
+  <text x="250.5895" y="75.35" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="250.5895" dy="-12.350000000000001">🏷️ CLASSIFY</tspan><tspan x="250.5895" dy="16.900000000000002">Identify</tspan><tspan x="250.5895" dy="16.900000000000002">what it is</tspan></text>
+</g>
+<g class="node" data-id="C" data-label="#️⃣ HASH&#10;Fingerprint&#10;every byte" data-shape="rectangle">
+  <rect x="364.395" y="40" width="108.64" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75"/>
+  <text x="418.715" y="75.35" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="418.715" dy="-12.350000000000001">#️⃣ HASH</tspan><tspan x="418.715" dy="16.900000000000002">Fingerprint</tspan><tspan x="418.715" dy="16.900000000000002">every byte</tspan></text>
+</g>
+<g class="node" data-id="D" data-label="⚖️ SCORE&#10;Rank the&#10;best copy" data-shape="rectangle">
+  <rect x="521.035" y="40" width="110.86299999999999" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75"/>
+  <text x="576.4665" y="75.35" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="576.4665" dy="-12.350000000000001">⚖️ SCORE</tspan><tspan x="576.4665" dy="16.900000000000002">Rank the</tspan><tspan x="576.4665" dy="16.900000000000002">best copy</tspan></text>
+</g>
+<g class="node" data-id="E" data-label="📂 ORGANISE&#10;Build the&#10;folder tree" data-shape="rectangle">
+  <rect x="679.8979999999999" y="40" width="124.20099999999998" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75"/>
+  <text x="741.9984999999999" y="75.35" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="741.9984999999999" dy="-12.350000000000001">📂 ORGANISE</tspan><tspan x="741.9984999999999" dy="16.900000000000002">Build the</tspan><tspan x="741.9984999999999" dy="16.900000000000002">folder tree</tspan></text>
+</g>
+</svg>
