@@ -16,7 +16,7 @@ import (
 type Migration struct {
 	Version     uint
 	Description string
-	SQL         string
+	SQL         []string
 }
 
 // schemas is the ordered list of migrations. Append new migrations at the end;
@@ -52,9 +52,11 @@ func Run(db *sql.DB) (int, error) {
 			return 0, fmt.Errorf("migration v%d: error beginning transaction: %w", schema.Version, err)
 		}
 
-		if _, err := tx.Exec(schema.SQL); err != nil {
-			tx.Rollback()
-			return 0, fmt.Errorf("migration v%d (%s): error executing SQL: %w", schema.Version, schema.Description, err)
+		for _, stmt := range schema.SQL {
+			if _, err := tx.Exec(stmt); err != nil {
+				tx.Rollback()
+				return 0, fmt.Errorf("migration v%d (%s): error executing SQL: %w", schema.Version, schema.Description, err)
+			}
 		}
 
 		if _, err := tx.Exec(

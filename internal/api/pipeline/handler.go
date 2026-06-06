@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/jammutkarsh/wandersort/internal/api"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
 var upgrader = websocket.Upgrader{
@@ -77,7 +78,7 @@ func (h *Handler) HandleStartScan(c *gin.Context) {
 
 	api.RespondOK(c, http.StatusAccepted, StartScanResponse{
 		SessionID: sessionID.String(),
-		Status:    "SCAN",
+		Status:    sm.WorkflowStatusStarted,
 		Message:   "Scan started successfully",
 		ScanPaths: scanPaths,
 	})
