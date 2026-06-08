@@ -12,7 +12,6 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/hasher"
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
-	"github.com/jammutkarsh/wandersort/pkg/core/scorer"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
@@ -35,7 +34,6 @@ type Workflow struct {
 	/* Pipeline components */
 	scanner *scanner.Scanner
 	hasher  *hasher.Hasher
-	scorer  *scorer.Scorer
 
 	/* Concurreny settings */
 	// For a session at any given time,
@@ -93,7 +91,6 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 	sm := sm.NewStatusManager()
 	sc := scanner.NewScanner(db, log)
 	h := hasher.NewHasher(ctx, db, log)
-	s := scorer.NewScorer(db, log)
 	p := path.New()
 
 	return &Workflow{
@@ -101,7 +98,6 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 		db:             db,
 		scanner:        sc,
 		hasher:         h,
-		scorer:         s,
 		statusMgr:      sm,
 		log:            log,
 		workers:        cfg.Workers,
