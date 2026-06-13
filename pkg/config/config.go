@@ -55,7 +55,8 @@ func Load() (*Configuration, error) {
 	}
 
 	if locationDBPath == "" {
-		locationDBPath = filepath.Join(outputPath, ".wandersort.locationdb")
+		home, _ := os.UserHomeDir()
+		locationDBPath = filepath.Join(home, ".wandersort", "location.db")
 	}
 
 	if workers != "" {
