@@ -18,6 +18,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/locationdb"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -45,6 +46,13 @@ func main() {
 		log.Fatalf("failed to initialize database: %v", err)
 	}
 
+	// locationDB(SQLite) (downloaded automatically if absent)
+	lDB, err := locationdb.New(cfg.LocationDBPath, logger)
+	if err != nil {
+		log.Printf("warning: locationdb unavailable: %v", err)
+		lDB = nil
+	}
+
 	// Ensure the DB get closed on any exit path — including unrecovered panics.
 	// With locking_mode=EXCLUSIVE, a missing Close leaves the WAL/SHM files
 	// locked and prevents the server from restarting.
@@ -52,14 +60,17 @@ func main() {
 		if r := recover(); r != nil {
 			log.Printf("panic recovered during shutdown: %v", r)
 		}
-		logger.Info("Closing database")
+		logger.Info("Closing databases")
 		if err := sqliteDB.Close(); err != nil {
 			log.Printf("error closing database: %v", err)
+		}
+		if err := lDB.Close(); err != nil {
+			log.Printf("error closing location database: %v", err)
 		}
 	}()
 
 	// Create the unified workflow orchestrator
-	workflow := workflow.NewWorkflow(ctx, sqliteDB, logger, cfg)
+	workflow := workflow.NewWorkflow(ctx, sqliteDB, lDB, logger, cfg)
 
 	// API handlers
 	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(sqliteDB)))
