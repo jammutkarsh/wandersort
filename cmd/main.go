@@ -39,10 +39,16 @@ func main() {
 	// Logger
 	logger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile)
 
-	// Database (SQLite)
-	sqliteDB, err := db.New(cfg.DatabasePath, logger)
+	// wandersort DB (SQLite)
+	wandersortSQL, err := db.Open(cfg.DatabasePath, db.WandersortDB, logger)
 	if err != nil {
-		log.Fatalf("failed to initialize database: %v", err)
+		log.Fatalf("failed to initialize wandersort database: %v", err)
+	}
+	appDB := db.New(wandersortSQL, logger)
+
+	locationSQL, err := db.Open(cfg.DbLocationPath, db.LocationDB, logger)
+	if err != nil {
+		log.Fatalf("failed to initialize location database: %v", err)
 	}
 
 	// Ensure the DB get closed on any exit path — including unrecovered panics.
@@ -53,17 +59,20 @@ func main() {
 			log.Printf("panic recovered during shutdown: %v", r)
 		}
 		logger.Info("Closing database")
-		if err := sqliteDB.Close(); err != nil {
-			log.Printf("error closing database: %v", err)
+		if err := db.Close(wandersortSQL); err != nil {
+			log.Printf("error closing wandersort database: %v", err)
+		}
+		if err := locationSQL.Close(); err != nil {
+			log.Printf("error closing location database: %v", err)
 		}
 	}()
 
 	// Create the unified workflow orchestrator
-	workflow := workflow.NewWorkflow(ctx, sqliteDB, logger, cfg)
+	workflow := workflow.NewWorkflow(ctx, appDB, logger, cfg)
 
 	// API handlers
-	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(sqliteDB)))
-	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, workflow, pipeline.NewRepository(sqliteDB)))
+	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(appDB)))
+	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, workflow, pipeline.NewRepository(appDB)))
 
 	// Setup Gin router
 	router := setupRouter(logger, cfg.Host, adminHandler, pipelineHandler)
