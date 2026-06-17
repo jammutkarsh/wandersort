@@ -39,14 +39,13 @@ func main() {
 	// Logger
 	logger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile)
 
-	// wandersort DB (SQLite)
-	wandersortSQL, err := db.Open(cfg.DatabasePath, db.WandersortDB, logger)
+	// app DB (SQLite)
+	appDB, err := db.New(cfg.DatabasePath, db.AppDB, logger)
 	if err != nil {
 		log.Fatalf("failed to initialize wandersort database: %v", err)
 	}
-	appDB := db.New(wandersortSQL, logger)
 
-	locationSQL, err := db.Open(cfg.DbLocationPath, db.LocationDB, logger)
+	locationDB, err := db.New(cfg.DbLocationPath, db.LocationDB, logger)
 	if err != nil {
 		log.Fatalf("failed to initialize location database: %v", err)
 	}
@@ -59,10 +58,10 @@ func main() {
 			log.Printf("panic recovered during shutdown: %v", r)
 		}
 		logger.Info("Closing database")
-		if err := db.Close(wandersortSQL); err != nil {
+		if err := appDB.Close(); err != nil {
 			log.Printf("error closing wandersort database: %v", err)
 		}
-		if err := locationSQL.Close(); err != nil {
+		if err := locationDB.Close(); err != nil {
 			log.Printf("error closing location database: %v", err)
 		}
 	}()

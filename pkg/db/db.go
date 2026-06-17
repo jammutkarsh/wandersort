@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/binary"
 	"fmt"
@@ -8,23 +9,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/db/migrations"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	_ "modernc.org/sqlite"
 )
 
-// DBType identifies which database is being opened so Open can apply the
-// correct pragmas and setup for each one.
 type DBType int
 
 const (
-	// WandersortDB is the main application database (read-write, WAL mode,
-	// migrations, BulkWriter).
-	WandersortDB DBType = iota
-
-	// LocationDB is the GeoNames reverse-geocoding database (read-only).
-	// It is downloaded automatically if absent.
+	AppDB DBType = iota
 	LocationDB
 )
 
@@ -40,33 +36,41 @@ const (
 	locationMetaFileName = "location.json"
 )
 
-// Open is the single entry point for opening any database and returns a *sql.DB
-// ready to be passed into the respective package's init function.
-// For WandersortDB: creates the directory, applies WAL pragmas, runs migrations.
-// For LocationDB:   downloads the file if absent, opens in read-only mode.
-func Open(dbPath string, dbType DBType, log logger.Logger) (*sql.DB, error) {
+// DB wraps *sql.DB with a BulkWriter for database operations.
+// BulkWriter is nil for LocationDB connections.
+type DB struct {
+	SQL    *sql.DB
+	Writer *BulkWriter
+	log    logger.Logger
+}
+
+// New opens the database at dbPath according to dbType and returns a *DB.
+func New(dbPath string, dbType DBType, log logger.Logger) (*DB, error) {
 	switch dbType {
-	case WandersortDB:
-		return openWandersortDB(dbPath, log)
+	case AppDB:
+		return openAppDB(dbPath, log)
 	case LocationDB:
 		return openLocationDB(dbPath, log)
 	default:
-		return nil, fmt.Errorf("db: unknown DBType %d", dbType)
+		return nil, fmt.Errorf("unknown DBType %d", dbType)
 	}
 }
 
-// Close safely closes a wandersort application DB after running optimization
-// routines.
-func Close(sqlDB *sql.DB) error {
-	// PRAGMA optimize runs an analysis to update query planner statistics.
-	// It's highly recommended to run this just before closing the database.
-	if _, err := sqlDB.Exec("PRAGMA optimize"); err != nil {
-		return fmt.Errorf("db: pragma optimize failed: %w", err)
+func (d *DB) Close() error {
+	if d.Writer != nil {
+		d.Writer.Close()
 	}
-	return sqlDB.Close()
+
+	if d.Writer != nil {
+		if _, err := d.SQL.Exec("PRAGMA optimize"); err != nil {
+			return fmt.Errorf("pragma optimize: %w", err)
+		}
+	}
+
+	return d.SQL.Close()
 }
 
-func openWandersortDB(dbPath string, log logger.Logger) (*sql.DB, error) {
+func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("creating database directory: %w", err)
 	}
@@ -108,7 +112,7 @@ func openWandersortDB(dbPath string, log logger.Logger) (*sql.DB, error) {
 
 	if err := sqlDB.Ping(); err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("db: ping wandersort db: %w", err)
+		return nil, fmt.Errorf("appDB: unable to ping - %w", err)
 	}
 
 	log.Info("Database connection established", "path", dbPath)
@@ -116,32 +120,35 @@ func openWandersortDB(dbPath string, log logger.Logger) (*sql.DB, error) {
 	count, err := migrations.Run(sqlDB)
 	if err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("db: migrations: %w", err)
+		return nil, fmt.Errorf("appDB: migrations - %w", err)
 	}
 
 	log.Info("Migration completed", "migrations", count)
 	log.Info("Successfully connected to sqlite database", "path", dbPath)
-	return sqlDB, nil
+
+	d := &DB{SQL: sqlDB, log: log}
+	d.Writer = NewBulkWriter(sqlDB, log)
+	return d, nil
 }
 
-func openLocationDB(dbPath string, log logger.Logger) (*sql.DB, error) {
+func openLocationDB(dbPath string, log logger.Logger) (*DB, error) {
 	if err := ensureLocationDB(dbPath, log); err != nil {
-		return nil, fmt.Errorf("db: ensure location db: %w", err)
+		return nil, fmt.Errorf("ensure location db: %w", err)
 	}
 
 	dsn := fmt.Sprintf("file:%s?mode=ro&_journal=OFF&_sync=OFF", dbPath)
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("db: open location db: %w", err)
+		return nil, fmt.Errorf("locationDB: unable to open - %w", err)
 	}
 
 	if err := sqlDB.Ping(); err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("db: ping location db: %w", err)
+		return nil, fmt.Errorf("locationDB: unable to ping - %w", err)
 	}
 
 	log.Info("Successfully connected to location database", "path", dbPath)
-	return sqlDB, nil
+	return &DB{SQL: sqlDB, log: log}, nil
 }
 
 // ensureLocationDB creates the parent directory and downloads location.db if the file does not already exist at dbPath.
@@ -205,6 +212,81 @@ func downloadFile(dest, url string) error {
 	}
 
 	return nil
+}
+
+func (db *DB) Optimize(ctx context.Context) error {
+	// reclaim space safely after large delete operations.
+	if _, err := db.SQL.ExecContext(ctx, "PRAGMA incremental_vacuum"); err != nil {
+		return fmt.Errorf("incremental vacuum failed: %w", err)
+	}
+	// free as much SQLite internal memory as possible.
+	// Useful after massive batch operations.
+	if _, err := db.SQL.ExecContext(ctx, "PRAGMA shrink_memory"); err != nil {
+		return fmt.Errorf("shrink memory failed: %w", err)
+	}
+	return nil
+}
+
+// BeginTx starts a new transaction.
+func (db *DB) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	return db.SQL.BeginTx(ctx, opts)
+}
+
+// ExecContext executes a query without returning any rows.
+func (db *DB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return db.SQL.ExecContext(ctx, query, args...)
+}
+
+// QueryContext executes a query that returns rows.
+func (db *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return db.SQL.QueryContext(ctx, query, args...)
+}
+
+// QueryRowContext executes a query that is expected to return at most one row.
+func (db *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return db.SQL.QueryRowContext(ctx, query, args...)
+}
+
+// ExecRetry executes a query with exponential backoff if the database is busy.
+// This is useful for multi-threaded SQLite environments.
+func (db *DB) ExecRetry(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	const maxAttempts = 12
+	backoff := 50 * time.Millisecond
+	// Max time: 50ms * (2^12 - 1) = ~3.4s total retry time before giving up.
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		result, err := db.SQL.ExecContext(ctx, query, args...)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+
+		if !isSQLITEBusy(err) || attempt == maxAttempts {
+			return nil, err
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+
+		// Exponential backoff capped to keep retries bounded.
+		if backoff < 500*time.Millisecond {
+			backoff *= 2
+		}
+	}
+
+	return nil, lastErr
+}
+
+func isSQLITEBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "database is locked")
 }
 
 func appIDFromTag() int32 {
