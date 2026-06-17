@@ -10,8 +10,10 @@ import (
 	"os"
 	"sync"
 
+	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
@@ -20,20 +22,22 @@ import (
 
 // Hasher handles file hashing and content group management
 type Hasher struct {
-	ctx  context.Context
-	db   *db.DB
-	log  logger.Logger
-	path *path.Resolver
+	ctx      context.Context
+	db       *db.DB
+	log      logger.Logger
+	path     *path.Resolver
+	exiftool *exiftool.Extractor
 }
 
 // NewHasher creates a new hasher instance
 func NewHasher(ctx context.Context, db *db.DB, log logger.Logger) *Hasher {
 
 	return &Hasher{
-		ctx:  ctx,
-		db:   db,
-		log:  log,
-		path: path.New(),
+		ctx:      ctx,
+		db:       db,
+		log:      log,
+		path:     path.New(),
+		exiftool: exiftool.New(exiftool.Config{}),
 	}
 }
 
@@ -151,8 +155,13 @@ func (h *Hasher) hasher(ctx context.Context, cancel context.CancelFunc, workerCo
 					continue
 				}
 
+				exifRes := h.exiftool.Extract(ctx, file.absPath)
+				if exifRes.Err != nil {
+					h.log.Warn("Failed to extract exif data", "file_id", file.id, "path", file.absPath, "error", exifRes.Err)
+				}
+
 				select {
-				case toPersist <- hashedRecord{id: file.id, hash: hash}:
+				case toPersist <- hashedRecord{id: file.id, hash: hash, exif: &exifRes.Common}:
 				case <-ctx.Done():
 					return
 				}
@@ -200,7 +209,7 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, toPersist
 		}
 
 		ok := h.db.Writer.Write(func(ctx context.Context, tx *sql.Tx) error {
-			return h.storeHash(ctx, tx, hashed.id, hashed.hash)
+			return h.storeHash(ctx, tx, hashed.id, hashed.hash, hashed.exif)
 		})
 		if !ok {
 			persistErr <- fmt.Errorf("bulk writer closed")
@@ -223,13 +232,44 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, toPersist
 	persistErr <- nil
 }
 
-func (h *Hasher) storeHash(ctx context.Context, tx *sql.Tx, fileID int64, hash string) error {
+func (h *Hasher) storeHash(ctx context.Context, tx *sql.Tx, fileID int64, hash string, exif *classifier.CommonMetadata) error {
+	var imageWidth, imageHeight, gpsLat, gpsLon, makeField, modelField, dateTimeOrig, createDate *string
+
+	if exif != nil {
+		if exif.ImageWidth != "" {
+			imageWidth = &exif.ImageWidth
+		}
+		if exif.ImageHeight != "" {
+			imageHeight = &exif.ImageHeight
+		}
+		if exif.GPSLatitude != "" {
+			gpsLat = &exif.GPSLatitude
+		}
+		if exif.GPSLongitude != "" {
+			gpsLon = &exif.GPSLongitude
+		}
+		if exif.Make != "" {
+			makeField = &exif.Make
+		}
+		if exif.Model != "" {
+			modelField = &exif.Model
+		}
+		if exif.DateTimeOriginal != "" {
+			dateTimeOrig = &exif.DateTimeOriginal
+		}
+		if exif.CreateDate != "" {
+			createDate = &exif.CreateDate
+		}
+	}
+
 	// Update Hash and Status
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE file_registry
-		SET file_hash = ?, scan_status = 'HASHED', updated_at = datetime('now')
+		SET file_hash = ?, scan_status = 'HASHED', updated_at = datetime('now'),
+		    image_width = ?, image_height = ?, gps_latitude = ?, gps_longitude = ?,
+		    make = ?, model = ?, date_time_original = ?, create_date = ?
 		WHERE id = ?
-	`, hash, fileID); err != nil {
+	`, hash, imageWidth, imageHeight, gpsLat, gpsLon, makeField, modelField, dateTimeOrig, createDate, fileID); err != nil {
 		return fmt.Errorf("failed to update file registry: %w", err)
 	}
 

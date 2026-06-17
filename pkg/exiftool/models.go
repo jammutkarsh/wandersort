@@ -31,8 +31,3 @@ type Result struct {
 	// Err is non-nil when extraction or parsing failed for this file.
 	Err error
 }
-
-// job is the internal unit of work dispatched to each worker.
-type job struct {
-	path string
-}
