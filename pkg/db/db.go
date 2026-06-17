@@ -11,6 +11,8 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,15 +23,60 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// DB wraps the standard sql.DB connection.
+type DBType int
+
+const (
+	AppDB DBType = iota
+	LocationDB
+)
+
+const (
+	// locationDownloadBaseURL is the download URL for the locationDB asset.
+	// Upstream update schedules and data details can be found at the source URL.
+	locationDownloadBaseURL = "https://locationdb.utkarshchourasia.in"
+
+	LocationDBFileName = "location.db"
+
+	// locationMetaFileName is the metadata JSON published alongside the LocationDB.
+	// location.json holds the dynamic metadata (version, date) used to determine if a re-download is required.
+	locationMetaFileName = "location.json"
+)
+
+// DB wraps *sql.DB with a BulkWriter for database operations.
+// BulkWriter is nil for LocationDB connections.
 type DB struct {
 	SQL    *sql.DB
 	Writer *BulkWriter
 	log    logger.Logger
 }
 
-// New creates and initializes a new DB instance.
-func New(dbPath string, log logger.Logger) (*DB, error) {
+// New opens the database at dbPath according to dbType and returns a *DB.
+func New(dbPath string, dbType DBType, log logger.Logger) (*DB, error) {
+	switch dbType {
+	case AppDB:
+		return openAppDB(dbPath, log)
+	case LocationDB:
+		return openLocationDB(dbPath, log)
+	default:
+		return nil, fmt.Errorf("unknown DBType %d", dbType)
+	}
+}
+
+func (d *DB) Close() error {
+	if d.Writer != nil {
+		d.Writer.Close()
+	}
+
+	if d.Writer != nil {
+		if _, err := d.SQL.Exec("PRAGMA optimize"); err != nil {
+			return fmt.Errorf("pragma optimize: %w", err)
+		}
+	}
+
+	return d.SQL.Close()
+}
+
+func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("creating database directory: %w", err)
 	}
@@ -71,37 +118,106 @@ func New(dbPath string, log logger.Logger) (*DB, error) {
 
 	if err := sqlDB.Ping(); err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("unable to ping database: %w", err)
+		return nil, fmt.Errorf("appDB: unable to ping - %w", err)
 	}
 
 	log.Info("Database connection established", "path", dbPath)
 
-	var count int
-	if count, err = migrations.Run(sqlDB); err != nil {
+	count, err := migrations.Run(sqlDB)
+	if err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("running migrations: %w", err)
+		return nil, fmt.Errorf("appDB: migrations - %w", err)
 	}
 
-	log.Info("Migration Completed", "migrations", count)
+	log.Info("Migration completed", "migrations", count)
 	log.Info("Successfully connected to sqlite database", "path", dbPath)
+
 	d := &DB{SQL: sqlDB, log: log}
 	d.Writer = NewBulkWriter(sqlDB, log)
 	return d, nil
 }
 
-// Close safely closes the database after running optimization routines.
-// Call this instead of db.SQL.Close() during application shutdown.
-func (db *DB) Close() error {
-	if db.Writer != nil {
-		db.Writer.Close()
+func openLocationDB(dbPath string, log logger.Logger) (*DB, error) {
+	if err := ensureLocationDB(dbPath, log); err != nil {
+		return nil, fmt.Errorf("ensure location db: %w", err)
 	}
 
-	// PRAGMA optimize runs an analysis to update query planner statistics.
-	// It's highly recommended to run this just before closing the database.
-	if _, err := db.SQL.Exec("PRAGMA optimize"); err != nil {
-		return fmt.Errorf("pragma optimize failed: %w", err)
+	dsn := fmt.Sprintf("file:%s?mode=ro&_journal=OFF&_sync=OFF", dbPath)
+	sqlDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("locationDB: unable to open - %w", err)
 	}
-	return db.SQL.Close()
+
+	if err := sqlDB.Ping(); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("locationDB: unable to ping - %w", err)
+	}
+
+	log.Info("Successfully connected to location database", "path", dbPath)
+	return &DB{SQL: sqlDB, log: log}, nil
+}
+
+// ensureLocationDB creates the parent directory and downloads location.db if the file does not already exist at dbPath.
+func ensureLocationDB(dbPath string, log logger.Logger) error {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		return fmt.Errorf("create dir %q: %w", dbPath, err)
+	}
+
+	if _, err := os.Stat(dbPath); err == nil {
+		log.Info("location db found; no need to download", "path", dbPath)
+		return nil
+	}
+
+	log.Info("location db not found; downloading", "url", locationDownloadBaseURL+"/"+LocationDBFileName)
+
+	if err := downloadFile(dbPath, locationDownloadBaseURL+"/"+LocationDBFileName); err != nil {
+		return fmt.Errorf("download %s: %w", LocationDBFileName, err)
+	}
+
+	metaPath := filepath.Join(filepath.Dir(dbPath), locationMetaFileName)
+	if err := downloadFile(metaPath, locationDownloadBaseURL+"/"+locationMetaFileName); err != nil {
+		log.Info("location db: could not download metadata (non-fatal)", "file", locationMetaFileName, "error", err)
+	}
+
+	return nil
+}
+
+// downloadFile fetches url and writes the body to dest atomically (via a temp
+// file) so a partial download never leaves a corrupt file at dest.
+func downloadFile(dest, url string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: unexpected status %s", url, resp.Status)
+	}
+
+	// Write to a temp file in the same directory so os.Rename is atomic.
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".dl-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpName) // no-op if Rename succeeded
+	}()
+
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		return fmt.Errorf("write %s: %w", dest, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpName, dest); err != nil {
+		return fmt.Errorf("rename to %s: %w", dest, err)
+	}
+
+	return nil
 }
 
 func (db *DB) Optimize(ctx context.Context) error {
