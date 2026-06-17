@@ -11,6 +11,7 @@ type Configuration struct {
 	ServerPort      string
 	Host            string
 	DatabasePath    string
+	DbLocationPath  string
 	OutputPath      string
 	LogLevel        string
 	LogConsole      bool
@@ -27,6 +28,7 @@ func Load() (*Configuration, error) {
 		logPath            = os.Getenv("LOG_FILE")
 		logLevel           = os.Getenv("LOG_LEVEL")
 		dbPath             = os.Getenv("DB_PATH")
+		dbLocationPath     = os.Getenv("DB_LOCATION_PATH")
 		workers            = os.Getenv("WORKERS")
 		port               = os.Getenv("PORT")
 		host               = os.Getenv("HOST")
@@ -50,6 +52,11 @@ func Load() (*Configuration, error) {
 
 	if dbPath == "" {
 		dbPath = filepath.Join(outputPath, ".wandersort.db")
+	}
+
+	if dbLocationPath == "" {
+		home, _ := os.UserHomeDir()
+		dbLocationPath = filepath.Join(home, ".wandersort", "location.db")
 	}
 
 	if workers != "" {
@@ -85,6 +92,7 @@ func Load() (*Configuration, error) {
 		LogFile:         logPath,
 		LogConsole:      true,
 		DatabasePath:    dbPath,
+		DbLocationPath:  dbLocationPath,
 		Workers:         workerCount,
 		UpdateInterval:  updateInterval,
 		FinalizeTimeout: finalizeTimeout,
