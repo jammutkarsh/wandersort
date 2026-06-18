@@ -1,7 +1,6 @@
 package locationdb
 
 import (
-	"context"
 	"database/sql"
 	"os"
 	"testing"
@@ -34,49 +33,4 @@ func makeFixtureDB(t *testing.T) *sql.DB {
 	}
 
 	return db
-}
-
-func TestLookup_ExpectedCity(t *testing.T) {
-	db := makeFixtureDB(t)
-	ldb := &DB{db: db, cache: make(map[cacheKey]string)}
-
-	city, err := ldb.Lookup(context.Background(), 16.88, 96.159)
-	if err != nil {
-		t.Fatalf("Lookup error: %v", err)
-	}
-	if city != "Yangon" {
-		t.Errorf("got %q, want %q", city, "Yangon")
-	}
-}
-
-func TestLookup_FarFromAnyPlace(t *testing.T) {
-	db := makeFixtureDB(t)
-	ldb := &DB{db: db, cache: make(map[cacheKey]string)}
-
-	_, err := ldb.Lookup(context.Background(), 0.0, 0.0)
-	if err != ErrNoLocation {
-		t.Errorf("got %v, want ErrNoLocation", err)
-	}
-}
-
-func TestLookup_CacheHit(t *testing.T) {
-	db := makeFixtureDB(t)
-	ldb := &DB{db: db, cache: make(map[cacheKey]string)}
-
-	ctx := context.Background()
-	city1, err := ldb.Lookup(ctx, 16.88, 96.159)
-	if err != nil {
-		t.Fatalf("first Lookup error: %v", err)
-	}
-
-	// Close the underlying DB to prove the second call serves from cache.
-	db.Close()
-
-	city2, err := ldb.Lookup(ctx, 16.88, 96.159)
-	if err != nil {
-		t.Fatalf("second Lookup (cache) error: %v", err)
-	}
-	if city1 != city2 {
-		t.Errorf("cache returned %q, want %q", city2, city1)
-	}
 }

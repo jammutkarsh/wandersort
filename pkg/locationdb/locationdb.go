@@ -6,193 +6,86 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	_ "modernc.org/sqlite"
 )
 
-var (
-	ErrNoLocation    = errors.New("locationdb: location not found")
-	ErrNotConfigured = errors.New("locationdb: database path not configured")
-)
+var ErrNoLocation = errors.New("locationdb: location not found")
 
-const (
-	// downloadBaseURL is the download URL for the locationDB asset.
-	// The DB file is updated on the 1st of every month; location.json holds
-	// the metadata (version, date) so we can decide whether to re-download.
-	downloadBaseURL = "https://locationdb.utkarshchourasia.in"
+// maxDistSquared is the rejection threshold for the nearest-neighbour search,
+// expressed as squared Euclidean distance in degree-space.
+// sqrt(0.01) = 0.1° ≈ 11 km.
+const maxDistSquared = 0.01
 
-	// dbFileName is the SQLite database file name inside $HOME/.wandersort/
-	dbFileName = "location.db"
-
-	// metaFileName is the metadata JSON file published alongside the DB.
-	metaFileName = "location.json"
-
-	// maxDistSquared is the rejection threshold for the nearest-neighbour search,
-	// expressed as squared Euclidean distance in degree-space.
-	//
-	// sqrt(0.01) = 0.1° ≈ 11 km at the equator. Any candidate farther than that
-	// is treated as "no location found" and ErrNoLocation is returned instead.
-	maxDistSquared = 0.01
-)
-
-// cacheKey is the lookup key for the in-memory result cache.
-// Coordinates are rounded to 4 decimal places (≈11 m precision) before use,
-// so burst photos taken at the same spot share a single DB round-trip.
 type cacheKey struct {
 	lat, lon float64
 }
 
-// LocationDB holds a read-only connection to the GeoNames SQLite database and
-// an in-memory result cache.
 type DB struct {
-	db    *sql.DB
-	mu    sync.Mutex
-	cache map[cacheKey]string
+	db    *db.DB
+	cache sync.Map // No need for sync.Mutex or RWMutex
+	sf    singleflight.Group
 	log   logger.Logger
 }
 
-// locationMeta mirrors the JSON structure of location.json in the release.
 type locationMeta struct {
 	Version   string    `json:"version"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// New downloads the DB file if it is absent and initializes a new DB instance.
-func New(dbPath string, log logger.Logger) (*DB, error) {
-	if err := ensureDB(dbPath, log); err != nil {
-		return nil, fmt.Errorf("locationdb: ensure db: %w", err)
-	}
-	return open(dbPath, log)
-}
-
-// ensureDB downloads location.db into the parent directory of dbPath if the file does not already exist.
-// The parent directory is created with 0755 permissions if needed.
-func ensureDB(dbPath string, log logger.Logger) error {
-	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create dir %q: %w", dir, err)
-	}
-
-	if _, err := os.Stat(dbPath); err == nil {
-		log.Info("locationdb found; no need to download", "database filename", dbFileName)
+func New(conn *db.DB, log logger.Logger) *DB {
+	if err := verifyLocationContent(conn); err != nil {
+		log.Error(err.Error())
 		return nil
 	}
-
-	log.Info("locationdb not found; downloading from", "download URL", downloadBaseURL+"/"+dbFileName)
-	if err := downloadFile(dbPath, downloadBaseURL+"/"+dbFileName); err != nil {
-		return fmt.Errorf("download %s: %w", dbFileName, err)
+	return &DB{
+		db:  conn,
+		log: log,
 	}
+}
 
-	// Also download the metadata file next to the DB so the user (and future
-	// tooling) can inspect the version without opening the SQLite file.
-	metaPath := filepath.Join(dir, metaFileName)
-	if err := downloadFile(metaPath, downloadBaseURL+"/"+metaFileName); err != nil {
-		// Non-fatal: the DB itself is what matters.
-		log.Info("locationdb: warning: could not download metadata", "file", metaFileName, "error", err)
+// verifyLocationContent confirms the given connection points at a database
+// that actually contains location data.
+func verifyLocationContent(conn *db.DB) error {
+	var name string
+	err := conn.QueryRowContext(context.Background(),
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='geonames_cities'`,
+	).Scan(&name)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("geonames_cities table not found in location database")
 	}
-
+	if err != nil {
+		return fmt.Errorf("verifying schema: %w", err)
+	}
 	return nil
 }
 
-// downloadFile fetches url and writes the body to dest atomically (via a temp
-// file) so a partial download never leaves a corrupt file at dest.
-func downloadFile(dest, url string) error {
-	resp, err := http.Get(url) //nolint:noctx // startup path, no context available
-	if err != nil {
-		return fmt.Errorf("GET %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: unexpected status %s", url, resp.Status)
-	}
-
-	// Write to a temp file in the same directory so os.Rename is atomic.
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".dl-*")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		tmp.Close()
-		os.Remove(tmpName) // no-op if Rename succeeded
-	}()
-
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
-		return fmt.Errorf("write %s: %w", dest, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file: %w", err)
-	}
-
-	if err := os.Rename(tmpName, dest); err != nil {
-		return fmt.Errorf("rename to %s: %w", dest, err)
-	}
-
-	return nil
-}
-
-// ReadMeta reads and returns the metadata stored in location.json next to the
-// DB file. Useful for logging or displaying the DB version to the user.
-func ReadMeta(dbPath string) (*locationMeta, error) {
-	metaPath := filepath.Join(filepath.Dir(dbPath), metaFileName)
+// Meta reads and returns the metadata stored in location.json
+func Meta(dbPath string) (*locationMeta, error) {
+	metaPath := filepath.Join(filepath.Dir(dbPath), db.LocationDBFileName)
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
-		return nil, fmt.Errorf("locationdb: read meta: %w", err)
+		return nil, fmt.Errorf("unable to read location meta: %w", err)
 	}
 	var m locationMeta
 	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("locationdb: parse meta: %w", err)
+		return nil, fmt.Errorf("unable to parse location meta: %w", err)
 	}
 	return &m, nil
 }
 
-// open opens the GeoNames SQLite database at dbPath in read-only mode.
-// Returns ErrNotConfigured if dbPath is empty.
-func open(dbPath string, log logger.Logger) (*DB, error) {
-	if dbPath == "" {
-		return nil, ErrNotConfigured
-	}
-
-	dsn := fmt.Sprintf("file:%s?mode=ro&_journal=OFF&_sync=OFF", dbPath)
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("locationdb: open %q: %w", dbPath, err)
-	}
-
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("locationdb: ping %q: %w", dbPath, err)
-	}
-
-	log.Info("Successfully connected to location database", "path", dbPath)
-	return &DB{
-		db:    db,
-		cache: make(map[cacheKey]string),
-		log:   log,
-	}, nil
-}
-
-// Close closes the underlying SQLite database connection.
-// Should be called during the application is shutting down.
-func (l *DB) Close() error {
-	return l.db.Close()
-}
-
 // Lookup returns the name of the nearest populated place for the given
 // decimal-degree coordinates.
-//
-// Results are cached: coordinates rounded to 4 decimal places (~11 m
-// precision) share one cache entry, so photos taken at virtually the same
-// spot never hit the database twice.
 func (l *DB) Lookup(ctx context.Context, lat, lon float64) (string, error) {
 	// Round to 4 decimal places ≈ 11 m precision — close enough that photos
 	// from the same physical spot.
@@ -202,23 +95,28 @@ func (l *DB) Lookup(ctx context.Context, lat, lon float64) (string, error) {
 		lon: math.Round(lon*10000) / 10000,
 	}
 
-	l.mu.Lock()
-	if city, ok := l.cache[key]; ok {
-		l.mu.Unlock()
-		return city, nil
+	if val, ok := l.cache.Load(key); ok {
+		return val.(string), nil
 	}
-	l.mu.Unlock()
 
-	city, err := l.queryNearest(ctx, key.lat, key.lon)
+	val, err, _ := l.sf.Do(fmt.Sprintf("%f:%f", key.lat, key.lon), func() (interface{}, error) {
+		if val, ok := l.cache.Load(key); ok {
+			return val, nil
+		}
+
+		city, err := l.queryNearest(ctx, key.lat, key.lon)
+		if err != nil {
+			return "", err
+		}
+
+		l.cache.Store(key, city)
+		return city, nil
+	})
+
 	if err != nil {
 		return "", err
 	}
-
-	l.mu.Lock()
-	l.cache[key] = city
-	l.mu.Unlock()
-
-	return city, nil
+	return val.(string), nil
 }
 
 // queryNearest finds the closest city name to the given coordinates.
@@ -237,10 +135,10 @@ func (l *DB) queryNearest(ctx context.Context, lat, lon float64) (string, error)
 	// deltaDegrees lists the bounding-box half-widths to try in order.
 	//   0.09° ≈ 10 km — tight first pass, covers most intra-city lookups.
 	//   0.45° ≈ 50 km — wider fallback for rural or coastal photos.
+	// TODO: Consider using a range of values here instead of fixed deltas,
+	// to better handle varying location densities across different regions.
 	deltaDegrees := []float64{0.09, 0.45}
 
-	// CTE passes lat, lon, and delta as named params so each appears only once,
-	// avoiding the error-prone repetition of positional ? placeholders.
 	const query = `
 WITH params AS (
     SELECT ? AS lat, ? AS lon, ? AS delta
@@ -253,6 +151,14 @@ WHERE  gc.latitude  BETWEEN p.lat - p.delta AND p.lat + p.delta
 AND    gc.longitude BETWEEN p.lon - p.delta AND p.lon + p.delta
 ORDER  BY dist
 LIMIT  1`
+	// TODO: Return all candidate locations ranked by distance instead of just the
+	// nearest one. This will be useful in the VFS stage when the user wants to
+	// correct a wrong location — we can suggest ranked options based on our findings.
+	// Once the user submits a value, search it again in the DB and store it so all
+	// subsequent operations use the same location.
+	// Example: A user visits a niche place and uploads photos (session X). Later,
+	// their friend uploads photos from the same place (session Y). Ideally both
+	// sessions resolve to the same location.
 
 	for _, delta := range deltaDegrees {
 		row := l.db.QueryRowContext(ctx, query, lat, lon, delta)
@@ -267,7 +173,7 @@ LIMIT  1`
 		}
 
 		if dist > maxDistSquared {
-			return "", ErrNoLocation
+			continue
 		}
 
 		return city, nil

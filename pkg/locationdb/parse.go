@@ -53,15 +53,23 @@ func parseDMS(s string) (float64, error) {
 		return 0, fmt.Errorf("missing hemisphere indicator (N/S/E/W)")
 	}
 
-	// Strip the trailing hemisphere character (last byte) from the body.
+	// trim N/S/E/W
+	// `31 deg 34' 5.84" N` -> `31 deg 34' 5.84" `
 	body := s[:len(s)-1]
+
+	// `31 deg 34' 5.84" ` -> `31 deg 34' 5.84"`
 	body = strings.TrimSpace(body)
 
-	// Normalise DMS separators to spaces so Fields can split uniformly.
+	// `31 deg 34' 5.84"` -> `31   34' 5.84"`
 	body = strings.ReplaceAll(body, "deg", " ")
+
+	// `31   34' 5.84"` -> `31   34  5.84"`
 	body = strings.ReplaceAll(body, "'", " ")
+
+	// `31   34  5.84"` -> `31   34  5.84 `
 	body = strings.ReplaceAll(body, `"`, " ")
 
+	// `31   34  5.84 ` -> ["31", "34", "5.84"]
 	parts := strings.Fields(body)
 	if len(parts) != 3 {
 		return 0, fmt.Errorf("expected 3 numeric fields after stripping tokens, got %d in %q", len(parts), s)

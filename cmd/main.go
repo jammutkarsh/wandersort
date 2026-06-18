@@ -18,6 +18,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/locationdb"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -42,13 +43,15 @@ func main() {
 	// app DB (SQLite)
 	appDB, err := db.New(cfg.DatabasePath, db.AppDB, logger)
 	if err != nil {
-		log.Fatalf("failed to initialize wandersort database: %v", err)
+		logger.Error("failed to initialize wandersort database: %v", err)
 	}
 
-	locationDB, err := db.New(cfg.DbLocationPath, db.LocationDB, logger)
+	locationConn, err := db.New(cfg.DbLocationPath, db.LocationDB, logger)
 	if err != nil {
-		log.Fatalf("failed to initialize location database: %v", err)
+		logger.Error("failed to initialize location database: %v", err)
 	}
+
+	lDB := locationdb.New(locationConn, logger)
 
 	// Ensure the DB get closed on any exit path — including unrecovered panics.
 	// With locking_mode=EXCLUSIVE, a missing Close leaves the WAL/SHM files
@@ -61,13 +64,13 @@ func main() {
 		if err := appDB.Close(); err != nil {
 			log.Printf("error closing wandersort database: %v", err)
 		}
-		if err := locationDB.Close(); err != nil {
+		if err := locationConn.Close(); err != nil {
 			log.Printf("error closing location database: %v", err)
 		}
 	}()
 
 	// Create the unified workflow orchestrator
-	workflow := workflow.NewWorkflow(ctx, appDB, logger, cfg)
+	workflow := workflow.NewWorkflow(ctx, appDB, lDB, logger, cfg)
 
 	// API handlers
 	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(appDB)))
