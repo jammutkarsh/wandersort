@@ -11,6 +11,7 @@ type Configuration struct {
 	ServerPort      string
 	Host            string
 	DatabasePath    string
+	DbLocationPath  string
 	OutputPath      string
 	LogLevel        string
 	LogConsole      bool
@@ -18,7 +19,6 @@ type Configuration struct {
 	Workers         int
 	UpdateInterval  time.Duration
 	FinalizeTimeout time.Duration
-	LocationDBPath  string
 }
 
 func Load() (*Configuration, error) {
@@ -28,12 +28,12 @@ func Load() (*Configuration, error) {
 		logPath            = os.Getenv("LOG_FILE")
 		logLevel           = os.Getenv("LOG_LEVEL")
 		dbPath             = os.Getenv("DB_PATH")
+		dbLocationPath     = os.Getenv("DB_LOCATION_PATH")
 		workers            = os.Getenv("WORKERS")
 		port               = os.Getenv("PORT")
 		host               = os.Getenv("HOST")
 		updateIntervalStr  = os.Getenv("UPDATE_INTERVAL")
 		finalizeTimeoutStr = os.Getenv("FINALIZE_TIMEOUT")
-		locationDBPath     = os.Getenv("LOCATION_DB_PATH")
 		workerCount        = defaultWorkers
 	)
 
@@ -54,9 +54,9 @@ func Load() (*Configuration, error) {
 		dbPath = filepath.Join(outputPath, ".wandersort.db")
 	}
 
-	if locationDBPath == "" {
+	if dbLocationPath == "" {
 		home, _ := os.UserHomeDir()
-		locationDBPath = filepath.Join(home, ".wandersort", "location.db")
+		dbLocationPath = filepath.Join(home, ".wandersort", "location.db")
 	}
 
 	if workers != "" {
@@ -92,9 +92,9 @@ func Load() (*Configuration, error) {
 		LogFile:         logPath,
 		LogConsole:      true,
 		DatabasePath:    dbPath,
+		DbLocationPath:  dbLocationPath,
 		Workers:         workerCount,
 		UpdateInterval:  updateInterval,
 		FinalizeTimeout: finalizeTimeout,
-		LocationDBPath:  locationDBPath,
 	}, nil
 }

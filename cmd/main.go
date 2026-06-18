@@ -18,7 +18,6 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/locationdb"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -40,17 +39,15 @@ func main() {
 	// Logger
 	logger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile)
 
-	// Database (SQLite)
-	sqliteDB, err := db.New(cfg.DatabasePath, logger)
+	// app DB (SQLite)
+	appDB, err := db.New(cfg.DatabasePath, db.AppDB, logger)
 	if err != nil {
-		log.Fatalf("failed to initialize database: %v", err)
+		log.Fatalf("failed to initialize wandersort database: %v", err)
 	}
 
-	// locationDB(SQLite) (downloaded automatically if absent)
-	lDB, err := locationdb.New(cfg.LocationDBPath, logger)
+	locationDB, err := db.New(cfg.DbLocationPath, db.LocationDB, logger)
 	if err != nil {
-		log.Printf("warning: locationdb unavailable: %v", err)
-		lDB = nil
+		log.Fatalf("failed to initialize location database: %v", err)
 	}
 
 	// Ensure the DB get closed on any exit path — including unrecovered panics.
@@ -60,21 +57,21 @@ func main() {
 		if r := recover(); r != nil {
 			log.Printf("panic recovered during shutdown: %v", r)
 		}
-		logger.Info("Closing databases")
-		if err := sqliteDB.Close(); err != nil {
-			log.Printf("error closing database: %v", err)
+		logger.Info("Closing database")
+		if err := appDB.Close(); err != nil {
+			log.Printf("error closing wandersort database: %v", err)
 		}
-		if err := lDB.Close(); err != nil {
+		if err := locationDB.Close(); err != nil {
 			log.Printf("error closing location database: %v", err)
 		}
 	}()
 
 	// Create the unified workflow orchestrator
-	workflow := workflow.NewWorkflow(ctx, sqliteDB, lDB, logger, cfg)
+	workflow := workflow.NewWorkflow(ctx, appDB, logger, cfg)
 
 	// API handlers
-	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(sqliteDB)))
-	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, workflow, pipeline.NewRepository(sqliteDB)))
+	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(appDB)))
+	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, workflow, pipeline.NewRepository(appDB)))
 
 	// Setup Gin router
 	router := setupRouter(logger, cfg.Host, adminHandler, pipelineHandler)
