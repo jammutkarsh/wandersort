@@ -37,7 +37,7 @@ func NewHasher(ctx context.Context, db *db.DB, log logger.Logger) *Hasher {
 		db:       db,
 		log:      log,
 		path:     path.New(),
-		exiftool: exiftool.New(exiftool.Config{}),
+		exiftool: exiftool.New(),
 	}
 }
 
@@ -155,13 +155,15 @@ func (h *Hasher) hasher(ctx context.Context, cancel context.CancelFunc, workerCo
 					continue
 				}
 
-				exifRes := h.exiftool.Extract(ctx, file.absPath)
-				if exifRes.Err != nil {
-					h.log.Warn("Failed to extract exif data", "file_id", file.id, "path", file.absPath, "error", exifRes.Err)
+				exifData, err := h.exiftool.Extract(ctx, file.absPath)
+				var exifPtr *classifier.CommonMetadata
+				if err != nil {
+					h.log.Warn("Failed to extract exif data", "file_id", file.id, "path", file.absPath, "error", err)
 				}
+				exifPtr = &exifData
 
 				select {
-				case toPersist <- hashedRecord{id: file.id, hash: hash, exif: &exifRes.Common}:
+				case toPersist <- hashedRecord{id: file.id, hash: hash, exif: exifPtr}:
 				case <-ctx.Done():
 					return
 				}
