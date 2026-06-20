@@ -156,14 +156,12 @@ func (h *Hasher) hasher(ctx context.Context, cancel context.CancelFunc, workerCo
 				}
 
 				exifData, err := h.exiftool.Extract(ctx, file.absPath)
-				var exifPtr *classifier.CommonMetadata
 				if err != nil {
 					h.log.Warn("Failed to extract exif data", "file_id", file.id, "path", file.absPath, "error", err)
 				}
-				exifPtr = &exifData
 
 				select {
-				case toPersist <- hashedRecord{id: file.id, hash: hash, exif: exifPtr}:
+				case toPersist <- hashedRecord{id: file.id, hash: hash, exif: exifData}:
 				case <-ctx.Done():
 					return
 				}
@@ -234,44 +232,24 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, toPersist
 	persistErr <- nil
 }
 
-func (h *Hasher) storeHash(ctx context.Context, tx *sql.Tx, fileID int64, hash string, exif *classifier.CommonMetadata) error {
-	var imageWidth, imageHeight, gpsLat, gpsLon, makeField, modelField, dateTimeOrig, createDate *string
-
-	if exif != nil {
-		if exif.ImageWidth != "" {
-			imageWidth = &exif.ImageWidth
-		}
-		if exif.ImageHeight != "" {
-			imageHeight = &exif.ImageHeight
-		}
-		if exif.GPSLatitude != "" {
-			gpsLat = &exif.GPSLatitude
-		}
-		if exif.GPSLongitude != "" {
-			gpsLon = &exif.GPSLongitude
-		}
-		if exif.Make != "" {
-			makeField = &exif.Make
-		}
-		if exif.Model != "" {
-			modelField = &exif.Model
-		}
-		if exif.DateTimeOriginal != "" {
-			dateTimeOrig = &exif.DateTimeOriginal
-		}
-		if exif.CreateDate != "" {
-			createDate = &exif.CreateDate
-		}
-	}
-
+func (h *Hasher) storeHash(ctx context.Context, tx *sql.Tx, fileID int64, hash string, exif classifier.CommonMetadata) error {
 	// Update Hash and Status
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE file_registry
 		SET file_hash = ?, scan_status = 'HASHED', updated_at = datetime('now'),
-		    image_width = ?, image_height = ?, gps_latitude = ?, gps_longitude = ?,
-		    make = ?, model = ?, date_time_original = ?, create_date = ?
+			image_width = ?, image_height = ?, gps_latitude = ?, gps_longitude = ?,
+			make = ?, model = ?, date_time_original = ?, create_date = ?
 		WHERE id = ?
-	`, hash, imageWidth, imageHeight, gpsLat, gpsLon, makeField, modelField, dateTimeOrig, createDate, fileID); err != nil {
+	`, hash,
+		nullIfEmpty(exif.ImageWidth),
+		nullIfEmpty(exif.ImageHeight),
+		nullIfEmpty(exif.GPSLatitude),
+		nullIfEmpty(exif.GPSLongitude),
+		nullIfEmpty(exif.Make),
+		nullIfEmpty(exif.Model),
+		nullIfEmpty(exif.DateTimeOriginal),
+		nullIfEmpty(exif.CreateDate),
+		fileID); err != nil {
 		return fmt.Errorf("failed to update file registry: %w", err)
 	}
 
@@ -309,4 +287,11 @@ func (h *Hasher) markFileError(fileID int64) {
 		`, fileID)
 		return err
 	})
+}
+
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

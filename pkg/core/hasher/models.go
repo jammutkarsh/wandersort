@@ -36,5 +36,5 @@ type fileRecord struct {
 type hashedRecord struct {
 	id   int64
 	hash string
-	exif *classifier.CommonMetadata
+	exif classifier.CommonMetadata
 }
