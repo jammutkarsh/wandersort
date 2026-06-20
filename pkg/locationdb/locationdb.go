@@ -3,12 +3,9 @@ package locationdb
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -38,50 +35,29 @@ type DB struct {
 }
 
 type locationMeta struct {
+	Hash      string    `json:"sha256"`
 	Version   string    `json:"version"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func New(conn *db.DB, log logger.Logger) *DB {
-	if err := verifyLocationContent(conn); err != nil {
-		log.Error(err.Error())
+	var count int
+	if err := conn.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM geonames_cities`,
+	).Scan(&count); err != nil {
+		log.Error(fmt.Sprintf("verifying location database: %v", err))
 		return nil
 	}
+
+	if count == 0 {
+		log.Error(fmt.Sprintf("geonames_cities has no data"))
+		return nil
+	}
+
 	return &DB{
 		db:  conn,
 		log: log,
 	}
-}
-
-// verifyLocationContent confirms the given connection points at a database
-// that actually contains location data.
-func verifyLocationContent(conn *db.DB) error {
-	var name string
-	err := conn.QueryRowContext(context.Background(),
-		`SELECT name FROM sqlite_master WHERE type='table' AND name='geonames_cities'`,
-	).Scan(&name)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		return errors.New("geonames_cities table not found in location database")
-	}
-	if err != nil {
-		return fmt.Errorf("verifying schema: %w", err)
-	}
-	return nil
-}
-
-// Meta reads and returns the metadata stored in location.json
-func Meta(dbPath string) (*locationMeta, error) {
-	metaPath := filepath.Join(filepath.Dir(dbPath), db.LocationDBFileName)
-	data, err := os.ReadFile(metaPath)
-	if err != nil {
-		return nil, fmt.Errorf("unable to read location meta: %w", err)
-	}
-	var m locationMeta
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("unable to parse location meta: %w", err)
-	}
-	return &m, nil
 }
 
 // Lookup returns the name of the nearest populated place for the given
@@ -95,11 +71,14 @@ func (l *DB) Lookup(ctx context.Context, lat, lon float64) (string, error) {
 		lon: math.Round(lon*10000) / 10000,
 	}
 
+	// 1. Load: Returns value and a boolean 'ok'
 	if val, ok := l.cache.Load(key); ok {
 		return val.(string), nil
 	}
 
+	// 2. Singleflight: Protect against cache stampede
 	val, err, _ := l.sf.Do(fmt.Sprintf("%f:%f", key.lat, key.lon), func() (interface{}, error) {
+		// Re-check cache in case another goroutine just finished the DB call
 		if val, ok := l.cache.Load(key); ok {
 			return val, nil
 		}
@@ -109,6 +88,7 @@ func (l *DB) Lookup(ctx context.Context, lat, lon float64) (string, error) {
 			return "", err
 		}
 
+		// 3. Store: Cache the result
 		l.cache.Store(key, city)
 		return city, nil
 	})

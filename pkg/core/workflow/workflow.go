@@ -25,7 +25,7 @@ import (
 type Workflow struct {
 	ctx        context.Context
 	db         *db.DB
-	ldb        *locationdb.DB
+	locationDB *locationdb.DB
 	outputPath string
 	log        logger.Logger
 
@@ -89,7 +89,7 @@ func (kind workflowPhaseKind) completedStatus() string {
 }
 
 // NewWorkflow creates a new workflow instance.
-func NewWorkflow(ctx context.Context, db *db.DB, ldb *locationdb.DB, log logger.Logger, cfg *config.Configuration) *Workflow {
+func NewWorkflow(ctx context.Context, db *db.DB, locationDB *locationdb.DB, log logger.Logger, cfg *config.Configuration) *Workflow {
 	sm := sm.NewStatusManager()
 	sc := scanner.NewScanner(db, log)
 	h := hasher.NewHasher(ctx, db, log)
@@ -98,7 +98,7 @@ func NewWorkflow(ctx context.Context, db *db.DB, ldb *locationdb.DB, log logger.
 	return &Workflow{
 		ctx:            ctx,
 		db:             db,
-		ldb:            ldb,
+		locationDB:     locationDB,
 		scanner:        sc,
 		hasher:         h,
 		statusMgr:      sm,

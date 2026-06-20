@@ -33,13 +33,13 @@ func ParseGPS(latStr, lonStr string) (float64, float64, error) {
 //
 // N/E → positive result; S/W → negative result.
 // Returns a descriptive error on malformed input; never panics.
-func parseDMS(s string) (float64, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, fmt.Errorf("empty string")
+func parseDMS(dms string) (float64, error) {
+	dms = strings.TrimSpace(dms)
+	if dms == "" {
+		return 0, fmt.Errorf("empty DMS")
 	}
 
-	upper := strings.ToUpper(s)
+	upper := strings.ToUpper(dms)
 
 	// Determine sign from the trailing hemisphere letter.
 	// Directions are geographic constants: N/E → positive, S/W → negative.
@@ -55,7 +55,7 @@ func parseDMS(s string) (float64, error) {
 
 	// trim N/S/E/W
 	// `31 deg 34' 5.84" N` -> `31 deg 34' 5.84" `
-	body := s[:len(s)-1]
+	body := dms[:len(dms)-1]
 
 	// `31 deg 34' 5.84" ` -> `31 deg 34' 5.84"`
 	body = strings.TrimSpace(body)
@@ -72,7 +72,7 @@ func parseDMS(s string) (float64, error) {
 	// `31   34  5.84 ` -> ["31", "34", "5.84"]
 	parts := strings.Fields(body)
 	if len(parts) != 3 {
-		return 0, fmt.Errorf("expected 3 numeric fields after stripping tokens, got %d in %q", len(parts), s)
+		return 0, fmt.Errorf("expected 3 numeric fields, got %d", len(parts))
 	}
 
 	degrees, err := strconv.ParseFloat(parts[0], 64)
@@ -91,7 +91,7 @@ func parseDMS(s string) (float64, error) {
 	}
 
 	if degrees < 0 || minutes < 0 || seconds < 0 {
-		return 0, fmt.Errorf("negative component in DMS value %q", s)
+		return 0, fmt.Errorf("negative component in DMS value %q", dms)
 	}
 
 	// Convert DMS to decimal degrees: 1° = 60′ = 3600″

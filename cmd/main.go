@@ -43,15 +43,15 @@ func main() {
 	// app DB (SQLite)
 	appDB, err := db.New(cfg.DatabasePath, db.AppDB, logger)
 	if err != nil {
-		logger.Error("failed to initialize wandersort database: %v", err)
+		logger.Error("appDB: failed to initialize: %v", err)
 	}
 
 	locationConn, err := db.New(cfg.DbLocationPath, db.LocationDB, logger)
 	if err != nil {
-		logger.Error("failed to initialize location database: %v", err)
+		logger.Error("locationDB: failed to initialize: %v", err)
 	}
 
-	lDB := locationdb.New(locationConn, logger)
+	locationDB := locationdb.New(locationConn, logger)
 
 	// Ensure the DB get closed on any exit path — including unrecovered panics.
 	// With locking_mode=EXCLUSIVE, a missing Close leaves the WAL/SHM files
@@ -70,7 +70,7 @@ func main() {
 	}()
 
 	// Create the unified workflow orchestrator
-	workflow := workflow.NewWorkflow(ctx, appDB, lDB, logger, cfg)
+	workflow := workflow.NewWorkflow(ctx, appDB, locationDB, logger, cfg)
 
 	// API handlers
 	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(appDB)))
