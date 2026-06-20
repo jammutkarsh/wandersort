@@ -198,8 +198,8 @@ func (h *Hasher) hashFile(filePath string) (string, error) {
 	return hash, nil
 }
 
-func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, toPersist <-chan hashedRecord, tracker *sm.Tracker, persistErr chan<- error) {
-	for hashed := range toPersist {
+func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-chan hashedRecord, tracker *sm.Tracker, persistErr chan<- error) {
+	for file := range files {
 		select {
 		case <-ctx.Done():
 			persistErr <- ctx.Err()
@@ -209,7 +209,7 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, toPersist
 		}
 
 		ok := h.db.Writer.Write(func(ctx context.Context, tx *sql.Tx) error {
-			return h.storeHash(ctx, tx, hashed.id, hashed.hash, hashed.exif)
+			return h.storeHash(ctx, tx, file.id, file.hash, file.exif)
 		})
 		if !ok {
 			persistErr <- fmt.Errorf("bulk writer closed")
