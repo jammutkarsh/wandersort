@@ -2,8 +2,9 @@ package classifier
 
 import (
 	"encoding/json"
-	"os"
+	"fmt"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -13,35 +14,6 @@ const (
 	MediaTypeRaw     = "RAW"
 	MediaTypeUnknown = "UNKNOWN"
 )
-
-// itoa and ftoa are package-level helpers used by ToCommon adapters.
-func itoa(v int) string     { return strconv.Itoa(v) }
-func ftoa(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
-
-// Metadata is the common interface implemented by all file-type metadata structs.
-type Metadata interface {
-	MediaType() string
-	ToCommon() CommonMetadata
-}
-
-// ParseFromBytes decodes a JSON byte slice into the target metadata struct T.
-func ParseFromBytes[T Metadata](data []byte) (T, error) {
-	var m T
-	if err := json.Unmarshal(data, &m); err != nil {
-		return m, err
-	}
-	return m, nil
-}
-
-// ParseFromFile reads a JSON file at path and decodes it into the target metadata struct T.
-func ParseFromFile[T Metadata](path string) (T, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		var zero T
-		return zero, err
-	}
-	return ParseFromBytes[T](data)
-}
 
 // CommonMetadata holds the common attributes across all supported file types.
 // All fields are strings; fields absent in a given file type are set to "".
@@ -106,4 +78,62 @@ type CommonMetadata struct {
 	GPSAltitude    string `json:"GPSAltitude"`
 	GPSAltitudeRef string `json:"GPSAltitudeRef"` // "0" = above sea level, "1" = below
 	GPSPosition    string `json:"GPSPosition"`    // combined "lat, lon" string from exiftool
+}
+
+// itoa and ftoa are package-level helpers used by ToCommon adapters.
+func itoa(v int) string     { return strconv.Itoa(v) }
+func ftoa(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+
+// Metadata is the common interface implemented by all file-type metadata structs.
+type Metadata interface {
+	MediaType() string
+	ToCommon() CommonMetadata
+}
+
+// ParseFromBytes decodes a JSON byte slice into the target metadata struct T.
+func ParseFromBytes[T Metadata](data []byte) (T, error) {
+	var m T
+	if err := json.Unmarshal(data, &m); err != nil {
+		return m, err
+	}
+	return m, nil
+}
+
+// ParseMetadata parses the raw JSON bytes representing EXIF metadata for a given file extension
+// and returns the unified CommonMetadata representation.
+func ParseMetadata(ext string, data []byte) (CommonMetadata, error) {
+	var m Metadata
+	var err error
+
+	switch strings.ToLower(ext) {
+	case ".jpg":
+		m, err = ParseFromBytes[Jpg](data)
+	case ".jpeg":
+		m, err = ParseFromBytes[Jpeg](data)
+	case ".heic":
+		m, err = ParseFromBytes[Heic](data)
+	case ".png":
+		m, err = ParseFromBytes[Png](data)
+	case ".bmp":
+		m, err = ParseFromBytes[Bmp](data)
+	case ".webp":
+		m, err = ParseFromBytes[Webp](data)
+	case ".cr2":
+		m, err = ParseFromBytes[Cr2](data)
+	case ".dng":
+		m, err = ParseFromBytes[Dng](data)
+	case ".mp4":
+		m, err = ParseFromBytes[Mp4](data)
+	case ".mov":
+		m, err = ParseFromBytes[Mov](data)
+	case ".aae":
+		m, err = ParseFromBytes[Aae](data)
+	default:
+		return CommonMetadata{}, fmt.Errorf("unsupported extension: %q", ext)
+	}
+
+	if err != nil {
+		return CommonMetadata{}, err
+	}
+	return m.ToCommon(), nil
 }

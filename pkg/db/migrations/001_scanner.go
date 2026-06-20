@@ -57,6 +57,16 @@ CREATE TABLE IF NOT EXISTS file_registry (
     -- Hash (populated in hashing phase)
     file_hash TEXT,
 
+    -- Exif Metadata (populated in hashing phase)
+    image_width        TEXT,
+    image_height       TEXT,
+    gps_latitude       TEXT,
+    gps_longitude      TEXT,
+    make               TEXT,
+    model              TEXT,
+    date_time_original TEXT,
+    create_date        TEXT,
+
     -- Discovery metadata
     discovered_at   TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
