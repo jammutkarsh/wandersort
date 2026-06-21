@@ -18,6 +18,7 @@ This document outlines the standard coding patterns, style, and rules that AI ag
   - **Public functions** require a docstring explaining what the function does, its parameters, and its return value.
   - **Private functions** need a simple comment above the definition explaining their purpose. Private functions with self-documenting names and straightforward logic (< 5 lines) may omit comments.
   - **Constructors**: A `New()` function (or `NewStruct()`) that acts as a constructor does not need a docstring if its purpose is obvious from context. Constructors are exempt only if they take zero parameters or all parameters have self-documenting names and types.
+- **API Documentation**: API handlers and endpoints must include Swagger doc-based comments (e.g., `// @Summary`, `// @Description`) so that Swagger documentation can be automatically generated via the CLI.
 
 ## 3. Naming Conventions
 
