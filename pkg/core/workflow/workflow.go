@@ -13,7 +13,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/hasher"
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/locationdb"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
@@ -23,11 +23,11 @@ import (
 // Scanning and hashing run in bounded batches to keep memory usage stable on
 // very large roots.
 type Workflow struct {
-	ctx        context.Context
-	db         *db.DB
-	locationDB *locationdb.DB
-	outputPath string
-	log        logger.Logger
+	ctx              context.Context
+	db               *db.DB
+	locationResolver *location.Resolver
+	outputPath       string
+	log              logger.Logger
 
 	/* Utilities */
 	path      *path.Resolver
@@ -89,25 +89,25 @@ func (kind workflowPhaseKind) completedStatus() string {
 }
 
 // NewWorkflow creates a new workflow instance.
-func NewWorkflow(ctx context.Context, db *db.DB, locationDB *locationdb.DB, log logger.Logger, cfg *config.Configuration) *Workflow {
+func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration) *Workflow {
 	sm := sm.NewStatusManager()
 	sc := scanner.NewScanner(db, log)
 	h := hasher.NewHasher(ctx, db, log)
 	p := path.New()
 
 	return &Workflow{
-		ctx:            ctx,
-		db:             db,
-		locationDB:     locationDB,
-		scanner:        sc,
-		hasher:         h,
-		statusMgr:      sm,
-		log:            log,
-		workers:        cfg.Workers,
-		path:           p,
-		outputPath:     cfg.OutputPath,
-		updateInterval: cfg.UpdateInterval,
-		finalTimeout:   cfg.FinalizeTimeout,
+		ctx:              ctx,
+		db:               db,
+		locationResolver: locationResolver,
+		scanner:          sc,
+		hasher:           h,
+		statusMgr:        sm,
+		log:              log,
+		workers:          cfg.Workers,
+		path:             p,
+		outputPath:       cfg.OutputPath,
+		updateInterval:   cfg.UpdateInterval,
+		finalTimeout:     cfg.FinalizeTimeout,
 	}
 }
 

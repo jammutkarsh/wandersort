@@ -1,4 +1,4 @@
-package locationdb
+package location
 
 import (
 	"fmt"
@@ -16,11 +16,11 @@ import (
 func ParseGPS(latStr, lonStr string) (float64, float64, error) {
 	lat, err := parseDMS(latStr)
 	if err != nil {
-		return 0, 0, fmt.Errorf("locationdb: parseGPS latitude: %w", err)
+		return 0, 0, fmt.Errorf("parseGPS latitude: %w", err)
 	}
 	lon, err := parseDMS(lonStr)
 	if err != nil {
-		return 0, 0, fmt.Errorf("locationdb: parseGPS longitude: %w", err)
+		return 0, 0, fmt.Errorf("parseGPS longitude: %w", err)
 	}
 	return lat, lon, nil
 }
@@ -75,24 +75,17 @@ func parseDMS(dms string) (float64, error) {
 		return 0, fmt.Errorf("expected 3 numeric fields, got %d", len(parts))
 	}
 
-	degrees, err := strconv.ParseFloat(parts[0], 64)
-	if err != nil {
-		return 0, fmt.Errorf("degrees %q: %w", parts[0], err)
+	var vals [3]float64
+	for i := 0; i < 3; i++ {
+		var err error
+		if vals[i], err = strconv.ParseFloat(parts[i], 64); err != nil {
+			return 0, fmt.Errorf("failed to parse DMS component %w", err)
+		}
+		if vals[i] < 0 {
+			return 0, fmt.Errorf("negative value in DMS: %v", parts[i])
+		}
 	}
-
-	minutes, err := strconv.ParseFloat(parts[1], 64)
-	if err != nil {
-		return 0, fmt.Errorf("minutes %q: %w", parts[1], err)
-	}
-
-	seconds, err := strconv.ParseFloat(parts[2], 64)
-	if err != nil {
-		return 0, fmt.Errorf("seconds %q: %w", parts[2], err)
-	}
-
-	if degrees < 0 || minutes < 0 || seconds < 0 {
-		return 0, fmt.Errorf("negative component in DMS value %q", dms)
-	}
+	degrees, minutes, seconds := vals[0], vals[1], vals[2]
 
 	// Convert DMS to decimal degrees: 1° = 60′ = 3600″
 	decimalDegrees := degrees + minutes/60 + seconds/3600

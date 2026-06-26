@@ -1,4 +1,4 @@
-package locationdb
+package location
 
 import (
 	"math"

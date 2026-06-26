@@ -1,11 +1,14 @@
-package locationdb
+package location
 
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -27,7 +30,7 @@ type cacheKey struct {
 	lat, lon float64
 }
 
-type DB struct {
+type Resolver struct {
 	db    *db.DB
 	cache sync.Map // No need for sync.Mutex or RWMutex
 	sf    singleflight.Group
@@ -35,34 +38,43 @@ type DB struct {
 }
 
 type locationMeta struct {
-	Hash      string    `json:"sha256"`
-	Version   string    `json:"version"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Hash      string         `json:"sha256"`
+	Version   string         `json:"version"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	Rows      map[string]int `json:"rows"`
 }
 
-func New(conn *db.DB, log logger.Logger) *DB {
+func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver, error) {
+	metaPath := filepath.Join(filepath.Dir(dbLocationPath), db.LocationMetaFileName)
+
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return nil, fmt.Errorf("unable to read location meta: %w", err)
+	}
+
+	var meta locationMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return nil, fmt.Errorf("unable to parse location meta: %w", err)
+	}
+
 	var count int
-	if err := conn.QueryRowContext(context.Background(),
+	err = locationDB.QueryRowContext(context.Background(),
 		`SELECT COUNT(*) FROM geonames_cities`,
-	).Scan(&count); err != nil {
-		log.Error(fmt.Sprintf("verifying location database: %v", err))
-		return nil
+	).Scan(&count)
+	if err != nil {
+		return nil, fmt.Errorf("verifying location database: %w", err)
 	}
 
-	if count == 0 {
-		log.Error(fmt.Sprintf("geonames_cities has no data"))
-		return nil
+	if count != meta.Rows["geonames_cities"] {
+		return nil, fmt.Errorf("row count mismatch: db has %d, meta expects %d", count, meta.Rows["geonames_cities"])
 	}
 
-	return &DB{
-		db:  conn,
-		log: log,
-	}
+	return &Resolver{db: locationDB, log: log}, nil
 }
 
 // Lookup returns the name of the nearest populated place for the given
 // decimal-degree coordinates.
-func (l *DB) Lookup(ctx context.Context, lat, lon float64) (string, error) {
+func (lR *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error) {
 	// Round to 4 decimal places ≈ 11 m precision — close enough that photos
 	// from the same physical spot.
 	// Formula: round(x * 10^4) / 10^4  keeps values stable across minor GPS jitter.
@@ -72,24 +84,24 @@ func (l *DB) Lookup(ctx context.Context, lat, lon float64) (string, error) {
 	}
 
 	// 1. Load: Returns value and a boolean 'ok'
-	if val, ok := l.cache.Load(key); ok {
+	if val, ok := lR.cache.Load(key); ok {
 		return val.(string), nil
 	}
 
 	// 2. Singleflight: Protect against cache stampede
-	val, err, _ := l.sf.Do(fmt.Sprintf("%f:%f", key.lat, key.lon), func() (interface{}, error) {
+	val, err, _ := lR.sf.Do(fmt.Sprintf("%f:%f", key.lat, key.lon), func() (any, error) {
 		// Re-check cache in case another goroutine just finished the DB call
-		if val, ok := l.cache.Load(key); ok {
+		if val, ok := lR.cache.Load(key); ok {
 			return val, nil
 		}
 
-		city, err := l.queryNearest(ctx, key.lat, key.lon)
+		city, err := lR.queryNearest(ctx, key.lat, key.lon)
 		if err != nil {
 			return "", err
 		}
 
 		// 3. Store: Cache the result
-		l.cache.Store(key, city)
+		lR.cache.Store(key, city)
 		return city, nil
 	})
 
@@ -111,7 +123,7 @@ func (l *DB) Lookup(ctx context.Context, lat, lon float64) (string, error) {
 //
 // Returns ErrNoLocation if no candidate is found within either box, or if the
 // closest match exceeds maxDistSquared.
-func (l *DB) queryNearest(ctx context.Context, lat, lon float64) (string, error) {
+func (lR *Resolver) queryNearest(ctx context.Context, lat, lon float64) (string, error) {
 	// deltaDegrees lists the bounding-box half-widths to try in order.
 	//   0.09° ≈ 10 km — tight first pass, covers most intra-city lookups.
 	//   0.45° ≈ 50 km — wider fallback for rural or coastal photos.
@@ -120,17 +132,17 @@ func (l *DB) queryNearest(ctx context.Context, lat, lon float64) (string, error)
 	deltaDegrees := []float64{0.09, 0.45}
 
 	const query = `
-WITH params AS (
-    SELECT ? AS lat, ? AS lon, ? AS delta
-)
-SELECT gc.city,
-       (gc.latitude  - p.lat) * (gc.latitude  - p.lat) +
-       (gc.longitude - p.lon) * (gc.longitude - p.lon) AS dist
-FROM   geonames_cities gc, params p
-WHERE  gc.latitude  BETWEEN p.lat - p.delta AND p.lat + p.delta
-AND    gc.longitude BETWEEN p.lon - p.delta AND p.lon + p.delta
-ORDER  BY dist
-LIMIT  1`
+		WITH params AS (
+    	SELECT ? AS lat, ? AS lon, ? AS delta
+		)
+		SELECT gc.city,
+       	(gc.latitude  - p.lat) * (gc.latitude  - p.lat) +
+       	(gc.longitude - p.lon) * (gc.longitude - p.lon) AS dist
+		FROM   geonames_cities gc, params p
+		WHERE  gc.latitude  BETWEEN p.lat - p.delta AND p.lat + p.delta
+		AND    gc.longitude BETWEEN p.lon - p.delta AND p.lon + p.delta
+		ORDER  BY dist
+		LIMIT  1`
 	// TODO: Return all candidate locations ranked by distance instead of just the
 	// nearest one. This will be useful in the VFS stage when the user wants to
 	// correct a wrong location — we can suggest ranked options based on our findings.
@@ -141,7 +153,7 @@ LIMIT  1`
 	// sessions resolve to the same location.
 
 	for _, delta := range deltaDegrees {
-		row := l.db.QueryRowContext(ctx, query, lat, lon, delta)
+		row := lR.db.QueryRowContext(ctx, query, lat, lon, delta)
 
 		var city string
 		var dist float64
