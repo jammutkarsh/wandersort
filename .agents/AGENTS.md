@@ -5,7 +5,7 @@ This document outlines the standard coding patterns, style, and rules that AI ag
 ## 1. Testing Strategy
 
 - **Algorithm-focused Tests**: Unit tests must focus on algorithmic correctness, edge cases, concurrency constraints, memory limits, etc.
-  - *Example:* Testing `CalculateMaxCapacity()` to ensure it handles negative numbers, zero, and very large inputs correctly.
+  - *Example:* Testing `walkRoot()` for correct traversal of a directory tree, including edge cases like symlinks, permission errors, and empty directories.
 - **Skip Trivial Data Flows**: Avoid testing simple data parsing or standard read/write flows unless it contains complex business logic.
   - *Example:* Avoid writing tests for a simple HTTP handler that directly calls a database abstraction and returns JSON without any conditional logic.
 - **Table-driven Tests**: Use [TableDrivenTestsarrays](https://go.dev/wiki/TableDrivenTests) to group related test cases of similar types into a single test function. Avoid creating multiple separate single-case test functions for similar logic.
@@ -44,11 +44,11 @@ This document outlines the standard coding patterns, style, and rules that AI ag
     `// Bad: This function takes a user object and calculates their age by subtracting...`
 - **Technical Jargon**: Use relevant common technical jargon to minimize word count. Do not explain standard computer science terms (e.g., "hash function").
   - *Example:* Say "Computes the SHA-256 hash" instead of explaining what a hash function is.
-- **References**: Add references or documentation links for uncommon terms which can not be found on Wikipedia.
+- **References**: Add references or documentation links for uncommon terms which cannot be found on Wikipedia.
   - *Example:* `// Uses the Aho-Corasick algorithm (https://en.wikipedia.org/wiki/Aho-Corasick_algorithm).`
 - **Public vs. Private Functions**:
   - **Public functions** require a docstring explaining what the function does, its parameters, and its return value. This rule only applies to functions performing complex computations; simple helpers (e.g., parsing a string to a positive int) do not need this.
-    - **Constructors** *(an exception)*: Constructors like `New()` functions do not need a docstring if their purpose is obvious from context.
+    - **Constructors** *(an exception)*: Constructors like `New()` functions do not need a docstring because their purpose is obvious from context.
   - **Private functions** need a simple comment above the definition explaining their purpose. Private functions with self-documenting names and straightforward logic (< 5 lines) may omit comments.
   - *Example:*
 
@@ -65,21 +65,26 @@ This document outlines the standard coding patterns, style, and rules that AI ag
   - *Example:*
 
     ```go
-    // @Summary Get user details
-    // @Description Retrieves a user by their ID
-    func getUserHandler(w http.ResponseWriter, r *http.Request) { ... }
+    // HandleReset godoc
+    // @Summary Reset all application data
+    // @Description Deletes all scan sessions, file registry entries, content groups and group members in a single transaction. Irreversible.
+    // @Tags Admin
+    // @Produce json
+    // @Success 200 {object} ResetResponse
+    // @Router /internal/v1/admin/reset [post]
+    func (h *Handler) HandleReset(c *gin.Context) { ... }
     ```
 
 ## 3. Naming Conventions
 
 - **English-like Semantics**: Package and function names should combine to read like an English phrase.
   - *Example:* `location.Resolver()` is preferred as it clearly states "location resolver". Avoid `loc.GetRes()`.
-- **Avoid Abbreviations**: Do not use abbreviations or acronyms in function or struct names unless they are widely accepted industry standards.
+- **Avoid Abbreviations**: Do not use abbreviations or acronyms in function or struct names unless they are commonly understood.
   - *Example:* Prefer `hashFile()` over `hf()`.
 - **Descriptive Variables**: Variables and constants must have descriptive names that clarify their intent. Single-letter variables are only acceptable for common loop indices (`i`, `j`, `k`) or standard conventions (`err` for errors, `ctx` for context).
   - *Example:* `maxRetries` instead of `m`.
 - **Generic Function Names**: Keep function names generic enough to allow underlying implementations to change.
-  - *Example:* Use `hashFile()` instead of `BLAKE3Hash()`.
+  - *Example:* Use `hashFile()` instead of `BLAKE3Hash()`. Caller of `hashFile()` should not need to know the underlying hashing algorithm.
 
 ## 4. Code Structure & Best Practices
 
@@ -112,6 +117,6 @@ This document outlines the standard coding patterns, style, and rules that AI ag
 - **Dependency Injection**: Pass dependencies (like loggers, database connections, and path resolvers) through constructors rather than relying on global state or singletons.
   - *Example:* `func NewService(db *sql.DB, logger *zap.Logger) *Service`
 - **Logging**: Use the application's custom logging library (e.g., `h.log.Info()`) instead of the standard library `log` package.
-  - *Example:* `h.log.Info("user logged in", zap.String("userID", id))` (Avoid `log.Printf()`)
+  - *Example:* `h.log.Info("user logged in", "userID", id)` (Avoid `log.Printf()`)
 - **Database & Concurrency**: Avoid `SELECT`-then-`INSERT` patterns that can cause race conditions. Instead, rely on atomic operations like `INSERT ... ON CONFLICT DO UPDATE` (upserts).
   - *Example:* `INSERT INTO users (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = $2;`
