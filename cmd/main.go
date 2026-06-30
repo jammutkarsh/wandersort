@@ -18,9 +18,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 )
@@ -41,9 +41,9 @@ func main() {
 	// Logger
 	logger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile)
 	// Verify exiftool is installed and meets minimum version requirement.
-if err := exiftool.Check(); err != nil {
-    log.Fatalf("startup check failed: %v", err)
-}
+	if _, err := exiftool.Check(logger); err != nil {
+		logger.Panic("startup check failed", "error", err)
+	}
 
 	// app DB (SQLite)
 	appDB, err := db.New(cfg.DatabasePath, db.AppDB, logger)
