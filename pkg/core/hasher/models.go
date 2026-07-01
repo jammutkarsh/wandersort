@@ -2,6 +2,8 @@ package hasher
 
 import (
 	"time"
+
+	"github.com/jammutkarsh/wandersort/pkg/classifier"
 )
 
 // ContentGroup represents a group of files with identical content (hash)
@@ -34,4 +36,5 @@ type fileRecord struct {
 type hashedRecord struct {
 	id   int64
 	hash string
+	exif classifier.CommonMetadata
 }
