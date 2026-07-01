@@ -39,7 +39,7 @@ const (
 
 	// locationMetaFileName is the metadata JSON published alongside the LocationDB.
 	// location.json holds the dynamic metadata (version, date) used to determine if a re-download is required.
-	locationMetaFileName = "location.json"
+	LocationMetaFileName = "location.json"
 )
 
 // DB wraps *sql.DB with a BulkWriter for database operations.
@@ -174,9 +174,9 @@ func ensureLocationDB(dbPath string, log logger.Logger) error {
 		return fmt.Errorf("download %s: %w", LocationDBFileName, err)
 	}
 
-	metaPath := filepath.Join(filepath.Dir(dbPath), locationMetaFileName)
-	if err := downloadFile(metaPath, locationDownloadBaseURL+"/"+locationMetaFileName); err != nil {
-		log.Info("location db: could not download metadata (non-fatal)", "file", locationMetaFileName, "error", err)
+	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
+	if err := downloadFile(metaPath, locationDownloadBaseURL+"/"+LocationMetaFileName); err != nil {
+		log.Info("location db: could not download metadata (non-fatal)", "file", LocationMetaFileName, "error", err)
 	}
 
 	return nil

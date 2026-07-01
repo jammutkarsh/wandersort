@@ -24,6 +24,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -48,12 +49,17 @@ func main() {
 	// app DB (SQLite)
 	appDB, err := db.New(cfg.DatabasePath, db.AppDB, logger)
 	if err != nil {
-		log.Fatalf("failed to initialize wandersort database: %v", err)
+		logger.Error("appDB: failed to initialize", "error", err)
 	}
 
 	locationDB, err := db.New(cfg.DbLocationPath, db.LocationDB, logger)
 	if err != nil {
-		log.Fatalf("failed to initialize location database: %v", err)
+		logger.Error("locationDB: failed to initialize", "error", err)
+	}
+
+	locationResolver, err := location.New(locationDB, cfg.DbLocationPath, logger)
+	if err != nil {
+		logger.Error("locationResolver: failed to initialize", "error", err)
 	}
 
 	// Ensure the DB get closed on any exit path — including unrecovered panics.
@@ -73,7 +79,7 @@ func main() {
 	}()
 
 	// Create the unified workflow orchestrator
-	workflow := workflow.NewWorkflow(ctx, appDB, logger, cfg)
+	workflow := workflow.NewWorkflow(ctx, appDB, locationResolver, logger, cfg)
 
 	// API handlers
 	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(appDB)))
