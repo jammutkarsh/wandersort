@@ -19,7 +19,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var ErrNoLocation = errors.New("locationdb: location not found")
+var ErrNoLocation = errors.New("locationResolver: location not found")
 
 // maxDistSquared is the rejection threshold for the nearest-neighbour search,
 // expressed as squared Euclidean distance in degree-space.
@@ -32,7 +32,7 @@ type cacheKey struct {
 
 type Resolver struct {
 	db    *db.DB
-	cache sync.Map // No need for sync.Mutex or RWMutex
+	cache sync.Map
 	sf    singleflight.Group
 	log   logger.Logger
 }
@@ -74,7 +74,7 @@ func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver
 
 // Lookup returns the name of the nearest populated place for the given
 // decimal-degree coordinates.
-func (lR *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error) {
+func (r *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error) {
 	// Round to 4 decimal places ≈ 11 m precision — close enough that photos
 	// from the same physical spot.
 	// Formula: round(x * 10^4) / 10^4  keeps values stable across minor GPS jitter.
@@ -84,24 +84,24 @@ func (lR *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error
 	}
 
 	// 1. Load: Returns value and a boolean 'ok'
-	if val, ok := lR.cache.Load(key); ok {
+	if val, ok := r.cache.Load(key); ok {
 		return val.(string), nil
 	}
 
 	// 2. Singleflight: Protect against cache stampede
-	val, err, _ := lR.sf.Do(fmt.Sprintf("%f:%f", key.lat, key.lon), func() (any, error) {
+	val, err, _ := r.sf.Do(fmt.Sprintf("%f:%f", key.lat, key.lon), func() (any, error) {
 		// Re-check cache in case another goroutine just finished the DB call
-		if val, ok := lR.cache.Load(key); ok {
+		if val, ok := r.cache.Load(key); ok {
 			return val, nil
 		}
 
-		city, err := lR.queryNearest(ctx, key.lat, key.lon)
+		city, err := r.queryNearest(ctx, key.lat, key.lon)
 		if err != nil {
 			return "", err
 		}
 
 		// 3. Store: Cache the result
-		lR.cache.Store(key, city)
+		r.cache.Store(key, city)
 		return city, nil
 	})
 
@@ -123,7 +123,7 @@ func (lR *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error
 //
 // Returns ErrNoLocation if no candidate is found within either box, or if the
 // closest match exceeds maxDistSquared.
-func (lR *Resolver) queryNearest(ctx context.Context, lat, lon float64) (string, error) {
+func (r *Resolver) queryNearest(ctx context.Context, lat, lon float64) (string, error) {
 	// deltaDegrees lists the bounding-box half-widths to try in order.
 	//   0.09° ≈ 10 km — tight first pass, covers most intra-city lookups.
 	//   0.45° ≈ 50 km — wider fallback for rural or coastal photos.
@@ -153,7 +153,7 @@ func (lR *Resolver) queryNearest(ctx context.Context, lat, lon float64) (string,
 	// sessions resolve to the same location.
 
 	for _, delta := range deltaDegrees {
-		row := lR.db.QueryRowContext(ctx, query, lat, lon, delta)
+		row := r.db.QueryRowContext(ctx, query, lat, lon, delta)
 
 		var city string
 		var dist float64
@@ -161,7 +161,7 @@ func (lR *Resolver) queryNearest(ctx context.Context, lat, lon float64) (string,
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
-			return "", fmt.Errorf("locationdb: query: %w", err)
+			return "", fmt.Errorf("locationResolver: query: %w", err)
 		}
 
 		if dist > maxDistSquared {
