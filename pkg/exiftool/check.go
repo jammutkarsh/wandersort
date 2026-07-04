@@ -127,7 +127,8 @@ func installFromZip(zipPath, binDir string, log logger.Logger) error {
 	}
 
 	// Move everything from that directory into binDir
-	if err := moveContents(filepath.Join(tmpDir, entries[0].Name()), binDir); err != nil {
+	srcDir := filepath.Join(tmpDir, entries[0].Name())
+	if err := moveContents(srcDir, binDir); err != nil {
 		return fmt.Errorf("move contents: %w", err)
 	}
 
@@ -174,7 +175,8 @@ func installFromTarGz(tgzPath, destDir string, log logger.Logger) error {
 	}
 
 	// Move everything from that directory into destDir
-	if err := moveContents(filepath.Join(tmpDir, entries[0].Name()), destDir); err != nil {
+	srcDir := filepath.Join(tmpDir, entries[0].Name())
+	if err := moveContents(srcDir, destDir); err != nil {
 		return fmt.Errorf("move contents: %w", err)
 	}
 
