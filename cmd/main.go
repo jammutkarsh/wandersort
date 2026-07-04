@@ -86,7 +86,7 @@ func main() {
 	// Create the unified workflow orchestrator
 	workflow := workflow.NewWorkflow(ctx, appDB, locationResolver, logger, cfg)
 
-	// API handlers.
+	// API handlers
 	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(appDB)))
 
 	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, workflow, pipeline.NewRepository(appDB)))
@@ -119,6 +119,7 @@ func main() {
 	// The explicit call ensures  the shutdown sequence happens
 	// in the right order: cancel pipeline → wait for sessions → close DB → shutdown server.
 	cancel()
+	// Wait for pipeline workers to finish before closing the DB.
 	workflow.Close()
 
 	// Give in-flight requests up to 30 s to complete.
