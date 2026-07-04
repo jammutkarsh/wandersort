@@ -13,33 +13,46 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
-
 const (
-	// installDir is where WanderSort keeps its own copy of exiftool,
-	// independent of any system-wide install.
-	installDir = ".wandersort/bin"
-
-	// windowsDownloadURL points to the latest portable Windows build.
-	// exiftool.org does not expose a stable "latest" alias, so this is
-	// updated manually when bumping the bundled version.
-	windowsDownloadURL = "https://sourceforge.net/projects/exiftool/files/exiftool-13.59_64.zip/download"
-	// macDownloadURL points to the latest macOS installer package.
-	macDownloadURL = "https://exiftool.org/ExifTool-13.59.pkg"
+	exiftoolVersion = "13.59"
 )
+type downloadInfo struct {
+    downloadURL string
+    binaryPath  string
+}
+
+var downloadMap = map[string]downloadInfo{
+    "windows": {
+        downloadURL: fmt.Sprintf(
+            "https://sourceforge.net/projects/exiftool/files/exiftool-%s_64.zip/download",
+            exiftoolVersion,
+        ),
+        binaryPath: "exiftool(-k).exe",
+    },
+    "linux": {
+        downloadURL: fmt.Sprintf(
+            "https://sourceforge.net/projects/exiftool/files/Image-ExifTool-%s.tar.gz/download",
+            exiftoolVersion,
+        ),
+        binaryPath: "exiftool", // TODO: verify exact path
+    },
+    "darwin": {
+        downloadURL: fmt.Sprintf(
+            "https://sourceforge.net/projects/exiftool/files/ExifTool-%s.pkg/download",
+            exiftoolVersion,
+        ),
+        binaryPath: "exiftool", // TODO: verify exact path
+    },
+}
 
 // Check verifies exiftool is available, either on $PATH or in WanderSort's
 // own install directory. If missing, it downloads a copy into ~/.wandersort/bin.
-func Check(log logger.Logger) (string, error) {
-	if path, err := exec.LookPath("exiftool"); err == nil {
+func Verify(log logger.Logger, binDir string) (string, error){
+		if path, err := exec.LookPath("exiftool"); err == nil {
 		log.Info("exiftool found on PATH", "path", path)
 		return path, nil
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	binDir := filepath.Join(home, installDir)
 	binPath := filepath.Join(binDir, binaryName())
 
 	if _, err := os.Stat(binPath); err == nil {
@@ -86,28 +99,32 @@ func install(binDir string, log logger.Logger) error {
 
 // installWindows downloads the portable zip and extracts exiftool.exe.
 func installWindows(binDir string, log logger.Logger) error {
-	zipPath := filepath.Join(binDir, "exiftool.zip")
-	if err := downloadFile(zipPath, windowsDownloadURL); err != nil {
-		return fmt.Errorf("download windows build: %w", err)
-	}
+	info := downloadMap["windows"]
+
+zipPath := filepath.Join(binDir, "exiftool.zip")
+if err := downloadFile(zipPath, info.downloadURL); err != nil {
+    return fmt.Errorf("download windows build: %w", err)
+}
 	defer os.Remove(zipPath)
 
-	r, err := zip.OpenReader(zipPath)
+	zipReader, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return fmt.Errorf("open zip: %w", err)
 	}
-	defer r.Close()
+	defer zipReader.Close()
 
-	for _, f := range r.File {
-		if !strings.EqualFold(filepath.Base(f.Name), "exiftool(-k).exe") {
+// Search the downloaded archive for the expected exiftool executable
+// and extract it into WanderSort's bin directory.
+for _, file := range zipReader.File {
+		if !strings.EqualFold(filepath.Base(file.Name), info.binaryPath) {
 			continue
 		}
 
-		rc, err := f.Open()
+		fileReader, err := file.Open()
 		if err != nil {
 			return fmt.Errorf("open zip entry: %w", err)
 		}
-		defer rc.Close()
+		defer fileReader.Close()
 
 		dest := filepath.Join(binDir, "exiftool.exe")
 		out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
@@ -116,7 +133,7 @@ func installWindows(binDir string, log logger.Logger) error {
 		}
 		defer out.Close()
 
-		if _, err := io.Copy(out, rc); err != nil {
+		if _, err := io.Copy(out, fileReader); err != nil {
 			return fmt.Errorf("extract exiftool.exe: %w", err)
 		}
 
@@ -124,27 +141,28 @@ func installWindows(binDir string, log logger.Logger) error {
 		return nil
 	}
 
-	return fmt.Errorf("exiftool(-k).exe not found in downloaded zip")
+return fmt.Errorf("exiftool not found in %s", filepath.Base(zipPath))
 }
 
 // installDarwin downloads the macOS package and runs the installer.
 func installDarwin(binDir string, log logger.Logger) error {
-	pkgPath := filepath.Join(binDir, "exiftool.pkg")
-	if err := downloadFile(pkgPath, macDownloadURL); err != nil {
-		return fmt.Errorf("download macos build: %w", err)
-	}
-	defer os.Remove(pkgPath)
+    info := downloadMap["darwin"]
 
-	cmd := exec.Command("installer", "-pkg", pkgPath, "-target", "/")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("run installer: %w (output: %s)", err, output)
-	}
+    pkgPath := filepath.Join(binDir, "exiftool.pkg")
+    if err := downloadFile(pkgPath, info.downloadURL); err != nil {
+        return fmt.Errorf("download macos build: %w", err)
+    }
+    defer os.Remove(pkgPath)
 
-	log.Info("ran macos exiftool installer", "output", string(output))
-	return nil
+    cmd := exec.Command("installer", "-pkg", pkgPath, "-target", "/")
+    output, err := cmd.CombinedOutput()
+    if err != nil {
+        return fmt.Errorf("run installer: %w (output: %s)", err, output)
+    }
+
+    log.Info("ran macos exiftool installer", "output", string(output))
+    return nil
 }
-
 // downloadFile fetches url and writes the body to dest atomically.
 func downloadFile(dest, url string) error {
 	resp, err := http.Get(url)
