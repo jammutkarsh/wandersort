@@ -42,7 +42,8 @@ func main() {
 	logger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile)
 
 	// Verify exiftool is available before starting the server.
-	if _, err := exiftool.Verify(logger, cfg.BinDir); err != nil {
+	exiftoolPath, err := exiftool.Verify(logger, cfg.BinDir)
+	if err != nil {
 		logger.Error("exiftool verification failed", "error", err)
 		os.Exit(1)
 	}
@@ -84,7 +85,7 @@ func main() {
 	}()
 
 	// Create the unified workflow orchestrator
-	workflow := workflow.NewWorkflow(ctx, appDB, locationResolver, logger, cfg)
+	workflow := workflow.NewWorkflow(ctx, appDB, locationResolver, logger, cfg, exiftoolPath)
 
 	// API handlers
 	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(appDB)))

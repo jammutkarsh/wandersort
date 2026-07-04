@@ -30,14 +30,14 @@ type Hasher struct {
 }
 
 // NewHasher creates a new hasher instance
-func NewHasher(ctx context.Context, db *db.DB, log logger.Logger) *Hasher {
+func NewHasher(ctx context.Context, db *db.DB, log logger.Logger, exiftoolPath string) *Hasher {
 
 	return &Hasher{
 		ctx:      ctx,
 		db:       db,
 		log:      log,
 		path:     path.New(),
-		exiftool: exiftool.New(),
+		exiftool: exiftool.New(exiftoolPath),
 	}
 }
 

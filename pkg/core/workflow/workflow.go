@@ -89,10 +89,10 @@ func (kind workflowPhaseKind) completedStatus() string {
 }
 
 // NewWorkflow creates a new workflow instance.
-func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration) *Workflow {
+func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration, exiftoolPath string) *Workflow {
 	sm := sm.NewStatusManager()
 	sc := scanner.NewScanner(db, log)
-	h := hasher.NewHasher(ctx, db, log)
+	h := hasher.NewHasher(ctx, db, log, exiftoolPath)
 	p := path.New()
 
 	return &Workflow{

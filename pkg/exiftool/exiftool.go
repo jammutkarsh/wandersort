@@ -11,17 +11,19 @@ import (
 )
 
 // Extractor runs exiftool as a subprocess and parses its JSON output.
-type Extractor struct{}
+type Extractor struct {
+	exiftoolPath string
+}
 
 // New returns a ready-to-use Extractor.
-func New() *Extractor {
-	return &Extractor{}
+func New(exiftoolPath string) *Extractor {
+	return &Extractor{exiftoolPath: exiftoolPath}
 }
 
 // Extract runs exiftool on a single file and returns the parsed metadata or error.
 func (e *Extractor) Extract(ctx context.Context, path string) (classifier.CommonMetadata, error) {
 	// -json: output as JSON array; -n: numeric values (no unit strings)
-	raw, err := exec.CommandContext(ctx, "exiftool", "-json", "-n", path).Output()
+	raw, err := exec.CommandContext(ctx, e.exiftoolPath, "-json", "-n", path).Output()
 	if err != nil {
 		return classifier.CommonMetadata{}, err
 	}
