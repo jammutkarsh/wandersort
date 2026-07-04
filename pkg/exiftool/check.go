@@ -1,61 +1,49 @@
 package exiftool
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
 const (
 	exiftoolVersion = "13.59"
+
+	// Name of the exiftool executable, same on all platforms.
+	exiftoolName = "exiftool"
+
+	// GOOS constants — runtime.GOOS uses these string values.
+	windows = "windows"
+	macOS   = "darwin"
+	linux   = "linux"
 )
 
-type downloadInfo struct {
-	downloadURL string
-	binaryPath  string
+// downloadURLs maps GOOS to the SourceForge download URL for the portable archive.
+var downloadURLs = map[string]string{
+	windows: fmt.Sprintf("https://sourceforge.net/projects/exiftool/files/exiftool-%s_64.zip/download", exiftoolVersion),
+	linux:   fmt.Sprintf("https://sourceforge.net/projects/exiftool/files/Image-ExifTool-%s.tar.gz/download", exiftoolVersion),
+	macOS:   fmt.Sprintf("https://sourceforge.net/projects/exiftool/files/ExifTool-%s.pkg/download", exiftoolVersion),
 }
 
-var downloadMap = map[string]downloadInfo{
-	"windows": {
-		downloadURL: fmt.Sprintf(
-			"https://sourceforge.net/projects/exiftool/files/exiftool-%s_64.zip/download",
-			exiftoolVersion,
-		),
-		binaryPath: "exiftool(-k).exe",
-	},
-	"linux": {
-		downloadURL: fmt.Sprintf(
-			"https://sourceforge.net/projects/exiftool/files/Image-ExifTool-%s.tar.gz/download",
-			exiftoolVersion,
-		),
-		binaryPath: "exiftool", // TODO: verify exact path
-	},
-	"darwin": {
-		downloadURL: fmt.Sprintf(
-			"https://sourceforge.net/projects/exiftool/files/ExifTool-%s.pkg/download",
-			exiftoolVersion,
-		),
-		binaryPath: "exiftool", // TODO: verify exact path
-	},
-}
-
-// Check verifies exiftool is available, either on $PATH or in WanderSort's
+// Verify checks exiftool is available, either on $PATH or in WanderSort's
 // own install directory. If missing, it downloads a copy into ~/.wandersort/bin.
 func Verify(log logger.Logger, binDir string) (string, error) {
-	if path, err := exec.LookPath("exiftool"); err == nil {
+	if path, err := exec.LookPath(exiftoolName); err == nil {
 		log.Info("exiftool found on PATH", "path", path)
 		return path, nil
 	}
 
-	binPath := filepath.Join(binDir, binaryName())
+	binPath := filepath.Join(binDir, exiftoolName)
 
 	if _, err := os.Stat(binPath); err == nil {
 		log.Info("exiftool found in wandersort bin", "path", binPath)
@@ -67,137 +55,250 @@ func Verify(log logger.Logger, binDir string) (string, error) {
 		return "", fmt.Errorf("install exiftool: %w", err)
 	}
 
-	if _, err := os.Stat(binPath); err != nil {
-		return "", fmt.Errorf("exiftool still missing after install: %w", err)
+	if _, err := os.Stat(binPath); err == nil {
+		return binPath, nil
 	}
 
-	log.Info("exiftool installed", "path", binPath)
-	return binPath, nil
+	return "", fmt.Errorf("exiftool not found after install at %s", binPath)
 }
 
-// binaryName returns the platform-specific exiftool executable name.
-func binaryName() string {
-	if runtime.GOOS == "windows" {
-		return "exiftool.exe"
-	}
-	return "exiftool"
-}
-
-// install downloads and unpacks exiftool into binDir for the current OS.
+// install downloads and stores the exiftool archive in binDir.
+// The archive must be kept — exiftool needs its support files at runtime.
 func install(binDir string, log logger.Logger) error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return fmt.Errorf("create dir %q: %w", binDir, err)
 	}
 
+	url, ok := downloadURLs[runtime.GOOS]
+	if !ok {
+		return fmt.Errorf("automatic install not supported on %s", runtime.GOOS)
+	}
+
+	// SourceForge /download URLs redirect; the real filename is the segment before it.
+	parts := strings.Split(strings.TrimRight(url, "/"), "/")
+	archivePath := filepath.Join(binDir, parts[len(parts)-1])
+	if err := db.DownloadFile(archivePath, url); err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
+
 	switch runtime.GOOS {
-	case "windows":
-		return installWindows(binDir, log)
-	case "darwin":
-		return installDarwin(binDir, log)
+	case windows:
+		if err := installFromZip(archivePath, binDir, log); err != nil {
+			return fmt.Errorf("zip: %w", err)
+		}
+	case macOS:
+		if err := installFromPkg(archivePath, binDir, log); err != nil {
+			return fmt.Errorf("pkg: %w", err)
+		}
 	default:
-		return fmt.Errorf("automatic install not supported on %s; install exiftool manually and ensure it is on PATH", runtime.GOOS)
-	}
-}
-
-// installWindows downloads the portable zip and extracts exiftool.exe.
-func installWindows(binDir string, log logger.Logger) error {
-	info := downloadMap["windows"]
-
-	zipPath := filepath.Join(binDir, "exiftool.zip")
-	if err := downloadFile(zipPath, info.downloadURL); err != nil {
-		return fmt.Errorf("download windows build: %w", err)
-	}
-	defer os.Remove(zipPath)
-
-	zipReader, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return fmt.Errorf("open zip: %w", err)
-	}
-	defer zipReader.Close()
-
-	// Search the downloaded archive for the expected exiftool executable
-	// and extract it into WanderSort's bin directory.
-	for _, file := range zipReader.File {
-		if !strings.EqualFold(filepath.Base(file.Name), info.binaryPath) {
-			continue
+		if err := installFromTarGz(archivePath, binDir, log); err != nil {
+			return fmt.Errorf("tar.gz: %w", err)
 		}
-
-		fileReader, err := file.Open()
-		if err != nil {
-			return fmt.Errorf("open zip entry: %w", err)
-		}
-		defer fileReader.Close()
-
-		dest := filepath.Join(binDir, "exiftool.exe")
-		out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-		if err != nil {
-			return fmt.Errorf("create %s: %w", dest, err)
-		}
-		defer out.Close()
-
-		if _, err := io.Copy(out, fileReader); err != nil {
-			return fmt.Errorf("extract exiftool.exe: %w", err)
-		}
-
-		log.Info("extracted exiftool.exe", "path", dest)
-		return nil
 	}
-
-	return fmt.Errorf("exiftool not found in %s", filepath.Base(zipPath))
-}
-
-// installDarwin downloads the macOS package and runs the installer.
-func installDarwin(binDir string, log logger.Logger) error {
-	info := downloadMap["darwin"]
-
-	pkgPath := filepath.Join(binDir, "exiftool.pkg")
-	if err := downloadFile(pkgPath, info.downloadURL); err != nil {
-		return fmt.Errorf("download macos build: %w", err)
-	}
-	defer os.Remove(pkgPath)
-
-	cmd := exec.Command("installer", "-pkg", pkgPath, "-target", "/")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("run installer: %w (output: %s)", err, output)
-	}
-
-	log.Info("ran macos exiftool installer", "output", string(output))
 	return nil
 }
 
-// downloadFile fetches url and writes the body to dest atomically.
-func downloadFile(dest, url string) error {
-	resp, err := http.Get(url)
+// installFromZip extracts the Windows zip and renames the launcher.
+//
+// Zip structure:
+//
+//	exiftool-{ver}_64/
+//	  exiftool(-k).exe       ← PE32+ launcher
+//	  exiftool_files/        ← Strawberry Perl runtime (perl.exe, perl532.dll, lib/…)
+func installFromZip(zipPath, binDir string, log logger.Logger) error {
+	r, err := zip.OpenReader(zipPath)
 	if err != nil {
-		return fmt.Errorf("GET %s: %w", url, err)
+		return fmt.Errorf("open zip: %w", err)
 	}
-	defer resp.Body.Close()
+	defer r.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: unexpected status %s", url, resp.Status)
+	// Determine the top-level directory inside the zip (exiftool-{ver}_64/).
+	var topDir string
+	for _, f := range r.File {
+		if strings.Contains(f.Name, "/") {
+			topDir = f.Name[:strings.Index(f.Name, "/")+1]
+			break
+		}
+	}
+	if topDir == "" {
+		return fmt.Errorf("unexpected zip structure — no directory found")
 	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".dl-*")
+	for _, f := range r.File {
+		// Strip the top-level directory prefix.
+		rel := strings.TrimPrefix(f.Name, topDir)
+		if rel == "" {
+			continue
+		}
+
+		dest := filepath.Join(binDir, rel)
+
+		// Handle the launcher rename: exiftool(-k).exe → exiftool
+		if strings.EqualFold(filepath.Base(rel), "exiftool(-k).exe") {
+			dest = filepath.Join(binDir, exiftoolName)
+		}
+
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(dest, 0o755); err != nil {
+				return fmt.Errorf("mkdir %s: %w", rel, err)
+			}
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("open %s: %w", rel, err)
+		}
+
+		out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+		if err != nil {
+			rc.Close()
+			return fmt.Errorf("create %s: %w", rel, err)
+		}
+
+		if _, err := io.Copy(out, rc); err != nil {
+			rc.Close()
+			out.Close()
+			return fmt.Errorf("write %s: %w", rel, err)
+		}
+		rc.Close()
+		out.Close()
+	}
+
+	log.Info("extracted windows zip", "dir", binDir)
+	return nil
+}
+
+// installFromTarGz extracts the Linux / portable tar.gz.
+//
+// Tarball structure:
+//
+//	Image-ExifTool-{ver}/
+//	  exiftool              ← Perl script
+//	  lib/                  ← Perl library modules (~20 MB)
+//	  html/, fmt_files/, …
+func installFromTarGz(tgzPath, destDir string, log logger.Logger) error {
+	f, err := os.Open(tgzPath)
 	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
+		return fmt.Errorf("open: %w", err)
 	}
-	tmpName := tmp.Name()
-	defer func() {
-		tmp.Close()
-		os.Remove(tmpName)
-	}()
+	defer f.Close()
 
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
-		return fmt.Errorf("write %s: %w", dest, err)
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("gzip reader: %w", err)
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file: %w", err)
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read tar: %w", err)
+		}
+
+		// Strip the top-level Image-ExifTool-{ver}/ prefix.
+		parts := strings.SplitN(hdr.Name, "/", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		rel := parts[1]
+		if rel == "" {
+			continue
+		}
+
+		dest := filepath.Join(destDir, rel)
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(dest, 0o755); err != nil {
+				return fmt.Errorf("mkdir %s: %w", rel, err)
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+				return fmt.Errorf("mkdir %s: %w", filepath.Dir(rel), err)
+			}
+			out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, hdr.FileInfo().Mode())
+			if err != nil {
+				return fmt.Errorf("create %s: %w", rel, err)
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
+				return fmt.Errorf("write %s: %w", rel, err)
+			}
+			out.Close()
+		}
 	}
 
-	if err := os.Rename(tmpName, dest); err != nil {
-		return fmt.Errorf("rename to %s: %w", dest, err)
+	log.Info("extracted tar.gz", "dir", destDir)
+	return nil
+}
+
+// installFromPkg extracts the macOS .pkg and copies files to binDir.
+//
+// Pkg layout (via pkgutil --expand-full):
+//
+//	Payload/usr/local/bin/
+//	  exiftool              ← Perl script
+//	  lib/                  ← Perl library modules
+func installFromPkg(pkgPath, destDir string, log logger.Logger) error {
+	extractDir, err := os.MkdirTemp("", "exiftool-pkg-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(extractDir)
+
+	cmd := exec.Command("pkgutil", "--expand-full", pkgPath, extractDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("pkgutil --expand-full: %w\n%s", err, output)
 	}
 
+	srcDir := filepath.Join(extractDir, "Payload", "usr", "local", "bin")
+	if err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		rel, _ := filepath.Rel(srcDir, path)
+		if rel == "." {
+			return nil
+		}
+
+		dest := filepath.Join(destDir, rel)
+
+		if info.IsDir() {
+			return os.MkdirAll(dest, 0o755)
+		}
+
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return err
+		}
+
+		out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+
+		_, err = io.Copy(out, in)
+		return err
+	}); err != nil {
+		return fmt.Errorf("copy pkg files: %w", err)
+	}
+
+	log.Info("extracted macOS pkg", "dir", destDir)
 	return nil
 }

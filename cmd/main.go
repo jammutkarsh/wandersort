@@ -32,7 +32,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Load configuration.
+	// Initialize configuration
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
@@ -64,7 +64,9 @@ func main() {
 		logger.Error("locationResolver: failed to initialize", "error", err)
 	}
 
-	// Ensure databases are closed on shutdown.
+	// Ensure the DB get closed on any exit path — including unrecovered panics.
+	// With locking_mode=EXCLUSIVE, a missing Close leaves the WAL/SHM files
+	// locked and prevents the server from restarting.
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("panic recovered during shutdown: %v", r)
@@ -85,17 +87,10 @@ func main() {
 	workflow := workflow.NewWorkflow(ctx, appDB, locationResolver, logger, cfg)
 
 	// API handlers.
-	adminHandler := admin.NewHandler(
-		logger,
-		admin.NewService(logger, admin.NewRepository(appDB)),
-	)
+	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(appDB)))
 
-	pipelineHandler := pipeline.NewHandler(
-		logger,
-		pipeline.NewService(logger, workflow, pipeline.NewRepository(appDB)),
-	)
+	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, workflow, pipeline.NewRepository(appDB)))
 
-	// Router.
 	router := setupRouter(logger, cfg.Host, adminHandler, pipelineHandler)
 
 	server := &http.Server{
@@ -106,13 +101,13 @@ func main() {
 
 	go func() {
 		logger.Info("Starting server", "port", cfg.ServerPort)
-
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		err := server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
 		}
 	}()
 
-	// Wait for shutdown signal.
+	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -120,11 +115,13 @@ func main() {
 
 	logger.Info("Shutting down", "signal", sig.String())
 
-	// Stop background workers.
+	// Cancel the root context to stop any background goroutines.
+	// The explicit call ensures  the shutdown sequence happens
+	// in the right order: cancel pipeline → wait for sessions → close DB → shutdown server.
 	cancel()
 	workflow.Close()
 
-	// Graceful HTTP shutdown.
+	// Give in-flight requests up to 30 s to complete.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
@@ -139,6 +136,7 @@ func main() {
 func setupRouter(l logger.Logger, host string, handlers ...api.Handlers) *gin.Engine {
 	router := gin.New()
 
+	// Global Middleware
 	router.Use(logger.GinLogger(l))
 	router.Use(api.RecoveryMiddleware())
 	router.Use(api.RequestIDMiddleware())
@@ -151,9 +149,7 @@ func setupRouter(l logger.Logger, host string, handlers ...api.Handlers) *gin.En
 	}
 
 	router.GET("/ping", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "pong",
-		})
+		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
 
 	docs.SwaggerInfo.Host = host
