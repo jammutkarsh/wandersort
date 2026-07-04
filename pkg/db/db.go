@@ -158,7 +158,7 @@ func ensureLocationDB(dbPath string, log logger.Logger) error {
 	}
 
 	if _, err := os.Stat(dbPath); err == nil {
-		log.Info("location db found; no need to download", "path", dbPath)
+		log.Info("location db found", "path", dbPath)
 		return nil
 	}
 

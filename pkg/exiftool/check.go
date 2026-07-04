@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -32,18 +33,27 @@ var downloadURLs = map[string]string{
 }
 
 // Verify checks exiftool is available, either on $PATH or in WanderSort's
-// own install directory. If missing, it downloads a copy into ~/.wandersort/bin
+// own install directory. If the found version is below the requirement, it
+// downloads and installs a bundled copy into ~/.wandersort/bin
 func Verify(log logger.Logger, binDir string) (string, error) {
+	// Check PATH — only accept if version meets requirement
 	if path, err := exec.LookPath(exiftoolName); err == nil {
-		log.Info("exiftool found on PATH", "path", path)
-		return path, nil
+		if ok, _ := checkVersion(path, log); ok {
+			log.Info("exiftool found on PATH", "path", path)
+			return path, nil
+		}
+		log.Info("exiftool on PATH is outdated; installing bundled version")
 	}
 
 	binaryPath := filepath.Join(binDir, exiftoolName)
 
+	// Check binDir install — only accept if version meets requirement
 	if _, err := os.Stat(binaryPath); err == nil {
-		log.Info("exiftool found in wandersort bin", "path", binaryPath)
-		return binaryPath, nil
+		if ok, _ := checkVersion(binaryPath, log); ok {
+			log.Info("exiftool found", "path", binaryPath)
+			return binaryPath, nil
+		}
+		log.Info("exiftool is outdated; installing bundled version", "path", binaryPath)
 	}
 
 	log.Info("exiftool not found; downloading", "dir", binDir, "os", runtime.GOOS)
@@ -58,7 +68,8 @@ func Verify(log logger.Logger, binDir string) (string, error) {
 	return "", fmt.Errorf("exiftool not found after install at %s", binaryPath)
 }
 
-// install downloads and stores the exiftool archive in binDir
+// install downloads and extracts exiftool into binDir. If the archive already
+// exists and passes integrity check, it skips the download.
 func install(binDir string, log logger.Logger) error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return fmt.Errorf("create dir %q: %w", binDir, err)
@@ -71,10 +82,22 @@ func install(binDir string, log logger.Logger) error {
 
 	// SourceForge /download URLs redirect; the real filename is the segment before it
 	parts := strings.Split(strings.TrimRight(url, "/"), "/")
-	archiveName := filepath.Join(binDir, parts[len(parts)-1])
-	// TODO: move download file to a better package
-	if err := db.DownloadFile(archiveName, url); err != nil {
-		return fmt.Errorf("download: %w", err)
+	archiveName := filepath.Join(binDir, parts[len(parts)-2])
+
+	// Reuse a cached archive if it passes integrity check
+	if _, err := os.Stat(archiveName); err == nil {
+		if archiveValid(archiveName) {
+			log.Info("using cached archive", "path", archiveName)
+		} else {
+			log.Warn("cached archive corrupt; re-downloading", "path", archiveName)
+			os.Remove(archiveName)
+		}
+	}
+
+	if _, err := os.Stat(archiveName); err != nil {
+		if err := db.DownloadFile(archiveName, url); err != nil {
+			return fmt.Errorf("download: %w", err)
+		}
 	}
 
 	switch runtime.GOOS {
@@ -192,13 +215,14 @@ func installFromTarGz(tgzPath, destDir string, log logger.Logger) error {
 //	  exiftool              ← Perl script
 //	  lib/                  ← Perl library modules
 func installFromPkg(pkgPath, destDir string, log logger.Logger) error {
-	extractDir, err := os.MkdirTemp("", "exiftool-pkg-*")
+	parentDir, err := os.MkdirTemp("", "exiftool-pkg-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
-	defer os.RemoveAll(extractDir)
+	defer os.RemoveAll(parentDir)
 
-	// Extract the xar archive using macOS's pkgutil
+	// Let pkgutil create the output directory itself
+	extractDir := filepath.Join(parentDir, "expanded")
 	cmd := exec.Command("pkgutil", "--expand-full", pkgPath, extractDir)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("pkgutil --expand-full: %w\n%s", err, output)
@@ -228,4 +252,55 @@ func moveContents(srcDir, dstDir string) error {
 		}
 	}
 	return nil
+}
+
+// checkVersion runs exiftool -ver on the given binary and returns true if its
+// version is at least exiftoolVersion
+func checkVersion(path string, log logger.Logger) (bool, error) {
+	output, err := exec.Command(path, "-ver").Output()
+	if err != nil {
+		return false, fmt.Errorf("run %s -ver: %w", path, err)
+	}
+
+	ver := strings.TrimSpace(string(output))
+	parts := strings.SplitN(ver, ".", 2)
+	if len(parts) < 2 {
+		return false, fmt.Errorf("unexpected version format: %s", ver)
+	}
+
+	major, err1 := strconv.Atoi(parts[0])
+	minor, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return false, fmt.Errorf("parse version %s: %v %v", ver, err1, err2)
+	}
+
+	reqMajor, reqMinor := parseVersion(exiftoolVersion)
+
+	if major > reqMajor || (major == reqMajor && minor >= reqMinor) {
+		return true, nil
+	}
+
+	log.Info("exiftool version below requirement", "have", ver, "need", exiftoolVersion)
+	return false, nil
+}
+
+// parseVersion parses a "major.minor" version string into two ints
+func parseVersion(v string) (int, int) {
+	parts := strings.SplitN(v, ".", 2)
+	major, _ := strconv.Atoi(parts[0])
+	minor, _ := strconv.Atoi(parts[1])
+	return major, minor
+}
+
+// archiveValid verifies the downloaded archive is not corrupt
+func archiveValid(path string) bool {
+	switch {
+	case strings.HasSuffix(path, ".zip"):
+		return exec.Command("unzip", "-t", path).Run() == nil
+	case strings.HasSuffix(path, ".tar.gz"):
+		return exec.Command("tar", "tzf", path).Run() == nil
+	case strings.HasSuffix(path, ".pkg"):
+		return exec.Command("pkgutil", "--payload-files", path).Run() == nil
+	}
+	return false
 }
