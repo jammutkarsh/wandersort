@@ -30,7 +30,7 @@ func (h *Handler) SetupRoutes(v1 *gin.RouterGroup) {
 // HandleStartScan godoc
 // @Summary Start a new pipeline scan
 // @Schemes http https
-// @Description Submit root paths to the pipeline. The API validates directories, removes overlapping child paths, returns the effective scanPaths, and then starts scanning immediately.
+// @Description Submit root paths to the pipeline. The API validates directories, removes overlapping child paths, returns the effective scanPaths, and then starts scanning immediately
 // @Tags Pipeline
 // @Accept json
 // @Produce json
@@ -75,7 +75,7 @@ func (h *Handler) HandleStartScan(c *gin.Context) {
 // HandleGetFileCount godoc
 // @Summary Get combined file counts
 // @Schemes http https
-// @Description Returns the number of files discovered by the scanner and the number hashed.
+// @Description Returns the number of files discovered by the scanner and the number hashed
 // @Tags Pipeline
 // @Produce json
 // @Success 200 {object} FileCountResponse

@@ -29,19 +29,18 @@ type Configuration struct {
 	BinDir         string
 }
 
-// Load reads environment variables and builds the application Configuration.
-// Defaults: info log level, port 8080, WanderSortLibrary output dir, and
-// runtime.NumCPU() workers. Returns error only for an invalid WORKERS env var.
+// Load reads environment variables and builds the application Configuration
+// Defaults: info log level, port 8080, WanderSortLibrary output dir, and runtime.NumCPU() workers
 func Load() (*Configuration, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve user home directory: %w", err)
 	}
 
-	// appDir is WanderSort's per-user configuration directory.
+	// appDir is WanderSort's per-user configuration directory
 	appDir := filepath.Join(home, ".wandersort")
 
-	// binDir stores downloaded helper executables such as exiftool.
+	// binDir stores downloaded helper executables such as exiftool
 	binDir := filepath.Join(appDir, "bin")
 
 	outputPath := os.Getenv("OUTPUT_PATH")

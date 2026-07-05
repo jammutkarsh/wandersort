@@ -76,8 +76,8 @@ func NewFileClassifier() *FileClassifier {
 	}
 }
 
-// ClassifyName classifies a file name and reports if it should be ignored.
-// This combines ignore and media checks so callers can make a single decision.
+// ClassifyName classifies a file name and reports if it should be ignored
+// This combines ignore and media checks so callers can make a single decision
 func (fc *FileClassifier) ClassifyName(name string) (mediaType string, shouldProcess bool, shouldIgnore bool) {
 	if fc.ignoredFiles[name] {
 		return MediaTypeUnknown, false, true
@@ -99,10 +99,10 @@ func (fc *FileClassifier) ClassifyName(name string) (mediaType string, shouldPro
 	}
 }
 
-// IsPrimarySource reports whether a media type represents an original/canonical file.
+// IsPrimarySource reports whether a media type represents an original/canonical file
 // Both IMAGE and RAW are primary sources — a DSLR root may contain only RAW files
-// with no paired JPG, and those RAW files are the authoritative originals.
-// SIDECAR files are metadata companions, never primary sources.
+// with no paired JPG, and those RAW files are the authoritative originals
+// SIDECAR files are metadata companions, never primary sources
 func (fc *FileClassifier) IsPrimarySource(mediaType string) bool {
 	switch mediaType {
 	case MediaTypeImage, MediaTypeRaw, MediaTypeVideo:
@@ -113,8 +113,8 @@ func (fc *FileClassifier) IsPrimarySource(mediaType string) bool {
 }
 
 // NeedsTranscoding reports whether a file requires on-the-fly conversion before
-// being consumed by downstream processes (e.g. AI inference pipelines).
-// RAW files cannot be fed directly to most models and must be decoded first.
+// being consumed by downstream processes (e.g. AI inference pipelines)
+// RAW files cannot be fed directly to most models and must be decoded first
 func (fc *FileClassifier) NeedsTranscoding(mediaType string) bool {
 	return mediaType == MediaTypeRaw
 }

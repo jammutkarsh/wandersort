@@ -14,7 +14,7 @@ var ignoredPaths []string = []string{
 }
 
 // GinLogger returns a Gin middleware that logs HTTP requests with method,
-// path, status, and latency, skipping ignored paths like /ping and /swagger.
+// path, status, and latency, skipping ignored paths like /ping and /swagger
 func GinLogger(l Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path

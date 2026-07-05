@@ -32,8 +32,8 @@ var downloadURLs = map[string]string{
 	macOS:   fmt.Sprintf("https://sourceforge.net/projects/exiftool/files/ExifTool-%s.pkg/download", exiftoolVersion),
 }
 
-// exiftoolBin returns the platform-specific binary name.
-// On Windows the .exe extension is required for execution.
+// exiftoolBin returns the platform-specific binary name
+// On Windows the .exe extension is required for execution
 func exiftoolBin() string {
 	if runtime.GOOS == windows {
 		return "exiftool.exe"
@@ -173,7 +173,7 @@ func installFromZip(zipPath, binDir string, log logger.Logger) error {
 	return nil
 }
 
-// extractZip extracts all files from a zip archive into destDir using archive/zip.
+// extractZip extracts all files from a zip archive into destDir using archive/zip
 func extractZip(zipPath, destDir string) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
@@ -182,7 +182,7 @@ func extractZip(zipPath, destDir string) error {
 	defer r.Close()
 
 	// Windows doesn't have zip/unzup command preinstalled
-	// hence using Go's standard library to extract the archive.
+	// hence using Go's standard library to extract the archive
 	for _, f := range r.File {
 		dst := filepath.Join(destDir, filepath.FromSlash(f.Name))
 		if f.FileInfo().IsDir() {
@@ -333,7 +333,7 @@ func checkVersion(path string, log logger.Logger) (bool, error) {
 	return false, nil
 }
 
-// archiveValid verifies the downloaded archive is not corrupt.
+// archiveValid verifies the downloaded archive is not corrupt
 func archiveValid(path string) bool {
 	switch {
 	case strings.HasSuffix(path, ".zip"):

@@ -55,7 +55,7 @@ const (
 	workflowPhaseScan workflowPhaseKind = "scan"
 	workflowPhaseHash workflowPhaseKind = "hash"
 	// defaultFinalizeTimeout is the deadline for writing the final session
-	// status when the pipeline completed without interruption.
+	// status when the pipeline completed without interruption
 	defaultFinalizeTimeout = 15 * time.Second
 )
 
@@ -182,7 +182,7 @@ func (wf *Workflow) background(sessionID uuid.UUID, paths []string) {
 	finalStatus = db.StatusCompleted
 }
 
-// workflowPhases builds the ordered list of pipeline phases for a session.
+// workflowPhases builds the ordered list of pipeline phases for a session
 func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string, workers int) []workflowPhase {
 	return []workflowPhase{
 		{

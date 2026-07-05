@@ -15,8 +15,8 @@ const (
 	MediaTypeUnknown = "UNKNOWN"
 )
 
-// CommonMetadata holds the common attributes across all supported file types.
-// All fields are strings; fields absent in a given file type are set to "".
+// CommonMetadata holds the common attributes across all supported file types
+// All fields are strings; fields absent in a given file type are set to ""
 //
 // Fields are grouped by presence:
 //   - File system:  present in every type (11/11)
@@ -80,17 +80,17 @@ type CommonMetadata struct {
 	GPSPosition    string `json:"GPSPosition"`    // combined "lat, lon" string from exiftool
 }
 
-// itoa and ftoa are package-level helpers used by ToCommon adapters.
+// itoa and ftoa are package-level helpers used by ToCommon adapters
 func itoa(v int) string     { return strconv.Itoa(v) }
 func ftoa(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
-// Metadata is the common interface implemented by all file-type metadata structs.
+// Metadata is the common interface implemented by all file-type metadata structs
 type Metadata interface {
 	MediaType() string
 	ToCommon() CommonMetadata
 }
 
-// ParseFromBytes decodes a JSON byte slice into the target metadata struct T.
+// ParseFromBytes decodes a JSON byte slice into the target metadata struct T
 func ParseFromBytes[T Metadata](data []byte) (T, error) {
 	var m T
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -100,7 +100,7 @@ func ParseFromBytes[T Metadata](data []byte) (T, error) {
 }
 
 // ParseMetadata parses the raw JSON bytes representing EXIF metadata for a given file extension
-// and returns the unified CommonMetadata representation.
+// and returns the unified CommonMetadata representation
 func ParseMetadata(ext string, data []byte) (CommonMetadata, error) {
 	var m Metadata
 	var err error

@@ -16,7 +16,7 @@ func New() *Resolver {
 	return &Resolver{HomeDir: home}
 }
 
-// IsDirectory checks if a path string points to a directory.
+// IsDirectory checks if a path string points to a directory
 func (r *Resolver) IsDirectory(path string) (bool, error) {
 	if p, err := r.RealPath(path); err != nil {
 		return false, err
@@ -30,7 +30,7 @@ func (r *Resolver) IsDirectory(path string) (bool, error) {
 	return fileInfo.IsDir(), nil
 }
 
-// RealPath resolves symlinks and returns the canonical absolute path of p.
+// RealPath resolves symlinks and returns the canonical absolute path of p
 func (r *Resolver) RealPath(p string) (string, error) {
 	p = r.ExpandPath(p)
 	resolved, err := filepath.EvalSymlinks(p)
@@ -44,14 +44,14 @@ func (r *Resolver) RealPath(p string) (string, error) {
 	return absPath, nil
 }
 
-// ExpandPath expands a leading "~/" to the user's home directory.
-// Non-home-relative paths are returned unchanged.
+// ExpandPath expands a leading "~/" to the user's home directory
+// Non-home-relative paths are returned unchanged
 func (r *Resolver) ExpandPath(path string) string {
 	return r.resolveHomePath(path)
 }
 
 // RelativeToHome converts an absolute path to
-// a path relative wrt user's home directory if it is under the home directory.
+// a path relative wrt user's home directory if it is under the home directory
 func (r *Resolver) RelativeToHome(path string) string {
 	cleanPath := filepath.Clean(path)
 	home := filepath.Clean(r.HomeDir)
@@ -68,7 +68,7 @@ func (r *Resolver) RelativeToHome(path string) string {
 	return path
 }
 
-// MakeRelative returns filePath relative to sourceRoot.
+// MakeRelative returns filePath relative to sourceRoot
 func (r *Resolver) MakeRelative(filePath, sourceRoot string) (string, error) {
 	absFile, err := r.RealPath(filePath)
 	if err != nil {
@@ -88,7 +88,7 @@ func (r *Resolver) MakeRelative(filePath, sourceRoot string) (string, error) {
 }
 
 // MakeAbsolute returns an absolute path for filePath using sourceRoot if
-// filePath is not already absolute.
+// filePath is not already absolute
 func (r *Resolver) MakeAbsolute(filePath, sourceRoot string) string {
 	if filepath.IsAbs(filePath) {
 		return filepath.Clean(filePath)
@@ -106,7 +106,7 @@ func (r *Resolver) MakeAbsolute(filePath, sourceRoot string) string {
 	return filepath.Clean(filepath.Join(expandedRoot, filePath))
 }
 
-// resolveHomePath converts ~/path to absolute path.
+// resolveHomePath converts ~/path to absolute path
 // Example: "~/Photos/2023" -> "/home/username/Photos/2023"
 func (r *Resolver) resolveHomePath(path string) string {
 	if strings.HasPrefix(path, "~/") {

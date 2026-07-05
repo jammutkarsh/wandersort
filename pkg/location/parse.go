@@ -7,9 +7,9 @@ import (
 )
 
 const (
-	// minutesPerDegree is the number of minutes in one degree.
+	// minutesPerDegree is the number of minutes in one degree
 	minutesPerDegree = 60
-	// secondsPerDegree is the number of seconds in one degree.
+	// secondsPerDegree is the number of seconds in one degree
 	secondsPerDegree = 3600
 )
 

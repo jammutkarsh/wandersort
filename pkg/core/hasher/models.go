@@ -27,7 +27,7 @@ type ContentGroupMember struct {
 }
 
 // fileRecord is the minimal info the pipeline passes from the scan phase
-// to drive the hash phase.
+// to drive the hash phase
 type fileRecord struct {
 	id      int64
 	absPath string

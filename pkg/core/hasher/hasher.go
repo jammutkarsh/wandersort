@@ -21,11 +21,11 @@ import (
 )
 
 const (
-	// hashOutputSize is the output length of BLAKE3-256 in bytes.
+	// hashOutputSize is the output length of BLAKE3-256 in bytes
 	hashOutputSize = 32
 )
 
-// Hasher handles file hashing and content group management.
+// Hasher handles file hashing and content group management
 type Hasher struct {
 	ctx      context.Context
 	db       *db.DB
@@ -87,7 +87,7 @@ func (h *Hasher) Run(ctx context.Context, sessionID uuid.UUID, workerCount int) 
 	return total, nil
 }
 
-// producer fetches hashable files from the database and feeds them into the toHash channel.
+// producer fetches hashable files from the database and feeds them into the toHash channel
 func (h *Hasher) producer(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, toHash chan<- fileRecord, producerErr chan<- error) {
 	defer close(toHash)
 
@@ -112,7 +112,7 @@ func (h *Hasher) producer(ctx context.Context, sessionID uuid.UUID, cancel conte
 	}
 }
 
-// getFile atomically claims the next undiscovered file and returns its record.
+// getFile atomically claims the next undiscovered file and returns its record
 func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, bool, error) {
 	var id int64
 	var filePath, sourceRoot string
@@ -142,7 +142,7 @@ func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, 
 	return fileRecord{id: id, absPath: h.path.MakeAbsolute(filePath, sourceRoot)}, true, nil
 }
 
-// hasher runs the bounded worker pool that computes BLAKE3 hashes and extracts EXIF.
+// hasher runs the bounded worker pool that computes BLAKE3 hashes and extracts EXIF
 func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, workerCount int, toHash <-chan fileRecord, toPersist chan<- hashedRecord, errorCount *atomic.Int64) {
 	var hashWG sync.WaitGroup
 
@@ -184,8 +184,8 @@ func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context
 	}()
 }
 
-// hashFile computes the BLAKE3 hash of a file.
-// Uses streaming to handle files of any size with constant memory (~32KB buffer).
+// hashFile computes the BLAKE3 hash of a file
+// Uses streaming to handle files of any size with constant memory (~32KB buffer)
 func (h *Hasher) hashFile(filePath string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -204,7 +204,7 @@ func (h *Hasher) hashFile(filePath string) (string, error) {
 	return hash, nil
 }
 
-// store consumes hashed records and writes them to the database via BulkWriter.
+// store consumes hashed records and writes them to the database via BulkWriter
 func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-chan hashedRecord, hashed *atomic.Int64, persistErr chan<- error) {
 	for file := range files {
 		select {
@@ -237,7 +237,7 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 	persistErr <- nil
 }
 
-// storeHash updates the file registry with hash and EXIF data, then upserts content group membership.
+// storeHash updates the file registry with hash and EXIF data, then upserts content group membership
 func (h *Hasher) storeHash(ctx context.Context, tx *sql.Tx, fileID int64, hash string, exif classifier.CommonMetadata) error {
 	// Update Hash and Status
 	if _, err := tx.ExecContext(ctx, `
@@ -284,7 +284,7 @@ func (h *Hasher) storeHash(ctx context.Context, tx *sql.Tx, fileID int64, hash s
 	return nil
 }
 
-// markFileError sets the file's scan_status to ERROR.
+// markFileError sets the file's scan_status to ERROR
 func (h *Hasher) markFileError(fileID int64) {
 	h.db.Writer.Write(func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `

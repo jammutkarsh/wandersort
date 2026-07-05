@@ -54,7 +54,7 @@ func TestDeriveCapture(t *testing.T) {
 	}
 }
 
-// TestDeriveCaptureGrouping verifies files from the same capture event share the same stem.
+// TestDeriveCaptureGrouping verifies files from the same capture event share the same stem
 func TestDeriveCaptureGrouping(t *testing.T) {
 	// All of these are part of the same capture group (IMG_3162)
 	group := []struct {

@@ -10,21 +10,21 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
-// Close gracefully waits for all in-flight sessions to finish.
-// Call this before closing the database to prevent panics.
+// Close gracefully waits for all in-flight sessions to finish
+// Call this before closing the database to prevent panics
 func (wf *Workflow) Close() {
 	wf.wg.Wait()
 }
 
 /*-------------------- STATUS UPDATES --------------------*/
 
-// finalizeSession writes the terminal status/time/error for a scan session.
-// It uses a detached context for cancelled sessions and a timeout for normal ones.
+// finalizeSession writes the terminal status/time/error for a scan session
+// It uses a detached context for cancelled sessions and a timeout for normal ones
 func (wf *Workflow) finalizeSession(sessionID uuid.UUID, finalStatus string, finalErr *string) {
-	// We select a context based on whether the pipeline was interrupted.
-	// 1. If CANCELLED: The session context is already dead; use a detached one for the final write.
-	// 2. If COMPLETED/FAILED: The pipeline was running without interruption; use the app context.
-	// 3. If App Shutdown: Falling back to detached even for success to ensure the state is persisted.
+	// We select a context based on whether the pipeline was interrupted
+	// 1. If CANCELLED: The session context is already dead; use a detached one for the final write
+	// 2. If COMPLETED/FAILED: The pipeline was running without interruption; use the app context
+	// 3. If App Shutdown: Falling back to detached even for success to ensure the state is persisted
 	finalizeCtx, cancel := context.WithCancel(wf.ctx)
 
 	if finalStatus != db.StatusCancelled && wf.ctx.Err() == nil {
@@ -54,7 +54,7 @@ func (wf *Workflow) finalizeSession(sessionID uuid.UUID, finalStatus string, fin
 	wf.log.Info("Pipeline session finished", "sessionId", sessionID, "status", finalStatus)
 }
 
-// setSessionStatus updates the current phase/status for a scan session.
+// setSessionStatus updates the current phase/status for a scan session
 func (wf *Workflow) setSessionStatus(ctx context.Context, sessionID uuid.UUID, statusValue string) error {
 	_, err := wf.db.ExecRetry(ctx, `
 		UPDATE scan_sessions

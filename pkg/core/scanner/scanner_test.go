@@ -17,7 +17,7 @@ import (
 // walkRoot — integration test with a real temp directory tree
 // ---------------------------------------------------------------------------
 
-// createTestTree builds a directory tree under t.TempDir() and returns the root.
+// createTestTree builds a directory tree under t.TempDir() and returns the root
 //
 //	root/
 //	  photos/
@@ -66,7 +66,7 @@ func createTestTree(t *testing.T) string {
 	return root
 }
 
-// newTestScanner constructs a Scanner with a noop logger for testing.
+// newTestScanner constructs a Scanner with a noop logger for testing
 func newTestScanner(t *testing.T) *Scanner {
 	t.Helper()
 	return &Scanner{

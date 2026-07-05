@@ -6,7 +6,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-// resetter is the persistence capability the Service needs.
+// resetter is the persistence capability the Service needs
 type resetter interface {
 	Reset(ctx context.Context) (ResetResponse, error)
 }

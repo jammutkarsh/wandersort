@@ -48,7 +48,7 @@ type SlogAdapter struct {
 
 var _ Logger = &SlogAdapter{}
 
-// log creates a record with the correct caller PC and dispatches it.
+// log creates a record with the correct caller PC and dispatches it
 func (l *SlogAdapter) log(level slog.Level, msg string, attrs ...any) {
 	if !l.logger.Handler().Enabled(context.TODO(), level) {
 		return
@@ -82,14 +82,14 @@ func (l *SlogAdapter) Panic(msg string, attrs ...any) {
 }
 
 // PrettyHandler wraps a slog.JSONHandler, captures its output into a buffer,
-// and re-formats it as a human-readable, coloured log line.
+// and re-formats it as a human-readable, coloured log line
 type PrettyHandler struct {
 	handler slog.Handler
 	buf     *bytes.Buffer
 	mu      *sync.Mutex
 }
 
-// NewPrettyHandler creates a PrettyHandler with the given options.
+// NewPrettyHandler creates a PrettyHandler with the given options
 func NewPrettyHandler(opts *slog.HandlerOptions) *PrettyHandler {
 	if opts == nil {
 		opts = &slog.HandlerOptions{}
@@ -108,7 +108,7 @@ func NewPrettyHandler(opts *slog.HandlerOptions) *PrettyHandler {
 
 // suppressDefaults removes the default time/level/msg keys so that the
 // PrettyHandler can render them itself while still forwarding any custom
-// ReplaceAttr supplied by the caller.
+// ReplaceAttr supplied by the caller
 func suppressDefaults(
 	next func([]string, slog.Attr) slog.Attr,
 ) func([]string, slog.Attr) slog.Attr {
@@ -138,7 +138,7 @@ func (h *PrettyHandler) WithGroup(name string) slog.Handler {
 	return &PrettyHandler{handler: h.handler.WithGroup(name), buf: h.buf, mu: h.mu}
 }
 
-// computeAttrs delegates to the inner JSONHandler and unmarshals the result.
+// computeAttrs delegates to the inner JSONHandler and unmarshals the result
 func (h *PrettyHandler) computeAttrs(ctx context.Context, r slog.Record) (map[string]any, error) {
 	h.mu.Lock()
 	defer func() {

@@ -18,10 +18,10 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
-// Scanner handles file discovery and registry population.
+// Scanner handles file discovery and registry population
 // It is stateless with respect to individual scan runs; all mutable state
-// lives in scanState, which is created fresh for every call to runScan.
-// This makes concurrent scans safe without any locking on Scanner itself.
+// lives in scanState, which is created fresh for every call to runScan
+// This makes concurrent scans safe without any locking on Scanner itself
 type Scanner struct {
 	db         *db.DB
 	classifier *classifier.FileClassifier
@@ -29,7 +29,7 @@ type Scanner struct {
 	path       *path.Resolver
 }
 
-// NewScanner creates a new scanner instance.
+// NewScanner creates a new scanner instance
 func NewScanner(db *db.DB, log logger.Logger) *Scanner {
 	return &Scanner{
 		db:         db,
@@ -39,9 +39,9 @@ func NewScanner(db *db.DB, log logger.Logger) *Scanner {
 	}
 }
 
-// Run orchestrates concurrent directory scans across all paths.
+// Run orchestrates concurrent directory scans across all paths
 // It returns the total number of files discovered (new + previously seen) and
-// any first error encountered.
+// any first error encountered
 func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string, workerCount int) (int, error) {
 	s.log.Info("Scanner Phase: Processing all paths", "sessionId", sessionID, "pathCount", len(paths))
 
@@ -50,22 +50,22 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string, 
 		err   error
 	}
 
-	// Buffer exactly one result per path; no path produces more than one result.
+	// Buffer exactly one result per path; no path produces more than one result
 	results := make(chan scanResult, len(paths))
 
-	// Enqueue all work up front so workers can start immediately without blocking.
+	// Enqueue all work up front so workers can start immediately without blocking
 	jobs := make(chan string, len(paths))
 	for _, path := range paths {
 		jobs <- path
 	}
 
-	// Accept no more jobs; workers will stop when they drain the queue.
+	// Accept no more jobs; workers will stop when they drain the queue
 	close(jobs)
 
 	var newFiles atomic.Int64
 	var errorCount atomic.Int64
 
-	// Spawn workers to drain the job queue concurrently.
+	// Spawn workers to drain the job queue concurrently
 	var workers sync.WaitGroup
 	for range workerCount {
 		workers.Go(func() {
@@ -80,7 +80,7 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string, 
 
 				count := 0
 				// Drain the channel to both count stored discoveries and wait until
-				// scan/store has fully finished this path.
+				// scan/store has fully finished this path
 				for range discoveredChan {
 					count++
 				}
@@ -91,7 +91,7 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string, 
 		})
 	}
 
-	// Close results only after all workers are done writing to it.
+	// Close results only after all workers are done writing to it
 	workers.Wait()
 	close(results)
 
@@ -119,15 +119,15 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string, 
 }
 
 // scan executes a scan for a single directory path and returns a channel
-// of discovered files. It's meant to be called by worker goroutines asynchronously.
+// of discovered files. It's meant to be called by worker goroutines asynchronously
 func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, path string, workerCount int, newFiles, errorCount *atomic.Int64) (<-chan FileDiscovery, error) {
 	s.log.Info("Scanning path", "sessionId", sessionID, "path", path)
 	// Channel for discovered files
 	fileDiscoveryChannel := make(chan FileDiscovery, 2*workerCount)
 	scanResultsChannel := make(chan FileDiscovery, 2*workerCount)
 
-	// Start a goroutine to walk the directory and send discoveries to the channel.
-	// We use a separate channel for walking results to decouple file discovery from database writes.
+	// Start a goroutine to walk the directory and send discoveries to the channel
+	// We use a separate channel for walking results to decouple file discovery from database writes
 
 	// Producer
 	go func() {
@@ -146,8 +146,8 @@ func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, path string, wo
 	return fileDiscoveryChannel, nil
 }
 
-// walkRoot walks absPath and emits FileDiscovery records with relative paths.
-// absPath is the absolute filesystem path.
+// walkRoot walks absPath and emits FileDiscovery records with relative paths
+// absPath is the absolute filesystem path
 func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string, output chan<- FileDiscovery) error {
 	absRoot, err := s.path.RealPath(path)
 	if err != nil {
@@ -176,7 +176,7 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 			return nil
 		}
 
-		// Classify file and apply ignore rules in one pass.
+		// Classify file and apply ignore rules in one pass
 		mediaType, shouldProcess, shouldIgnore := s.classifier.ClassifyName(d.Name())
 		switch {
 		case shouldIgnore:
@@ -203,7 +203,7 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 			return nil
 		}
 
-		// Persist file path relative to source root for portability.
+		// Persist file path relative to source root for portability
 		capture := deriveCapture(d.Name(), strings.ToLower(filepath.Ext(p)), mediaType)
 		file := FileDiscovery{
 			Path:       relativeToSource,
@@ -231,7 +231,7 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 	return nil
 }
 
-// store drains the discovery channel and enqueues each file to the BulkWriter.
+// store drains the discovery channel and enqueues each file to the BulkWriter
 func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-chan FileDiscovery, storedFiles chan<- FileDiscovery, newFiles, errorCount *atomic.Int64) {
 	var dbWritesWG sync.WaitGroup
 
@@ -251,12 +251,12 @@ func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-
 	}
 }
 
-// storeScan builds the DB callback consumed by BulkWriter.Write.
+// storeScan builds the DB callback consumed by BulkWriter.Write
 //
 // The callback shape is fixed by db.DBOperation (func(ctx, tx) error), so we
-// cannot return fileID directly to the caller of Write at enqueue time.
+// cannot return fileID directly to the caller of Write at enqueue time
 // Instead, we compute (id, isNew) during execution and mutate the local file
-// copy before sending it downstream.
+// copy before sending it downstream
 func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG *sync.WaitGroup, storedFiles chan<- FileDiscovery, file FileDiscovery, newFiles, errorCount *atomic.Int64) db.DBOperation {
 	const query = `
 		INSERT INTO file_registry (
@@ -310,7 +310,7 @@ func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG
 		if err != nil {
 			s.log.Warn("Failed to upsert file", "sessionId", sessionID, "path", file.Path, "error", err)
 			errorCount.Add(1)
-			return nil // Continue processing other files in batch.
+			return nil // Continue processing other files in batch
 		}
 
 		if isNew == 1 {

@@ -55,19 +55,19 @@ const (
 // SQLite connection pool and retry tuning
 const (
 	// maxOpenConns is 1 because SQLite is single-writer — one Go-level connection
-	// serialises access and avoids SQLITE_BUSY lock contention.
+	// serialises access and avoids SQLITE_BUSY lock contention
 	maxOpenConns = 1
 	maxIdleConns = 1
-	// connMaxLifetime of 0 means connections live forever, acceptable with maxOpenConns=1.
+	// connMaxLifetime of 0 means connections live forever, acceptable with maxOpenConns=1
 	connMaxLifetime = 0
-	// retryInitialBackoff is the starting sleep between SQLITE_BUSY retries.
+	// retryInitialBackoff is the starting sleep between SQLITE_BUSY retries
 	retryInitialBackoff = 50 * time.Millisecond
-	// retryMaxBackoff caps exponential backoff to keep retry latency bounded.
+	// retryMaxBackoff caps exponential backoff to keep retry latency bounded
 	retryMaxBackoff = 500 * time.Millisecond
 )
 
-// DB wraps *sql.DB with a BulkWriter for database operations.
-// BulkWriter is nil for LocationDB connections.
+// DB wraps *sql.DB with a BulkWriter for database operations
+// BulkWriter is nil for LocationDB connections
 type DB struct {
 	SQL    *sql.DB
 	Writer *BulkWriter
@@ -101,7 +101,7 @@ func (d *DB) Close() error {
 }
 
 // openAppDB opens the application SQLite database, applies pragma tuning,
-// runs migrations, and initialises the BulkWriter for batched writes.
+// runs migrations, and initialises the BulkWriter for batched writes
 func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("creating database directory: %w", err)
@@ -164,7 +164,7 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 }
 
 // openLocationDB opens the read-only location database, downloading it first
-// via ensureLocationDB if the file does not already exist.
+// via ensureLocationDB if the file does not already exist
 func openLocationDB(ctx context.Context, dbPath string, log logger.Logger) (*DB, error) {
 	if err := ensureLocationDB(ctx, dbPath, log); err != nil {
 		return nil, fmt.Errorf("ensure location db: %w", err)
@@ -253,7 +253,7 @@ func DownloadFile(ctx context.Context, dest, url string) error {
 }
 
 // Optimize reclaims SQLite disk space (incremental_vacuum) and releases
-// internal memory (shrink_memory). Call after large delete operations.
+// internal memory (shrink_memory). Call after large delete operations
 func (db *DB) Optimize(ctx context.Context) error {
 	// reclaim space safely after large delete operations
 	if _, err := db.SQL.ExecContext(ctx, "PRAGMA incremental_vacuum"); err != nil {
@@ -321,7 +321,7 @@ func (db *DB) ExecRetry(ctx context.Context, query string, args ...any) (sql.Res
 	return nil, lastErr
 }
 
-// isSQLITEBusy checks if an error is a SQLite busy/locked error.
+// isSQLITEBusy checks if an error is a SQLite busy/locked error
 func isSQLITEBusy(err error) bool {
 	if err == nil {
 		return false

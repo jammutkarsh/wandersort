@@ -7,7 +7,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 )
 
-// Capture role constants.
+// Capture role constants
 const (
 	CaptureRoleOriginal        = "ORIGINAL"
 	CaptureRoleRaw             = "RAW"
@@ -18,23 +18,23 @@ const (
 	CaptureRoleOriginalSidecar = "ORIGINAL_SIDECAR"
 )
 
-// variantPrefix maps known iPhone variant prefixes to a normalisation rule.
+// variantPrefix maps known iPhone variant prefixes to a normalisation rule
 // The key is the prefix (e.g. "IMG_E"), the value is the canonical prefix
-// that replaces it (e.g. "IMG_") to recover the original capture stem.
+// that replaces it (e.g. "IMG_") to recover the original capture stem
 var variantPrefixes = []CaptureInfo{
 	{variant: "IMG_E", captureKey: "IMG_"}, // Edited version of an original photo or video
 	{variant: "IMG_O", captureKey: "IMG_"}, // Original-state sidecar (e.g. AAE edits without a paired HEIC)
 }
 
 // deriveCapture computes the capture stem and role from a filename, its
-// lowercased extension, and its classified media type.
+// lowercased extension, and its classified media type
 //
 // The stem is the base filename (no extension) with any variant prefix
 // normalised back to the canonical prefix.  The role is determined by a
-// combination of variant prefix, media type and extension.
+// combination of variant prefix, media type and extension
 // Commonly found in iPhone images and videos, this logic is designed to group related files together
 // (e.g. RAW + JPG pairs, edited + original variants) while distinguishing different capture groups
-// (e.g. separate shoots or different devices) that happen to share the same filename.
+// (e.g. separate shoots or different devices) that happen to share the same filename
 func deriveCapture(filename, ext, mediaType string) CaptureInfo {
 	base := strings.TrimSuffix(filename, filepath.Ext(filename)) // strip extension preserving case
 
@@ -58,7 +58,7 @@ func deriveCapture(filename, ext, mediaType string) CaptureInfo {
 	return CaptureInfo{captureKey: base, variant: role}
 }
 
-// deriveRole determines the capture role from variant prefix, extension, and media type.
+// deriveRole determines the capture role from variant prefix, extension, and media type
 func deriveRole(variant, ext, mediaType string) string {
 	switch {
 	// Edited variants
