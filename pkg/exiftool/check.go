@@ -18,9 +18,6 @@ import (
 const (
 	exiftoolVersion = "13.59"
 
-	// Name of the exiftool executable, same on all platforms
-	exiftoolName = "exiftool"
-
 	// GOOS constants — runtime.GOOS uses these string values
 	windows = "windows"
 	macOS   = "darwin"
@@ -34,12 +31,21 @@ var downloadURLs = map[string]string{
 	macOS:   fmt.Sprintf("https://sourceforge.net/projects/exiftool/files/ExifTool-%s.pkg/download", exiftoolVersion),
 }
 
+// exiftoolBin returns the platform-specific binary name.
+// On Windows the .exe extension is required for execution.
+func exiftoolBin() string {
+	if runtime.GOOS == windows {
+		return "exiftool.exe"
+	}
+	return "exiftool"
+}
+
 // Verify checks exiftool is available, either on $PATH or in WanderSort's
 // own install directory. If the found version is below the requirement, it
 // downloads and installs a bundled copy into ~/.wandersort/bin
 func Verify(log logger.Logger, binDir string) (string, error) {
 	// Check PATH — only accept if version meets requirement
-	if path, err := exec.LookPath(exiftoolName); err == nil {
+	if path, err := exec.LookPath(exiftoolBin()); err == nil {
 		if ok, _ := checkVersion(path, log); ok {
 			log.Info("exiftool found on PATH", "path", path)
 			return path, nil
@@ -47,7 +53,7 @@ func Verify(log logger.Logger, binDir string) (string, error) {
 		log.Info("exiftool on PATH is outdated; installing bundled version")
 	}
 
-	binaryPath := filepath.Join(binDir, exiftoolName)
+	binaryPath := filepath.Join(binDir, exiftoolBin())
 
 	// Check binDir install — only accept if version meets requirement
 	if _, err := os.Stat(binaryPath); err == nil {
@@ -154,10 +160,10 @@ func installFromZip(zipPath, binDir string, log logger.Logger) error {
 		return fmt.Errorf("move contents: %w", err)
 	}
 
-	// Rename the launcher for cross-platform consistency: exiftool(-k).exe → exiftool
+	// Rename the launcher: exiftool(-k).exe → exiftool.exe (or exiftool on non-Windows)
 	launcher := filepath.Join(binDir, "exiftool(-k).exe")
 	if _, err := os.Stat(launcher); err == nil {
-		if err := os.Rename(launcher, filepath.Join(binDir, exiftoolName)); err != nil {
+		if err := os.Rename(launcher, filepath.Join(binDir, exiftoolBin())); err != nil {
 			return fmt.Errorf("rename launcher: %w", err)
 		}
 	}
