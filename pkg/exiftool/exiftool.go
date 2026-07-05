@@ -15,7 +15,6 @@ type Extractor struct {
 	exiftoolPath string
 }
 
-// New returns a ready-to-use Extractor
 func New(exiftoolPath string) *Extractor {
 	return &Extractor{exiftoolPath: exiftoolPath}
 }

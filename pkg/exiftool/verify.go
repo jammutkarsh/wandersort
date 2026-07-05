@@ -86,7 +86,7 @@ func install(binDir string, log logger.Logger) error {
 		return fmt.Errorf("automatic install not supported on %s", runtime.GOOS)
 	}
 
-	// SourceForge /download URLs redirect; the real filename is the segment before it
+	// https://sourceforge.net/projects/exiftool/files/exiftool-13.59_64.zip/download -> exiftool-13.59_64.zip
 	parts := strings.Split(strings.TrimRight(url, "/"), "/")
 	archiveName := filepath.Join(binDir, parts[len(parts)-2])
 
@@ -180,6 +180,8 @@ func extractZip(zipPath, destDir string) error {
 	}
 	defer r.Close()
 
+	// Windows doesn't have zip/unzup command preinstalled
+	// hence using Go's standard library to extract the archive.
 	for _, f := range r.File {
 		dst := filepath.Join(destDir, filepath.FromSlash(f.Name))
 		if f.FileInfo().IsDir() {
@@ -326,7 +328,7 @@ func checkVersion(path string, log logger.Logger) (bool, error) {
 		return true, nil
 	}
 
-	log.Info("exiftool version below requirement", "have", ver, "need", exiftoolVersion)
+	log.Info("exiftool version below requirement", "have", ver, "want", exiftoolVersion)
 	return false, nil
 }
 
