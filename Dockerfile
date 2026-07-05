@@ -2,7 +2,7 @@ FROM golang:1.26-alpine AS base
 
 WORKDIR /app
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod download -x
 
 FROM base AS build
 COPY . .
