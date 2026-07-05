@@ -74,7 +74,7 @@ func TestParseGPS(t *testing.T) {
 	}
 }
 
-// almostEqual reports whether a and b differ by less than epsilon(small tolerance value).
+// almostEqual reports whether a and b differ by less than epsilon(small tolerance value)
 func almostEqual(a, b, eps float64) bool {
 	return math.Abs(a-b) < eps
 }

@@ -7,6 +7,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,10 +26,13 @@ type Configuration struct {
 	Workers         int
 	UpdateInterval  time.Duration
 	FinalizeTimeout time.Duration
+	AppDir          string
+	BinDir          string
 }
 
 func Load() (*Configuration, error) {
 	const defaultWorkers = 5
+
 	var (
 		outputPath         = os.Getenv("OUTPUT_PATH")
 		logPath            = os.Getenv("LOG_FILE")
@@ -43,8 +47,20 @@ func Load() (*Configuration, error) {
 		workerCount        = defaultWorkers
 	)
 
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve user home directory: %w", err)
+	}
+
+	// appDir is WanderSort's per-user configuration directory.
+	// Everything managed by WanderSort outside the output library
+	// (downloaded tools, location database, etc.) lives here.
+	appDir := filepath.Join(home, ".wandersort")
+
+	// binDir stores downloaded helper executables such as exiftool.
+	binDir := filepath.Join(appDir, "bin")
+
 	if outputPath == "" {
-		home, _ := os.UserHomeDir()
 		outputPath = filepath.Join(home, "WanderSortLibrary")
 	}
 
@@ -61,8 +77,7 @@ func Load() (*Configuration, error) {
 	}
 
 	if dbLocationPath == "" {
-		home, _ := os.UserHomeDir()
-		dbLocationPath = filepath.Join(home, ".wandersort", "location.db")
+		dbLocationPath = filepath.Join(appDir, "location.db")
 	}
 
 	if workers != "" {
@@ -70,6 +85,7 @@ func Load() (*Configuration, error) {
 			workerCount = n
 		}
 	}
+
 	if port == "" {
 		port = "8080"
 	}
@@ -77,6 +93,7 @@ func Load() (*Configuration, error) {
 	if updateIntervalStr == "" {
 		updateIntervalStr = "5s"
 	}
+
 	updateInterval, err := time.ParseDuration(updateIntervalStr)
 	if err != nil {
 		return nil, err
@@ -85,6 +102,7 @@ func Load() (*Configuration, error) {
 	if finalizeTimeoutStr == "" {
 		finalizeTimeoutStr = "15s"
 	}
+
 	finalizeTimeout, err := time.ParseDuration(finalizeTimeoutStr)
 	if err != nil {
 		return nil, err
@@ -93,14 +111,16 @@ func Load() (*Configuration, error) {
 	return &Configuration{
 		ServerPort:      port,
 		Host:            host,
-		OutputPath:      outputPath,
-		LogLevel:        logLevel,
-		LogFile:         logPath,
-		LogConsole:      true,
 		DatabasePath:    dbPath,
 		DbLocationPath:  dbLocationPath,
+		OutputPath:      outputPath,
+		LogLevel:        logLevel,
+		LogConsole:      true,
+		LogFile:         logPath,
 		Workers:         workerCount,
 		UpdateInterval:  updateInterval,
 		FinalizeTimeout: finalizeTimeout,
+		AppDir:          appDir,
+		BinDir:          binDir,
 	}, nil
 }

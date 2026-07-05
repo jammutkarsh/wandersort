@@ -233,7 +233,7 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 		line += sep + colorize(ansiLightMagenta, "[ ") + strings.Join(attrParts, colorize(ansiDarkGray, " | ")) + colorize(ansiLightMagenta, " ]")
 	}
 	if fileStr != "" {
-		line += "\t | " + colorize(ansiDarkGray, fileStr+" "+funcStr)
+		line += " | " + colorize(ansiDarkGray, fileStr+" "+funcStr)
 	}
 
 	fmt.Fprintln(os.Stderr, line)
