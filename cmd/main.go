@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -35,7 +35,8 @@ func main() {
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintf(os.Stderr, "config load failed: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Initialize logger
@@ -48,17 +49,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	appDB, err := db.New(cfg.DatabasePath, db.AppDB, logger)
+	appDB, err := db.New(ctx, cfg.AppDBPath, db.AppDB, logger)
 	if err != nil {
 		logger.Error("appDB: failed to initialize", "error", err)
 	}
 
-	locationDB, err := db.New(cfg.DbLocationPath, db.LocationDB, logger)
+	locationDB, err := db.New(ctx, cfg.LocationDBPath, db.LocationDB, logger)
 	if err != nil {
 		logger.Error("locationDB: failed to initialize", "error", err)
 	}
 
-	locationResolver, err := location.New(locationDB, cfg.DbLocationPath, logger)
+	locationResolver, err := location.New(locationDB, cfg.LocationDBPath, logger)
 	if err != nil {
 		logger.Error("locationResolver: failed to initialize", "error", err)
 	}
@@ -68,17 +69,17 @@ func main() {
 	// locked and prevents the server from restarting
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("panic recovered during shutdown: %v", r)
+			logger.Error("panic recovered during shutdown", "error", fmt.Sprintf("%v", r))
 		}
 
 		logger.Info("Closing databases")
 
 		if err := appDB.Close(); err != nil {
-			log.Printf("error closing wandersort database: %v", err)
+			logger.Error("error closing wandersort database", "error", err)
 		}
 
 		if err := locationDB.Close(); err != nil {
-			log.Printf("error closing location database: %v", err)
+			logger.Error("error closing location database", "error", err)
 		}
 	}()
 
@@ -89,6 +90,7 @@ func main() {
 	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(appDB)))
 	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, workflow, pipeline.NewRepository(appDB)))
 
+	// Setup Gin router
 	router := setupRouter(logger, cfg.Host, adminHandler, pipelineHandler)
 
 	server := &http.Server{
@@ -101,7 +103,7 @@ func main() {
 		logger.Info("Starting server", "port", cfg.ServerPort)
 		err := server.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("server error: %v", err)
+			logger.Error("server listen failed", "error", err)
 		}
 	}()
 
@@ -125,19 +127,19 @@ func main() {
 	defer shutdownCancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("forced shutdown: %v", err)
+		logger.Error("forced shutdown", "error", err)
 	}
 
 	logger.Info("Server stopped")
 }
 
-// setupRouter creates and configures the Gin router
-func setupRouter(l logger.Logger, host string, handlers ...api.Handlers) *gin.Engine {
+// setupRouter creates and configures the Gin router with all middleware and routes
+func setupRouter(log logger.Logger, host string, handlers ...api.Handlers) *gin.Engine {
 	router := gin.New()
 
 	// Global middleware
-	router.Use(logger.GinLogger(l))
-	router.Use(api.RecoveryMiddleware())
+	router.Use(logger.GinLogger(log))
+	router.Use(api.RecoveryMiddleware(log))
 	router.Use(api.RequestIDMiddleware())
 	router.Use(api.CORSMiddleware())
 
@@ -154,9 +156,8 @@ func setupRouter(l logger.Logger, host string, handlers ...api.Handlers) *gin.En
 	docs.SwaggerInfo.Host = host
 
 	v1.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
-
-	for _, route := range router.Routes() {
-		l.Info("Registered Route", route.Method, route.Path)
+	for _, v := range router.Routes() {
+		log.Info("Registered Route", "method", v.Method, "path", v.Path)
 	}
 
 	return router

@@ -49,16 +49,6 @@ const (
 	FileOriginUnknown   = "UNKNOWN"
 )
 
-// TODO: Take a look these states and move them to a common place.
-const (
-	ScanStatusDiscovered = "DISCOVERED"
-	ScanStatusHashing    = "HASHING"
-	ScanStatusHashed     = "HASHED"
-	ScanStatusAnalyzing  = "ANALYZING"
-	ScanStatusAnalyzed   = "ANALYZED"
-	ScanStatusError      = "ERROR"
-)
-
 // GetAbsolutePath returns the full absolute path, expanding relative paths using source root.
 func (fr *FileRegistry) GetAbsolutePath(path *path.Resolver) string {
 	if fr.PathType == PathTypeAbsolute {

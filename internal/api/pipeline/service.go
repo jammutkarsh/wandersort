@@ -11,10 +11,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
-	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
-// Service orchestrates both scan submission and status streaming.
+// Service orchestrates scan submission and related queries.
 type Service struct {
 	pipeline *workflow.Workflow
 	repo     *Repository
@@ -110,14 +109,6 @@ func isChildPath(parent, candidate string) bool {
 	}
 	// Append the separator so "/foo" doesn't falsely match "/foobar".
 	return strings.HasPrefix(candidate, parent+string(filepath.Separator))
-}
-
-func (s *Service) SubscribeStatus() chan sm.WorkflowStatus {
-	return s.pipeline.StatusStream()
-}
-
-func (s *Service) UnsubscribeStatus(ch chan sm.WorkflowStatus) {
-	s.pipeline.UnsubscribeStatus(ch)
 }
 
 func (s *Service) GetFileCount(ctx context.Context) (FileCountResponse, error) {

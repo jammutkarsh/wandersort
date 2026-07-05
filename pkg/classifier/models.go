@@ -94,7 +94,7 @@ type Metadata interface {
 func ParseFromBytes[T Metadata](data []byte) (T, error) {
 	var m T
 	if err := json.Unmarshal(data, &m); err != nil {
-		return m, err
+		return m, fmt.Errorf("unmarshal: %w", err)
 	}
 	return m, nil
 }
@@ -133,7 +133,7 @@ func ParseMetadata(ext string, data []byte) (CommonMetadata, error) {
 	}
 
 	if err != nil {
-		return CommonMetadata{}, err
+		return CommonMetadata{}, fmt.Errorf("parse %s: %w", ext, err)
 	}
 	return m.ToCommon(), nil
 }

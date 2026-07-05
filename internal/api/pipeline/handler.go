@@ -5,15 +5,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 	"github.com/jammutkarsh/wandersort/internal/api"
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
 
 var _ api.Handlers = (*Handler)(nil)
 
@@ -27,10 +22,9 @@ func NewHandler(log logger.Logger, service *Service) *Handler {
 }
 
 func (h *Handler) SetupRoutes(v1 *gin.RouterGroup) {
-	g := v1.Group("/pipeline")
-	g.POST("/start", h.HandleStartScan)
-	g.GET("/ws", h.HandleWebSocket)
-	g.GET("/count", h.HandleGetFileCount)
+	routerGroup := v1.Group("/pipeline")
+	routerGroup.POST("/start", h.HandleStartScan)
+	routerGroup.GET("/count", h.HandleGetFileCount)
 }
 
 // HandleStartScan godoc
@@ -72,46 +66,10 @@ func (h *Handler) HandleStartScan(c *gin.Context) {
 
 	api.RespondOK(c, http.StatusAccepted, StartScanResponse{
 		SessionID: sessionID.String(),
-		Status:    sm.WorkflowStatusStarted,
+		Status:    db.StatusStarted,
 		Message:   "Scan started successfully",
 		ScanPaths: scanPaths,
 	})
-}
-
-// HandleWebSocket godoc
-// @Summary Stream pipeline status via WebSocket
-// @Schemes ws wss
-// @Description Opens a WebSocket connection that pushes PipelineStatus JSON messages in real time.
-// @Tags Pipeline
-// @Success 101 {string} string "Switching Protocols"
-// @Router /internal/v1/pipeline/ws [get]
-func (h *Handler) HandleWebSocket(c *gin.Context) {
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		h.logger.Warn("WebSocket upgrade failed", "error", err)
-		return
-	}
-	defer conn.Close()
-
-	ch := h.service.SubscribeStatus()
-	defer h.service.UnsubscribeStatus(ch)
-
-	// Pump status messages to the client until the connection closes or the
-	// channel is drained.
-	for {
-		select {
-		case <-c.Request.Context().Done():
-			return
-		case msg, ok := <-ch:
-			if !ok {
-				return
-			}
-			if err := conn.WriteJSON(msg); err != nil {
-				h.logger.Warn("WebSocket write error", "error", err)
-				return
-			}
-		}
-	}
 }
 
 // HandleGetFileCount godoc

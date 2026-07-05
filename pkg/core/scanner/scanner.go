@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,7 +16,6 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
-	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
 // Scanner handles file discovery and registry population.
@@ -27,7 +27,6 @@ type Scanner struct {
 	classifier *classifier.FileClassifier
 	log        logger.Logger
 	path       *path.Resolver
-	scanBuffer int // Channel buffer size
 }
 
 // NewScanner creates a new scanner instance.
@@ -37,12 +36,14 @@ func NewScanner(db *db.DB, log logger.Logger) *Scanner {
 		classifier: classifier.NewFileClassifier(),
 		log:        log,
 		path:       path.New(),
-		scanBuffer: 1000,
 	}
 }
 
-func (s *Scanner) Run(ctx context.Context, tracker *sm.Tracker, paths []string, workerCount int) (int, error) {
-	s.log.Info("Scanner Phase: Processing all paths", "session_id", tracker.SessionID, "path_count", len(paths))
+// Run orchestrates concurrent directory scans across all paths.
+// It returns the total number of files discovered (new + previously seen) and
+// any first error encountered.
+func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string, workerCount int) (int, error) {
+	s.log.Info("Scanner Phase: Processing all paths", "sessionId", sessionID, "pathCount", len(paths))
 
 	type scanResult struct {
 		count int
@@ -61,14 +62,18 @@ func (s *Scanner) Run(ctx context.Context, tracker *sm.Tracker, paths []string, 
 	// Accept no more jobs; workers will stop when they drain the queue.
 	close(jobs)
 
+	var newFiles atomic.Int64
+	var errorCount atomic.Int64
+
 	// Spawn workers to drain the job queue concurrently.
 	var workers sync.WaitGroup
 	for range workerCount {
 		workers.Go(func() {
 			for path := range jobs {
-				discoveredChan, err := s.scan(ctx, path, tracker)
+				discoveredChan, err := s.scan(ctx, sessionID, path, workerCount, &newFiles, &errorCount)
 				if err != nil {
-					s.log.Error("Failed to scan path", "session_id", tracker.SessionID, "path", path, "error", err)
+					s.log.Error("Failed to scan path", "sessionId", sessionID, "path", path, "error", err)
+					errorCount.Add(1)
 					results <- scanResult{err: fmt.Errorf("scan failed for %s: %w", path, err)}
 					continue
 				}
@@ -80,7 +85,7 @@ func (s *Scanner) Run(ctx context.Context, tracker *sm.Tracker, paths []string, 
 					count++
 				}
 
-				s.log.Info("Scanned path", "session_id", tracker.SessionID, "path", path, "files_discovered", count)
+				s.log.Info("Scanned path", "sessionId", sessionID, "path", path, "filesDiscovered", count)
 				results <- scanResult{count: count}
 			}
 		})
@@ -99,15 +104,27 @@ func (s *Scanner) Run(ctx context.Context, tracker *sm.Tracker, paths []string, 
 		}
 	}
 
+	newCount := newFiles.Load()
+	modifiedCount := int64(totalFiles) - newCount
+	errorTotal := errorCount.Load()
+	if _, upErr := s.db.ExecContext(ctx, `
+		UPDATE scan_sessions
+		SET files_discovered = ?, files_new = ?, files_modified = ?, errors_encountered = ?
+		WHERE id = ?
+	`, totalFiles, newCount, modifiedCount, errorTotal, sessionID.String()); upErr != nil {
+		s.log.Error("Failed to update scan counters", "sessionId", sessionID, "error", upErr)
+	}
+
 	return totalFiles, firstScanErr
 }
 
 // scan executes a scan for a single directory path and returns a channel
 // of discovered files. It's meant to be called by worker goroutines asynchronously.
-func (s *Scanner) scan(ctx context.Context, path string, tracker *sm.Tracker) (<-chan FileDiscovery, error) {
+func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, path string, workerCount int, newFiles, errorCount *atomic.Int64) (<-chan FileDiscovery, error) {
+	s.log.Info("Scanning path", "sessionId", sessionID, "path", path)
 	// Channel for discovered files
-	fileDiscoveryChannel := make(chan FileDiscovery, s.scanBuffer) // In
-	scanResultsChannel := make(chan FileDiscovery, s.scanBuffer)   // Out
+	fileDiscoveryChannel := make(chan FileDiscovery, 2*workerCount)
+	scanResultsChannel := make(chan FileDiscovery, 2*workerCount)
 
 	// Start a goroutine to walk the directory and send discoveries to the channel.
 	// We use a separate channel for walking results to decouple file discovery from database writes.
@@ -116,14 +133,14 @@ func (s *Scanner) scan(ctx context.Context, path string, tracker *sm.Tracker) (<
 	go func() {
 		defer close(scanResultsChannel)
 
-		if err := s.walkRoot(ctx, path, scanResultsChannel, tracker); err != nil {
-			s.log.Error("Walk root failed during scanPath", "path", path, "error", err)
+		if err := s.walkRoot(ctx, sessionID, path, scanResultsChannel); err != nil {
+			s.log.Error("Walk root failed", "sessionId", sessionID, "path", path, "error", err)
 		}
 	}()
 
 	// Consumer
 	go func() {
-		s.store(ctx, tracker.SessionID, scanResultsChannel, fileDiscoveryChannel, tracker)
+		s.store(ctx, sessionID, scanResultsChannel, fileDiscoveryChannel, newFiles, errorCount)
 	}()
 
 	return fileDiscoveryChannel, nil
@@ -131,11 +148,10 @@ func (s *Scanner) scan(ctx context.Context, path string, tracker *sm.Tracker) (<
 
 // walkRoot walks absPath and emits FileDiscovery records with relative paths.
 // absPath is the absolute filesystem path.
-func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileDiscovery, tracker *sm.Tracker) error {
+func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string, output chan<- FileDiscovery) error {
 	absRoot, err := s.path.RealPath(path)
 	if err != nil {
-		s.log.Error("Failed to resolve root path", "input_path", path, "error", err)
-		return err
+		return fmt.Errorf("realpath %q: %w", path, err)
 	}
 
 	err = filepath.WalkDir(absRoot, func(p string, d fs.DirEntry, err error) error {
@@ -148,8 +164,7 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 
 		// Handle errors (permission denied, etc.)
 		if err != nil {
-			s.log.Error("Walk error", "input_path", path, "walking_path", s.path.RelativeToHome(p), "error", err)
-			tracker.Errors.Add(1)
+			s.log.Error("Walk error", "sessionId", sessionID, "inputPath", path, "walkingPath", s.path.RelativeToHome(p), "error", err)
 			return nil // Continue walking
 		}
 
@@ -165,20 +180,17 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 		mediaType, shouldProcess, shouldIgnore := s.classifier.ClassifyName(d.Name())
 		switch {
 		case shouldIgnore:
-			s.log.Debug("Ignoring file", "input_path", path, "walking_path", s.path.RelativeToHome(p))
-			tracker.Skipped.Add(1)
+			s.log.Debug("Ignoring file", "sessionId", sessionID, "inputPath", path, "walkingPath", s.path.RelativeToHome(p))
 			return nil
 		case !shouldProcess:
-			s.log.Debug("Unsupported file type", "input_path", path, "walking_path", s.path.RelativeToHome(p))
-			tracker.AddUnsupportedPath(s.path.RelativeToHome(p))
+			s.log.Debug("Unsupported file type", "sessionId", sessionID, "walkingPath", s.path.RelativeToHome(p))
 			return nil
 		}
 
 		// Get file info
 		info, err := d.Info()
 		if err != nil {
-			s.log.Warn("Failed to get file info", "input_path", path, "walking_path", s.path.RelativeToHome(p), "error", err)
-			tracker.Errors.Add(1)
+			s.log.Warn("Failed to get file info", "sessionId", sessionID, "inputPath", path, "walkingPath", s.path.RelativeToHome(p), "error", err)
 			return nil
 		}
 
@@ -187,8 +199,7 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 		// relativeToSource = 2024/sunset.jpg
 		relativeToSource, err := filepath.Rel(absRoot, p)
 		if err != nil {
-			s.log.Warn("Failed to make path relative", "input_path", path, "walking_path", s.path.RelativeToHome(p), "error", err)
-			tracker.Errors.Add(1)
+			s.log.Warn("Failed to make path relative", "sessionId", sessionID, "inputPath", path, "walkingPath", s.path.RelativeToHome(p), "error", err)
 			return nil
 		}
 
@@ -204,8 +215,6 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 			Capture:    capture,
 		}
 
-		tracker.Discovered.Add(1)
-
 		// Send to processing channel
 		select {
 		case output <- file:
@@ -217,65 +226,38 @@ func (s *Scanner) walkRoot(ctx context.Context, path string, output chan<- FileD
 	})
 
 	if err != nil {
-		s.log.Error("Walk failed", "input_path", path, "error", err)
-		return err
+		return fmt.Errorf("walk %q: %w", absRoot, err)
 	}
 	return nil
 }
 
-func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-chan FileDiscovery, storedFiles chan<- FileDiscovery, tracker *sm.Tracker) {
+// store drains the discovery channel and enqueues each file to the BulkWriter.
+func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-chan FileDiscovery, storedFiles chan<- FileDiscovery, newFiles, errorCount *atomic.Int64) {
 	var dbWritesWG sync.WaitGroup
-	var emittersWG sync.WaitGroup
-	emitQueue := make(chan FileDiscovery, s.scanBuffer)
-
-	// TODO: This shouldn't be hardcoded value
-	for range 4 { // Emitters
-		emittersWG.Go(func() {
-			for file := range emitQueue {
-				select {
-				case storedFiles <- file:
-				case <-ctx.Done():
-					return
-				}
-			}
-		})
-	}
 
 	defer func() {
-		// 1) Wait for all queued DB write callbacks to finish.
-		// 2) Close emit queue so emit workers can drain and exit.
-		// 3) Wait for emitters, then close final output channel.
 		dbWritesWG.Wait()
-		close(emitQueue)
-		emittersWG.Wait()
 		close(storedFiles)
 	}()
 
 	for file := range discoveries {
 		dbWritesWG.Add(1)
-		operation := s.storeScan(ctx, sessionID, &dbWritesWG, emitQueue, file, tracker)
+		operation := s.storeScan(ctx, sessionID, &dbWritesWG, storedFiles, file, newFiles, errorCount)
 		enqueued := s.db.Writer.Write(operation)
 		if !enqueued {
 			dbWritesWG.Done()
-			tracker.Errors.Add(1)
-			s.log.Warn("Bulk writer closed; dropping discovery write", "path", file.Path, "session_id", sessionID)
+			s.log.Warn("Bulk writer closed; dropping discovery write", "path", file.Path, "sessionId", sessionID)
 		}
 	}
 }
 
 // storeScan builds the DB callback consumed by BulkWriter.Write.
 //
-// Why these captured values are part of this closure:
-//   - ctx: needed to stop emit handoff promptly when the scan is canceled.
-//   - emitQueue: this callback can only emit after the DB write succeeds.
-//   - file.ID: ID is produced by RETURNING at actual DB execution time, so it
-//     must be assigned inside this callback before forwarding the file.
-//
 // The callback shape is fixed by db.DBOperation (func(ctx, tx) error), so we
 // cannot return fileID directly to the caller of Write at enqueue time.
 // Instead, we compute (id, isNew) during execution and mutate the local file
-// copy before emitting it downstream.
-func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG *sync.WaitGroup, emitQueue chan<- FileDiscovery, file FileDiscovery, tracker *sm.Tracker) db.DBOperation {
+// copy before sending it downstream.
+func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG *sync.WaitGroup, storedFiles chan<- FileDiscovery, file FileDiscovery, newFiles, errorCount *atomic.Int64) db.DBOperation {
 	const query = `
 		INSERT INTO file_registry (
 			file_path, file_size, file_modified_at,
@@ -307,7 +289,7 @@ func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG
 			file.SourceRoot,
 			file.MediaType,
 			file.Extension,
-			ScanStatusDiscovered,
+			db.StatusDiscovered,
 			PathTypeRelative,
 			FileOriginSource,
 			file.Capture.captureKey,
@@ -326,21 +308,19 @@ func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG
 
 		fileID, isNew, err := queryFileState(dbCtx, tx)
 		if err != nil {
-			s.log.Warn("Failed to upsert file", "path", file.Path, "error", err)
-			tracker.Errors.Add(1)
+			s.log.Warn("Failed to upsert file", "sessionId", sessionID, "path", file.Path, "error", err)
+			errorCount.Add(1)
 			return nil // Continue processing other files in batch.
+		}
+
+		if isNew == 1 {
+			newFiles.Add(1)
 		}
 
 		file.ID = fileID
 
-		if isNew == 1 {
-			tracker.NewFiles.Add(1)
-		} else {
-			tracker.Skipped.Add(1)
-		}
-
 		select {
-		case emitQueue <- file:
+		case storedFiles <- file:
 		case <-ctx.Done():
 			return ctx.Err()
 		}

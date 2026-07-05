@@ -2,6 +2,7 @@ package exiftool
 
 import (
 	"archive/zip"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -65,7 +66,7 @@ func Verify(log logger.Logger, binDir string) (string, error) {
 	}
 
 	log.Info("exiftool not found; downloading", "dir", binDir, "os", runtime.GOOS)
-	if err := install(binDir, log); err != nil {
+	if err := install(context.Background(), binDir, log); err != nil {
 		return "", fmt.Errorf("install exiftool: %w", err)
 	}
 
@@ -76,7 +77,7 @@ func Verify(log logger.Logger, binDir string) (string, error) {
 	return "", fmt.Errorf("exiftool not found after install at %s", binaryPath)
 }
 
-func install(binDir string, log logger.Logger) error {
+func install(ctx context.Context, binDir string, log logger.Logger) error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return fmt.Errorf("create dir %q: %w", binDir, err)
 	}
@@ -101,7 +102,7 @@ func install(binDir string, log logger.Logger) error {
 	}
 
 	if _, err := os.Stat(archiveName); err != nil {
-		if err := db.DownloadFile(archiveName, url); err != nil {
+		if err := db.DownloadFile(ctx, archiveName, url); err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
 	}

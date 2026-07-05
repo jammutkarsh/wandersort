@@ -3,6 +3,8 @@ package scanner
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/jammutkarsh/wandersort/pkg/classifier"
 )
 
 // Capture role constants.
@@ -37,15 +39,15 @@ func deriveCapture(filename, ext, mediaType string) CaptureInfo {
 	base := strings.TrimSuffix(filename, filepath.Ext(filename)) // strip extension preserving case
 
 	variant := ""
-	for _, vp := range variantPrefixes {
-		if strings.HasPrefix(base, vp.variant) {
-			variant = vp.variant
-			start := len(vp.variant)
+	for _, prefix := range variantPrefixes {
+		if strings.HasPrefix(base, prefix.variant) {
+			variant = prefix.variant
+			start := len(prefix.variant)
 			// Handle edge case where filename is just the variant prefix with no stem (e.g. "IMG_E.jpg")
 			if len(base) > start {
-				base = vp.captureKey + base[start:] // normalise to canonical prefix
+				base = prefix.captureKey + base[start:] // normalise to canonical prefix
 			} else {
-				base = vp.captureKey // edge case: filename is just the variant prefix
+				base = prefix.captureKey // edge case: filename is just the variant prefix
 			}
 			break
 		}
@@ -56,6 +58,7 @@ func deriveCapture(filename, ext, mediaType string) CaptureInfo {
 	return CaptureInfo{captureKey: base, variant: role}
 }
 
+// deriveRole determines the capture role from variant prefix, extension, and media type.
 func deriveRole(variant, ext, mediaType string) string {
 	switch {
 	// Edited variants
@@ -69,11 +72,11 @@ func deriveRole(variant, ext, mediaType string) string {
 		return CaptureRoleOriginalSidecar
 
 	// No variant prefix — decide by media type / extension
-	case mediaType == "RAW":
+	case mediaType == classifier.MediaTypeRaw:
 		return CaptureRoleRaw
-	case mediaType == "SIDECAR":
+	case mediaType == classifier.MediaTypeSidecar:
 		return CaptureRoleSidecar
-	case mediaType == "VIDEO":
+	case mediaType == classifier.MediaTypeVideo:
 		return CaptureRoleLiveVideo
 	default:
 		return CaptureRoleOriginal
