@@ -1,9 +1,7 @@
 package exiftool
 
 import (
-	"archive/tar"
 	"archive/zip"
-	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
@@ -221,8 +219,10 @@ func installFromTarGz(tgzPath, destDir string, log logger.Logger) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := extractTarGz(tgzPath, tmpDir); err != nil {
-		return fmt.Errorf("tar.gz: %w", err)
+	// Use system tar — available on all major Linux distros
+	cmd := exec.Command("tar", "xzf", tgzPath, "-C", tmpDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tar: %w\n%s", err, output)
 	}
 
 	// Find the single versioned top-level directory (e.g. Image-ExifTool-13.59/)
@@ -241,53 +241,6 @@ func installFromTarGz(tgzPath, destDir string, log logger.Logger) error {
 	}
 
 	log.Info("extracted tar.gz", "dir", destDir)
-	return nil
-}
-
-// extractTarGz extracts a .tar.gz archive into destDir using archive/tar and compress/gzip.
-func extractTarGz(tgzPath, destDir string) error {
-	f, err := os.Open(tgzPath)
-	if err != nil {
-		return fmt.Errorf("open: %w", err)
-	}
-	defer f.Close()
-
-	gr, err := gzip.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("gzip reader: %w", err)
-	}
-	defer gr.Close()
-
-	tr := tar.NewReader(gr)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("read tar: %w", err)
-		}
-		dst := filepath.Join(destDir, filepath.FromSlash(hdr.Name))
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(dst, os.FileMode(hdr.Mode)); err != nil {
-				return fmt.Errorf("mkdir %s: %w", dst, err)
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-				return fmt.Errorf("mkdir parent %s: %w", dst, err)
-			}
-			out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
-			if err != nil {
-				return fmt.Errorf("create %s: %w", dst, err)
-			}
-			_, copyErr := io.Copy(out, tr)
-			out.Close()
-			if copyErr != nil {
-				return fmt.Errorf("write %s: %w", dst, copyErr)
-			}
-		}
-	}
 	return nil
 }
 
@@ -383,18 +336,7 @@ func archiveValid(path string) bool {
 		r.Close()
 		return true
 	case strings.HasSuffix(path, ".tar.gz"):
-		f, err := os.Open(path)
-		if err != nil {
-			return false
-		}
-		defer f.Close()
-		// gzip.NewReader verifies the gzip header and CRC
-		gr, err := gzip.NewReader(f)
-		if err != nil {
-			return false
-		}
-		gr.Close()
-		return true
+		return exec.Command("tar", "tzf", path).Run() == nil
 	case strings.HasSuffix(path, ".pkg"):
 		return exec.Command("pkgutil", "--payload-files", path).Run() == nil
 	}
