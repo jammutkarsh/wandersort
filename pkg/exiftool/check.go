@@ -1,7 +1,11 @@
 package exiftool
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -133,8 +137,7 @@ func installFromZip(zipPath, binDir string, log logger.Logger) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Use system unzip to extract into a temp directory
-	if err := exec.Command("unzip", "-q", zipPath, "-d", tmpDir).Run(); err != nil {
+	if err := extractZip(zipPath, tmpDir); err != nil {
 		return fmt.Errorf("unzip: %w", err)
 	}
 
@@ -165,6 +168,44 @@ func installFromZip(zipPath, binDir string, log logger.Logger) error {
 	return nil
 }
 
+// extractZip extracts all files from a zip archive into destDir using archive/zip.
+func extractZip(zipPath, destDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("open zip: %w", err)
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		dst := filepath.Join(destDir, filepath.FromSlash(f.Name))
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(dst, f.Mode()); err != nil {
+				return fmt.Errorf("mkdir %s: %w", dst, err)
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return fmt.Errorf("mkdir parent %s: %w", dst, err)
+		}
+		out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode())
+		if err != nil {
+			return fmt.Errorf("create %s: %w", dst, err)
+		}
+		rc, err := f.Open()
+		if err != nil {
+			out.Close()
+			return fmt.Errorf("open zip entry %s: %w", f.Name, err)
+		}
+		_, copyErr := io.Copy(out, rc)
+		rc.Close()
+		out.Close()
+		if copyErr != nil {
+			return fmt.Errorf("write %s: %w", dst, copyErr)
+		}
+	}
+	return nil
+}
+
 // installFromTarGz extracts the Linux / portable tar.gz
 //
 // Tarball structure:
@@ -180,10 +221,8 @@ func installFromTarGz(tgzPath, destDir string, log logger.Logger) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Use system tar to extract into a temp directory
-	cmd := exec.Command("tar", "xzf", tgzPath, "-C", tmpDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tar: %w\n%s", err, output)
+	if err := extractTarGz(tgzPath, tmpDir); err != nil {
+		return fmt.Errorf("tar.gz: %w", err)
 	}
 
 	// Find the single versioned top-level directory (e.g. Image-ExifTool-13.59/)
@@ -202,6 +241,53 @@ func installFromTarGz(tgzPath, destDir string, log logger.Logger) error {
 	}
 
 	log.Info("extracted tar.gz", "dir", destDir)
+	return nil
+}
+
+// extractTarGz extracts a .tar.gz archive into destDir using archive/tar and compress/gzip.
+func extractTarGz(tgzPath, destDir string) error {
+	f, err := os.Open(tgzPath)
+	if err != nil {
+		return fmt.Errorf("open: %w", err)
+	}
+	defer f.Close()
+
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("gzip reader: %w", err)
+	}
+	defer gr.Close()
+
+	tr := tar.NewReader(gr)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read tar: %w", err)
+		}
+		dst := filepath.Join(destDir, filepath.FromSlash(hdr.Name))
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(dst, os.FileMode(hdr.Mode)); err != nil {
+				return fmt.Errorf("mkdir %s: %w", dst, err)
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return fmt.Errorf("mkdir parent %s: %w", dst, err)
+			}
+			out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
+			if err != nil {
+				return fmt.Errorf("create %s: %w", dst, err)
+			}
+			_, copyErr := io.Copy(out, tr)
+			out.Close()
+			if copyErr != nil {
+				return fmt.Errorf("write %s: %w", dst, copyErr)
+			}
+		}
+	}
 	return nil
 }
 
@@ -272,7 +358,10 @@ func checkVersion(path string, log logger.Logger) (bool, error) {
 		return false, fmt.Errorf("parse version %s: %v %v", ver, err1, err2)
 	}
 
-	reqMajor, reqMinor := parseVersion(exiftoolVersion)
+	// Parse required version
+	reqParts := strings.SplitN(exiftoolVersion, ".", 2)
+	reqMajor, _ := strconv.Atoi(reqParts[0])
+	reqMinor, _ := strconv.Atoi(reqParts[1])
 
 	if major > reqMajor || (major == reqMajor && minor >= reqMinor) {
 		return true, nil
@@ -282,21 +371,30 @@ func checkVersion(path string, log logger.Logger) (bool, error) {
 	return false, nil
 }
 
-// parseVersion parses a "major.minor" version string into two ints
-func parseVersion(v string) (int, int) {
-	parts := strings.SplitN(v, ".", 2)
-	major, _ := strconv.Atoi(parts[0])
-	minor, _ := strconv.Atoi(parts[1])
-	return major, minor
-}
-
-// archiveValid verifies the downloaded archive is not corrupt
+// archiveValid verifies the downloaded archive is not corrupt.
 func archiveValid(path string) bool {
 	switch {
 	case strings.HasSuffix(path, ".zip"):
-		return exec.Command("unzip", "-t", path).Run() == nil
+		// zip.OpenReader verifies the central directory and CRCs of all entries
+		r, err := zip.OpenReader(path)
+		if err != nil {
+			return false
+		}
+		r.Close()
+		return true
 	case strings.HasSuffix(path, ".tar.gz"):
-		return exec.Command("tar", "tzf", path).Run() == nil
+		f, err := os.Open(path)
+		if err != nil {
+			return false
+		}
+		defer f.Close()
+		// gzip.NewReader verifies the gzip header and CRC
+		gr, err := gzip.NewReader(f)
+		if err != nil {
+			return false
+		}
+		gr.Close()
+		return true
 	case strings.HasSuffix(path, ".pkg"):
 		return exec.Command("pkgutil", "--payload-files", path).Run() == nil
 	}
