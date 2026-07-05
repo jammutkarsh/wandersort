@@ -42,7 +42,7 @@ func NewHasher(ctx context.Context, db *db.DB, log logger.Logger, exiftoolPath s
 }
 
 // Run fetches hashable files for the given session in pages and executes
-// hashing in bounded worker pools.
+// hashing in bounded worker pools
 func (h *Hasher) Run(ctx context.Context, tracker *sm.Tracker, workerCount int) (int, error) {
 	queueSize := max(workerCount*2, 2)
 

@@ -10,17 +10,17 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 )
 
-// Extractor runs exiftool as a subprocess and parses its JSON output.
+// Extractor runs exiftool as a subprocess and parses its JSON output
 type Extractor struct {
 	exiftoolPath string
 }
 
-// New returns a ready-to-use Extractor.
+// New returns a ready-to-use Extractor
 func New(exiftoolPath string) *Extractor {
 	return &Extractor{exiftoolPath: exiftoolPath}
 }
 
-// Extract runs exiftool on a single file and returns the parsed metadata or error.
+// Extract runs exiftool on a single file and returns the parsed metadata or error
 func (e *Extractor) Extract(ctx context.Context, path string) (classifier.CommonMetadata, error) {
 	// -json: output as JSON array; -n: numeric values (no unit strings)
 	raw, err := exec.CommandContext(ctx, e.exiftoolPath, "-json", "-n", path).Output()

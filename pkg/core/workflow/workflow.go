@@ -19,9 +19,9 @@ import (
 	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
-// Workflow orchestrates scan, hash and score workflow for each session.
+// Workflow orchestrates scan, hash and score workflow for each session
 // Scanning and hashing run in bounded batches to keep memory usage stable on
-// very large roots.
+// very large roots
 type Workflow struct {
 	ctx              context.Context
 	db               *db.DB
@@ -40,7 +40,7 @@ type Workflow struct {
 	/* Concurreny settings */
 	// For a session at any given time,
 	// only one phase runs (scan OR hash OR score)
-	// and it uses up to this many workers.
+	// and it uses up to this many workers
 	workers int
 
 	updateInterval time.Duration
@@ -88,7 +88,7 @@ func (kind workflowPhaseKind) completedStatus() string {
 	}
 }
 
-// NewWorkflow creates a new workflow instance.
+// NewWorkflow creates a new workflow instance
 func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration, exiftoolPath string) *Workflow {
 	sm := sm.NewStatusManager()
 	sc := scanner.NewScanner(db, log)
@@ -112,7 +112,7 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 }
 
 // SubmitScan creates a new scan session and kicks off the workflow
-// workflow in a background goroutine.
+// workflow in a background goroutine
 func (wf *Workflow) SubmitScan(paths []string) (uuid.UUID, error) {
 	select {
 	case <-wf.ctx.Done():
@@ -134,11 +134,11 @@ func (wf *Workflow) SubmitScan(paths []string) (uuid.UUID, error) {
 	return tracker.SessionID, nil
 }
 
-// prepareSession creates the scan_sessions DB row and returns a fresh tracker.
+// prepareSession creates the scan_sessions DB row and returns a fresh tracker
 //
-// The incoming paths are expected to already be canonical, validated scan roots.
+// The incoming paths are expected to already be canonical, validated scan roots
 // API-level preparation resolves, deduplicates, and prunes overlapping paths
-// before this method runs.
+// before this method runs
 func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (*sm.Tracker, error) {
 	storedPaths := make([]string, 0, len(paths))
 	for _, path := range paths {
@@ -180,7 +180,7 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (*sm.Tra
 	return tracker, nil
 }
 
-// background executes the three sequential phases for a single scan session.
+// background executes the three sequential phases for a single scan session
 func (wf *Workflow) background(tracker *sm.Tracker, paths []string) {
 	var finalStatus string
 	var finalErr *string
@@ -240,7 +240,7 @@ func (wf *Workflow) workflowPhases(tracker *sm.Tracker, paths []string, workers 
 
 // run runs a single workflow phase, handles logging,
 // status updates, and consistent error reporting. Returns the result count,
-// final status, error message (if any), and a boolean indicating success.
+// final status, error message (if any), and a boolean indicating success
 func (wf *Workflow) run(tracker *sm.Tracker, phase workflowPhaseKind, phaseFunc func() (int, error)) (int, string, *string, bool) {
 	success := true
 	inProgressStatus := phase.inProgressStatus()

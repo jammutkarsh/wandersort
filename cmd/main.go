@@ -32,16 +32,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Load configuration.
+	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Initialize logger.
+	// Initialize logger
 	logger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile)
 
-	// Verify exiftool is available before starting the server.
+	// Verify exiftool is available before starting the server
 	exiftoolPath, err := exiftool.Verify(logger, cfg.BinDir)
 	if err != nil {
 		logger.Error("exiftool verification failed", "error", err)
@@ -52,7 +52,7 @@ func main() {
 	if err != nil {
 		logger.Error("appDB: failed to initialize", "error", err)
 	}
-	// Initialize location database.
+
 	locationDB, err := db.New(cfg.DbLocationPath, db.LocationDB, logger)
 	if err != nil {
 		logger.Error("locationDB: failed to initialize", "error", err)
@@ -63,7 +63,9 @@ func main() {
 		logger.Error("locationResolver: failed to initialize", "error", err)
 	}
 
-	// Ensure databases are closed on shutdown.
+	// Ensure the DB get closed on any exit path — including unrecovered panics
+	// With locking_mode=EXCLUSIVE, a missing Close leaves the WAL/SHM files
+	// locked and prevents the server from restarting
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("panic recovered during shutdown: %v", r)
@@ -85,8 +87,8 @@ func main() {
 
 	// API handlers
 	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(appDB)))
-
 	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, workflow, pipeline.NewRepository(appDB)))
+
 	router := setupRouter(logger, cfg.Host, adminHandler, pipelineHandler)
 
 	server := &http.Server{
@@ -103,7 +105,7 @@ func main() {
 		}
 	}()
 
-	// Wait for shutdown signal.
+	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -111,12 +113,14 @@ func main() {
 
 	logger.Info("Shutting down", "signal", sig.String())
 
-	// Stop background workers.
+	// Cancel the root context to stop any background goroutines
+	// The explicit call ensures  the shutdown sequence happens
+	// in the right order: cancel pipeline → wait for sessions → close DB → shutdown server
 	cancel()
-	// Wait for pipeline workers to finish before closing the DB.
+	// Wait for pipeline workers to finish before closing the DB
 	workflow.Close()
 
-	// Graceful HTTP shutdown.
+	// Graceful HTTP shutdown
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
@@ -127,11 +131,11 @@ func main() {
 	logger.Info("Server stopped")
 }
 
-// setupRouter creates and configures the Gin router.
+// setupRouter creates and configures the Gin router
 func setupRouter(l logger.Logger, host string, handlers ...api.Handlers) *gin.Engine {
 	router := gin.New()
 
-	// Global Middleware
+	// Global middleware
 	router.Use(logger.GinLogger(l))
 	router.Use(api.RecoveryMiddleware())
 	router.Use(api.RequestIDMiddleware())
