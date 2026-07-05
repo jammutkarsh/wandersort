@@ -19,6 +19,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -41,21 +42,25 @@ func main() {
 	logger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile)
 
 	// Verify exiftool is available before starting the server.
-	if _, err := exiftool.Verify(logger, cfg.BinDir); err != nil {
+	exiftoolPath, err := exiftool.Verify(logger, cfg.BinDir)
+	if err != nil {
 		logger.Error("exiftool verification failed", "error", err)
 		os.Exit(1)
 	}
 
-	// Initialize application database.
 	appDB, err := db.New(cfg.DatabasePath, db.AppDB, logger)
 	if err != nil {
-		log.Fatalf("failed to initialize wandersort database: %v", err)
+		logger.Error("appDB: failed to initialize", "error", err)
 	}
-
 	// Initialize location database.
 	locationDB, err := db.New(cfg.DbLocationPath, db.LocationDB, logger)
 	if err != nil {
-		log.Fatalf("failed to initialize location database: %v", err)
+		logger.Error("locationDB: failed to initialize", "error", err)
+	}
+
+	locationResolver, err := location.New(locationDB, cfg.DbLocationPath, logger)
+	if err != nil {
+		logger.Error("locationResolver: failed to initialize", "error", err)
 	}
 
 	// Ensure databases are closed on shutdown.
@@ -75,21 +80,13 @@ func main() {
 		}
 	}()
 
-	// Create workflow.
-	workflow := workflow.NewWorkflow(ctx, appDB, logger, cfg)
+	// Create the unified workflow orchestrator
+	workflow := workflow.NewWorkflow(ctx, appDB, locationResolver, logger, cfg, exiftoolPath)
 
-	// API handlers.
-	adminHandler := admin.NewHandler(
-		logger,
-		admin.NewService(logger, admin.NewRepository(appDB)),
-	)
+	// API handlers
+	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(appDB)))
 
-	pipelineHandler := pipeline.NewHandler(
-		logger,
-		pipeline.NewService(logger, workflow, pipeline.NewRepository(appDB)),
-	)
-
-	// Router.
+	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, workflow, pipeline.NewRepository(appDB)))
 	router := setupRouter(logger, cfg.Host, adminHandler, pipelineHandler)
 
 	server := &http.Server{
@@ -100,8 +97,8 @@ func main() {
 
 	go func() {
 		logger.Info("Starting server", "port", cfg.ServerPort)
-
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		err := server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
 		}
 	}()
@@ -116,6 +113,7 @@ func main() {
 
 	// Stop background workers.
 	cancel()
+	// Wait for pipeline workers to finish before closing the DB.
 	workflow.Close()
 
 	// Graceful HTTP shutdown.
@@ -133,6 +131,7 @@ func main() {
 func setupRouter(l logger.Logger, host string, handlers ...api.Handlers) *gin.Engine {
 	router := gin.New()
 
+	// Global Middleware
 	router.Use(logger.GinLogger(l))
 	router.Use(api.RecoveryMiddleware())
 	router.Use(api.RequestIDMiddleware())
@@ -145,9 +144,7 @@ func setupRouter(l logger.Logger, host string, handlers ...api.Handlers) *gin.En
 	}
 
 	router.GET("/ping", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "pong",
-		})
+		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
 
 	docs.SwaggerInfo.Host = host

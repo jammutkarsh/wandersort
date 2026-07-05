@@ -33,7 +33,7 @@ const (
 
 	// locationMetaFileName is the metadata JSON published alongside the LocationDB.
 	// location.json holds the dynamic metadata (version, date) used to determine if a re-download is required.
-	locationMetaFileName = "location.json"
+	LocationMetaFileName = "location.json"
 )
 
 // DB wraps *sql.DB with a BulkWriter for database operations.
@@ -158,27 +158,27 @@ func ensureLocationDB(dbPath string, log logger.Logger) error {
 	}
 
 	if _, err := os.Stat(dbPath); err == nil {
-		log.Info("location db found; no need to download", "path", dbPath)
+		log.Info("location db found", "path", dbPath)
 		return nil
 	}
 
 	log.Info("location db not found; downloading", "url", locationDownloadBaseURL+"/"+LocationDBFileName)
 
-	if err := downloadFile(dbPath, locationDownloadBaseURL+"/"+LocationDBFileName); err != nil {
+	if err := DownloadFile(dbPath, locationDownloadBaseURL+"/"+LocationDBFileName); err != nil {
 		return fmt.Errorf("download %s: %w", LocationDBFileName, err)
 	}
 
-	metaPath := filepath.Join(filepath.Dir(dbPath), locationMetaFileName)
-	if err := downloadFile(metaPath, locationDownloadBaseURL+"/"+locationMetaFileName); err != nil {
-		log.Info("location db: could not download metadata (non-fatal)", "file", locationMetaFileName, "error", err)
+	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
+	if err := DownloadFile(metaPath, locationDownloadBaseURL+"/"+LocationMetaFileName); err != nil {
+		log.Info("location db: could not download metadata (non-fatal)", "file", LocationMetaFileName, "error", err)
 	}
 
 	return nil
 }
 
-// downloadFile fetches url and writes the body to dest atomically (via a temp
+// DownloadFile fetches url and writes the body to dest atomically (via a temp
 // file) so a partial download never leaves a corrupt file at dest.
-func downloadFile(dest, url string) error {
+func DownloadFile(dest, url string) error {
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", url, err)
