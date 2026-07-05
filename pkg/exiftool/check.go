@@ -56,8 +56,6 @@ func Verify(log logger.Logger, binDir string) (string, error) {
 		log.Info("exiftool is outdated; installing bundled version", "path", binaryPath)
 	}
 
-	}
-
 	log.Info("exiftool not found; downloading", "dir", binDir, "os", runtime.GOOS)
 	if err := install(binDir, log); err != nil {
 		return "", fmt.Errorf("install exiftool: %w", err)
@@ -68,6 +66,8 @@ func Verify(log logger.Logger, binDir string) (string, error) {
 	}
 
 	return "", fmt.Errorf("exiftool not found after install at %s", binaryPath)
+}
+
 func install(binDir string, log logger.Logger) error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return fmt.Errorf("create dir %q: %w", binDir, err)
@@ -302,4 +302,3 @@ func archiveValid(path string) bool {
 	}
 	return false
 }
-
