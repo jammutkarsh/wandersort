@@ -22,6 +22,9 @@ func TestComputeScanPaths_FilterDuplicatePaths(t *testing.T) {
 	svc := &Service{logger: logger.NewNoopLogger(), path: path.New()}
 
 	resolvedRoot, err := svc.path.RealPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	resolvedOtherRoot, err := svc.path.RealPath(otherRoot)
 	if err != nil {
 		t.Fatal(err)

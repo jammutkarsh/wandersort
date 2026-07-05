@@ -18,6 +18,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	swaggerfiles "github.com/swaggo/files"
@@ -31,16 +32,22 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize configuration
+	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Logger
+	// Initialize logger
 	logger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile)
 
-	// app DB (SQLite)
+	// Verify exiftool is available before starting the server
+	exiftoolPath, err := exiftool.Verify(logger, cfg.BinDir)
+	if err != nil {
+		logger.Error("exiftool verification failed", "error", err)
+		os.Exit(1)
+	}
+
 	appDB, err := db.New(cfg.DatabasePath, db.AppDB, logger)
 	if err != nil {
 		logger.Error("appDB: failed to initialize", "error", err)
@@ -56,42 +63,42 @@ func main() {
 		logger.Error("locationResolver: failed to initialize", "error", err)
 	}
 
-	// Ensure the DB get closed on any exit path — including unrecovered panics.
+	// Ensure the DB get closed on any exit path — including unrecovered panics
 	// With locking_mode=EXCLUSIVE, a missing Close leaves the WAL/SHM files
-	// locked and prevents the server from restarting.
+	// locked and prevents the server from restarting
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("panic recovered during shutdown: %v", r)
 		}
-		logger.Info("Closing database")
+
+		logger.Info("Closing databases")
+
 		if err := appDB.Close(); err != nil {
 			log.Printf("error closing wandersort database: %v", err)
 		}
+
 		if err := locationDB.Close(); err != nil {
 			log.Printf("error closing location database: %v", err)
 		}
 	}()
 
 	// Create the unified workflow orchestrator
-	workflow := workflow.NewWorkflow(ctx, appDB, locationResolver, logger, cfg)
+	workflow := workflow.NewWorkflow(ctx, appDB, locationResolver, logger, cfg, exiftoolPath)
 
 	// API handlers
 	adminHandler := admin.NewHandler(logger, admin.NewService(logger, admin.NewRepository(appDB)))
 	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, workflow, pipeline.NewRepository(appDB)))
 
-	// Setup Gin router
 	router := setupRouter(logger, cfg.Host, adminHandler, pipelineHandler)
 
-	// HTTP server
 	server := &http.Server{
 		Addr:              ":" + cfg.ServerPort,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Start server in a goroutine so it doesn't block the signal listener.
 	go func() {
-		logger.Info("Starting Server on", "port", cfg.ServerPort)
+		logger.Info("Starting server", "port", cfg.ServerPort)
 		err := server.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
@@ -101,18 +108,19 @@ func main() {
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
 	sig := <-quit
+
 	logger.Info("Shutting down", "signal", sig.String())
 
-	// Cancel the root context to stop any background goroutines.
+	// Cancel the root context to stop any background goroutines
 	// The explicit call ensures  the shutdown sequence happens
-	// in the right order: cancel pipeline → wait for sessions → close DB → shutdown server.
+	// in the right order: cancel pipeline → wait for sessions → close DB → shutdown server
 	cancel()
-
-	// Wait for pipeline workers to finish before closing the DB.
+	// Wait for pipeline workers to finish before closing the DB
 	workflow.Close()
 
-	// Give in-flight requests up to 30 s to complete.
+	// Graceful HTTP shutdown
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
@@ -123,7 +131,7 @@ func main() {
 	logger.Info("Server stopped")
 }
 
-// setupRouter creates and configures the Gin router with all middleware and routes.
+// setupRouter creates and configures the Gin router
 func setupRouter(l logger.Logger, host string, handlers ...api.Handlers) *gin.Engine {
 	router := gin.New()
 
@@ -134,19 +142,21 @@ func setupRouter(l logger.Logger, host string, handlers ...api.Handlers) *gin.En
 	router.Use(api.CORSMiddleware())
 
 	v1 := router.Group("/internal/v1")
+
 	for _, handler := range handlers {
 		handler.SetupRoutes(v1)
 	}
 
 	router.GET("/ping", func(c *gin.Context) {
-		c.JSON(200, gin.H{"message": "pong"})
+		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
 
-	// Swagger docs
 	docs.SwaggerInfo.Host = host
+
 	v1.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
-	for _, v := range router.Routes() {
-		l.Info("Registered Route", v.Method, v.Path)
+
+	for _, route := range router.Routes() {
+		l.Info("Registered Route", route.Method, route.Path)
 	}
 
 	return router
