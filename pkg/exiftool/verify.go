@@ -8,6 +8,7 @@ package exiftool
 
 import (
 	"archive/zip"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -37,8 +38,8 @@ var downloadURLs = map[string]string{
 	macOS:   fmt.Sprintf("https://sourceforge.net/projects/exiftool/files/ExifTool-%s.pkg/download", exiftoolVersion),
 }
 
-// exiftoolBin returns the platform-specific binary name.
-// On Windows the .exe extension is required for execution.
+// exiftoolBin returns the platform-specific binary name
+// On Windows the .exe extension is required for execution
 func exiftoolBin() string {
 	if runtime.GOOS == windows {
 		return "exiftool.exe"
@@ -49,7 +50,7 @@ func exiftoolBin() string {
 // Verify checks exiftool is available, either on $PATH or in WanderSort's
 // own install directory. If the found version is below the requirement, it
 // downloads and installs a bundled copy into ~/.wandersort/bin
-func Verify(log logger.Logger, binDir string) (string, error) {
+func Verify(ctx context.Context, log logger.Logger, binDir string) (string, error) {
 	// Check PATH — only accept if version meets requirement
 	if path, err := exec.LookPath(exiftoolBin()); err == nil {
 		if ok, _ := checkVersion(path, log); ok {
@@ -71,7 +72,7 @@ func Verify(log logger.Logger, binDir string) (string, error) {
 	}
 
 	log.Info("exiftool not found; downloading", "dir", binDir, "os", runtime.GOOS)
-	if err := install(binDir, log); err != nil {
+	if err := install(ctx, binDir, log); err != nil {
 		return "", fmt.Errorf("install exiftool: %w", err)
 	}
 
@@ -82,7 +83,7 @@ func Verify(log logger.Logger, binDir string) (string, error) {
 	return "", fmt.Errorf("exiftool not found after install at %s", binaryPath)
 }
 
-func install(binDir string, log logger.Logger) error {
+func install(ctx context.Context, binDir string, log logger.Logger) error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return fmt.Errorf("create dir %q: %w", binDir, err)
 	}
@@ -107,7 +108,7 @@ func install(binDir string, log logger.Logger) error {
 	}
 
 	if _, err := os.Stat(archiveName); err != nil {
-		if err := db.DownloadFile(archiveName, url); err != nil {
+		if err := db.DownloadFile(ctx, archiveName, url); err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
 	}
@@ -178,7 +179,7 @@ func installFromZip(zipPath, binDir string, log logger.Logger) error {
 	return nil
 }
 
-// extractZip extracts all files from a zip archive into destDir using archive/zip.
+// extractZip extracts all files from a zip archive into destDir using archive/zip
 func extractZip(zipPath, destDir string) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
@@ -187,7 +188,7 @@ func extractZip(zipPath, destDir string) error {
 	defer r.Close()
 
 	// Windows doesn't have zip/unzup command preinstalled
-	// hence using Go's standard library to extract the archive.
+	// hence using Go's standard library to extract the archive
 	for _, f := range r.File {
 		dst := filepath.Join(destDir, filepath.FromSlash(f.Name))
 		if f.FileInfo().IsDir() {
@@ -338,7 +339,7 @@ func checkVersion(path string, log logger.Logger) (bool, error) {
 	return false, nil
 }
 
-// archiveValid verifies the downloaded archive is not corrupt.
+// archiveValid verifies the downloaded archive is not corrupt
 func archiveValid(path string) bool {
 	switch {
 	case strings.HasSuffix(path, ".zip"):

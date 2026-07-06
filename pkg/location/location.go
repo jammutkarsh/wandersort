@@ -32,6 +32,9 @@ var ErrNoLocation = errors.New("locationResolver: location not found")
 // sqrt(0.01) = 0.1° ≈ 11 km
 const maxDistSquared = 0.01
 
+// gpsRoundingFactor rounds coordinates to 4 decimal places (≈ 11 m)
+const gpsRoundingFactor = 10000
+
 type cacheKey struct {
 	lat, lon float64
 }
@@ -83,10 +86,10 @@ func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver
 func (r *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error) {
 	// Round to 4 decimal places ≈ 11 m precision — close enough that photos
 	// from the same physical spot
-	// Formula: round(x * 10^4) / 10^4  keeps values stable across minor GPS jitter
+	// Formula: round(x * gpsRoundingFactor) / gpsRoundingFactor keeps values stable across minor GPS jitter
 	key := cacheKey{
-		lat: math.Round(lat*10000) / 10000,
-		lon: math.Round(lon*10000) / 10000,
+		lat: math.Round(lat*gpsRoundingFactor) / gpsRoundingFactor,
+		lon: math.Round(lon*gpsRoundingFactor) / gpsRoundingFactor,
 	}
 
 	// 1. Load: Returns value and a boolean 'ok'

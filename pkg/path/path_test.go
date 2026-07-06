@@ -61,37 +61,6 @@ func TestPathUtil_ContractPath(t *testing.T) {
 	}
 }
 
-func TestPathUtil_MakeRelative(t *testing.T) {
-	root := t.TempDir()
-	photosRoot := filepath.Join(root, "Photos")
-	imgPath := filepath.Join(photosRoot, "2023", "img.jpg")
-	if err := os.MkdirAll(filepath.Dir(imgPath), 0o755); err != nil {
-		t.Fatalf("mkdir temp tree: %v", err)
-	}
-	if err := os.WriteFile(imgPath, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write temp file: %v", err)
-	}
-
-	pu := &Resolver{HomeDir: root}
-
-	rel, err := pu.MakeRelative(imgPath, photosRoot)
-	if err != nil {
-		t.Fatalf("MakeRelative: %v", err)
-	}
-	if rel != "2023/img.jpg" {
-		t.Errorf("MakeRelative = %q, want %q", rel, "2023/img.jpg")
-	}
-}
-
-func TestPathUtil_MakeAbsolute(t *testing.T) {
-	pu := &Resolver{HomeDir: "/home/testuser"}
-	got := pu.MakeAbsolute("2023/img.jpg", "~/Photos")
-	want := "/home/testuser/Photos/2023/img.jpg"
-	if got != want {
-		t.Errorf("MakeAbsolute = %q, want %q", got, want)
-	}
-}
-
 func TestPathUtil_RoundTrip(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")

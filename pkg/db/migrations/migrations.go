@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Migration describes a single schema migration step.
+// Migration describes a single schema migration step
 type Migration struct {
 	Version     uint
 	Description string
@@ -20,12 +20,12 @@ type Migration struct {
 }
 
 // schemas is the ordered list of migrations. Append new migrations at the end;
-// never reorder or mutate existing entries.
+// never reorder or mutate existing entries
 var schemas = []Migration{schema001, schema002}
 
 // Run applies any migrations whose version is greater than what the database
 // has already recorded. It creates the schema_migrations tracking table on
-// first run.
+// first run
 func Run(db *sql.DB) (int, error) {
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (

@@ -10,117 +10,80 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
-	"time"
+)
+
+const (
+	defaultLibraryDir  = "WanderSortLibrary"
+	defaultLogFileName = ".wandersort.log"
+	defaultDBFileName  = ".wandersort.db"
+	locationDBFileName = "location.db"
+	defaultLogLevel    = "info"
+	defaultPort        = "8080"
 )
 
 type Configuration struct {
-	ServerPort      string
-	Host            string
-	DatabasePath    string
-	DbLocationPath  string
-	OutputPath      string
-	LogLevel        string
-	LogConsole      bool
-	LogFile         string
-	Workers         int
-	UpdateInterval  time.Duration
-	FinalizeTimeout time.Duration
-	AppDir          string
-	BinDir          string
+	ServerPort     string
+	Host           string
+	AppDBPath      string
+	LocationDBPath string
+	LogLevel       string
+	LogConsole     bool
+	LogFile        string
+	Workers        int
+	BinDir         string
 }
 
+// Load reads environment variables and builds the application Configuration
+// Defaults: info log level, port 8080, WanderSortLibrary output dir, and runtime.NumCPU() workers
 func Load() (*Configuration, error) {
-	const defaultWorkers = 5
-
-	var (
-		outputPath         = os.Getenv("OUTPUT_PATH")
-		logPath            = os.Getenv("LOG_FILE")
-		logLevel           = os.Getenv("LOG_LEVEL")
-		dbPath             = os.Getenv("DB_PATH")
-		dbLocationPath     = os.Getenv("DB_LOCATION_PATH")
-		workers            = os.Getenv("WORKERS")
-		port               = os.Getenv("PORT")
-		host               = os.Getenv("HOST")
-		updateIntervalStr  = os.Getenv("UPDATE_INTERVAL")
-		finalizeTimeoutStr = os.Getenv("FINALIZE_TIMEOUT")
-		workerCount        = defaultWorkers
-	)
-
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve user home directory: %w", err)
 	}
 
-	// appDir is WanderSort's per-user configuration directory.
-	// Everything managed by WanderSort outside the output library
-	// (downloaded tools, location database, etc.) lives here.
+	// appDir is WanderSort's per-user configuration directory
 	appDir := filepath.Join(home, ".wandersort")
 
-	// binDir stores downloaded helper executables such as exiftool.
+	// binDir stores downloaded helper executables such as exiftool
 	binDir := filepath.Join(appDir, "bin")
 
+	outputPath := os.Getenv("OUTPUT_PATH")
 	if outputPath == "" {
-		outputPath = filepath.Join(home, "WanderSortLibrary")
+		outputPath = filepath.Join(home, defaultLibraryDir)
 	}
 
-	if logPath == "" {
-		logPath = filepath.Join(outputPath, ".wandersort.log")
-	}
+	logPath := filepath.Join(outputPath, defaultLogFileName)
+	dbPath := filepath.Join(outputPath, defaultDBFileName)
+	dbLocationPath := filepath.Join(appDir, locationDBFileName)
 
+	logLevel := os.Getenv("LOG_LEVEL")
 	if logLevel == "" {
-		logLevel = "info"
+		logLevel = defaultLogLevel
 	}
 
-	if dbPath == "" {
-		dbPath = filepath.Join(outputPath, ".wandersort.db")
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = defaultPort
 	}
 
-	if dbLocationPath == "" {
-		dbLocationPath = filepath.Join(appDir, "location.db")
-	}
-
-	if workers != "" {
-		if n, err := strconv.Atoi(workers); err == nil && n > 0 {
-			workerCount = n
+	workerCount := runtime.NumCPU()
+	if workersEnv := os.Getenv("WORKERS"); workersEnv != "" {
+		if workers, err := strconv.Atoi(workersEnv); err == nil && workers > 0 {
+			workerCount = workers
 		}
 	}
 
-	if port == "" {
-		port = "8080"
-	}
-
-	if updateIntervalStr == "" {
-		updateIntervalStr = "5s"
-	}
-
-	updateInterval, err := time.ParseDuration(updateIntervalStr)
-	if err != nil {
-		return nil, err
-	}
-
-	if finalizeTimeoutStr == "" {
-		finalizeTimeoutStr = "15s"
-	}
-
-	finalizeTimeout, err := time.ParseDuration(finalizeTimeoutStr)
-	if err != nil {
-		return nil, err
-	}
-
 	return &Configuration{
-		ServerPort:      port,
-		Host:            host,
-		DatabasePath:    dbPath,
-		DbLocationPath:  dbLocationPath,
-		OutputPath:      outputPath,
-		LogLevel:        logLevel,
-		LogConsole:      true,
-		LogFile:         logPath,
-		Workers:         workerCount,
-		UpdateInterval:  updateInterval,
-		FinalizeTimeout: finalizeTimeout,
-		AppDir:          appDir,
-		BinDir:          binDir,
+		ServerPort:     port,
+		Host:           "localhost",
+		AppDBPath:      dbPath,
+		LocationDBPath: dbLocationPath,
+		LogLevel:       logLevel,
+		LogConsole:     true,
+		LogFile:        logPath,
+		Workers:        workerCount,
+		BinDir:         binDir,
 	}, nil
 }

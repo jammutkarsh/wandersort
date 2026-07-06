@@ -10,11 +10,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"runtime/debug"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
 func RequestIDMiddleware() gin.HandlerFunc {
@@ -42,11 +42,11 @@ func CORSMiddleware() gin.HandlerFunc {
 	}
 }
 
-func RecoveryMiddleware() gin.HandlerFunc {
+func RecoveryMiddleware(log logger.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("panic recovered",
+				log.Error("panic recovered",
 					"error", fmt.Sprintf("%v", r),
 					"stack", string(debug.Stack()),
 					"path", c.Request.URL.Path,

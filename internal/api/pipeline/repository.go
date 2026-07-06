@@ -16,11 +16,11 @@ type Repository struct {
 	db *db.DB
 }
 
-func NewRepository(d *db.DB) *Repository {
-	return &Repository{db: d}
+func NewRepository(database *db.DB) *Repository {
+	return &Repository{db: database}
 }
 
-// GetFileCount returns the number of files tracked by the scanner and the hasher.
+// GetFileCount returns the number of files tracked by the scanner and the hasher
 func (r *Repository) GetFileCount(ctx context.Context) (FileCountResponse, error) {
 	var resp FileCountResponse
 

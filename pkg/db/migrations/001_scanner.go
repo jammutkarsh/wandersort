@@ -6,13 +6,6 @@
 
 package migrations
 
-import (
-	"fmt"
-	"strings"
-
-	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
-)
-
 var schema001 = Migration{
 	Version:     001,
 	Description: "scanner_schema",
@@ -22,13 +15,12 @@ var schema001 = Migration{
 	},
 }
 
-// scan_sessions table with indexes
-var scanSessions = fmt.Sprintf(`
+const scanSessions = `
 CREATE TABLE IF NOT EXISTS scan_sessions (
     id TEXT PRIMARY KEY,
     started_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
-    status TEXT NOT NULL DEFAULT '%s',
+    status TEXT NOT NULL DEFAULT 'STARTED',
 
     root_paths TEXT NOT NULL,
 
@@ -41,14 +33,8 @@ CREATE TABLE IF NOT EXISTS scan_sessions (
 
     -- Error tracking
     errors_encountered INTEGER DEFAULT 0,
-    last_error         TEXT,
-
-    CHECK (status IN (%s))
-);
-
-CREATE INDEX IF NOT EXISTS idx_scan_sessions_status  ON scan_sessions(status);
-CREATE INDEX IF NOT EXISTS idx_scan_sessions_started ON scan_sessions(started_at DESC);
-`, sm.WorkflowStatusStarted, quotedStatuses())
+    last_error         TEXT
+);`
 
 // file_registry table with indexes
 const fileRegistry = `
@@ -103,30 +89,6 @@ CREATE TABLE IF NOT EXISTS file_registry (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_registry_path_root ON file_registry(file_path, source_root);
-CREATE INDEX IF NOT EXISTS idx_file_registry_hash       ON file_registry(file_hash) WHERE file_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_file_registry_session     ON file_registry(scan_session_id);
 CREATE INDEX IF NOT EXISTS idx_file_registry_status      ON file_registry(scan_status);
-CREATE INDEX IF NOT EXISTS idx_file_registry_source_root ON file_registry(source_root);
-CREATE INDEX IF NOT EXISTS idx_file_registry_media_type  ON file_registry(media_type);
-CREATE INDEX IF NOT EXISTS idx_file_registry_origin      ON file_registry(file_origin);
-CREATE INDEX IF NOT EXISTS idx_file_registry_capture     ON file_registry(capture_stem, source_root)
-    WHERE capture_stem IS NOT NULL;
 `
-
-func quotedStatuses() string {
-	statuses := []string{
-		sm.WorkflowStatusStarted,
-		sm.WorkflowStatusScanning,
-		sm.WorkflowStatusScanned,
-		sm.WorkflowStatusHashing,
-		sm.WorkflowStatusHashed,
-		sm.WorkflowStatusCompleted,
-		sm.WorkflowStatusFailed,
-		sm.WorkflowStatusCancelled,
-	}
-	quoted := make([]string, 0, len(statuses))
-	for _, status := range statuses {
-		quoted = append(quoted, fmt.Sprintf("'%s'", status))
-	}
-	return strings.Join(quoted, ", ")
-}

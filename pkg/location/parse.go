@@ -12,6 +12,13 @@ import (
 	"strings"
 )
 
+const (
+	// minutesPerDegree is the number of minutes in one degree
+	minutesPerDegree = 60
+	// secondsPerDegree is the number of seconds in one degree
+	secondsPerDegree = 3600
+)
+
 // ParseGPS converts a pair of EXIF DMS strings into signed decimal-degree floats
 //
 // latStr must be a latitude string (N/S hemisphere), e.g. `31 deg 34' 5.84" N`
@@ -85,7 +92,7 @@ func parseDMS(dms string) (float64, error) {
 	for i := 0; i < 3; i++ {
 		var err error
 		if vals[i], err = strconv.ParseFloat(parts[i], 64); err != nil {
-			return 0, fmt.Errorf("failed to parse DMS component %w", err)
+			return 0, fmt.Errorf("failed to parse DMS component: %w", err)
 		}
 		if vals[i] < 0 {
 			return 0, fmt.Errorf("negative value in DMS: %v", parts[i])
@@ -94,6 +101,6 @@ func parseDMS(dms string) (float64, error) {
 	degrees, minutes, seconds := vals[0], vals[1], vals[2]
 
 	// Convert DMS to decimal degrees: 1° = 60′ = 3600″
-	decimalDegrees := degrees + minutes/60 + seconds/3600
+	decimalDegrees := degrees + minutes/minutesPerDegree + seconds/secondsPerDegree
 	return sign * decimalDegrees, nil
 }

@@ -61,26 +61,37 @@ func TestComputeScanPaths_FilterDuplicatePaths(t *testing.T) {
 	}
 }
 
-func TestPrepareScanRoots_ErrorOnNonexistentPath(t *testing.T) {
-	svc := &Service{logger: logger.NewNoopLogger(), path: path.New()}
-
-	_, err := svc.prepareScanRoots([]string{"/definitely/not/a/real/path"})
-	if err == nil {
-		t.Fatal(err)
+func TestPrepareScanRoots_ErrorCases(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T) []string
+	}{
+		{
+			name: "nonexistent path",
+			setup: func(t *testing.T) []string {
+				return []string{"/definitely/not/a/real/path"}
+			},
+		},
+		{
+			name: "file path instead of directory",
+			setup: func(t *testing.T) []string {
+				root := t.TempDir()
+				file := filepath.Join(root, "note.txt")
+				if err := os.WriteFile(file, []byte("not a directory"), 0o644); err != nil {
+					t.Fatalf("failed to create test file: %v", err)
+				}
+				return []string{file}
+			},
+		},
 	}
-}
 
-func TestPrepareScanRoots_ErrorOnFilePath(t *testing.T) {
-	root := t.TempDir()
-	file := filepath.Join(root, "note.txt")
-	if err := os.WriteFile(file, []byte("not a directory"), 0o644); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
-	}
-
-	svc := &Service{logger: logger.NewNoopLogger(), path: path.New()}
-
-	_, err := svc.prepareScanRoots([]string{file})
-	if err == nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &Service{logger: logger.NewNoopLogger(), path: path.New()}
+			_, err := svc.prepareScanRoots(tt.setup(t))
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+		})
 	}
 }

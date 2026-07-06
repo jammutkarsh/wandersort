@@ -54,7 +54,7 @@ type SlogAdapter struct {
 
 var _ Logger = &SlogAdapter{}
 
-// log creates a record with the correct caller PC and dispatches it.
+// log creates a record with the correct caller PC and dispatches it
 func (l *SlogAdapter) log(level slog.Level, msg string, attrs ...any) {
 	if !l.logger.Handler().Enabled(context.TODO(), level) {
 		return
@@ -88,33 +88,33 @@ func (l *SlogAdapter) Panic(msg string, attrs ...any) {
 }
 
 // PrettyHandler wraps a slog.JSONHandler, captures its output into a buffer,
-// and re-formats it as a human-readable, coloured log line.
+// and re-formats it as a human-readable, coloured log line
 type PrettyHandler struct {
-	h slog.Handler
-	b *bytes.Buffer
-	m *sync.Mutex
+	handler slog.Handler
+	buf     *bytes.Buffer
+	mu      *sync.Mutex
 }
 
-// NewPrettyHandler creates a PrettyHandler with the given options.
+// NewPrettyHandler creates a PrettyHandler with the given options
 func NewPrettyHandler(opts *slog.HandlerOptions) *PrettyHandler {
 	if opts == nil {
 		opts = &slog.HandlerOptions{}
 	}
 	b := &bytes.Buffer{}
 	return &PrettyHandler{
-		b: b,
-		h: slog.NewJSONHandler(b, &slog.HandlerOptions{
+		buf: b,
+		handler: slog.NewJSONHandler(b, &slog.HandlerOptions{
 			Level:       opts.Level,
 			AddSource:   false, // source is rendered manually as file:line
 			ReplaceAttr: suppressDefaults(opts.ReplaceAttr),
 		}),
-		m: &sync.Mutex{},
+		mu: &sync.Mutex{},
 	}
 }
 
 // suppressDefaults removes the default time/level/msg keys so that the
 // PrettyHandler can render them itself while still forwarding any custom
-// ReplaceAttr supplied by the caller.
+// ReplaceAttr supplied by the caller
 func suppressDefaults(
 	next func([]string, slog.Attr) slog.Attr,
 ) func([]string, slog.Attr) slog.Attr {
@@ -133,29 +133,29 @@ func suppressDefaults(
 }
 
 func (h *PrettyHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return h.h.Enabled(ctx, level)
+	return h.handler.Enabled(ctx, level)
 }
 
 func (h *PrettyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &PrettyHandler{h: h.h.WithAttrs(attrs), b: h.b, m: h.m}
+	return &PrettyHandler{handler: h.handler.WithAttrs(attrs), buf: h.buf, mu: h.mu}
 }
 
 func (h *PrettyHandler) WithGroup(name string) slog.Handler {
-	return &PrettyHandler{h: h.h.WithGroup(name), b: h.b, m: h.m}
+	return &PrettyHandler{handler: h.handler.WithGroup(name), buf: h.buf, mu: h.mu}
 }
 
-// computeAttrs delegates to the inner JSONHandler and unmarshals the result.
+// computeAttrs delegates to the inner JSONHandler and unmarshals the result
 func (h *PrettyHandler) computeAttrs(ctx context.Context, r slog.Record) (map[string]any, error) {
-	h.m.Lock()
+	h.mu.Lock()
 	defer func() {
-		h.b.Reset()
-		h.m.Unlock()
+		h.buf.Reset()
+		h.mu.Unlock()
 	}()
-	if err := h.h.Handle(ctx, r); err != nil {
+	if err := h.handler.Handle(ctx, r); err != nil {
 		return nil, fmt.Errorf("error when calling inner handler's Handle: %w", err)
 	}
 	var attrs map[string]any
-	if err := json.Unmarshal(h.b.Bytes(), &attrs); err != nil {
+	if err := json.Unmarshal(h.buf.Bytes(), &attrs); err != nil {
 		return nil, fmt.Errorf("error when unmarshaling inner handler's Handle result: %w", err)
 	}
 	return attrs, nil
@@ -189,11 +189,11 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 		}
 		fileStr = fmt.Sprintf("%s:%d", file, f.Line)
 		// f.Function is like "github.com/org/repo/pkg.FuncName" — take after last '/'
-		fn := f.Function
-		if idx := strings.LastIndexByte(fn, '/'); idx >= 0 {
-			fn = fn[idx+1:]
+		funcName := f.Function
+		if idx := strings.LastIndexByte(funcName, '/'); idx >= 0 {
+			funcName = funcName[idx+1:]
 		}
-		funcStr = fn
+		funcStr = funcName
 	}
 
 	attrs, err := h.computeAttrs(ctx, r)
