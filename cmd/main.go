@@ -43,7 +43,7 @@ func main() {
 	logger := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile)
 
 	// Verify exiftool is available before starting the server
-	exiftoolPath, err := exiftool.Verify(logger, cfg.BinDir)
+	exiftoolPath, err := exiftool.Verify(ctx, logger, cfg.BinDir)
 	if err != nil {
 		logger.Error("exiftool verification failed", "error", err)
 		os.Exit(1)

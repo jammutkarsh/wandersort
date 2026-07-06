@@ -44,7 +44,7 @@ func exiftoolBin() string {
 // Verify checks exiftool is available, either on $PATH or in WanderSort's
 // own install directory. If the found version is below the requirement, it
 // downloads and installs a bundled copy into ~/.wandersort/bin
-func Verify(log logger.Logger, binDir string) (string, error) {
+func Verify(ctx context.Context, log logger.Logger, binDir string) (string, error) {
 	// Check PATH — only accept if version meets requirement
 	if path, err := exec.LookPath(exiftoolBin()); err == nil {
 		if ok, _ := checkVersion(path, log); ok {
@@ -66,7 +66,7 @@ func Verify(log logger.Logger, binDir string) (string, error) {
 	}
 
 	log.Info("exiftool not found; downloading", "dir", binDir, "os", runtime.GOOS)
-	if err := install(context.Background(), binDir, log); err != nil {
+	if err := install(ctx, binDir, log); err != nil {
 		return "", fmt.Errorf("install exiftool: %w", err)
 	}
 
