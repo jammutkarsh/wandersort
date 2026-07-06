@@ -7,17 +7,17 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
-	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
 // ---------------------------------------------------------------------------
 // walkRoot — integration test with a real temp directory tree
 // ---------------------------------------------------------------------------
 
-// createTestTree builds a directory tree under t.TempDir() and returns the root.
+// createTestTree builds a directory tree under t.TempDir() and returns the root
 //
 //	root/
 //	  photos/
@@ -66,22 +66,21 @@ func createTestTree(t *testing.T) string {
 	return root
 }
 
+// newTestScanner constructs a Scanner with a noop logger for testing
+func newTestScanner(t *testing.T) *Scanner {
+	t.Helper()
+	return &Scanner{
+		classifier: classifier.NewFileClassifier(),
+		log:        logger.NewNoopLogger(),
+		path:       &path.Resolver{HomeDir: "/tmp"},
+	}
+}
+
 func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 	root := createTestTree(t)
-	log := logger.NewNoopLogger()
-	fc := classifier.NewFileClassifier()
-
-	pu := &path.Resolver{HomeDir: "/tmp"}
-	sc := &Scanner{
-		classifier: fc,
-		log:        log,
-		path:       pu,
-		scanBuffer: 50,
-	}
-	tracker := &sm.Tracker{}
-
+	sc := newTestScanner(t)
 	filesChan := make(chan FileDiscovery, 200)
-	err := sc.walkRoot(context.Background(), root, filesChan, tracker)
+	err := sc.walkRoot(context.Background(), uuid.Nil, root, filesChan)
 	close(filesChan)
 	if err != nil {
 		t.Fatalf("walkRoot: %v", err)
@@ -102,32 +101,17 @@ func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 		}
 		t.Fatalf("expected 5 discoveries, got %d: %v", len(discoveries), names)
 	}
-
-	// Verify counters
-	discovered := tracker.Discovered.Load()
-	if discovered != 5 {
-		t.Errorf("discovered = %d, want 5", discovered)
-	}
-
-	unsupported := tracker.Unsupported.Load()
-	if unsupported != 1 { // readme.txt
-		t.Errorf("unsupported = %d, want 1", unsupported)
-	}
 }
 
 func TestWalkRoot_ContextCancellation(t *testing.T) {
 	root := createTestTree(t)
-	log := logger.NewNoopLogger()
-	fc := classifier.NewFileClassifier()
-	pu := &path.Resolver{HomeDir: "/tmp"}
-	sc := &Scanner{classifier: fc, log: log, path: pu, scanBuffer: 100}
+	sc := newTestScanner(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
 	filesChan := make(chan FileDiscovery, 200)
-	tracker := &sm.Tracker{}
-	err := sc.walkRoot(ctx, root, filesChan, tracker)
+	err := sc.walkRoot(ctx, uuid.Nil, root, filesChan)
 	close(filesChan)
 
 	if err == nil {
@@ -141,19 +125,15 @@ func TestWalkRoot_ContextCancellation(t *testing.T) {
 
 func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 	root := createTestTree(t)
-	log := logger.NewNoopLogger()
-	fc := classifier.NewFileClassifier()
-	pu := &path.Resolver{HomeDir: "/tmp"}
-	sc := &Scanner{classifier: fc, log: log, path: pu, scanBuffer: 500}
+	sc := newTestScanner(t)
 
 	const walkers = 4
 	filesChan := make(chan FileDiscovery, 1000)
-	tracker := &sm.Tracker{}
 
 	var wg sync.WaitGroup
 	for range walkers {
 		wg.Go(func() {
-			_ = sc.walkRoot(context.Background(), root, filesChan, tracker)
+			_ = sc.walkRoot(context.Background(), uuid.Nil, root, filesChan)
 		})
 	}
 
@@ -171,11 +151,5 @@ func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 	expected := 5 * walkers
 	if total != expected {
 		t.Errorf("total discoveries = %d, want %d", total, expected)
-	}
-
-	// Atomic counter should also match
-	discovered := tracker.Discovered.Load()
-	if discovered != int64(expected) {
-		t.Errorf("discovered counter = %d, want %d", discovered, expected)
 	}
 }

@@ -41,10 +41,6 @@ func InternalError(code, message string, details map[string]any) APIError {
 	return newAPIError(http.StatusInternalServerError, code, message, details)
 }
 
-func NotImplemented(message string) APIError {
-	return newAPIError(http.StatusNotImplemented, "NOT_IMPLEMENTED", message, nil)
-}
-
 func AsAPIError(err error) APIError {
 	if err == nil {
 		return InternalError("INTERNAL_ERROR", "unexpected error", nil)

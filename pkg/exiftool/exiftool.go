@@ -24,7 +24,7 @@ func (e *Extractor) Extract(ctx context.Context, path string) (classifier.Common
 	// -json: output as JSON array; -n: numeric values (no unit strings)
 	raw, err := exec.CommandContext(ctx, e.exiftoolPath, "-json", "-n", path).Output()
 	if err != nil {
-		return classifier.CommonMetadata{}, err
+		return classifier.CommonMetadata{}, fmt.Errorf("exiftool %s: %w", path, err)
 	}
 
 	var arr []json.RawMessage

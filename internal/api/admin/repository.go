@@ -15,7 +15,7 @@ func NewRepository(db *db.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// Reset deletes all application data in FK-safe order within a transaction.
+// Reset deletes all application data in FK-safe order within a transaction
 func (r *Repository) Reset(ctx context.Context) (ResetResponse, error) {
 	var resp ResetResponse
 

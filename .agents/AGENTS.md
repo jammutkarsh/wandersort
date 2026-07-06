@@ -98,7 +98,7 @@ This document outlines the standard coding patterns, style, and rules that AI ag
 
 - **Error Wrapping**: Always wrap errors with context using `fmt.Errorf("description: %w", err)` to preserve the original error trace and add debugging context.
   - *Example:* `fmt.Errorf("failed to read config file: %w", err)`
-- **Context Propagation**: Always pass `context.Context` as the first argument to any function performing blocking I/O, database operations, or long-running tasks.
+- **Context Propagation**: Pass `context.Context` as the first argument to functions performing network I/O, database operations, or long-running tasks where cancellation/timeout is meaningful. Functions wrapping local filesystem operations (`os.Stat`, `filepath.Abs`, `filepath.EvalSymlinks`) do not require `ctx` — Go cannot cancel in-flight syscalls.
   - *Example:* `func fetchUser(ctx context.Context, id int) (*User, error)`
 - **Bounded Concurrency**: Use bounded worker pools rather than unbounded goroutines to prevent resource exhaustion (e.g., spinning up a fixed number of workers based on `workerCount`). Avoid fire-and-forget goroutines that can lead to unbounded resource usage.
   - *Example:*
@@ -120,3 +120,11 @@ This document outlines the standard coding patterns, style, and rules that AI ag
   - *Example:* `h.log.Info("user logged in", "userID", id)` (Avoid `log.Printf()`)
 - **Database & Concurrency**: Avoid `SELECT`-then-`INSERT` patterns that can cause race conditions. Instead, rely on atomic operations like `INSERT ... ON CONFLICT DO UPDATE` (upserts).
   - *Example:* `INSERT INTO users (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = $2;`
+
+### 4.1 Pipeline Component Conventions
+
+- **Session ID Propagation**: Every function in a pipeline component (`scanner`, `hasher`, and any future phase) that performs work must receive `sessionID uuid.UUID` as a parameter, immediately after `ctx`. This ensures every log line emitted during a session is traceable. Do not add `sessionID` or `ctx` to functions that don't already use them and have no reason to — passing unused parameters is noise.
+  - *Example:* `func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string, output chan<- FileDiscovery) error`
+- **Log Key Format**: All structured log key-value pairs use camelCase. The session identifier key is always `"sessionId"`, never `"session_id"`.
+  - *Example:* `s.log.Info("scanning path", "sessionId", sessionID, "path", path)`
+- **Logs as Notification**: Pipeline progress is surfaced exclusively through structured logs keyed by `sessionId`. There is no separate pub/sub status channel. Any downstream system that wants to track session progress reads the log stream filtered by `sessionId`.

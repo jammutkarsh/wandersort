@@ -11,10 +11,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
-	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
 )
 
-// Service orchestrates both scan submission and status streaming.
+// Service orchestrates scan submission and related queries
 type Service struct {
 	pipeline *workflow.Workflow
 	repo     *Repository
@@ -41,19 +40,19 @@ func (s *Service) StartScan(paths []string) (uuid.UUID, []string, error) {
 }
 
 // prepareScanRoots turns the incoming request into the final list of
-// directories that will actually be scanned.
+// directories that will actually be scanned
 //
-// Stage 1: resolve each path to a canonical absolute directory.
-// Stage 2: remove exact duplicates after canonicalization.
+// Stage 1: resolve each path to a canonical absolute directory
+// Stage 2: remove exact duplicates after canonicalization
 // Stage 3: sort lexicographically — this guarantees every descendant of a
 //
-//	path appears contiguously after it in the slice.
+//	path appears contiguously after it in the slice
 //
 // Stage 4: single-pass prune: compare each candidate only against the last
 //
 //	accepted root. Because paths are sorted, if a candidate is a child
 //	of *any* accepted root it must be a child of the most-recently
-//	accepted one, so one comparison suffices — O(N) instead of O(N²).
+//	accepted one, so one comparison suffices — O(N) instead of O(N²)
 func (s *Service) prepareScanRoots(paths []string) ([]string, error) {
 	canonicalSet := make(map[string]struct{}, len(paths))
 
@@ -82,14 +81,14 @@ func (s *Service) prepareScanRoots(paths []string) ([]string, error) {
 	for p := range canonicalSet {
 		canonicalPaths = append(canonicalPaths, p)
 	}
-	// Paths will be lexicographically sorted, so any child path follows its parent.
-	// This makes the single-pass prune in the next step possible.
+	// Paths will be lexicographically sorted, so any child path follows its parent
+	// This makes the single-pass prune in the next step possible
 	sort.Strings(canonicalPaths)
 
-	// Single-pass prune: O(N).
+	// Single-pass prune: O(N)
 	// After lex sort, any descendant of an accepted root immediately follows
 	// it (or follows another descendant of it). Comparing against only the
-	// last accepted root is therefore sufficient.
+	// last accepted root is therefore sufficient
 	effectivePaths := make([]string, 0, len(canonicalPaths))
 	for _, candidate := range canonicalPaths {
 		lenEffective := len(effectivePaths)
@@ -101,23 +100,15 @@ func (s *Service) prepareScanRoots(paths []string) ([]string, error) {
 	return effectivePaths, nil
 }
 
-// isChildPath reports whether candidate is strictly nested below parent.
-// Both paths must already be canonical (filepath.Clean + RealPath).
+// isChildPath reports whether candidate is strictly nested below parent
+// Both paths must already be canonical (filepath.Clean + RealPath)
 func isChildPath(parent, candidate string) bool {
-	// Equal paths are not a parent–child relationship.
+	// Equal paths are not a parent–child relationship
 	if parent == candidate {
 		return false
 	}
-	// Append the separator so "/foo" doesn't falsely match "/foobar".
+	// Append the separator so "/foo" doesn't falsely match "/foobar"
 	return strings.HasPrefix(candidate, parent+string(filepath.Separator))
-}
-
-func (s *Service) SubscribeStatus() chan sm.WorkflowStatus {
-	return s.pipeline.StatusStream()
-}
-
-func (s *Service) UnsubscribeStatus(ch chan sm.WorkflowStatus) {
-	s.pipeline.UnsubscribeStatus(ch)
 }
 
 func (s *Service) GetFileCount(ctx context.Context) (FileCountResponse, error) {

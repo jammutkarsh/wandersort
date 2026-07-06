@@ -9,15 +9,20 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 
+	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
-	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
-	sm "github.com/jammutkarsh/wandersort/pkg/statusmanager"
 	"lukechampine.com/blake3"
+)
+
+const (
+	// hashOutputSize is the output length of BLAKE3-256 in bytes
+	hashOutputSize = 32
 )
 
 // Hasher handles file hashing and content group management
@@ -27,66 +32,67 @@ type Hasher struct {
 	log      logger.Logger
 	path     *path.Resolver
 	exiftool *exiftool.Extractor
+	workers  int
 }
 
-// NewHasher creates a new hasher instance
-func NewHasher(ctx context.Context, db *db.DB, log logger.Logger, exiftoolPath string) *Hasher {
-
+func New(ctx context.Context, db *db.DB, log logger.Logger, exiftoolPath string, workers int) *Hasher {
 	return &Hasher{
 		ctx:      ctx,
 		db:       db,
 		log:      log,
 		path:     path.New(),
 		exiftool: exiftool.New(exiftoolPath),
+		workers:  workers,
 	}
 }
 
 // Run fetches hashable files for the given session in pages and executes
 // hashing in bounded worker pools
-func (h *Hasher) Run(ctx context.Context, tracker *sm.Tracker, workerCount int) (int, error) {
-	queueSize := max(workerCount*2, 2)
-
-	toHash := make(chan fileRecord, queueSize)    // file to hash
-	toStore := make(chan hashedRecord, queueSize) // hash to DB
+func (h *Hasher) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
+	toHash := make(chan fileRecord, 2*h.workers)
+	toStore := make(chan hashedRecord, 2*h.workers)
 	producerErr := make(chan error, 1)
 	hasherErr := make(chan error, 1)
+
+	var hashedCount atomic.Int64
+	var errorCount atomic.Int64
 
 	ctxWithCancel, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	h.log.Info("Hashing session", "session_id", tracker.SessionID)
-	sessionStr := tracker.SessionID.String()
-	startHashed := tracker.Hashed.Load()
+	h.log.Info("Hashing session", "sessionId", sessionID)
 
-	go h.producer(ctxWithCancel, cancel, sessionStr, toHash, producerErr)
-	go h.hasher(ctxWithCancel, cancel, workerCount, toHash, toStore, tracker)
-	go h.store(ctxWithCancel, cancel, toStore, tracker, hasherErr)
-
-	total := int(tracker.Hashed.Load() - startHashed)
+	go h.producer(ctxWithCancel, sessionID, cancel, toHash, producerErr)
+	go h.hasher(ctxWithCancel, sessionID, cancel, toHash, toStore, &errorCount)
+	go h.store(ctxWithCancel, cancel, toStore, &hashedCount, hasherErr)
 
 	if err := <-producerErr; err != nil {
-		return total, err
+		return 0, err
 	}
 	if err := <-hasherErr; err != nil {
-		return total, err
+		return 0, err
 	}
 
-	if _, err := h.db.ExecContext(ctx, `
+	total := int(hashedCount.Load())
+	errorTotal := errorCount.Load()
+	if _, upErr := h.db.ExecContext(ctx, `
 		UPDATE scan_sessions
-		SET files_hashed = COALESCE(files_hashed, 0) + ?
-		WHERE id = ?`, total, sessionStr); err != nil {
-		return total, fmt.Errorf("failed to update files_hashed counter: %w", err)
+		SET files_hashed = ?, errors_encountered = errors_encountered + ?
+		WHERE id = ?
+	`, total, errorTotal, sessionID.String()); upErr != nil {
+		h.log.Error("Failed to update hash counters", "sessionId", sessionID, "error", upErr)
 	}
 
-	h.log.Info("Hashing complete", "session_id", tracker.SessionID, "files_hashed", total)
+	h.log.Info("Hashing complete", "sessionId", sessionID, "filesHashed", total)
 	return total, nil
 }
 
-func (h *Hasher) producer(ctx context.Context, cancel context.CancelFunc, sessionStr string, toHash chan<- fileRecord, producerErr chan<- error) {
+// producer fetches hashable files from the database and feeds them into the toHash channel
+func (h *Hasher) producer(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, toHash chan<- fileRecord, producerErr chan<- error) {
 	defer close(toHash)
 
 	for {
-		record, ok, err := h.getFile(ctx, sessionStr)
+		record, ok, err := h.getFile(ctx, sessionID)
 		if err != nil {
 			producerErr <- err
 			cancel()
@@ -106,7 +112,8 @@ func (h *Hasher) producer(ctx context.Context, cancel context.CancelFunc, sessio
 	}
 }
 
-func (h *Hasher) getFile(ctx context.Context, sessionStr string) (fileRecord, bool, error) {
+// getFile atomically claims the next undiscovered file and returns its record
+func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, bool, error) {
 	var id int64
 	var filePath, sourceRoot string
 	query := `
@@ -123,7 +130,7 @@ func (h *Hasher) getFile(ctx context.Context, sessionStr string) (fileRecord, bo
 	RETURNING id, file_path, source_root`
 
 	err := h.db.
-		QueryRowContext(ctx, query, scanner.ScanStatusHashing, sessionStr, scanner.ScanStatusDiscovered).
+		QueryRowContext(ctx, query, db.StatusHashing, sessionID.String(), db.StatusDiscovered).
 		Scan(&id, &filePath, &sourceRoot)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fileRecord{}, false, nil
@@ -135,10 +142,11 @@ func (h *Hasher) getFile(ctx context.Context, sessionStr string) (fileRecord, bo
 	return fileRecord{id: id, absPath: h.path.MakeAbsolute(filePath, sourceRoot)}, true, nil
 }
 
-func (h *Hasher) hasher(ctx context.Context, cancel context.CancelFunc, workerCount int, toHash <-chan fileRecord, toPersist chan<- hashedRecord, tracker *sm.Tracker) {
+// hasher runs the bounded worker pool that computes BLAKE3 hashes and extracts EXIF
+func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, toHash <-chan fileRecord, toPersist chan<- hashedRecord, errorCount *atomic.Int64) {
 	var hashWG sync.WaitGroup
 
-	for range workerCount {
+	for range h.workers {
 		hashWG.Go(func() {
 			for file := range toHash {
 				if ctx.Err() != nil {
@@ -147,17 +155,15 @@ func (h *Hasher) hasher(ctx context.Context, cancel context.CancelFunc, workerCo
 
 				hash, err := h.hashFile(file.absPath)
 				if err != nil {
-					h.log.Error("Failed to hash file", "file_id", file.id, "path", file.absPath, "error", err)
+					h.log.Error("Failed to hash file", "sessionId", sessionID, "fileId", file.id, "path", file.absPath, "error", err)
 					h.markFileError(file.id)
-					if tracker != nil {
-						tracker.Errors.Add(1)
-					}
+					errorCount.Add(1)
 					continue
 				}
 
 				exifData, err := h.exiftool.Extract(ctx, file.absPath)
 				if err != nil {
-					h.log.Warn("Failed to extract exif data", "file_id", file.id, "path", file.absPath, "error", err)
+					h.log.Warn("Failed to extract exif data", "sessionId", sessionID, "fileId", file.id, "path", file.absPath, "error", err)
 				}
 
 				select {
@@ -187,18 +193,19 @@ func (h *Hasher) hashFile(filePath string) (string, error) {
 	}
 	defer file.Close()
 
-	hasher := blake3.New(32, nil)
+	hasher := blake3.New(hashOutputSize, nil)
 
 	if _, err := io.Copy(hasher, file); err != nil {
 		return "", fmt.Errorf("failed to hash file: %w", err)
 	}
 
-	sum := make([]byte, 0, 32)
+	sum := make([]byte, 0, hashOutputSize)
 	hash := hex.EncodeToString(hasher.Sum(sum))
 	return hash, nil
 }
 
-func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-chan hashedRecord, tracker *sm.Tracker, persistErr chan<- error) {
+// store consumes hashed records and writes them to the database via BulkWriter
+func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-chan hashedRecord, hashed *atomic.Int64, persistErr chan<- error) {
 	for file := range files {
 		select {
 		case <-ctx.Done():
@@ -223,15 +230,14 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 			return
 		}
 
-		if tracker != nil {
-			tracker.Hashed.Add(1)
-		}
+		hashed.Add(1)
 	}
 
 	h.db.Writer.Flush()
 	persistErr <- nil
 }
 
+// storeHash updates the file registry with hash and EXIF data, then upserts content group membership
 func (h *Hasher) storeHash(ctx context.Context, tx *sql.Tx, fileID int64, hash string, exif classifier.CommonMetadata) error {
 	// Update Hash and Status
 	if _, err := tx.ExecContext(ctx, `
@@ -278,6 +284,7 @@ func (h *Hasher) storeHash(ctx context.Context, tx *sql.Tx, fileID int64, hash s
 	return nil
 }
 
+// markFileError sets the file's scan_status to ERROR
 func (h *Hasher) markFileError(fileID int64) {
 	h.db.Writer.Write(func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `

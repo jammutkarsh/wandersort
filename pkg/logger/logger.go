@@ -1,4 +1,4 @@
-// https://gogoapps.io/blog/passing-loggers-in-go-golang-logging-best-practices/.
+// https://gogoapps.io/blog/passing-loggers-in-go-golang-logging-best-practices/
 package logger
 
 import (
@@ -11,7 +11,7 @@ import (
 	slogmulti "github.com/samber/slog-multi"
 )
 
-// Logger is the shared logging interface used throughout the application.
+// Logger is the shared logging interface used throughout the application
 type Logger interface {
 	Debug(msg string, attrs ...any)
 	Info(msg string, attrs ...any)
@@ -20,20 +20,20 @@ type Logger interface {
 	Panic(msg string, attrs ...any)
 }
 
-// New constructs a Logger.
+// New constructs a Logger
 //
-//   - logLvl:  minimum log level ("debug", "info", "warn", "error")
+//   - logLevel:  minimum log level ("debug", "info", "warn", "error")
 //   - console: emit colourful logs to stderr
 //   - logFile: path of the JSON log file; empty string disables file logging
 //     (call after telemetry.Setup() has registered the provider)
 //
-// Passing console=false, logFile="", otel=false returns a no-op logger.
-func New(logLvl string, console bool, logFile string) Logger {
+// Passing console=false, logFile="", otel=false returns a no-op logger
+func New(logLevel string, console bool, logFile string) Logger {
 	if !console && logFile == "" {
 		return NewNoopLogger()
 	}
 
-	level := getSlogLevel(logLvl)
+	level := getSlogLevel(logLevel)
 
 	var handlers []slog.Handler
 
@@ -64,8 +64,9 @@ func New(logLvl string, console bool, logFile string) Logger {
 	}
 }
 
-func getSlogLevel(s string) slog.Level {
-	switch strings.ToLower(s) {
+// getSlogLevel maps a human-readable string to slog.Level
+func getSlogLevel(levelStr string) slog.Level {
+	switch strings.ToLower(levelStr) {
 	case "local", "debug":
 		return slog.LevelDebug
 	case "info":

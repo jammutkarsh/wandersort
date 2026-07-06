@@ -9,20 +9,20 @@ import (
 )
 
 const (
-	largeFileSizeBytes        int64 = 8 << 20  // 8 MiB keeps the normal unit test readable and fast.
-	constrainedMemoryLimit          = "64MiB"  // Child process heap target for resource-constrained tests.
-	fileFitsWithinMemoryBytes int64 = 16 << 20 // 16 MiB is below the configured memory limit.
-	fileExceedsMemoryBytes    int64 = 96 << 20 // 96 MiB is above the configured memory limit.
+	largeFileSizeBytes        int64 = 8 << 20  // 8 MiB keeps the normal unit test readable and fast
+	constrainedMemoryLimit          = "64MiB"  // Child process heap target for resource-constrained tests
+	fileFitsWithinMemoryBytes int64 = 16 << 20 // 16 MiB is below the configured memory limit
+	fileExceedsMemoryBytes    int64 = 96 << 20 // 96 MiB is above the configured memory limit
 	concurrentLargeFileCount        = 4
 )
 
-// helperHasher returns a *Hasher with nil DB (HashFile doesn't touch DB).
+// helperHasher returns a *Hasher with nil DB (HashFile doesn't touch DB)
 func helperHasher() *Hasher {
 	return &Hasher{}
 }
 
 // helperWritePatternFile writes a deterministic file of the requested size
-// without holding the whole file in memory.
+// without holding the whole file in memory
 func helperWritePatternFile(t *testing.T, size int64, seed byte) string {
 	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "hash-*")
@@ -37,7 +37,7 @@ func helperWritePatternFile(t *testing.T, size int64, seed byte) string {
 		chunk[i] = seed + byte(i%251)
 	}
 
-	// Write the file in fixed-size chunks so test setup does not scale memory usage with file size.
+	// Write the file in fixed-size chunks so test setup does not scale memory usage with file size
 	remaining := size
 	for remaining > 0 {
 		writeSize := len(chunk)
@@ -72,7 +72,7 @@ func runHashingSubprocess(t *testing.T, testName string) {
 func TestHashFile_LargeFile(t *testing.T) {
 	// 8 MiB is large enough to exercise the streaming path while remaining a fast
 	// unit test. The resource-constrained cases below cover files larger than the
-	// configured memory limit.
+	// configured memory limit
 	path := helperWritePatternFile(t, largeFileSizeBytes, 0x11)
 	copyPath := helperWritePatternFile(t, largeFileSizeBytes, 0x11)
 	mutatedPath := helperWritePatternFile(t, largeFileSizeBytes, 0x12)

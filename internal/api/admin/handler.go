@@ -26,7 +26,7 @@ func (h *Handler) SetupRoutes(v1 *gin.RouterGroup) {
 
 // HandleReset godoc
 // @Summary Reset all application data
-// @Description Deletes all scan sessions, file registry entries, content groups and group members in a single transaction. Irreversible.
+// @Description Deletes all scan sessions, file registry entries, content groups and group members in a single transaction. Irreversible
 // @Tags Admin
 // @Produce json
 // @Success 200 {object} ResetResponse

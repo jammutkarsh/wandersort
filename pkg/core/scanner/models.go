@@ -49,17 +49,7 @@ const (
 	FileOriginUnknown   = "UNKNOWN"
 )
 
-// TODO: Take a look these states and move them to a common place.
-const (
-	ScanStatusDiscovered = "DISCOVERED"
-	ScanStatusHashing    = "HASHING"
-	ScanStatusHashed     = "HASHED"
-	ScanStatusAnalyzing  = "ANALYZING"
-	ScanStatusAnalyzed   = "ANALYZED"
-	ScanStatusError      = "ERROR"
-)
-
-// GetAbsolutePath returns the full absolute path, expanding relative paths using source root.
+// GetAbsolutePath returns the full absolute path, expanding relative paths using source root
 func (fr *FileRegistry) GetAbsolutePath(path *path.Resolver) string {
 	if fr.PathType == PathTypeAbsolute {
 		return fr.FilePath
@@ -67,8 +57,8 @@ func (fr *FileRegistry) GetAbsolutePath(path *path.Resolver) string {
 	return path.MakeAbsolute(fr.FilePath, fr.SourceRoot)
 }
 
-// IsPrimarySource reports whether this registry entry is an original/canonical file.
-// RAW files from a DSLR that has no paired JPG are still primary sources.
+// IsPrimarySource reports whether this registry entry is an original/canonical file
+// RAW files from a DSLR that has no paired JPG are still primary sources
 func (fr *FileRegistry) IsPrimarySource() bool {
 	switch fr.MediaType {
 	case classifier.MediaTypeImage, classifier.MediaTypeRaw, classifier.MediaTypeVideo:
@@ -79,8 +69,8 @@ func (fr *FileRegistry) IsPrimarySource() bool {
 }
 
 // NeedsTranscoding reports whether this file must be decoded on the fly before
-// being passed to downstream consumers such as AI inference pipelines.
-// RAW images cannot be used directly and must be converted first.
+// being passed to downstream consumers such as AI inference pipelines
+// RAW images cannot be used directly and must be converted first
 func (fr *FileRegistry) NeedsTranscoding() bool {
 	return fr.MediaType == classifier.MediaTypeRaw
 }
@@ -114,7 +104,7 @@ type ScanSession struct {
 	LastError         *string `db:"last_error"`
 }
 
-// CaptureInfo holds the derived capture-group fields for a single file.
+// CaptureInfo holds the derived capture-group fields for a single file
 type CaptureInfo struct {
 	captureKey string // e.g. "IMG_3162", "_MG_1721"
 	variant    string // one of the CaptureRole* constants
