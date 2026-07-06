@@ -32,25 +32,25 @@ type Hasher struct {
 	log      logger.Logger
 	path     *path.Resolver
 	exiftool *exiftool.Extractor
+	workers  int
 }
 
-// NewHasher creates a new hasher instance
-func NewHasher(ctx context.Context, db *db.DB, log logger.Logger, exiftoolPath string) *Hasher {
-
+func New(ctx context.Context, db *db.DB, log logger.Logger, exiftoolPath string, workers int) *Hasher {
 	return &Hasher{
 		ctx:      ctx,
 		db:       db,
 		log:      log,
 		path:     path.New(),
 		exiftool: exiftool.New(exiftoolPath),
+		workers:  workers,
 	}
 }
 
 // Run fetches hashable files for the given session in pages and executes
 // hashing in bounded worker pools
-func (h *Hasher) Run(ctx context.Context, sessionID uuid.UUID, workerCount int) (int, error) {
-	toHash := make(chan fileRecord, 2*workerCount)
-	toStore := make(chan hashedRecord, 2*workerCount)
+func (h *Hasher) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
+	toHash := make(chan fileRecord, 2*h.workers)
+	toStore := make(chan hashedRecord, 2*h.workers)
 	producerErr := make(chan error, 1)
 	hasherErr := make(chan error, 1)
 
@@ -63,7 +63,7 @@ func (h *Hasher) Run(ctx context.Context, sessionID uuid.UUID, workerCount int) 
 	h.log.Info("Hashing session", "sessionId", sessionID)
 
 	go h.producer(ctxWithCancel, sessionID, cancel, toHash, producerErr)
-	go h.hasher(ctxWithCancel, sessionID, cancel, workerCount, toHash, toStore, &errorCount)
+	go h.hasher(ctxWithCancel, sessionID, cancel, toHash, toStore, &errorCount)
 	go h.store(ctxWithCancel, cancel, toStore, &hashedCount, hasherErr)
 
 	if err := <-producerErr; err != nil {
@@ -143,10 +143,10 @@ func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, 
 }
 
 // hasher runs the bounded worker pool that computes BLAKE3 hashes and extracts EXIF
-func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, workerCount int, toHash <-chan fileRecord, toPersist chan<- hashedRecord, errorCount *atomic.Int64) {
+func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, toHash <-chan fileRecord, toPersist chan<- hashedRecord, errorCount *atomic.Int64) {
 	var hashWG sync.WaitGroup
 
-	for range workerCount {
+	for range h.workers {
 		hashWG.Go(func() {
 			for file := range toHash {
 				if ctx.Err() != nil {

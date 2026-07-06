@@ -27,22 +27,23 @@ type Scanner struct {
 	classifier *classifier.FileClassifier
 	log        logger.Logger
 	path       *path.Resolver
+	workers    int
 }
 
-// NewScanner creates a new scanner instance
-func NewScanner(db *db.DB, log logger.Logger) *Scanner {
+func New(db *db.DB, log logger.Logger, workers int) *Scanner {
 	return &Scanner{
 		db:         db,
 		classifier: classifier.NewFileClassifier(),
 		log:        log,
 		path:       path.New(),
+		workers:    workers,
 	}
 }
 
 // Run orchestrates concurrent directory scans across all paths
 // It returns the total number of files discovered (new + previously seen) and
 // any first error encountered
-func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string, workerCount int) (int, error) {
+func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string) (int, error) {
 	s.log.Info("Scanner Phase: Processing all paths", "sessionId", sessionID, "pathCount", len(paths))
 
 	type scanResult struct {
@@ -67,10 +68,10 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string, 
 
 	// Spawn workers to drain the job queue concurrently
 	var workers sync.WaitGroup
-	for range workerCount {
+	for range s.workers {
 		workers.Go(func() {
 			for path := range jobs {
-				discoveredChan, err := s.scan(ctx, sessionID, path, workerCount, &newFiles, &errorCount)
+				discoveredChan, err := s.scan(ctx, sessionID, path, &newFiles, &errorCount)
 				if err != nil {
 					s.log.Error("Failed to scan path", "sessionId", sessionID, "path", path, "error", err)
 					errorCount.Add(1)
@@ -120,11 +121,11 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string, 
 
 // scan executes a scan for a single directory path and returns a channel
 // of discovered files. It's meant to be called by worker goroutines asynchronously
-func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, path string, workerCount int, newFiles, errorCount *atomic.Int64) (<-chan FileDiscovery, error) {
+func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, path string, newFiles, errorCount *atomic.Int64) (<-chan FileDiscovery, error) {
 	s.log.Info("Scanning path", "sessionId", sessionID, "path", path)
 	// Channel for discovered files
-	fileDiscoveryChannel := make(chan FileDiscovery, 2*workerCount)
-	scanResultsChannel := make(chan FileDiscovery, 2*workerCount)
+	fileDiscoveryChannel := make(chan FileDiscovery, 2*s.workers)
+	scanResultsChannel := make(chan FileDiscovery, 2*s.workers)
 
 	// Start a goroutine to walk the directory and send discoveries to the channel
 	// We use a separate channel for walking results to decouple file discovery from database writes

@@ -34,12 +34,6 @@ type Workflow struct {
 	scanner *scanner.Scanner
 	hasher  *hasher.Hasher
 
-	/* Concurreny settings */
-	// For a session at any given time,
-	// only one phase runs (scan OR hash OR score)
-	// and it uses up to this many workers
-	workers int
-
 	wg sync.WaitGroup
 }
 
@@ -87,10 +81,9 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 		ctx:              ctx,
 		db:               db,
 		locationResolver: locationResolver,
-		scanner:          scanner.NewScanner(db, log),
-		hasher:           hasher.NewHasher(ctx, db, log, exiftoolPath),
+		scanner:          scanner.New(db, log, cfg.Workers),
+		hasher:           hasher.New(ctx, db, log, exiftoolPath, cfg.Workers),
 		log:              log,
-		workers:          cfg.Workers,
 		path:             path.New(),
 	}
 }
@@ -152,7 +145,6 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UU
 func (wf *Workflow) background(sessionID uuid.UUID, paths []string) {
 	var finalStatus string
 	var finalErr *string
-	workers := max(len(paths), wf.workers)
 
 	defer func() {
 		wf.finalizeSession(sessionID, finalStatus, finalErr)
@@ -160,7 +152,7 @@ func (wf *Workflow) background(sessionID uuid.UUID, paths []string) {
 
 	wf.log.Info("Workflow session started", "sessionId", sessionID, "phases", "scanning → hashing")
 
-	phases := wf.workflowPhases(sessionID, paths, workers)
+	phases := wf.workflowPhases(sessionID, paths)
 
 	for _, phase := range phases {
 		count, status, errStr, ok := wf.run(sessionID, phase.kind, phase.run)
@@ -183,12 +175,12 @@ func (wf *Workflow) background(sessionID uuid.UUID, paths []string) {
 }
 
 // workflowPhases builds the ordered list of pipeline phases for a session
-func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string, workers int) []workflowPhase {
+func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workflowPhase {
 	return []workflowPhase{
 		{
 			kind: workflowPhaseScan,
 			run: func() (int, error) {
-				return wf.scanner.Run(wf.ctx, sessionID, paths, workers)
+				return wf.scanner.Run(wf.ctx, sessionID, paths)
 			},
 			onSuccess: func(count int) {
 				wf.log.Info("Phase 1 complete: all paths scanned", "sessionId", sessionID, "filesCollected", count)
@@ -197,7 +189,7 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string, workers 
 		{
 			kind: workflowPhaseHash,
 			run: func() (int, error) {
-				return wf.hasher.Run(wf.ctx, sessionID, workers)
+				return wf.hasher.Run(wf.ctx, sessionID)
 			},
 			onSuccess: func(count int) {
 				wf.log.Info("Phase 2 complete: all files hashed", "sessionId", sessionID, "filesHashed", count)
