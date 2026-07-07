@@ -43,6 +43,8 @@ const (
 	StatusScanned    = "SCANNED"
 	StatusHashing    = "HASHING"
 	StatusHashed     = "HASHED"
+	StatusScoring    = "SCORING"
+	StatusScored     = "SCORED"
 	StatusAnalyzing  = "ANALYZING"
 	StatusAnalyzed   = "ANALYZED"
 	StatusCompleted  = "COMPLETED"

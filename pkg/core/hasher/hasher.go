@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -118,7 +119,7 @@ func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, 
 	var filePath, sourceRoot string
 	query := `
 	UPDATE file_registry
-	SET scan_status = ?, updated_at = datetime('now')
+	SET scan_status = ?
 	WHERE id = (
 		SELECT id
 		FROM file_registry
@@ -237,42 +238,42 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 	persistErr <- nil
 }
 
-// storeHash updates the file registry with hash and EXIF data, then upserts content group membership
+// storeHash updates the file registry with hash, then upserts content group membership
 func (h *Hasher) storeHash(ctx context.Context, tx *sql.Tx, fileID int64, hash string, exif classifier.CommonMetadata) error {
-	// Update Hash and Status
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE file_registry
-		SET file_hash = ?, scan_status = 'HASHED', updated_at = datetime('now'),
-			image_width = ?, image_height = ?, gps_latitude = ?, gps_longitude = ?,
-			make = ?, model = ?, date_time_original = ?, create_date = ?
+		SET file_hash = ?, scan_status = 'HASHED'
 		WHERE id = ?
-	`, hash,
-		nullIfEmpty(exif.ImageWidth),
-		nullIfEmpty(exif.ImageHeight),
-		nullIfEmpty(exif.GPSLatitude),
-		nullIfEmpty(exif.GPSLongitude),
-		nullIfEmpty(exif.Make),
-		nullIfEmpty(exif.Model),
-		nullIfEmpty(exif.DateTimeOriginal),
-		nullIfEmpty(exif.CreateDate),
-		fileID); err != nil {
+	`, hash, fileID); err != nil {
 		return fmt.Errorf("failed to update file registry: %w", err)
 	}
 
-	// Upsert Content Group and Membership
 	var groupID int64
 	err := tx.QueryRowContext(ctx, `
-		INSERT INTO content_groups (content_hash, total_copies)
-		VALUES (?, 1)
+		INSERT INTO content_groups (
+			content_hash, total_copies,
+			exif_image_width, exif_image_height,
+			exif_gps_latitude, exif_gps_longitude,
+			exif_make, exif_model,
+			exif_date_time_original, exif_create_date
+		) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (content_hash)
 		DO UPDATE SET total_copies = content_groups.total_copies + 1
 		RETURNING id
-	`, hash).Scan(&groupID)
+	`, hash,
+		intOrNil(exif.ImageWidth),
+		intOrNil(exif.ImageHeight),
+		floatOrNil(exif.GPSLatitude),
+		floatOrNil(exif.GPSLongitude),
+		strOrNil(exif.Make),
+		strOrNil(exif.Model),
+		strOrNil(exif.DateTimeOriginal),
+		strOrNil(exif.CreateDate),
+	).Scan(&groupID)
 	if err != nil {
 		return fmt.Errorf("failed to upsert/fetch content group: %w", err)
 	}
 
-	// Insert membership (idempotent)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO content_group_members (group_id, file_id, is_master, metadata_score)
 		VALUES (?, ?, 0, 0)
@@ -284,21 +285,43 @@ func (h *Hasher) storeHash(ctx context.Context, tx *sql.Tx, fileID int64, hash s
 	return nil
 }
 
+func intOrNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return nil
+	}
+	return v
+}
+
+func floatOrNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return nil
+	}
+	return v
+}
+
+func strOrNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // markFileError sets the file's scan_status to ERROR
 func (h *Hasher) markFileError(fileID int64) {
 	h.db.Writer.Write(func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE file_registry
-			SET scan_status = 'ERROR', updated_at = datetime('now')
+			SET scan_status = 'ERROR'
 			WHERE id = ?
 		`, fileID)
 		return err
 	})
-}
-
-func nullIfEmpty(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }

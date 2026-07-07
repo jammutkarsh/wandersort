@@ -2,14 +2,13 @@ package migrations
 
 var schema002 = Migration{
 	Version:     002,
-	Description: "hasher_schema",
+	Description: "content_groups_schema",
 	SQL: []string{
 		contentGroups,
 		contentGroupMembers,
 	},
 }
 
-// content_groups table with indexes and trigger
 const contentGroups = `
 CREATE TABLE IF NOT EXISTS content_groups (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,25 +16,23 @@ CREATE TABLE IF NOT EXISTS content_groups (
     master_file_id INTEGER REFERENCES file_registry(id) ON DELETE SET NULL,
     total_copies INTEGER DEFAULT 1,
 
-    exif_metadata TEXT,
+    exif_image_width        INTEGER,
+    exif_image_height       INTEGER,
+    exif_gps_latitude       REAL,
+    exif_gps_longitude      REAL,
+    exif_make               TEXT,
+    exif_model              TEXT,
+    exif_date_time_original TEXT,
+    exif_create_date        TEXT,
 
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_content_groups_hash   ON content_groups(content_hash);
 CREATE INDEX IF NOT EXISTS idx_content_groups_master ON content_groups(master_file_id)
     WHERE master_file_id IS NOT NULL;
-
-CREATE TRIGGER IF NOT EXISTS update_content_groups_updated_at
-    AFTER UPDATE ON content_groups
-    FOR EACH ROW
-BEGIN
-    UPDATE content_groups SET updated_at = datetime('now') WHERE id = OLD.id;
-END;
 `
 
-// content_group_members table with indexes
 const contentGroupMembers = `
 CREATE TABLE IF NOT EXISTS content_group_members (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,

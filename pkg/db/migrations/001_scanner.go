@@ -43,16 +43,6 @@ CREATE TABLE IF NOT EXISTS file_registry (
     -- Hash (populated in hashing phase)
     file_hash TEXT,
 
-    -- Exif Metadata (populated in hashing phase)
-    image_width        TEXT,
-    image_height       TEXT,
-    gps_latitude       TEXT,
-    gps_longitude      TEXT,
-    make               TEXT,
-    model              TEXT,
-    date_time_original TEXT,
-    create_date        TEXT,
-
     -- Discovery metadata
     discovered_at   TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
@@ -69,14 +59,6 @@ CREATE TABLE IF NOT EXISTS file_registry (
     -- Path storage
     path_type   TEXT NOT NULL DEFAULT 'RELATIVE',
     file_origin TEXT NOT NULL DEFAULT 'SOURCE',
-
-    -- Capture grouping
-    capture_stem TEXT,
-    capture_role TEXT,
-
-    -- Timestamps
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
 
     CHECK (media_type  IN ('IMAGE', 'VIDEO', 'SIDECAR', 'RAW', 'UNKNOWN')),
     CHECK (scan_status IN ('DISCOVERED', 'HASHING', 'HASHED', 'ANALYZING', 'ANALYZED', 'ERROR'))

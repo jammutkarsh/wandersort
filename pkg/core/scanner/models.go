@@ -24,16 +24,8 @@ type FileRegistry struct {
 	FileExtension string `db:"file_extension"`
 	ScanStatus    string `db:"scan_status"`
 
-	// Capture grouping
-	CaptureStem *string `db:"capture_stem"`
-	CaptureRole *string `db:"capture_role"`
-
-	// Path storage
-	PathType   string `db:"path_type" json:"pathType"`     // RELATIVE or ABSOLUTE
-	FileOrigin string `db:"file_origin" json:"fileOrigin"` // SOURCE or ORGANIZED
-
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	PathType   string `db:"path_type" json:"pathType"`
+	FileOrigin string `db:"file_origin" json:"fileOrigin"`
 }
 
 // Path type constants
@@ -84,7 +76,6 @@ type FileDiscovery struct {
 	Extension  string
 	SourceRoot string
 	MediaType  string
-	Capture    CaptureInfo
 }
 
 type ScanSession struct {
