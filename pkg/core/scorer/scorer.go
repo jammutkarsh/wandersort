@@ -13,9 +13,11 @@ import (
 )
 
 var (
+	// Matches date-prefixed filenames: YYYYMMDD_ or YYYY-MM-DD_ or YYYY_MM_DD_
+	// Ref: https://en.wikipedia.org/wiki/ISO_8601#Calendar_dates
 	datePattern = regexp.MustCompile(`^(\d{8}_|\d{4}-\d{2}-\d{2}_|\d{4}_\d{2}_\d{2}_)`)
 	// Matches camera-generated filenames per DCF spec:
-	//   IMG_3162, _MG_1721 (Adobe RGB), DSC01234, WP_0001, GOPR1234, ABCD0001, etc.
+	// IMG_3162, _MG_1721 (Adobe RGB), DSC01234, WP_0001, GOPR1234, ABCD0001, etc.
 	// Structure: optional underscore + 1-5 letters + optional underscore + digits.
 	// Ref: https://en.wikipedia.org/wiki/Design_rule_for_Camera_File_system
 	cameraPattern = regexp.MustCompile(`^(_?[A-Z]{1,5}_?)\d+(_\d+)*$`)
