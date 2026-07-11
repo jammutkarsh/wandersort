@@ -2,6 +2,8 @@
 >
 > Copyright (c) 2026 Utkarsh Chourasia
 
+[![CI](https://github.com/jammutkarsh/wandersort/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jammutkarsh/wandersort/actions/workflows/ci.yml)
+
 # WanderSort
 
 **Your photos tell the story of your life. They deserve better than a black-box algorithm deciding what you see.**

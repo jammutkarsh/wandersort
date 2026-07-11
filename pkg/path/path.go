@@ -100,7 +100,10 @@ func (r *Resolver) MakeAbsolute(filePath, sourceRoot string) string {
 		return filepath.Clean(filePath)
 	}
 
-	if strings.HasPrefix(filePath, "~/") {
+	if filePath == "~" {
+		return r.HomeDir
+	}
+	if strings.HasPrefix(filePath, "~/") || strings.HasPrefix(filePath, "~\\") {
 		return filepath.Clean(r.ExpandPath(filePath))
 	}
 
@@ -115,8 +118,8 @@ func (r *Resolver) MakeAbsolute(filePath, sourceRoot string) string {
 // resolveHomePath converts ~/path to absolute path
 // Example: "~/Photos/2023" -> "/home/username/Photos/2023"
 func (r *Resolver) resolveHomePath(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		return filepath.Join(r.HomeDir, strings.TrimPrefix(path, "~/"))
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
+		return filepath.Join(r.HomeDir, path[2:])
 	}
 	return path
 }
