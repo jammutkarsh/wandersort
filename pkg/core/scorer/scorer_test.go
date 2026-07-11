@@ -199,16 +199,29 @@ func TestRun(t *testing.T) {
 	ctx := context.Background()
 	sessionId := uuid.New()
 
-	d.ExecContext(ctx, `INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'HASHED', '/tmp')`, sessionId.String())
-	d.ExecContext(ctx, `INSERT INTO
-		file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type
+	_, err := d.ExecContext(ctx, `INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'HASHED', '/tmp')`, sessionId.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.ExecContext(ctx, `INSERT INTO file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
 		VALUES (1, 'trips/goa/sunset.jpg', 1024, '2024-01-01', ?, '/photos', '.jpg', 'IMAGE')`, sessionId.String())
-	d.ExecContext(ctx, `INSERT INTO
-		file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.ExecContext(ctx, `INSERT INTO file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
 		VALUES (2, 'dcim/IMG_3162.jpg', 1024, '2024-01-01', ?, '/backup', '.jpg', 'IMAGE')`, sessionId.String())
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES ('abc', 1)`)
-	d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES ('abc', 2)`)
+	_, err = d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES ('abc', 1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES ('abc', 2)`)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	s := &Scorer{db: d, log: logger.NewNoopLogger()}
 	n, err := s.Run(ctx, sessionId)
