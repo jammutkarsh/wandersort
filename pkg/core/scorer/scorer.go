@@ -3,6 +3,7 @@ package scorer
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -93,7 +94,7 @@ func (s *Scorer) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 		start = end
 		count++
 
-		bestScore, bestPathLen, master := -1<<31, int(^uint(0)>>1), member{}
+		bestScore, bestPathLen, master := math.MinInt, math.MaxInt, member{}
 		for _, dupe := range duplicates {
 			score := perFileScore(dupe.FilePath)
 			pathLen := len(dupe.SourceRoot) + len(dupe.FilePath)
