@@ -13,7 +13,6 @@ type ContentGroup struct {
 	MasterFileID *int64    `json:"masterFileId,omitempty"`
 	TotalCopies  int       `json:"totalCopies"`
 	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 // ContentGroupMember represents a file's membership in a content group

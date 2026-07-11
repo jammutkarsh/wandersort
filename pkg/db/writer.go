@@ -2,8 +2,8 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
+	"github.com/jmoiron/sqlx"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,11 +19,11 @@ const (
 	// writerFlushInterval ensures periodic flushes even if batch size isn't reached
 	writerFlushInterval = 100 * time.Millisecond
 	// batchExecutionTimeout is the context deadline for executing a single batch
-	batchExecutionTimeout = 1 * time.Second
+	batchExecutionTimeout = 5 * time.Second
 )
 
 // DBOperation represents a single database mutation
-type DBOperation func(ctx context.Context, tx *sql.Tx) error
+type DBOperation func(ctx context.Context, tx *sqlx.Tx) error
 
 // flushReq is sent by Flush() to signal the background goroutine to drain
 // all pending operations and report back when done
@@ -34,7 +34,7 @@ type flushReq struct {
 // BulkWriter batches multiple database operations into single transactions
 // to minimize lock contention and improve write performance in SQLite
 type BulkWriter struct {
-	sqlDB         *sql.DB
+	sqlDB         *sqlx.DB
 	log           logger.Logger
 	ops           chan DBOperation
 	flushReqs     chan flushReq
@@ -46,7 +46,7 @@ type BulkWriter struct {
 }
 
 // NewBulkWriter creates a new bulk writer
-func NewBulkWriter(sqlDB *sql.DB, log logger.Logger) *BulkWriter {
+func NewBulkWriter(sqlDB *sqlx.DB, log logger.Logger) *BulkWriter {
 	bw := &BulkWriter{
 		sqlDB:         sqlDB,
 		log:           log,
@@ -81,8 +81,13 @@ func (bw *BulkWriter) Flush() {
 		return
 	}
 	req := flushReq{done: make(chan struct{})}
-	bw.flushReqs <- req
-	<-req.done
+	select {
+	case bw.flushReqs <- req:
+		<-req.done
+	case <-bw.done:
+		// Writer is closed or shutting down, abandon flush request
+		return
+	}
 }
 
 // Close gracefully shuts down the bulk writer, flushing any pending operations
@@ -113,6 +118,10 @@ func (bw *BulkWriter) start() {
 		}
 		if err := bw.executeBatch(batch); err != nil {
 			bw.log.Error("Bulk DB write failed", "error", err, "size", len(batch))
+		}
+		// Clear pointers to allow GC of captured variables in DBOperation closures
+		for i := range batch {
+			batch[i] = nil
 		}
 		// Try to reuse the slice capacity
 		batch = batch[:0]
@@ -145,7 +154,7 @@ func (bw *BulkWriter) executeBatch(batch []DBOperation) error {
 	ctx, cancel := context.WithTimeout(context.Background(), batchExecutionTimeout)
 	defer cancel()
 
-	tx, err := bw.sqlDB.BeginTx(ctx, nil)
+	tx, err := bw.sqlDB.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
@@ -173,7 +182,7 @@ func (bw *BulkWriter) executeIndividually(ctx context.Context, batch []DBOperati
 	var failed int
 
 	for i, op := range batch {
-		tx, err := bw.sqlDB.BeginTx(ctx, nil)
+		tx, err := bw.sqlDB.BeginTxx(ctx, nil)
 		if err != nil {
 			failed++
 			bw.log.Error("Bulk writer fallback begin tx failed", "index", i, "error", err)
