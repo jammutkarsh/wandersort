@@ -13,7 +13,6 @@ type FileRegistry struct {
 	FilePath       string    `db:"file_path"`
 	FileSize       int64     `db:"file_size"`
 	FileModifiedAt time.Time `db:"file_modified_at"`
-	FileHash       *string   `db:"file_hash"`
 
 	DiscoveredAt  time.Time `db:"discovered_at"`
 	LastSeenAt    time.Time `db:"last_seen_at"`

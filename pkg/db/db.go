@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/db/migrations"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
 )
 
@@ -71,7 +73,7 @@ const (
 // DB wraps *sql.DB with a BulkWriter for database operations
 // BulkWriter is nil for LocationDB connections
 type DB struct {
-	SQL    *sql.DB
+	SQL    *sqlx.DB
 	Writer *BulkWriter
 	log    logger.Logger
 }
@@ -151,17 +153,18 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 
 	log.Info("Database connection established", "path", dbPath)
 
-	count, err := migrations.Run(sqlDB)
+	sqlxDB := sqlx.NewDb(sqlDB, "sqlite")
+
+	count, err := migrations.Run(sqlxDB)
 	if err != nil {
-		sqlDB.Close()
+		sqlxDB.Close()
 		return nil, fmt.Errorf("appDB: migrations - %w", err)
 	}
 
 	log.Info("Migration completed", "migrations", count)
 	log.Info("Successfully connected to sqlite database", "path", dbPath)
-
-	d := &DB{SQL: sqlDB, log: log}
-	d.Writer = NewBulkWriter(sqlDB, log)
+	d := &DB{SQL: sqlxDB, log: log}
+	d.Writer = NewBulkWriter(sqlxDB, log)
 	return d, nil
 }
 
@@ -184,7 +187,7 @@ func openLocationDB(ctx context.Context, dbPath string, log logger.Logger) (*DB,
 	}
 
 	log.Info("Successfully connected to location database", "path", dbPath)
-	return &DB{SQL: sqlDB, log: log}, nil
+	return &DB{SQL: sqlx.NewDb(sqlDB, "sqlite"), log: log}, nil
 }
 
 // ensureLocationDB creates the parent directory and downloads location.db if the file does not already exist at dbPath
@@ -270,8 +273,8 @@ func (db *DB) Optimize(ctx context.Context) error {
 }
 
 // BeginTx starts a new transaction
-func (db *DB) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
-	return db.SQL.BeginTx(ctx, opts)
+func (db *DB) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sqlx.Tx, error) {
+	return db.SQL.BeginTxx(ctx, opts)
 }
 
 // ExecContext executes a query without returning any rows
@@ -335,4 +338,36 @@ func isSQLITEBusy(err error) bool {
 func appIDFromTag() int32 {
 	const tag = "WAND"
 	return int32(binary.BigEndian.Uint32([]byte(tag)))
+}
+
+// IntOrNil parses s as an int, returning nil if s is empty or invalid.
+func IntOrNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return nil
+	}
+	return v
+}
+
+// FloatOrNil parses s as a float64, returning nil if s is empty or invalid.
+func FloatOrNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return nil
+	}
+	return v
+}
+
+// StrOrNil returns s, or nil if s is empty.
+func StrOrNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

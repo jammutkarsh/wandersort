@@ -1303,12 +1303,12 @@ type Jpg struct {
 	XPAuthor                                           string    `json:"XPAuthor"`
 	XPComment                                          string    `json:"XPComment"`
 	XPKeywords                                         string    `json:"XPKeywords"`
-	XResolution                                        string    `json:"XResolution"`
+	XResolution                                        float64   `json:"XResolution"`
 	XiaomiModel                                        string    `json:"XiaomiModel"`
 	YCbCrCoefficients                                  string    `json:"YCbCrCoefficients"`
 	YCbCrPositioning                                   int       `json:"YCbCrPositioning"`
 	YCbCrSubSampling                                   string    `json:"YCbCrSubSampling"`
-	YResolution                                        string    `json:"YResolution"`
+	YResolution                                        float64   `json:"YResolution"`
 	ZoneMatching                                       int       `json:"ZoneMatching"`
 	ZoomMultiple                                       int       `json:"ZoomMultiple"`
 	ZoomSourceWidth                                    int       `json:"ZoomSourceWidth"`

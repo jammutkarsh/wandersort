@@ -2,8 +2,8 @@ package scanner
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
+	"github.com/jmoiron/sqlx"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -272,7 +272,7 @@ func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG
 			file_modified_at = excluded.file_modified_at
 		RETURNING id, (discovered_at = last_seen_at) AS is_new`
 
-	queryFileState := func(dbCtx context.Context, tx *sql.Tx) (int64, int, error) {
+	queryFileState := func(dbCtx context.Context, tx *sqlx.Tx) (int64, int, error) {
 		var fileID int64
 		var isNew int // SQLite does not have a real BOOLEAN storage class
 		err := tx.QueryRowContext(
@@ -291,7 +291,7 @@ func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG
 		).Scan(&fileID, &isNew)
 		return fileID, isNew, err
 	}
-	execute := func(dbCtx context.Context, tx *sql.Tx) error {
+	execute := func(dbCtx context.Context, tx *sqlx.Tx) error {
 		defer dbWritesWG.Done()
 
 		select {

@@ -155,7 +155,7 @@ type Mov struct {
 	FocusRange                                      int      `json:"FocusRange"`
 	FontName                                        string   `json:"FontName"`
 	FullFrameRatePlaybackIntent                     int      `json:"FullFrameRatePlaybackIntent"`
-	GPSAltitude                                     int      `json:"GPSAltitude"`
+	GPSAltitude                                     float64  `json:"GPSAltitude"`
 	GPSAltitudeRef                                  int      `json:"GPSAltitudeRef"`
 	GPSCoordinates                                  string   `json:"GPSCoordinates"`
 	GPSLatitude                                     float64  `json:"GPSLatitude"`
@@ -295,7 +295,7 @@ type Mov struct {
 	SmartstyleIntensity                             int      `json:"SmartstyleIntensity"`
 	SmartstyleRenderingVersion                      int      `json:"SmartstyleRendering-version"`
 	SmartstyleTone                                  int      `json:"SmartstyleTone"`
-	Software                                        string   `json:"Software"`
+	Software                                        any      `json:"Software"`
 	SoftwareEngIN                                   string   `json:"Software-eng-IN"`
 	SourceFile                                      string   `json:"SourceFile"`
 	SourceImageHeight                               int      `json:"SourceImageHeight"`
@@ -382,7 +382,7 @@ func (m Mov) ToCommon() CommonMetadata {
 		Make:                 m.Make,
 		Model:                m.Model,
 		LensModel:            m.LensModel,
-		Software:             m.Software,
+		Software:             numStr(m.Software),
 		CreateDate:           m.CreateDate,
 		ModifyDate:           m.ModifyDate,
 		DateTimeOriginal:     m.DateTimeOriginal,
@@ -400,7 +400,7 @@ func (m Mov) ToCommon() CommonMetadata {
 		WhiteBalance:         itoa(m.WhiteBalance),
 		GPSLatitude:          ftoa(m.GPSLatitude),
 		GPSLongitude:         ftoa(m.GPSLongitude),
-		GPSAltitude:          itoa(m.GPSAltitude),
+		GPSAltitude:          ftoa(m.GPSAltitude),
 		GPSAltitudeRef:       itoa(m.GPSAltitudeRef),
 		GPSPosition:          m.GPSPosition,
 	}
