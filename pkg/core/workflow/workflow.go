@@ -18,6 +18,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/hasher"
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
+	"github.com/jammutkarsh/wandersort/pkg/core/scorer"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -39,6 +40,7 @@ type Workflow struct {
 	/* Pipeline components */
 	scanner *scanner.Scanner
 	hasher  *hasher.Hasher
+	scorer  *scorer.Scorer
 
 	wg sync.WaitGroup
 }
@@ -52,8 +54,9 @@ type workflowPhase struct {
 type workflowPhaseKind string
 
 const (
-	workflowPhaseScan workflowPhaseKind = "scan"
-	workflowPhaseHash workflowPhaseKind = "hash"
+	workflowPhaseScan  workflowPhaseKind = "scan"
+	workflowPhaseHash  workflowPhaseKind = "hash"
+	workflowPhaseScore workflowPhaseKind = "score"
 	// defaultFinalizeTimeout is the deadline for writing the final session
 	// status when the pipeline completed without interruption
 	defaultFinalizeTimeout = 15 * time.Second
@@ -65,6 +68,8 @@ func (kind workflowPhaseKind) inProgressStatus() string {
 		return db.StatusScanning
 	case workflowPhaseHash:
 		return db.StatusHashing
+	case workflowPhaseScore:
+		return db.StatusScoring
 	default:
 		return db.StatusFailed
 	}
@@ -76,6 +81,8 @@ func (kind workflowPhaseKind) completedStatus() string {
 		return db.StatusScanned
 	case workflowPhaseHash:
 		return db.StatusHashed
+	case workflowPhaseScore:
+		return db.StatusScored
 	default:
 		return db.StatusFailed
 	}
@@ -89,6 +96,7 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 		locationResolver: locationResolver,
 		scanner:          scanner.New(db, log, cfg.Workers),
 		hasher:           hasher.New(ctx, db, log, exiftoolPath, cfg.Workers),
+		scorer:           scorer.New(db, log),
 		log:              log,
 		path:             path.New(),
 	}
@@ -156,7 +164,7 @@ func (wf *Workflow) background(sessionID uuid.UUID, paths []string) {
 		wf.finalizeSession(sessionID, finalStatus, finalErr)
 	}()
 
-	wf.log.Info("Workflow session started", "sessionId", sessionID, "phases", "scanning → hashing")
+	wf.log.Info("Workflow session started", "sessionId", sessionID, "phases", "scanning → hashing → scoring")
 
 	phases := wf.workflowPhases(sessionID, paths)
 
@@ -192,6 +200,14 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 				wf.log.Info("Phase 1 complete: all paths scanned", "sessionId", sessionID, "filesCollected", count)
 			},
 		},
+		/*
+			TODO(#22): the hasher currently uses BLAKE3 on the full file bytes, so two
+			pixel-identical photos with different embedded metadata (EXIF, ICC profile)
+			produce different hashes and land in separate content groups.  This means the
+			scorer cannot elect between them — each becomes a solo master and both
+			survive.  Until pixel-level and perceptual hashing layers are added, the
+			only signal available for picking the best copy is the folder-naming heuristics in the scorer.
+		*/
 		{
 			kind: workflowPhaseHash,
 			run: func() (int, error) {
@@ -199,6 +215,15 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 			},
 			onSuccess: func(count int) {
 				wf.log.Info("Phase 2 complete: all files hashed", "sessionId", sessionID, "filesHashed", count)
+			},
+		},
+		{
+			kind: workflowPhaseScore,
+			run: func() (int, error) {
+				return wf.scorer.Run(wf.ctx, sessionID)
+			},
+			onSuccess: func(count int) {
+				wf.log.Info("Phase 3 complete: all groups scored", "sessionId", sessionID, "groupsScored", count)
 			},
 		},
 	}
@@ -229,6 +254,8 @@ func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhaseKind, phaseFunc 
 		}
 		return count, finalStatus, &finalErr, !success
 	}
+
+	wf.db.Writer.Flush()
 
 	completedStatus := phase.completedStatus()
 	if err := wf.setSessionStatus(wf.ctx, sessionID, completedStatus); err != nil {

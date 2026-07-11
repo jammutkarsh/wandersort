@@ -7,8 +7,8 @@
 package migrations
 
 import (
-	"database/sql"
 	"fmt"
+	"github.com/jmoiron/sqlx"
 	"time"
 )
 
@@ -26,7 +26,7 @@ var schemas = []Migration{schema001, schema002}
 // Run applies any migrations whose version is greater than what the database
 // has already recorded. It creates the schema_migrations tracking table on
 // first run
-func Run(db *sql.DB) (int, error) {
+func Run(db *sqlx.DB) (int, error) {
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version INTEGER PRIMARY KEY,

@@ -17,8 +17,9 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/jmoiron/sqlx"
+
 	"github.com/google/uuid"
-	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -124,7 +125,7 @@ func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, 
 	var filePath, sourceRoot string
 	query := `
 	UPDATE file_registry
-	SET scan_status = ?, updated_at = datetime('now')
+	SET scan_status = ?
 	WHERE id = (
 		SELECT id
 		FROM file_registry
@@ -162,7 +163,11 @@ func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context
 				hash, err := h.hashFile(file.absPath)
 				if err != nil {
 					h.log.Error("Failed to hash file", "sessionId", sessionID, "fileId", file.id, "path", file.absPath, "error", err)
-					h.markFileError(file.id)
+					h.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+						_, err := tx.ExecContext(ctx, ` UPDATE file_registry
+							SET scan_status = 'ERROR' WHERE id = ?`, file.id)
+						return err
+					})
 					errorCount.Add(1)
 					continue
 				}
@@ -221,8 +226,26 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 		default:
 		}
 
-		ok := h.db.Writer.Write(func(ctx context.Context, tx *sql.Tx) error {
-			return h.storeHash(ctx, tx, file.id, file.hash, file.exif)
+		ok := h.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+			_, err := tx.ExecContext(ctx, `
+				INSERT INTO file_metadata (
+					file_hash, file_id,
+					exif_image_width, exif_image_height,
+					exif_gps_latitude, exif_gps_longitude,
+					exif_make, exif_model,
+					exif_date_time_original, exif_create_date
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, file.hash, file.id,
+				db.IntOrNil(file.exif.ImageWidth),
+				db.IntOrNil(file.exif.ImageHeight),
+				db.FloatOrNil(file.exif.GPSLatitude),
+				db.FloatOrNil(file.exif.GPSLongitude),
+				db.StrOrNil(file.exif.Make),
+				db.StrOrNil(file.exif.Model),
+				db.StrOrNil(file.exif.DateTimeOriginal),
+				db.StrOrNil(file.exif.CreateDate),
+			)
+			return err
 		})
 		if !ok {
 			persistErr <- fmt.Errorf("bulk writer closed")
@@ -239,72 +262,5 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 		hashed.Add(1)
 	}
 
-	h.db.Writer.Flush()
 	persistErr <- nil
-}
-
-// storeHash updates the file registry with hash and EXIF data, then upserts content group membership
-func (h *Hasher) storeHash(ctx context.Context, tx *sql.Tx, fileID int64, hash string, exif classifier.CommonMetadata) error {
-	// Update Hash and Status
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE file_registry
-		SET file_hash = ?, scan_status = 'HASHED', updated_at = datetime('now'),
-			image_width = ?, image_height = ?, gps_latitude = ?, gps_longitude = ?,
-			make = ?, model = ?, date_time_original = ?, create_date = ?
-		WHERE id = ?
-	`, hash,
-		nullIfEmpty(exif.ImageWidth),
-		nullIfEmpty(exif.ImageHeight),
-		nullIfEmpty(exif.GPSLatitude),
-		nullIfEmpty(exif.GPSLongitude),
-		nullIfEmpty(exif.Make),
-		nullIfEmpty(exif.Model),
-		nullIfEmpty(exif.DateTimeOriginal),
-		nullIfEmpty(exif.CreateDate),
-		fileID); err != nil {
-		return fmt.Errorf("failed to update file registry: %w", err)
-	}
-
-	// Upsert Content Group and Membership
-	var groupID int64
-	err := tx.QueryRowContext(ctx, `
-		INSERT INTO content_groups (content_hash, total_copies)
-		VALUES (?, 1)
-		ON CONFLICT (content_hash)
-		DO UPDATE SET total_copies = content_groups.total_copies + 1
-		RETURNING id
-	`, hash).Scan(&groupID)
-	if err != nil {
-		return fmt.Errorf("failed to upsert/fetch content group: %w", err)
-	}
-
-	// Insert membership (idempotent)
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO content_group_members (group_id, file_id, is_master, metadata_score)
-		VALUES (?, ?, 0, 0)
-		ON CONFLICT (group_id, file_id) DO NOTHING
-	`, groupID, fileID); err != nil {
-		return fmt.Errorf("failed to add member to group: %w", err)
-	}
-
-	return nil
-}
-
-// markFileError sets the file's scan_status to ERROR
-func (h *Hasher) markFileError(fileID int64) {
-	h.db.Writer.Write(func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `
-			UPDATE file_registry
-			SET scan_status = 'ERROR', updated_at = datetime('now')
-			WHERE id = ?
-		`, fileID)
-		return err
-	})
-}
-
-func nullIfEmpty(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
 }

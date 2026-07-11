@@ -33,6 +33,10 @@ definitions:
     properties:
       message:
         type: string
+      scanPaths:
+        items:
+          type: string
+        type: array
       sessionId:
         type: string
       status:
@@ -47,7 +51,7 @@ paths:
   /internal/v1/admin/reset:
     post:
       description: Deletes all scan sessions, file registry entries, content groups
-        and group members in a single transaction. Irreversible.
+        and group members in a single transaction. Irreversible
       produces:
       - application/json
       responses:
@@ -61,7 +65,7 @@ paths:
   /internal/v1/pipeline/count:
     get:
       description: Returns the number of files discovered by the scanner and the number
-        hashed.
+        hashed
       produces:
       - application/json
       responses:
@@ -76,7 +80,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: Submit root paths to the pipeline. Scanning and hashing run automatically.
+      description: Submit root paths to the pipeline. The API validates directories,
+        removes overlapping child paths, returns the effective scanPaths, and then
+        starts scanning immediately
       parameters:
       - description: Start Scan Request
         in: body
@@ -92,18 +98,6 @@ paths:
           schema:
             $ref: '#/definitions/pipeline.StartScanResponse'
       summary: Start a new pipeline scan
-      tags:
-      - Pipeline
-  /internal/v1/pipeline/ws:
-    get:
-      description: Opens a WebSocket connection that pushes PipelineStatus JSON messages
-        in real time.
-      responses:
-        "101":
-          description: Switching Protocols
-          schema:
-            type: string
-      summary: Stream pipeline status via WebSocket
       tags:
       - Pipeline
 swagger: "2.0"

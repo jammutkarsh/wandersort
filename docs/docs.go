@@ -17,7 +17,7 @@ const docTemplate = `{
     "paths": {
         "/internal/v1/admin/reset": {
             "post": {
-                "description": "Deletes all scan sessions, file registry entries, content groups and group members in a single transaction. Irreversible.",
+                "description": "Deletes all scan sessions, file registry entries, content groups and group members in a single transaction. Irreversible",
                 "produces": [
                     "application/json"
                 ],
@@ -37,7 +37,7 @@ const docTemplate = `{
         },
         "/internal/v1/pipeline/count": {
             "get": {
-                "description": "Returns the number of files discovered by the scanner and the number hashed.",
+                "description": "Returns the number of files discovered by the scanner and the number hashed",
                 "produces": [
                     "application/json"
                 ],
@@ -57,7 +57,7 @@ const docTemplate = `{
         },
         "/internal/v1/pipeline/start": {
             "post": {
-                "description": "Submit root paths to the pipeline. Scanning and hashing run automatically.",
+                "description": "Submit root paths to the pipeline. The API validates directories, removes overlapping child paths, returns the effective scanPaths, and then starts scanning immediately",
                 "consumes": [
                     "application/json"
                 ],
@@ -84,23 +84,6 @@ const docTemplate = `{
                         "description": "Accepted",
                         "schema": {
                             "$ref": "#/definitions/pipeline.StartScanResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/internal/v1/pipeline/ws": {
-            "get": {
-                "description": "Opens a WebSocket connection that pushes PipelineStatus JSON messages in real time.",
-                "tags": [
-                    "Pipeline"
-                ],
-                "summary": "Stream pipeline status via WebSocket",
-                "responses": {
-                    "101": {
-                        "description": "Switching Protocols",
-                        "schema": {
-                            "type": "string"
                         }
                     }
                 }
@@ -155,6 +138,12 @@ const docTemplate = `{
             "properties": {
                 "message": {
                     "type": "string"
+                },
+                "scanPaths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "sessionId": {
                     "type": "string"

@@ -198,100 +198,57 @@ Auto-created by the migration runner. Tracks which migrations have been applied.
 
 ---
 
-### `content_groups`
+### `file_metadata`
 
-**Purpose:** The **deduplication brain**. Groups files with identical content and picks the "best" version as master.
+**Purpose:** Links files to their content hash and caches per-hash EXIF data. The scorer uses this table to find duplicate files and elect a master.
 
-**Why a separate table instead of just using `file_registry.file_hash`?**
-
-```text
-Hash abc123 found in:
-- /Backup/IMG_001.jpg (no EXIF)
-- /iPhone/IMG_001.jpg (has EXIF, GPS)
-- /Old/IMG_001.jpg (no EXIF)
-```
-
-Without `content_groups`, querying "which is the best copy?" requires joining and scoring every time. With it:
+**How deduplication works:**
+Each hashed file inserts one row into `file_metadata` — `(file_hash, file_id)` pairs are unique, but multiple files can share the same hash. The scorer queries:
 
 ```sql
-SELECT master_file_id FROM content_groups WHERE content_hash = 'abc123'
--- Returns: The iPhone version (has metadata, highest score)
+SELECT file_hash FROM file_metadata
+GROUP BY file_hash
+HAVING COUNT(*) > 1
 ```
+
+This yields duplicate hashes. For each hash, the scorer JOINs `file_registry` to load paths for all files, scores them on filename quality and directory context, and elects the best as master by updating `file_metadata.file_id` for the winning row.
 
 ```sql
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    content_hash TEXT NOT NULL UNIQUE,
-    master_file_id INTEGER NOT NULL REFERENCES file_registry(id),
-    total_copies INTEGER NOT NULL DEFAULT 1,
+    file_hash TEXT NOT NULL,
+    file_id INTEGER REFERENCES file_registry(id) ON DELETE SET NULL,
 ```
 
-- `content_hash`: The BLAKE3 hash acting as the group key. **Why UNIQUE?** One group per unique content. If two files have the same hash, they're byte-for-byte identical and belong to the same group.
-- `master_file_id`: Points to the **best** file in this group. **Why needed?** During organization, only copy the master, ignore duplicates. The master is the copy with the richest metadata (EXIF, GPS, meaningful path).
-- `total_copies`: Count of duplicates. **Why?** UI can show "3 duplicates found, saving 12MB" without running a COUNT query every time.
+- `file_hash`: BLAKE3 content hash. One row per hashed file — multiple files with the same hash form a duplicate group.
+- `file_id`: The file_registry row this metadata belongs to. Set by the hasher on INSERT. Updated by the scorer to point to the master copy for each duplicate group.
 
 ```sql
-    exif_metadata TEXT,
+    exif_image_width        INTEGER,
+    exif_image_height       INTEGER,
+    exif_gps_latitude       REAL,
+    exif_gps_longitude      REAL,
+    exif_make               TEXT,
+    exif_model              TEXT,
+    exif_date_time_original TEXT,
+    exif_create_date        TEXT,
 ```
 
-- `exif_metadata`: JSON blob of shared EXIF data extracted from the master file. **Why store it here?** Avoid re-running exiftool when you need metadata for display or organization decisions. Stored at the group level because all copies share the same content (and therefore the same EXIF).
+- EXIF columns: Cached per file during hashing. `date_time_original` and `create_date` are used by the scorer (+10 base signal). `image_width`/`image_height` and `gps_latitude`/`gps_longitude` are available for the VFS phase.
 
 ```sql
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (datetime('now'))
 ```
 
-- `updated_at` is trigger-maintained, same as `file_registry`. **Why?** When a new duplicate is found and `total_copies` increments, or when master is re-elected, the timestamp updates automatically.
+**Trigger:**
+```sql
+CREATE TRIGGER trg_file_metadata_hashed
+AFTER INSERT ON file_metadata
+FOR EACH ROW
+BEGIN
+    UPDATE file_registry SET scan_status = 'HASHED' WHERE id = NEW.file_id;
+END;
+```
+When the hasher inserts a row, the trigger automatically marks the corresponding `file_registry` row as `HASHED`.
 
 **Indexes:**
-
-- `idx_content_groups_hash`: Lookup group by content hash — the primary access pattern during hashing.
-- `idx_content_groups_master`: Find the group for a given master file — used when a file is deleted and you need to re-elect.
-
----
-
-### `content_group_members`
-
-**Purpose:** The **many-to-many link** between content groups and files.
-
-**Why not just add a `group_id` column to `file_registry`?**
-
-Because of this edge case:
-
-```text
-File discovered, hash computed → Group created, file marked as master
-Later scan: File is DELETED from disk
-Cleanup: DELETE FROM file_registry WHERE file doesn't exist
-Now: content_groups.master_file_id points to DELETED row → broken FK
-```
-
-With a junction table, you can cleanly remove the member, then re-elect a new master from remaining members:
-
-```sql
-DELETE FROM content_group_members WHERE file_id = 999;
-DELETE FROM file_registry WHERE id = 999;
-
-UPDATE content_groups SET master_file_id = (
-    SELECT file_id FROM content_group_members
-    WHERE group_id = X ORDER BY metadata_score DESC LIMIT 1
-);
-```
-
-```sql
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_id INTEGER NOT NULL REFERENCES content_groups(id),
-    file_id INTEGER NOT NULL REFERENCES file_registry(id),
-    is_master INTEGER NOT NULL DEFAULT 0,
-    metadata_score INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-```
-
-- `is_master`: Denormalized 0/1 flag. **Why denormalized?** Faster than always joining to `content_groups.master_file_id`. Query "give me the master of group X" without a second table lookup.
-- `metadata_score`: Numeric score used for master election. **Why store it?** Avoids recalculating the score on every query. Score is computed once during hashing (e.g., EXIF timestamp = +10, GPS = +5, meaningful folder name = +2) and persisted.
-
-**Constraints:** `UNIQUE(group_id, file_id)` — a file can only appear once in a group.
-
-**Indexes:**
-
-- `idx_cgm_group`: List all files in a group — used when displaying duplicates.
-- `idx_cgm_file`: Find which group a file belongs to — used when a file is deleted.
-- `idx_cgm_master`: Quickly find master members across all groups — used for organization queries ("give me all masters to organize").
+- `idx_file_metadata_hash_file` (UNIQUE): Prevents duplicate (hash, file) entries and serves hash-only lookups via the leftmost column.

@@ -585,11 +585,11 @@ type Jpeg struct {
 	ShutterReleaseWithoutLens                          int      `json:"ShutterReleaseWithoutLens"`
 	ShutterSpeed                                       float64  `json:"ShutterSpeed"`
 	ShutterSpeedRange                                  string   `json:"ShutterSpeedRange"`
-	ShutterSpeedValue                                  string   `json:"ShutterSpeedValue"`
+	ShutterSpeedValue                                  float64  `json:"ShutterSpeedValue"`
 	SignalToNoiseRatio                                 float64  `json:"SignalToNoiseRatio"`
 	SlowShutter                                        int      `json:"SlowShutter"`
 	SoftFocusFilter                                    int      `json:"SoftFocusFilter"`
-	Software                                           float64  `json:"Software"`
+	Software                                           string   `json:"Software"`
 	SourceFile                                         string   `json:"SourceFile"`
 	SpecularWhiteLevel                                 int      `json:"SpecularWhiteLevel"`
 	SplitToningBalance                                 int      `json:"SplitToningBalance"`
@@ -713,7 +713,7 @@ func (j Jpeg) ToCommon() CommonMetadata {
 		Make:                 j.Make,
 		Model:                j.Model,
 		LensModel:            j.LensModel,
-		Software:             ftoa(j.Software),
+		Software:             j.Software,
 		CreateDate:           j.CreateDate,
 		ModifyDate:           j.ModifyDate,
 		DateTimeOriginal:     j.DateTimeOriginal,

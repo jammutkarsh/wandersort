@@ -46,19 +46,6 @@ CREATE TABLE IF NOT EXISTS file_registry (
     file_size        INTEGER NOT NULL,
     file_modified_at TEXT    NOT NULL,
 
-    -- Hash (populated in hashing phase)
-    file_hash TEXT,
-
-    -- Exif Metadata (populated in hashing phase)
-    image_width        TEXT,
-    image_height       TEXT,
-    gps_latitude       TEXT,
-    gps_longitude      TEXT,
-    make               TEXT,
-    model              TEXT,
-    date_time_original TEXT,
-    create_date        TEXT,
-
     -- Discovery metadata
     discovered_at   TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
@@ -71,24 +58,16 @@ CREATE TABLE IF NOT EXISTS file_registry (
 
     -- Processing state machine
     scan_status TEXT NOT NULL DEFAULT 'DISCOVERED',
-
+    
     -- Path storage
     path_type   TEXT NOT NULL DEFAULT 'RELATIVE',
     file_origin TEXT NOT NULL DEFAULT 'SOURCE',
-
-    -- Capture grouping
-    capture_stem TEXT,
-    capture_role TEXT,
-
-    -- Timestamps
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
 
     CHECK (media_type  IN ('IMAGE', 'VIDEO', 'SIDECAR', 'RAW', 'UNKNOWN')),
     CHECK (scan_status IN ('DISCOVERED', 'HASHING', 'HASHED', 'ANALYZING', 'ANALYZED', 'ERROR'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_registry_path_root ON file_registry(file_path, source_root);
-CREATE INDEX IF NOT EXISTS idx_file_registry_session     ON file_registry(scan_session_id);
-CREATE INDEX IF NOT EXISTS idx_file_registry_status      ON file_registry(scan_status);
+CREATE INDEX IF NOT EXISTS idx_file_registry_session ON file_registry(scan_session_id);
+CREATE INDEX IF NOT EXISTS idx_file_registry_status ON file_registry(scan_status);
 `

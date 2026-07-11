@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jammutkarsh/wandersort/docs"
+	_ "github.com/jammutkarsh/wandersort/docs"
 	"github.com/jammutkarsh/wandersort/internal/api"
 	"github.com/jammutkarsh/wandersort/internal/api/admin"
 	"github.com/jammutkarsh/wandersort/internal/api/pipeline"
@@ -97,7 +97,7 @@ func main() {
 	pipelineHandler := pipeline.NewHandler(logger, pipeline.NewService(logger, workflow, pipeline.NewRepository(appDB)))
 
 	// Setup Gin router
-	router := setupRouter(logger, cfg.Host, adminHandler, pipelineHandler)
+	router := setupRouter(logger, adminHandler, pipelineHandler)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.ServerPort,
@@ -140,7 +140,7 @@ func main() {
 }
 
 // setupRouter creates and configures the Gin router with all middleware and routes
-func setupRouter(log logger.Logger, host string, handlers ...api.Handlers) *gin.Engine {
+func setupRouter(log logger.Logger, handlers ...api.Handlers) *gin.Engine {
 	router := gin.New()
 
 	// Global middleware
@@ -158,8 +158,6 @@ func setupRouter(log logger.Logger, host string, handlers ...api.Handlers) *gin.
 	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
-
-	docs.SwaggerInfo.Host = host
 
 	v1.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
 	for _, v := range router.Routes() {

@@ -8,8 +8,8 @@ package scanner
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
+	"github.com/jmoiron/sqlx"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -211,7 +211,6 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 		}
 
 		// Persist file path relative to source root for portability
-		capture := deriveCapture(d.Name(), strings.ToLower(filepath.Ext(p)), mediaType)
 		file := FileDiscovery{
 			Path:       relativeToSource,
 			Size:       info.Size(),
@@ -219,7 +218,6 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 			Extension:  strings.ToLower(filepath.Ext(p)),
 			SourceRoot: path,
 			MediaType:  mediaType,
-			Capture:    capture,
 		}
 
 		// Send to processing channel
@@ -269,21 +267,18 @@ func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG
 		INSERT INTO file_registry (
 			file_path, file_size, file_modified_at,
 			scan_session_id, source_root, media_type, file_extension,
-			scan_status, path_type, file_origin, capture_stem, capture_role,
+			scan_status, path_type, file_origin,
 			discovered_at, last_seen_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
 		ON CONFLICT (file_path, source_root) DO UPDATE SET
 			last_seen_at = datetime('now'),
 			scan_session_id = excluded.scan_session_id,
 			file_origin = excluded.file_origin,
 			file_size = excluded.file_size,
-			file_modified_at = excluded.file_modified_at,
-			capture_stem = excluded.capture_stem,
-			capture_role = excluded.capture_role,
-			updated_at = datetime('now')
+			file_modified_at = excluded.file_modified_at
 		RETURNING id, (discovered_at = last_seen_at) AS is_new`
 
-	queryFileState := func(dbCtx context.Context, tx *sql.Tx) (int64, int, error) {
+	queryFileState := func(dbCtx context.Context, tx *sqlx.Tx) (int64, int, error) {
 		var fileID int64
 		var isNew int // SQLite does not have a real BOOLEAN storage class
 		err := tx.QueryRowContext(
@@ -299,12 +294,10 @@ func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG
 			db.StatusDiscovered,
 			PathTypeRelative,
 			FileOriginSource,
-			file.Capture.captureKey,
-			file.Capture.variant,
 		).Scan(&fileID, &isNew)
 		return fileID, isNew, err
 	}
-	execute := func(dbCtx context.Context, tx *sql.Tx) error {
+	execute := func(dbCtx context.Context, tx *sqlx.Tx) error {
 		defer dbWritesWG.Done()
 
 		select {

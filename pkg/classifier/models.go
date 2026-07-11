@@ -90,6 +90,18 @@ type CommonMetadata struct {
 func itoa(v int) string     { return strconv.Itoa(v) }
 func ftoa(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
+// numStr converts an any value that may be a json.Number, string, or float64 to string.
+func numStr(v any) string {
+	switch v := v.(type) {
+	case string:
+		return v
+	case float64:
+		return ftoa(v)
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
 // Metadata is the common interface implemented by all file-type metadata structs
 type Metadata interface {
 	MediaType() string
