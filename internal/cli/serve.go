@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -44,12 +45,18 @@ func (a *App) runServe() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := a.Bootstrap(ctx); err != nil {
+	if err := a.InitAppDB(ctx); err != nil {
+		return err
+	}
+	if err := a.InitLocationResolver(ctx); err != nil {
+		return err
+	}
+	if err := a.InitExiftool(); err != nil {
 		return err
 	}
 	defer a.Close()
 
-	lock, err := AcquireLock(outputDir(a.Config.LogFile))
+	lock, err := AcquireLock(filepath.Dir(a.Config.LogFile))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
@@ -57,8 +64,8 @@ func (a *App) runServe() error {
 
 	wf := workflow.NewWorkflow(ctx, a.AppDB, a.LocationResolver, a.Log, a.Config, a.ExiftoolPath)
 
-	adminHandler := admin.NewHandler(a.Log, admin.NewService(a.Log, admin.NewRepository(a.AppDB)))
-	pipelineHandler := pipeline.NewHandler(a.Log, pipeline.NewService(a.Log, wf, pipeline.NewRepository(a.AppDB)))
+	adminHandler := admin.NewHandler(a.Log, a.AdminService())
+	pipelineHandler := pipeline.NewHandler(a.Log, a.PipelineService(wf))
 
 	router := setupRouter(a.Log, adminHandler, pipelineHandler)
 

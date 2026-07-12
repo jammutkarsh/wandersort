@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
-	"github.com/jammutkarsh/wandersort/internal/api/pipeline"
+	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/spf13/cobra"
 )
 
@@ -35,16 +36,32 @@ func (a *App) runScan(paths []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if err := a.Bootstrap(ctx); err != nil {
+	if err := a.InitAppDB(ctx); err != nil {
+		return err
+	}
+	if err := a.InitLocationResolver(ctx); err != nil {
+		return err
+	}
+	if err := a.InitExiftool(); err != nil {
 		return err
 	}
 	defer a.Close()
 
-	lock, err := AcquireLock(outputDir(a.Config.LogFile))
+	lock, err := AcquireLock(filepath.Dir(a.Config.LogFile))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
 	defer lock.Unlock()
 
-	return pipeline.RunScan(ctx, a.Log, a.AppDB, a.LocationResolver, a.Config, a.ExiftoolPath, paths)
+	wf := workflow.NewWorkflow(ctx, a.AppDB, a.LocationResolver, a.Log, a.Config, a.ExiftoolPath)
+
+	sessionID, scanPaths, err := a.PipelineService(wf).StartScan(paths)
+	if err != nil {
+		return fmt.Errorf("start scan: %w", err)
+	}
+
+	a.Log.Info("Scan started", "sessionId", sessionID, "scanPaths", scanPaths)
+
+	wf.Close()
+	return nil
 }

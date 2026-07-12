@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/spf13/cobra"
 )
 
@@ -23,16 +23,14 @@ func (a *App) newSetupCmd() *cobra.Command {
 func (a *App) runSetup() error {
 	ctx := context.Background()
 
-	if _, err := exiftool.Verify(ctx, a.Log, a.Config.ExecutablePath); err != nil {
+	if _, err := exiftool.Setup(ctx, a.Log, a.Config.ExecutablePath); err != nil {
 		return fmt.Errorf("exiftool: %w", err)
 	}
 	a.Log.Info("exiftool ready")
 
-	locDB, err := db.New(ctx, a.Config.LocationDBPath, db.LocationDB, a.Log)
-	if err != nil {
+	if err := location.Setup(ctx, a.Log, a.Config.LocationDBPath); err != nil {
 		return fmt.Errorf("location db: %w", err)
 	}
-	locDB.Close()
 	a.Log.Info("location database ready")
 
 	return nil

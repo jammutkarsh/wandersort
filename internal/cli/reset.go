@@ -5,10 +5,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jammutkarsh/wandersort/internal/api/admin"
 	"github.com/spf13/cobra"
 )
 
@@ -32,7 +32,7 @@ func (a *App) newResetCmd() *cobra.Command {
 }
 
 func (a *App) runReset() error {
-	if dbMissing(a.Config.AppDBPath) {
+	if _, err := os.Stat(a.Config.AppDBPath); os.IsNotExist(err) {
 		return fmt.Errorf("no database found — nothing to reset")
 	}
 
@@ -42,7 +42,7 @@ func (a *App) runReset() error {
 		}
 	}
 
-	lock, err := AcquireLock(outputDir(a.Config.LogFile))
+	lock, err := AcquireLock(filepath.Dir(a.Config.LogFile))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
@@ -50,8 +50,17 @@ func (a *App) runReset() error {
 
 	ctx := context.Background()
 
-	if _, err := admin.RunReset(ctx, a.Log, a.Config.AppDBPath); err != nil {
+	if err := a.InitAppDB(ctx); err != nil {
+		return fmt.Errorf("app db: %w", err)
+	}
+	defer a.Close()
+
+	if _, err := a.AdminService().Reset(ctx); err != nil {
 		return fmt.Errorf("reset failed: %w", err)
+	}
+
+	if err := a.AppDB.Optimize(ctx); err != nil {
+		a.Log.Warn("database optimization after reset failed", "error", err)
 	}
 
 	fmt.Fprintln(os.Stderr, successStyle.Render("All wandersort data deleted."))

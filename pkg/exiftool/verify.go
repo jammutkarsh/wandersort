@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/utils"
 )
 
 const (
@@ -41,10 +41,10 @@ func exiftoolBin() string {
 	return "exiftool"
 }
 
-// Verify checks exiftool is available, either on $PATH or in WanderSort's
+// Setup checks exiftool is available, either on $PATH or in WanderSort's
 // own install directory. If the found version is below the requirement, it
 // downloads and installs a bundled copy into ~/.wandersort/bin
-func Verify(ctx context.Context, log logger.Logger, binDir string) (string, error) {
+func Setup(ctx context.Context, log logger.Logger, binDir string) (string, error) {
 	if path, err := findExiftool(log, binDir); err == nil {
 		return path, nil
 	}
@@ -118,7 +118,7 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 	}
 
 	if _, err := os.Stat(archiveName); err != nil {
-		if err := db.DownloadFile(ctx, archiveName, url); err != nil {
+		if err := utils.DownloadFile(ctx, archiveName, url); err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
 	}

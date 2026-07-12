@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,9 +25,9 @@ const (
 )
 
 const (
-	// locationDownloadBaseURL is the download URL for the locationDB asset
+	// LocationDownloadBaseURL is the download URL for the locationDB asset
 	// Upstream update schedules and data details can be found at the source URL
-	locationDownloadBaseURL = "https://locationdb.utkarshchourasia.in"
+	LocationDownloadBaseURL = "https://locationdb.utkarshchourasia.in"
 
 	LocationDBFileName = "location.db"
 
@@ -168,11 +166,10 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 	return d, nil
 }
 
-// openLocationDB opens the read-only location database, downloading it first
-// via ensureLocationDB if the file does not already exist
+// openLocationDB opens the read-only location database.
 func openLocationDB(ctx context.Context, dbPath string, log logger.Logger) (*DB, error) {
-	if err := ensureLocationDB(ctx, dbPath, log); err != nil {
-		return nil, fmt.Errorf("ensure location db: %w", err)
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, fmt.Errorf("location database not found at %s: %w", dbPath, err)
 	}
 
 	dsn := fmt.Sprintf("file:%s?mode=ro&_journal=OFF&_sync=OFF", dbPath)
@@ -188,73 +185,6 @@ func openLocationDB(ctx context.Context, dbPath string, log logger.Logger) (*DB,
 
 	log.Info("Successfully connected to location database", "path", dbPath)
 	return &DB{SQL: sqlx.NewDb(sqlDB, "sqlite"), log: log}, nil
-}
-
-// ensureLocationDB creates the parent directory and downloads location.db if the file does not already exist at dbPath
-func ensureLocationDB(ctx context.Context, dbPath string, log logger.Logger) error {
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
-		return fmt.Errorf("create dir %q: %w", dbPath, err)
-	}
-
-	if _, err := os.Stat(dbPath); err == nil {
-		log.Info("location db found", "path", dbPath)
-		return nil
-	}
-
-	log.Info("location db not found; downloading", "url", locationDownloadBaseURL+"/"+LocationDBFileName)
-
-	if err := DownloadFile(ctx, dbPath, locationDownloadBaseURL+"/"+LocationDBFileName); err != nil {
-		return fmt.Errorf("download %s: %w", LocationDBFileName, err)
-	}
-
-	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
-	if err := DownloadFile(ctx, metaPath, locationDownloadBaseURL+"/"+LocationMetaFileName); err != nil {
-		log.Warn("location db: could not download metadata (non-fatal)", "file", LocationMetaFileName, "error", err)
-	}
-
-	return nil
-}
-
-// DownloadFile fetches url and writes the body to dest atomically (via a temp
-// file) so a partial download never leaves a corrupt file at dest
-func DownloadFile(ctx context.Context, dest, url string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("create request %s: %w", url, err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("GET %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: unexpected status %s", url, resp.Status)
-	}
-
-	// Write to a temp file in the same directory so os.Rename is atomic
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".dl-*")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		tmp.Close()
-		os.Remove(tmpName) // no-op if Rename succeeded
-	}()
-
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
-		return fmt.Errorf("write %s: %w", dest, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file: %w", err)
-	}
-
-	if err := os.Rename(tmpName, dest); err != nil {
-		return fmt.Errorf("rename to %s: %w", dest, err)
-	}
-
-	return nil
 }
 
 // Optimize reclaims SQLite disk space (incremental_vacuum) and releases
