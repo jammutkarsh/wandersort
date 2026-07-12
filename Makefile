@@ -1,7 +1,7 @@
 APP_NAME := wandersort
 IMAGE := $(APP_NAME):latest
-BINARY := bin/server
-GO_MAIN := ./cmd
+BINARY := bin/wandersort
+GO_MAIN := .
 
 .PHONY: help build swagger lint test run
 
@@ -23,7 +23,7 @@ test:
 
 swagger:
 	@which swag >/dev/null 2>&1 || (echo "Swag CLI not found. Install with 'go install github.com/swaggo/swag/cmd/swag@latest'"; exit 1)
-	swag init -g cmd/main.go -o docs
+	swag init -g internal/cli/serve.go -o docs
 
 lint:
 	gofmt -s -d -e -w .

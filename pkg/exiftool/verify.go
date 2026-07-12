@@ -45,13 +45,25 @@ func exiftoolBin() string {
 // own install directory. If the found version is below the requirement, it
 // downloads and installs a bundled copy into ~/.wandersort/bin
 func Verify(ctx context.Context, log logger.Logger, binDir string) (string, error) {
+	if path, err := findExiftool(log, binDir); err == nil {
+		return path, nil
+	}
+	return installExiftool(ctx, log, binDir)
+}
+
+// Check checks exiftool is available without downloading anything.
+// Returns the path if found, or an error telling the user to run setup.
+func Check(log logger.Logger, binDir string) (string, error) {
+	return findExiftool(log, binDir)
+}
+
+func findExiftool(log logger.Logger, binDir string) (string, error) {
 	// Check PATH — only accept if version meets requirement
 	if path, err := exec.LookPath(exiftoolBin()); err == nil {
 		if ok, _ := checkVersion(path, log); ok {
 			log.Info("exiftool found on PATH", "path", path)
 			return path, nil
 		}
-		log.Info("exiftool on PATH is outdated; installing bundled version")
 	}
 
 	binaryPath := filepath.Join(binDir, exiftoolBin())
@@ -62,14 +74,18 @@ func Verify(ctx context.Context, log logger.Logger, binDir string) (string, erro
 			log.Info("exiftool found", "path", binaryPath)
 			return binaryPath, nil
 		}
-		log.Info("exiftool is outdated; installing bundled version", "path", binaryPath)
 	}
 
+	return "", fmt.Errorf("exiftool not found at %s", binaryPath)
+}
+
+func installExiftool(ctx context.Context, log logger.Logger, binDir string) (string, error) {
 	log.Info("exiftool not found; downloading", "dir", binDir, "os", runtime.GOOS)
 	if err := install(ctx, binDir, log); err != nil {
 		return "", fmt.Errorf("install exiftool: %w", err)
 	}
 
+	binaryPath := filepath.Join(binDir, exiftoolBin())
 	if _, err := os.Stat(binaryPath); err == nil {
 		return binaryPath, nil
 	}
