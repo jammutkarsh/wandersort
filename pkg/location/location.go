@@ -61,7 +61,8 @@ func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver
 	}
 
 	var count int
-	err = locationDB.QueryRowContext(context.Background(),
+	err = locationDB.QueryRowContext(
+		context.Background(),
 		`SELECT COUNT(*) FROM geonames_cities`,
 	).Scan(&count)
 	if err != nil {

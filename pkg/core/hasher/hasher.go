@@ -221,7 +221,8 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 		}
 
 		ok := h.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
-			_, err := tx.ExecContext(ctx, `
+			_, err := tx.ExecContext(
+				ctx, `
 				INSERT INTO file_metadata (
 					file_hash, file_id,
 					exif_image_width, exif_image_height,

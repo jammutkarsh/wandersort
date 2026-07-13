@@ -224,7 +224,6 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 
 		return nil
 	})
-
 	if err != nil {
 		return fmt.Errorf("walk %q: %w", absRoot, err)
 	}

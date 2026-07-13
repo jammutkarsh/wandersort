@@ -18,13 +18,15 @@ func NewRepository(database *db.DB) *Repository {
 func (r *Repository) GetFileCount(ctx context.Context) (FileCountResponse, error) {
 	var resp FileCountResponse
 
-	if err := r.db.QueryRowContext(ctx,
+	if err := r.db.QueryRowContext(
+		ctx,
 		`SELECT COUNT(*) FROM file_registry`,
 	).Scan(&resp.FilesScanned); err != nil {
 		return FileCountResponse{}, err
 	}
 
-	if err := r.db.QueryRowContext(ctx,
+	if err := r.db.QueryRowContext(
+		ctx,
 		`SELECT COUNT(*) FROM content_group_members`,
 	).Scan(&resp.FilesHashed); err != nil {
 		return FileCountResponse{}, err

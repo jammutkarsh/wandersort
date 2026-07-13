@@ -68,7 +68,8 @@ func (a *App) generateReport(ctx context.Context, dbPath string) (*Report, error
 		return nil, fmt.Errorf("count file_metadata: %w", err)
 	}
 
-	if err := sqlDB.QueryRowContext(ctx,
+	if err := sqlDB.QueryRowContext(
+		ctx,
 		`SELECT COUNT(*) FROM file_metadata WHERE file_hash IN (SELECT file_hash FROM file_metadata GROUP BY file_hash HAVING COUNT(*) > 1)`,
 	).Scan(&result.FilesDuplicated); err != nil {
 		return nil, fmt.Errorf("count duplicates: %w", err)

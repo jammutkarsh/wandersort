@@ -13,7 +13,7 @@ import (
 
 // Setup downloads the location database and its metadata if they do not exist
 func Setup(ctx context.Context, log logger.Logger, dbPath string) error {
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return fmt.Errorf("create dir %q: %w", dbPath, err)
 	}
 

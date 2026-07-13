@@ -18,6 +18,7 @@ import (
 )
 
 const (
+	// CLI flags
 	flagOutputPath = "output-path"
 	flagDebug      = "debug"
 	flagPaths      = "paths"

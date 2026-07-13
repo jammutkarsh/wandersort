@@ -214,7 +214,8 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 		default:
 			valStr = fmt.Sprintf("%v", val)
 		}
-		attrParts = append(attrParts,
+		attrParts = append(
+			attrParts,
 			colorize(ansiWhite, k+":")+" "+colorize(ansiDarkGray, valStr),
 		)
 	}
