@@ -7,7 +7,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jammutkarsh/wandersort/internal/cli"
 	"github.com/jammutkarsh/wandersort/pkg/config"
-	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
 func main() {
@@ -16,11 +15,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "config:", err)
 		os.Exit(1)
 	}
-	cli.ResolveConfig(cfg)
 
-	log := logger.New(cfg.LogLevel, cfg.LogConsole, cfg.LogFile)
-
-	app := &cli.App{Config: cfg, Log: log}
+	// Logger is built in the root command's PersistentPreRunE, once flags/env are resolved.
+	app := &cli.App{Config: cfg}
 
 	if err := app.Execute(); err != nil {
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
@@ -21,12 +20,11 @@ duplicates so you can keep only the best copy.
 
 Requires --paths (-p) to specify which directories to scan.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths := v.GetString(flagPaths)
-			return a.runScan(strings.Split(paths, ","))
+			return a.runScan(v.GetStringSlice(flagPaths))
 		},
 	}
 
-	cmd.Flags().StringP(flagPaths, "p", "", "Directories to scan (comma-separated)")
+	cmd.Flags().StringSliceP(flagPaths, "p", nil, "Directories to scan (repeatable, or comma-separated)")
 	cmd.Flags().IntP(flagWorkers, "w", 0, "Concurrent worker count")
 	cmd.MarkFlagRequired(flagPaths)
 	return cmd
@@ -54,14 +52,13 @@ func (a *App) runScan(paths []string) error {
 	defer lock.Unlock()
 
 	wf := workflow.NewWorkflow(ctx, a.AppDB, a.LocationResolver, a.Log, a.Config, a.ExiftoolPath)
+	defer wf.Close()
 
-	sessionID, scanPaths, err := a.PipelineService(wf).StartScan(paths)
+	sessionID, scanPaths, err := a.PipelineService(wf).RunScan(paths)
 	if err != nil {
-		return fmt.Errorf("start scan: %w", err)
+		return fmt.Errorf("scan: %w", err)
 	}
 
-	a.Log.Info("Scan started", "sessionId", sessionID, "scanPaths", scanPaths)
-
-	wf.Close()
+	a.Log.Info("Scan complete", "sessionId", sessionID, "scanPaths", scanPaths)
 	return nil
 }

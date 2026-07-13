@@ -96,8 +96,10 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 	}
 }
 
-// SubmitScan creates a new scan session and kicks off the workflow
-// workflow in a background goroutine
+// SubmitScan creates a new scan session and runs the pipeline in a background
+// goroutine. Used by the HTTP server, which returns the session ID immediately
+// and reports progress through the sessionId-keyed log stream. CLI scans want
+// foreground progress instead — use RunScan.
 func (wf *Workflow) SubmitScan(paths []string) (uuid.UUID, error) {
 	select {
 	case <-wf.ctx.Done():
@@ -111,8 +113,34 @@ func (wf *Workflow) SubmitScan(paths []string) (uuid.UUID, error) {
 	}
 
 	wf.wg.Go(func() {
-		wf.background(sessionID, paths)
+		wf.runSession(sessionID, paths)
 	})
+
+	return sessionID, nil
+}
+
+// RunScan creates a scan session and runs the pipeline synchronously on the
+// calling goroutine, so a CLI invocation streams progress and blocks until the
+// scan finishes. Returns an error if the session did not complete.
+func (wf *Workflow) RunScan(paths []string) (uuid.UUID, error) {
+	select {
+	case <-wf.ctx.Done():
+		return uuid.Nil, context.Canceled
+	default:
+	}
+
+	sessionID, err := wf.prepareSession(wf.ctx, paths)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	status, errStr := wf.runSession(sessionID, paths)
+	if status != db.StatusCompleted {
+		if errStr != nil {
+			return sessionID, errors.New(*errStr)
+		}
+		return sessionID, fmt.Errorf("scan ended with status %s", status)
+	}
 
 	return sessionID, nil
 }
@@ -149,11 +177,10 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UU
 	return sessionID, nil
 }
 
-// background executes the sequential phases for a single scan session
-func (wf *Workflow) background(sessionID uuid.UUID, paths []string) {
-	var finalStatus string
-	var finalErr *string
-
+// runSession executes the sequential phases for a single scan session and
+// finalizes it. Returns the terminal status and error message (if any) so a
+// synchronous caller can surface failure; the async caller ignores them.
+func (wf *Workflow) runSession(sessionID uuid.UUID, paths []string) (finalStatus string, finalErr *string) {
 	defer func() {
 		wf.finalizeSession(sessionID, finalStatus, finalErr)
 	}()
@@ -180,6 +207,7 @@ func (wf *Workflow) background(sessionID uuid.UUID, paths []string) {
 		return
 	}
 	finalStatus = db.StatusCompleted
+	return
 }
 
 // workflowPhases builds the ordered list of pipeline phases for a session

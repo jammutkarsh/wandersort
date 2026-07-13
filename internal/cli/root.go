@@ -102,26 +102,13 @@ func init() {
 	v.SetDefault(flagOutputPath, "")
 	v.SetDefault(flagDebug, false)
 	v.SetDefault(flagPort, "")
-	v.SetDefault(flagPaths, "")
+	v.SetDefault(flagPaths, []string{})
 	v.SetDefault(flagWorkers, 0)
 	v.SetDefault(flagYes, false)
+	// Bind the only hyphenated flag explicitly; AutomaticEnv covers the rest,
+	// whose env names already match their uppercased flag (WORKERS, PORT, ...).
+	v.BindEnv(flagOutputPath, "OUTPUT_PATH")
 	v.AutomaticEnv()
-}
-
-func ResolveConfig(cfg *config.Configuration) {
-	if outputPath := v.GetString(flagOutputPath); outputPath != "" {
-		cfg.AppDBPath = filepath.Join(outputPath, config.DefaultDBFileName)
-		cfg.LogFile = filepath.Join(outputPath, config.DefaultLogFileName)
-	}
-	if workers := v.GetInt(flagWorkers); workers > 0 {
-		cfg.Workers = workers
-	}
-	if v.GetBool(flagDebug) {
-		cfg.LogLevel = "debug"
-	}
-	if port := v.GetString(flagPort); port != "" {
-		cfg.ServerPort = port
-	}
 }
 
 func (a *App) Execute() error {
@@ -142,8 +129,12 @@ names and convert hyphens to underscores (e.g., --output-path becomes OUTPUT_PAT
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			v.BindPFlags(cmd.Flags())
-			a.mergeCLIFlags()
+			if err := v.BindPFlags(cmd.Flags()); err != nil {
+				return err
+			}
+			a.applyOverrides()
+			// Build logger after overrides so --debug and --output-path take effect
+			a.Log = logger.New(a.Config.LogLevel, a.Config.LogConsole, a.Config.LogFile)
 			return nil
 		},
 	}
@@ -176,7 +167,9 @@ Where to ideally store the generated scripts:
 	return rootCmd
 }
 
-func (a *App) mergeCLIFlags() {
+// applyOverrides layers ENV and CLI flag values over the config defaults.
+// Precedence: flag > env > default (viper resolves flag/env; defaults come from config.Defaults).
+func (a *App) applyOverrides() {
 	if outputPath := v.GetString(flagOutputPath); outputPath != "" {
 		a.Config.AppDBPath = filepath.Join(outputPath, config.DefaultDBFileName)
 		a.Config.LogFile = filepath.Join(outputPath, config.DefaultLogFileName)
