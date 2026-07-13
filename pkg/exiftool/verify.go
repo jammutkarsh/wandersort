@@ -51,12 +51,6 @@ func Setup(ctx context.Context, log logger.Logger, binDir string) (string, error
 	return installExiftool(ctx, log, binDir)
 }
 
-// Check checks exiftool is available without downloading anything.
-// Returns the path if found, or an error telling the user to run setup.
-func Check(log logger.Logger, binDir string) (string, error) {
-	return findExiftool(log, binDir)
-}
-
 func findExiftool(log logger.Logger, binDir string) (string, error) {
 	// Check PATH — only accept if version meets requirement
 	if path, err := exec.LookPath(exiftoolBin()); err == nil {
@@ -80,7 +74,7 @@ func findExiftool(log logger.Logger, binDir string) (string, error) {
 }
 
 func installExiftool(ctx context.Context, log logger.Logger, binDir string) (string, error) {
-	log.Info("exiftool not found; downloading", "dir", binDir, "os", runtime.GOOS)
+	log.Info("Downloading ExifTool…", logger.UserKey, true, "dir", binDir, "os", runtime.GOOS)
 	if err := install(ctx, binDir, log); err != nil {
 		return "", fmt.Errorf("install exiftool: %w", err)
 	}

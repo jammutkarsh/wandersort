@@ -31,7 +31,10 @@ func (a *App) newServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the HTTP API server",
-		Long:  "Starts a long-running server that exposes the pipeline over REST.",
+		Long: `Starts a long-running server that exposes the scan pipeline over a REST
+API, with Swagger docs at /internal/v1/swagger. Runs until interrupted.`,
+		Example: `wandersort serve
+wandersort serve --port 8080`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runServe()
 		},
@@ -45,18 +48,22 @@ func (a *App) runServe() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Gin's verbose debug output only when the user asked for --debug.
+	if a.Config.LogLevel == "debug" {
+		gin.SetMode(gin.DebugMode)
+	} else {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
 	if err := a.InitAppDB(ctx); err != nil {
 		return err
 	}
-	if err := a.InitLocationResolver(ctx); err != nil {
-		return err
-	}
-	if err := a.InitExiftool(); err != nil {
+	if err := a.EnsureDependencies(ctx); err != nil {
 		return err
 	}
 	defer a.Close()
 
-	lock, err := AcquireLock(filepath.Dir(a.Config.LogFile))
+	lock, err := acquireOutputLock(filepath.Dir(a.Config.LogFile))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
@@ -76,7 +83,7 @@ func (a *App) runServe() error {
 	}
 
 	go func() {
-		a.Log.Info("Starting server", "port", a.Config.ServerPort)
+		a.Log.Info(fmt.Sprintf("Server running on http://localhost:%s (press Ctrl-C to stop)", a.Config.ServerPort), logger.UserKey, true)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			a.Log.Error("server listen failed", "error", err)
 		}
@@ -86,7 +93,7 @@ func (a *App) runServe() error {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 
-	a.Log.Info("Shutting down", "signal", sig.String())
+	a.Log.Info("Shutting down…", logger.UserKey, true, "signal", sig.String())
 
 	cancel()
 	wf.Close()
@@ -98,7 +105,7 @@ func (a *App) runServe() error {
 		a.Log.Error("forced shutdown", "error", err)
 	}
 
-	a.Log.Info("Server stopped")
+	a.Log.Info("Server stopped", logger.UserKey, true)
 	return nil
 }
 

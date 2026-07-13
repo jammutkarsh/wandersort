@@ -22,7 +22,7 @@ func Setup(ctx context.Context, log logger.Logger, dbPath string) error {
 		return nil
 	}
 
-	log.Info("location db not found; downloading", "url", db.LocationDownloadBaseURL+"/"+db.LocationDBFileName)
+	log.Info("Downloading location database…", logger.UserKey, true, "url", db.LocationDownloadBaseURL+"/"+db.LocationDBFileName)
 
 	if err := utils.DownloadFile(ctx, dbPath, db.LocationDownloadBaseURL+"/"+db.LocationDBFileName); err != nil {
 		return fmt.Errorf("download %s: %w", db.LocationDBFileName, err)

@@ -27,19 +27,12 @@ func (r *Repository) Reset(ctx context.Context) (ResetResponse, error) {
 
 	var count int64
 
-	result, err := tx.ExecContext(ctx, `DELETE FROM content_group_members`)
+	result, err := tx.ExecContext(ctx, `DELETE FROM file_metadata`)
 	if err != nil {
-		return ResetResponse{}, fmt.Errorf("reset: delete members: %w", err)
+		return ResetResponse{}, fmt.Errorf("reset: delete metadata: %w", err)
 	}
 	count, _ = result.RowsAffected()
-	resp.GroupMembersDeleted = count
-
-	result, err = tx.ExecContext(ctx, `DELETE FROM content_groups`)
-	if err != nil {
-		return ResetResponse{}, fmt.Errorf("reset: delete groups: %w", err)
-	}
-	count, _ = result.RowsAffected()
-	resp.ContentGroupsDeleted = count
+	resp.FileMetadataDeleted = count
 
 	result, err = tx.ExecContext(ctx, `DELETE FROM file_registry`)
 	if err != nil {

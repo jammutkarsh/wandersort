@@ -82,6 +82,20 @@ func (kind workflowPhaseKind) completedStatus() string {
 	}
 }
 
+// userMessage is the human-readable line shown on the console when a phase starts.
+func (kind workflowPhaseKind) userMessage() string {
+	switch kind {
+	case workflowPhaseScan:
+		return "Scanning your files…"
+	case workflowPhaseHash:
+		return "Looking for duplicate files…"
+	case workflowPhaseScore:
+		return "Selecting the best copy of each duplicate…"
+	default:
+		return "Working…"
+	}
+}
+
 // NewWorkflow creates a new workflow instance
 func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration, exiftoolPath string) *Workflow {
 	return &Workflow{
@@ -172,7 +186,7 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UU
 		return uuid.Nil, fmt.Errorf("failed to create scan session: %w", err)
 	}
 
-	wf.log.Info("Scan session created", "sessionId", sessionID, "rootPaths", storedPaths)
+	wf.log.Info(fmt.Sprintf("Started session %s", sessionID), logger.UserKey, true, "sessionId", sessionID, "rootPaths", storedPaths)
 
 	return sessionID, nil
 }
@@ -219,7 +233,7 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 				return wf.scanner.Run(wf.ctx, sessionID, paths)
 			},
 			onSuccess: func(count int) {
-				wf.log.Info("Phase 1 complete: all paths scanned", "sessionId", sessionID, "filesCollected", count)
+				wf.log.Info(fmt.Sprintf("Found %d files", count), logger.UserKey, true, "sessionId", sessionID)
 			},
 		},
 		/*
@@ -236,7 +250,7 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 				return wf.hasher.Run(wf.ctx, sessionID)
 			},
 			onSuccess: func(count int) {
-				wf.log.Info("Phase 2 complete: all files hashed", "sessionId", sessionID, "filesHashed", count)
+				wf.log.Info(fmt.Sprintf("Checked %d files for duplicates", count), logger.UserKey, true, "sessionId", sessionID)
 			},
 		},
 		{
@@ -245,7 +259,7 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 				return wf.scorer.Run(wf.ctx, sessionID)
 			},
 			onSuccess: func(count int) {
-				wf.log.Info("Phase 3 complete: all groups scored", "sessionId", sessionID, "groupsScored", count)
+				wf.log.Info(fmt.Sprintf("Reviewed %d duplicate groups", count), logger.UserKey, true, "sessionId", sessionID)
 			},
 		},
 	}
@@ -262,7 +276,7 @@ func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhaseKind, phaseFunc 
 		return 0, db.StatusFailed, &msg, !success
 	}
 
-	wf.log.Info("Starting phase", "sessionId", sessionID, "phase", inProgressStatus)
+	wf.log.Info(phase.userMessage(), logger.UserKey, true, "sessionId", sessionID)
 	count, err := phaseFunc()
 	if err != nil {
 		var finalStatus string

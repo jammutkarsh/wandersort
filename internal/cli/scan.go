@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
+	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +19,17 @@ func (a *App) newScanCmd() *cobra.Command {
 		Long: `Scans the given paths for photos and videos, hashes them, and scores
 duplicates so you can keep only the best copy.
 
-Requires --paths (-p) to specify which directories to scan.`,
+Requires --paths (-p) to specify which directories to scan. The scan runs in
+the foreground and reports progress until it finishes.`,
+		Example: `# Scan a single directory
+wandersort scan --paths ~/Pictures
+
+# Scan multiple directories (repeat -p or comma-separate)
+wandersort scan -p ~/Pictures -p /Volumes/SD
+wandersort scan -p ~/Pictures,/Volumes/SD
+
+# Use 8 workers and a custom output directory
+wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runScan(v.GetStringSlice(flagPaths))
 		},
@@ -37,15 +48,12 @@ func (a *App) runScan(paths []string) error {
 	if err := a.InitAppDB(ctx); err != nil {
 		return err
 	}
-	if err := a.InitLocationResolver(ctx); err != nil {
-		return err
-	}
-	if err := a.InitExiftool(); err != nil {
+	if err := a.EnsureDependencies(ctx); err != nil {
 		return err
 	}
 	defer a.Close()
 
-	lock, err := AcquireLock(filepath.Dir(a.Config.LogFile))
+	lock, err := acquireOutputLock(filepath.Dir(a.Config.LogFile))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
@@ -59,6 +67,6 @@ func (a *App) runScan(paths []string) error {
 		return fmt.Errorf("scan: %w", err)
 	}
 
-	a.Log.Info("Scan complete", "sessionId", sessionID, "scanPaths", scanPaths)
+	a.Log.Info("Scan complete. Run 'wandersort report' to see the results.", logger.UserKey, true, "sessionId", sessionID, "scanPaths", scanPaths)
 	return nil
 }

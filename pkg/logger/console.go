@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
-	"strings"
+	"sort"
 	"sync"
 	"time"
 )
@@ -34,8 +34,6 @@ const (
 	// ansiLightCyan    = 96
 	ansiWhite = 97
 )
-
-const timeFormat = "[15:04:05.000]"
 
 func colorize(colorCode int, v string) string {
 	return fmt.Sprintf("\033[%dm%s%s", colorCode, v, ansiReset)
@@ -81,18 +79,36 @@ func (l *SlogAdapter) Panic(msg string, attrs ...any) {
 	panic(msg)
 }
 
+// UserKey marks a log call as user-facing. Set it truthy (e.g.
+// log.Info("Scanning…", logger.UserKey, true)) and the message shows on the
+// clean console; untagged Info/Debug lines go to the file log only. In debug
+// mode the console shows everything.
+const UserKey = "userFacing"
+
+// sessionKey is the pipeline correlation id. It is printed once at session
+// start and then omitted from every console line to avoid spamming it; the JSON
+// file log still carries it on every record for traceability.
+const sessionKey = "sessionId"
+
 // PrettyHandler wraps a slog.JSONHandler, captures its output into a buffer,
-// and re-formats it as a human-readable, coloured log line
+// and re-formats it as a human-readable, coloured console line. It surfaces
+// only user-facing lines (see UserKey) and warnings/errors, unless the
+// configured level is debug, in which case it shows every record.
 type PrettyHandler struct {
-	handler slog.Handler
-	buf     *bytes.Buffer
-	mu      *sync.Mutex
+	handler  slog.Handler
+	buf      *bytes.Buffer
+	mu       *sync.Mutex
+	minLevel slog.Level
 }
 
 // NewPrettyHandler creates a PrettyHandler with the given options
 func NewPrettyHandler(opts *slog.HandlerOptions) *PrettyHandler {
 	if opts == nil {
 		opts = &slog.HandlerOptions{}
+	}
+	minLevel := slog.LevelInfo
+	if opts.Level != nil {
+		minLevel = opts.Level.Level()
 	}
 	b := &bytes.Buffer{}
 	return &PrettyHandler{
@@ -102,7 +118,8 @@ func NewPrettyHandler(opts *slog.HandlerOptions) *PrettyHandler {
 			AddSource:   false, // source is rendered manually as file:line
 			ReplaceAttr: suppressDefaults(opts.ReplaceAttr),
 		}),
-		mu: &sync.Mutex{},
+		mu:       &sync.Mutex{},
+		minLevel: minLevel,
 	}
 }
 
@@ -131,11 +148,11 @@ func (h *PrettyHandler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (h *PrettyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &PrettyHandler{handler: h.handler.WithAttrs(attrs), buf: h.buf, mu: h.mu}
+	return &PrettyHandler{handler: h.handler.WithAttrs(attrs), buf: h.buf, mu: h.mu, minLevel: h.minLevel}
 }
 
 func (h *PrettyHandler) WithGroup(name string) slog.Handler {
-	return &PrettyHandler{handler: h.handler.WithGroup(name), buf: h.buf, mu: h.mu}
+	return &PrettyHandler{handler: h.handler.WithGroup(name), buf: h.buf, mu: h.mu, minLevel: h.minLevel}
 }
 
 // computeAttrs delegates to the inner JSONHandler and unmarshals the result
@@ -155,39 +172,21 @@ func (h *PrettyHandler) computeAttrs(ctx context.Context, r slog.Record) (map[st
 	return attrs, nil
 }
 
+// Handle renders a clean, user-facing console line: a coloured level tag, the
+// message, then any structured attributes as dimmed key=value pairs. Timestamp
+// and source location are intentionally omitted here — the JSON file log keeps
+// them for debugging (see report-issue).
 func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
-	level := r.Level.String() + ":"
-
+	levelColor := ansiCyan
 	switch r.Level {
 	case slog.LevelDebug:
-		level = colorize(ansiDarkGray, level)
+		levelColor = ansiDarkGray
 	case slog.LevelInfo:
-		level = colorize(ansiCyan, level)
+		levelColor = ansiCyan
 	case slog.LevelWarn:
-		level = colorize(ansiLightYellow, level)
+		levelColor = ansiLightYellow
 	case slog.LevelError:
-		level = colorize(ansiLightRed, level)
-	}
-
-	sep := colorize(ansiDarkGray, " | ")
-
-	// Format source as file:line and pkg.funcName
-	fileStr := ""
-	funcStr := ""
-	if r.PC != 0 {
-		frames := runtime.CallersFrames([]uintptr{r.PC})
-		f, _ := frames.Next()
-		file := f.File
-		if idx := strings.LastIndexByte(file, '/'); idx >= 0 {
-			file = file[idx+1:]
-		}
-		fileStr = fmt.Sprintf("%s:%d", file, f.Line)
-		// f.Function is like "github.com/org/repo/pkg.FuncName" — take after last '/'
-		funcName := f.Function
-		if idx := strings.LastIndexByte(funcName, '/'); idx >= 0 {
-			funcName = funcName[idx+1:]
-		}
-		funcStr = funcName
+		levelColor = ansiLightRed
 	}
 
 	attrs, err := h.computeAttrs(ctx, r)
@@ -195,17 +194,35 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 		return err
 	}
 
-	// Render attrs inline: key: value
+	_, userFacing := attrs[UserKey]
+	delete(attrs, UserKey)
+
+	// In debug mode show everything; otherwise only user-facing lines and
+	// warnings/errors reach the console — the rest is developer detail that
+	// stays in the JSON file log.
+	verbose := h.minLevel <= slog.LevelDebug
+	if !verbose && !userFacing && r.Level < slog.LevelWarn {
+		return nil
+	}
+
+	// The correlation id is printed once at session start; keep it out of every
+	// other console line (it stays in the file log).
+	if !verbose {
+		delete(attrs, sessionKey)
+	}
+
+	// Fixed-width level tag keeps message columns aligned.
+	line := colorize(levelColor, fmt.Sprintf("%-5s", r.Level.String())) + " " + r.Message
+
 	keys := make([]string, 0, len(attrs))
 	for k := range attrs {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 
-	var attrParts []string
 	for _, k := range keys {
-		v := attrs[k]
 		var valStr string
-		switch val := v.(type) {
+		switch val := attrs[k].(type) {
 		case string:
 			valStr = val
 		case map[string]any:
@@ -214,21 +231,7 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 		default:
 			valStr = fmt.Sprintf("%v", val)
 		}
-		attrParts = append(
-			attrParts,
-			colorize(ansiWhite, k+":")+" "+colorize(ansiDarkGray, valStr),
-		)
-	}
-
-	// [TS] | LEVEL: | Message | [K: V | K: V]    file:line funcName
-	line := colorize(ansiWhite, r.Time.Format(timeFormat))
-	line += sep + level
-	line += sep + colorize(ansiWhite, r.Message)
-	if len(attrParts) > 0 {
-		line += sep + colorize(ansiLightMagenta, "[ ") + strings.Join(attrParts, colorize(ansiDarkGray, " | ")) + colorize(ansiLightMagenta, " ]")
-	}
-	if fileStr != "" {
-		line += " | " + colorize(ansiDarkGray, fileStr+" "+funcStr)
+		line += " " + colorize(ansiDarkGray, k+"="+valStr)
 	}
 
 	fmt.Fprintln(os.Stderr, line)

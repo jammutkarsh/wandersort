@@ -31,10 +31,19 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     progress and the exit code reflects pipeline success. `--paths/-p` is
     repeatable + comma-friendly (`StringSlice`).
   - `serve.go` — `serve` cmd, HTTP API (gin) + swagger. Same workflow, long-lived.
-  - `setup.go` — downloads exiftool + location DB (run once).
+  - `setup.go` — downloads exiftool + location DB. **Optional** — scan/serve
+    auto-install missing deps via `App.EnsureDependencies`. Uses a *non-blocking*
+    install lock: if a scan/serve is already installing, setup steps aside.
   - `report.go` — read-only summary of last scan (opens its own RO sqlite conn).
+  - `report_issue.go` — `report-issue` cmd: zips the log (renamed
+    `wandersort.log`) + `about.txt`; db opt-in via `--include-db` (holds paths/GPS).
   - `reset.go` — wipe scan data (confirm prompt unless `--yes`).
-  - `lock.go` — PID lock on the output dir; one scan/serve at a time.
+  - `lock.go` — thin CLI layer over `pkg/utils` locking: `acquireOutputLock`
+    (one scan/serve per output dir) + the styled "already running" message, and
+    the lock filename constants. The generic mechanics live in
+    `pkg/utils/lock.go` (`utils.Acquire`, `ErrLockHeld`) so the pipeline and
+    future callers reuse them. Install coordination uses `utils.Acquire` with
+    `installLockFileName`: blocking for scan/serve, non-blocking for setup.
   - `help.go` — custom lipgloss-styled help renderer.
 
 Config precedence: **flag > env > default**. Env names are the uppercased flag;
@@ -70,13 +79,25 @@ Only used by `serve`. Standard handler→service→repository split per domain:
 - `config/` — `Defaults()`, hardcoded config only (no env reads).
 - `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry; `writer.go` batched
   writes; `migrations/` numbered Go migrations.
-- `logger/` — slog-based `Logger` interface; pretty console + JSON file fanout.
-  Use this, never stdlib `log`.
-- `location/` — offline reverse-geocode resolver + its own sqlite DB.
+- `logger/` — slog-based `Logger` interface; fans out to two handlers. The
+  **console** handler (`console.go`) is deliberately minimal for CLI users: a
+  coloured level tag + message + dimmed `key=value` attrs, no timestamp/source.
+  It shows **only user-facing lines and warnings/errors** — tag a milestone with
+  `logger.UserKey` (`log.Info("Scanning…", logger.UserKey, true)`); everything
+  untagged is developer detail that goes to the file only. The `sessionId` attr
+  is stripped from console lines (printed once at session start, in the message
+  text) to avoid spam. `--debug` bypasses both filters and shows every record.
+  The **JSON file** handler keeps timestamp + source (`AddSource`) and every
+  attr (incl. `sessionId`) — that's what `report-issue` ships. Never stdlib `log`.
+- `location/` — offline reverse-geocode resolver + its own sqlite DB. `Setup()`
+  downloads DB+meta if missing (idempotent); `exiftool.Setup()` is the same idea
+  for the binary. Both are called lazily by `EnsureDependencies`.
 - `classifier/` — media type detection, one file per format (jpeg/heic/mov/…).
 - `exiftool/` — bundled exiftool wrapper + verify.
 - `path/` — path canonicalization / home-relative helpers.
 - `utils/download.go` — atomic HTTP download (temp file + rename).
+- `utils/lock.go` — generic PID/O_EXCL file lock (`Acquire`, `Unlock`,
+  `ErrLockHeld`); stale-lock reclaim; blocking waits honour ctx.
 
 ## Conventions that bite if ignored
 

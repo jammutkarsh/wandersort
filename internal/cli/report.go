@@ -28,6 +28,8 @@ func (a *App) newReportCmd() *cobra.Command {
 		Use:   "report",
 		Short: "Show a summary of the last scan",
 		Long:  `Prints a report of scanned files, hashed files, and detected duplicates.`,
+		Example: `wandersort report
+wandersort report -o ~/wandersort-out`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runReport()
 		},

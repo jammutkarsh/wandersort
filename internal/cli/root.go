@@ -13,6 +13,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/utils"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -52,6 +53,11 @@ func (a *App) InitLocationResolver(ctx context.Context) error {
 	if a.LocationResolver != nil {
 		return nil
 	}
+	// Download the location database on first use so scan/serve work without a
+	// separate setup step. No-op if it already exists.
+	if err := location.Setup(ctx, a.Log, a.Config.LocationDBPath); err != nil {
+		return fmt.Errorf("location db: %w", err)
+	}
 	locationDB, err := db.New(ctx, a.Config.LocationDBPath, db.LocationDB, a.Log)
 	if err != nil {
 		return fmt.Errorf("location db: %w", err)
@@ -66,13 +72,39 @@ func (a *App) InitLocationResolver(ctx context.Context) error {
 	return nil
 }
 
-func (a *App) InitExiftool() error {
+// installDir is the shared directory holding downloaded dependencies (exiftool
+// binaries and the location database). It also hosts the install coordination lock.
+func (a *App) installDir() string {
+	return filepath.Dir(a.Config.LocationDBPath)
+}
+
+// EnsureDependencies installs the location database and exiftool if missing,
+// then opens the location resolver. It holds the install lock for the duration
+// so a concurrent scan/serve/setup never installs at the same time: callers
+// wait for an in-progress install to finish, then continue (a no-op if it is
+// already done).
+func (a *App) EnsureDependencies(ctx context.Context) error {
+	lock, err := utils.Acquire(ctx, a.installDir(), installLockFileName, true)
+	if err != nil {
+		return fmt.Errorf("wait for dependency install: %w", err)
+	}
+	defer lock.Unlock()
+
+	if err := a.InitLocationResolver(ctx); err != nil {
+		return err
+	}
+	return a.InitExiftool(ctx)
+}
+
+func (a *App) InitExiftool(ctx context.Context) error {
 	if a.ExiftoolPath != "" {
 		return nil
 	}
-	exiftoolPath, err := exiftool.Check(a.Log, a.Config.ExecutablePath)
+	// Install exiftool on first use so scan/serve work without a separate setup
+	// step. No-op if a suitable version is already present.
+	exiftoolPath, err := exiftool.Setup(ctx, a.Log, a.Config.ExecutablePath)
 	if err != nil {
-		return fmt.Errorf("exiftool not found — run 'wandersort setup' first: %w", err)
+		return fmt.Errorf("exiftool: %w", err)
 	}
 	a.ExiftoolPath = exiftoolPath
 	return nil
@@ -118,14 +150,26 @@ func (a *App) Execute() error {
 func (a *App) newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "wandersort",
-		Short: "Find and organize duplicate media files",
-		Long: `WanderSort scans your photo and video libraries and identifies duplicates by 
-computing unique content hashes.
+		Short: "Organize your media library and find duplicates",
+		Long: `WanderSort is a local-first media organizer. Point it at your photo and
+video directories and it scans them, fingerprints every file to find
+duplicates, and scores copies to pick the best one to keep.
 
-Environment Variables:
-All CLI flags can be configured via environment variables. Simply use uppercase 
-names and convert hyphens to underscores (e.g., --output-path becomes OUTPUT_PATH, 
---workers becomes WORKERS).`,
+Run 'wandersort setup' once to install its dependencies, then
+'wandersort scan' to process your libraries.`,
+		Example: `# Install dependencies (run once)
+wandersort setup
+
+# Scan one or more directories for media and duplicates
+wandersort scan --paths ~/Pictures,/Volumes/SD
+
+# Show a summary of the last scan
+wandersort report`,
+		Annotations: map[string]string{
+			"env": `All flags can also be set via environment variables, using the uppercased
+flag name (--output-path becomes OUTPUT_PATH, --workers becomes WORKERS).
+Flags take precedence over environment variables.`,
+		},
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
@@ -146,6 +190,7 @@ names and convert hyphens to underscores (e.g., --output-path becomes OUTPUT_PAT
 	rootCmd.AddCommand(a.newScanCmd())
 	rootCmd.AddCommand(a.newServeCmd())
 	rootCmd.AddCommand(a.newReportCmd())
+	rootCmd.AddCommand(a.newReportIssueCmd())
 	rootCmd.AddCommand(a.newResetCmd())
 
 	rootCmd.InitDefaultCompletionCmd()

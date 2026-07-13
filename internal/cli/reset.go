@@ -21,7 +21,14 @@ func (a *App) newResetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reset",
 		Short: "Delete all wandersort scan data",
-		Long:  "Clears the wandersort database — scan history, file index, and duplicate results.",
+		Long: `Clears the wandersort database — scan history, file index, and duplicate
+results. This is irreversible; you are prompted for confirmation unless --yes
+is given.`,
+		Example: `# Delete all scan data (prompts for confirmation)
+wandersort reset
+
+# Skip the confirmation prompt
+wandersort reset --yes`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runReset()
 		},
@@ -42,7 +49,7 @@ func (a *App) runReset() error {
 		}
 	}
 
-	lock, err := AcquireLock(filepath.Dir(a.Config.LogFile))
+	lock, err := acquireOutputLock(filepath.Dir(a.Config.LogFile))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
