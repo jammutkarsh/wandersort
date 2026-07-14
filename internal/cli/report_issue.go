@@ -40,8 +40,10 @@ type zipEntry struct {
 }
 
 func (a *App) runReportIssue(includeDB bool) error {
-	if _, err := os.Stat(a.Config.LogFile); err != nil {
-		return fmt.Errorf("no log file found at %s — run a command first", a.Config.LogFile)
+	// The logger creates an empty log file at startup, so existence alone is not
+	// enough — treat an empty log as "nothing to report".
+	if info, err := os.Stat(a.Config.LogFile); err != nil || info.Size() == 0 {
+		return fmt.Errorf("no log data found at %s — run a scan first", a.Config.LogFile)
 	}
 	entries := []zipEntry{{a.Config.LogFile, "wandersort.log"}}
 

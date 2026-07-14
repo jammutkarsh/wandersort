@@ -98,6 +98,7 @@ func (kind workflowPhaseKind) userMessage() string {
 
 // NewWorkflow creates a new workflow instance
 func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration, exiftoolPath string) *Workflow {
+	log.Info("Pipeline configured", "workers", cfg.Workers)
 	return &Workflow{
 		ctx:              ctx,
 		db:               db,
