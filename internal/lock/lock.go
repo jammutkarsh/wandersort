@@ -21,8 +21,10 @@ const (
 	OutputFileName  = ".wandersort.lock"
 	InstallFileName = ".wandersort-install.lock"
 
-	// pollInterval is how often a blocking acquire re-checks a held lock.
-	pollInterval = 200 * time.Millisecond
+	// pollInterval is the starting wait between re-checks of a held lock;
+	// pollMaxInterval caps the exponential backoff applied on each retry.
+	pollInterval    = 200 * time.Millisecond
+	pollMaxInterval = 2 * time.Second
 )
 
 // ErrHeld reports that a live process currently owns the lock.
@@ -31,11 +33,19 @@ var ErrHeld = errors.New("lock held by another process")
 // Lock is an exclusive PID-based lock on a file within a directory.
 type Lock struct {
 	path string
+	pid  int
 }
 
-// Unlock removes the lock file. Safe to call multiple times or on nil.
+// Unlock removes the lock file, but only if it still records this process's
+// PID — if another process reclaimed the path first (see tryLock), removing
+// it here would release a lock we no longer hold. Safe to call multiple
+// times or on nil.
 func (l *Lock) Unlock() {
 	if l == nil || l.path == "" {
+		return
+	}
+	if pid, err := readLockPID(l.path); err != nil || pid != l.pid {
+		l.path = ""
 		return
 	}
 	os.Remove(l.path)
@@ -83,6 +93,7 @@ func acquire(ctx context.Context, dir, name string, block bool) (*Lock, error) {
 	}
 
 	lockPath := filepath.Join(dir, name)
+	wait := pollInterval
 	for {
 		l, err := tryLock(lockPath)
 		if err == nil {
@@ -97,7 +108,10 @@ func acquire(ctx context.Context, dir, name string, block bool) (*Lock, error) {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(pollInterval):
+		case <-time.After(wait):
+		}
+		if wait < pollMaxInterval {
+			wait *= 2
 		}
 	}
 }
@@ -111,22 +125,46 @@ func readLockPID(path string) (int, error) {
 	return strconv.Atoi(strings.TrimSpace(string(data)))
 }
 
-// tryLock attempts a single exclusive create, reclaiming a stale (dead PID) lock.
+// tryLock attempts a single exclusive create, reclaiming a stale (dead PID)
+// lock. The create is attempted first and unconditionally: on the common
+// path (no existing lock) this is a single atomic O_EXCL syscall with no
+// intervening remove, so there is no window in which a concurrent holder's
+// freshly-created lock can be deleted. Only when create fails because a
+// lock file is already there do we inspect its PID, and only remove it if
+// that owner is confirmed dead.
 func tryLock(lockPath string) (*Lock, error) {
-	if pid, err := readLockPID(lockPath); err == nil && processExists(pid) {
-		return nil, ErrHeld
-	}
-	os.Remove(lockPath) // clear a stale lock before the exclusive create
-
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		if os.IsExist(err) {
-			return nil, ErrHeld // lost the race to another process
-		}
+	if l, err := createLock(lockPath); err == nil {
+		return l, nil
+	} else if !os.IsExist(err) {
 		return nil, fmt.Errorf("create lock file %s: %w", lockPath, err)
 	}
 
-	if _, err := fmt.Fprintf(f, "%d\n", os.Getpid()); err != nil {
+	pid, err := readLockPID(lockPath)
+	if err == nil && processExists(pid) {
+		return nil, ErrHeld
+	}
+	os.Remove(lockPath) // stale: owner is dead (or file was unreadable)
+
+	l, err := createLock(lockPath)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil, ErrHeld // lost the reclaim race to another process
+		}
+		return nil, fmt.Errorf("create lock file %s: %w", lockPath, err)
+	}
+	return l, nil
+}
+
+// createLock exclusively creates lockPath and writes the caller's PID into
+// it. Returns an os.IsExist error if the path is already taken.
+func createLock(lockPath string) (*Lock, error) {
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, err
+	}
+
+	pid := os.Getpid()
+	if _, err := fmt.Fprintf(f, "%d\n", pid); err != nil {
 		f.Close()
 		os.Remove(lockPath)
 		return nil, fmt.Errorf("write lock file: %w", err)
@@ -136,7 +174,7 @@ func tryLock(lockPath string) (*Lock, error) {
 		return nil, fmt.Errorf("close lock file: %w", err)
 	}
 
-	return &Lock{path: lockPath}, nil
+	return &Lock{path: lockPath, pid: pid}, nil
 }
 
 func processExists(pid int) bool {

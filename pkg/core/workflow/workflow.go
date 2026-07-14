@@ -260,8 +260,7 @@ func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhaseKind, phaseFunc 
 		return 0, db.StatusFailed, &msg, !success
 	}
 
-	msg := fmt.Sprintf("Starting %s phase", status.inProgress)
-	wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
+	wf.log.Info(status.message, logger.UserKey, true, "sessionId", sessionID)
 	count, err := phaseFunc()
 	if err != nil {
 		var finalStatus string

@@ -79,11 +79,15 @@ func New(ctx context.Context, dbPath string, dbType DBType, log logger.Logger) (
 func (d *DB) Close() error {
 	if d.Writer != nil {
 		d.Writer.Close()
-	}
 
-	if d.Writer != nil {
 		if _, err := d.SQL.Exec("PRAGMA optimize"); err != nil {
 			return fmt.Errorf("pragma optimize: %w", err)
+		}
+		// WAL mode doesn't fold -wal/-shm back into the main file just because
+		// the connection closes — force a full checkpoint so a clean shutdown
+		// doesn't leave them behind.
+		if _, err := d.SQL.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			return fmt.Errorf("wal checkpoint: %w", err)
 		}
 	}
 

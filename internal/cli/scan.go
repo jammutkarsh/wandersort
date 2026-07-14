@@ -68,6 +68,10 @@ func (a *App) runScan(paths []string) error {
 		return fmt.Errorf("scan: %w", err)
 	}
 
-	a.Log.Info("Scan complete. Run 'wandersort report' to see the results.", logger.UserKey, true, "sessionId", sessionID, "scanPaths", scanPaths)
+	hint := "wandersort report"
+	if outputPath := v.GetString(flagOutputPath); outputPath != "" {
+		hint = fmt.Sprintf("wandersort report -o %s", outputPath)
+	}
+	a.Log.Info(fmt.Sprintf("Scan complete. Run '%s' to see the results.", hint), logger.UserKey, true, "sessionId", sessionID, "scanPaths", scanPaths)
 	return nil
 }

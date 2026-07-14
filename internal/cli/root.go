@@ -15,6 +15,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -118,11 +119,17 @@ func (a *App) InitExiftool(ctx context.Context) error {
 
 func (a *App) Close() {
 	a.Log.Info("Closing databases")
+	// A failed Close can leave the WAL/SHM files locked (locking_mode=EXCLUSIVE),
+	// preventing the next scan/serve from starting — always log the cause.
 	if a.AppDB != nil {
-		a.AppDB.Close()
+		if err := a.AppDB.Close(); err != nil {
+			a.Log.Error("failed to close app database", "error", err)
+		}
 	}
 	if a.LocationDB != nil {
-		a.LocationDB.Close()
+		if err := a.LocationDB.Close(); err != nil {
+			a.Log.Error("failed to close location database", "error", err)
+		}
 	}
 }
 
@@ -222,6 +229,7 @@ Where to ideally store the generated scripts:
 // Precedence: flag > env > default (viper resolves flag/env; defaults come from config.Defaults).
 func (a *App) applyOverrides() {
 	if outputPath := v.GetString(flagOutputPath); outputPath != "" {
+		outputPath = path.New().ExpandPath(outputPath)
 		a.Config.AppDBPath = filepath.Join(outputPath, config.DefaultDBFileName)
 		a.Config.LogFile = filepath.Join(outputPath, config.DefaultLogFileName)
 	}

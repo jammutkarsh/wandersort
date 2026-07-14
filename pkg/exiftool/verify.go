@@ -58,6 +58,7 @@ func findExiftool(log logger.Logger, binDir string) (string, error) {
 			log.Info("exiftool found on PATH", "path", path)
 			return path, nil
 		}
+		log.Info("exiftool on PATH is outdated; installing bundled version")
 	}
 
 	binaryPath := filepath.Join(binDir, exiftoolBin())
@@ -68,6 +69,7 @@ func findExiftool(log logger.Logger, binDir string) (string, error) {
 			log.Info("exiftool found", "path", binaryPath)
 			return binaryPath, nil
 		}
+		log.Info("exiftool is outdated; installing bundled version", "path", binaryPath)
 	}
 
 	return "", fmt.Errorf("exiftool not found at %s", binaryPath)

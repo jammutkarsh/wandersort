@@ -89,7 +89,9 @@ func (a *App) runReport() error {
 }
 
 func (a *App) generateReport(ctx context.Context, dbPath string) ([]SessionReport, error) {
-	dsn := fmt.Sprintf("file:%s?mode=ro&_journal=OFF", dbPath)
+	// busy_timeout lets sqlite wait out a concurrent scan/serve writer instead
+	// of failing outright with SQLITE_BUSY on this read-only connection.
+	dsn := fmt.Sprintf("file:%s?mode=ro&_journal=OFF&_pragma=busy_timeout(5000)", dbPath)
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db read-only: %w", err)

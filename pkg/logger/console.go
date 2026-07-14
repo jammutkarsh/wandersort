@@ -194,7 +194,7 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 		return err
 	}
 
-	_, userFacing := attrs[UserKey]
+	userFacing, _ := attrs[UserKey].(bool)
 	delete(attrs, UserKey)
 
 	// In debug mode show everything; otherwise only user-facing lines and
