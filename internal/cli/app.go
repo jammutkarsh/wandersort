@@ -26,16 +26,18 @@ import (
 // the app and everything hanging off it stay internal, so main.go has one way
 // in and no state to assemble. a.Config starts nil — PersistentPreRunE builds
 // it via config.Resolve before any command body runs, so nothing here reads
-// it early.
-func Execute() error {
-	a := &app{}
+// it early. version is set on the root command so `wandersort --version`
+// reports the build main.go stamped via -ldflags (see .goreleaser.yaml).
+func Execute(version string) error {
+	a := &app{Version: version}
 	return a.newRootCmd().Execute()
 }
 
 type app struct {
-	Config *config.Configuration
-	Log    logger.Logger
-	AppDB  *db.DB
+	Config  *config.Configuration
+	Version string
+	Log     logger.Logger
+	AppDB   *db.DB
 	// Deps coordinates the two downloadable dependencies (exiftool, the
 	// location database) for the current command. Built once per command via
 	// newDeps; nil until then. See pkg/install — this is the one place

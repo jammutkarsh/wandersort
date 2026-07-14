@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Utkarsh Chourasia
+
+# GoReleaser config (OSS). Docs: https://goreleaser.com
+# Build/test locally:  goreleaser release --snapshot --clean
+# Real release:        push a tag `vX.Y.Z` (the release workflow runs this).
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: wandersort
+    main: .
+    binary: wandersort
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    # Windows gets .zip instead of .tar.gz.
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+# Linux system packages attached to the GitHub release.
+nfpms:
+  - id: linux-packages
+    package_name: wandersort
+    formats: [deb, rpm, apk]
+    maintainer: "Utkarsh Chourasia <utkarshchourasia100@gmail.com>"
+    description: "Local-first media organizer and duplicate finder."
+    license: MIT
+    homepage: https://github.com/jammutkarsh/wandersort
+    bindir: /usr/bin
+
+# Homebrew cask -> jammutkarsh/homebrew-tap
+# Needs env TAP_GITHUB_TOKEN (PAT with contents:write on the tap repo).
+homebrew_casks:
+  - name: wandersort
+    repository:
+      owner: jammutkarsh
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/jammutkarsh/wandersort
+    description: "Local-first media organizer and duplicate finder."
+    # Unsigned binary: strip the quarantine flag on install so Gatekeeper
+    # doesn't block it. Remove once the binary is notarized.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/wandersort"]
+          end
+
+# Scoop manifest -> jammutkarsh/scoop-bucket (Windows).
+scoops:
+  - name: wandersort
+    repository:
+      owner: jammutkarsh
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/jammutkarsh/wandersort
+    description: "Local-first media organizer and duplicate finder."
+    license: MIT
+
+# winget: manifest generation is OSS, but auto-PR to microsoft/winget-pkgs
+# needs a fork + the community winget-releaser action (see RELEASING.md).
+# Enable after forking microsoft/winget-pkgs, else the release will fail
+# trying to push to a repo that doesn't exist.
+# winget:
+#   - name: wandersort
+#     publisher: jammutkarsh
+#     license: MIT
+#     homepage: https://github.com/jammutkarsh/wandersort
+#     short_description: "Local-first media organizer and duplicate finder."
+#     repository:
+#       owner: jammutkarsh
+#       name: winget-pkgs
+#       branch: "wandersort-{{ .Version }}"
+#       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+
+release:
+  github:
+    owner: jammutkarsh
+    name: wandersort
