@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/jammutkarsh/wandersort/internal/lock"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/spf13/cobra"
@@ -53,11 +54,11 @@ func (a *App) runScan(paths []string) error {
 	}
 	defer a.Close()
 
-	lock, err := acquireOutputLock(filepath.Dir(a.Config.LogFile))
+	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
-	defer lock.Unlock()
+	defer l.Unlock()
 
 	wf := workflow.NewWorkflow(ctx, a.AppDB, a.LocationResolver, a.Log, a.Config, a.ExiftoolPath)
 	defer wf.Close()

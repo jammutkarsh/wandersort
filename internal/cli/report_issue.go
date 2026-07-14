@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/style"
 	"github.com/spf13/cobra"
 )
 
@@ -86,8 +87,8 @@ func (a *App) runReportIssue(includeDB bool) error {
 	}
 
 	abs, _ := filepath.Abs(zipName)
-	fmt.Fprintln(os.Stderr, successStyle.Render("Created "+abs))
-	fmt.Fprintln(os.Stderr, labelStyle.Render("Attach this file to your bug report or share it with the maintainer."))
+	fmt.Fprintln(os.Stderr, style.Success.Render("Created "+abs))
+	fmt.Fprintln(os.Stderr, style.Dim.Render("Attach this file to your bug report or share it with the maintainer."))
 	return nil
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/jammutkarsh/wandersort/internal/api"
 	"github.com/jammutkarsh/wandersort/internal/api/admin"
 	"github.com/jammutkarsh/wandersort/internal/api/pipeline"
+	"github.com/jammutkarsh/wandersort/internal/lock"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	_ "github.com/jammutkarsh/wandersort/swagger"
@@ -63,11 +64,11 @@ func (a *App) runServe() error {
 	}
 	defer a.Close()
 
-	lock, err := acquireOutputLock(filepath.Dir(a.Config.LogFile))
+	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
-	defer lock.Unlock()
+	defer l.Unlock()
 
 	wf := workflow.NewWorkflow(ctx, a.AppDB, a.LocationResolver, a.Log, a.Config, a.ExiftoolPath)
 

@@ -38,13 +38,24 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
   - `report_issue.go` — `report-issue` cmd: zips the log (renamed
     `wandersort.log`) + `about.txt`; db opt-in via `--include-db` (holds paths/GPS).
   - `reset.go` — wipe scan data (confirm prompt unless `--yes`).
-  - `lock.go` — thin CLI layer over `pkg/utils` locking: `acquireOutputLock`
-    (one scan/serve per output dir) + the styled "already running" message, and
-    the lock filename constants. The generic mechanics live in
-    `pkg/utils/lock.go` (`utils.Acquire`, `ErrLockHeld`) so the pipeline and
-    future callers reuse them. Install coordination uses `utils.Acquire` with
-    `installLockFileName`: blocking for scan/serve, non-blocking for setup.
-  - `help.go` — custom lipgloss-styled help renderer.
+  - `help.go` — custom lipgloss-styled help renderer. Kept in `cli` (unlike
+    `lock.go`/`style.go`) since it's a one-off cobra `SetHelpFunc`, not reusable
+    logic another entry point would need.
+  - `internal/cli` holds **only** `root.go` + one file per subcommand (plus the
+    `help.go` exception above) — everything else that used to live here moved
+    out to its own package so a future TUI entry point can reuse it:
+    - `internal/lock/` — all wandersort file locking: generic PID/O_EXCL
+      acquire/reclaim mechanics (`acquire`, `Lock`, `ErrHeld`) plus the two
+      domain wrappers — `AcquireOutput` (one scan/serve per output dir, styled
+      "already running" message) and `AcquireInstall` (install coordination
+      across scan/serve/setup: blocking for scan/serve, non-blocking for
+      setup) — and the lock filenames (`OutputFileName`, `InstallFileName`).
+      Only `cli` uses locking, so this isn't split out to `pkg/utils` — it was
+      merged out of there.
+    - `pkg/style/` — shared lipgloss palette/styles (`style.Err`,
+      `style.Success`, `style.Warn`, `style.Header`, `style.Dim`,
+      `style.Desc`). One place to change a color; used by `cli` today, meant
+      for a future TUI too.
 
 Config precedence: **flag > env > default**. Env names are the uppercased flag;
 `AutomaticEnv` covers the hyphen-free flags (`WORKERS`, `PORT`, …), and the one
@@ -100,8 +111,6 @@ Only used by `serve`. Standard handler→service→repository split per domain:
 - `exiftool/` — bundled exiftool wrapper + verify.
 - `path/` — path canonicalization / home-relative helpers.
 - `utils/download.go` — atomic HTTP download (temp file + rename).
-- `utils/lock.go` — generic PID/O_EXCL file lock (`Acquire`, `Unlock`,
-  `ErrLockHeld`); stale-lock reclaim; blocking waits honour ctx.
 
 ## Conventions that bite if ignored
 
@@ -126,8 +135,9 @@ go build ./... # quick compile check
 - `report.go` builds a raw sqlite DSN + inline SQL in the CLI layer, bypassing
   `pkg/db`/repository. Read-only by design, but a layering shortcut — move to a
   repository method if it grows.
-- **Concurrency wall:** `AcquireLock` (lock.go) takes an exclusive PID lock on
-  the output dir, so only one scan *or* serve runs against a dir at a time. Log
+- **Concurrency wall:** `lock.AcquireOutput` (`internal/lock/`) takes an
+  exclusive PID lock on the output dir, so only one scan *or* serve runs
+  against a dir at a time. Log
   lines are already `sessionId`-tagged, so multiple sessions sharing one log
   file interleave cleanly (consumers filter by id) — logs are **not** the wall.
   The lock is. Running scans concurrently would need per-session isolation or a

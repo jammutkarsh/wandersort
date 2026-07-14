@@ -4,16 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/jammutkarsh/wandersort/pkg/style"
 	"github.com/spf13/cobra"
-)
-
-var (
-	headerStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	commandStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
-	flagStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	descStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
 
 // setCustomHelp installs a help renderer modelled on git/gh/docker: a short
@@ -44,8 +36,8 @@ func setCustomHelp(cmd *cobra.Command) {
 			for _, sub := range c.Commands() {
 				if sub.IsAvailableCommand() || sub.Name() == "help" {
 					fmt.Fprintf(&rows, "  %s %s\n",
-						commandStyle.Render(fmt.Sprintf("%-12s", sub.Name())),
-						descStyle.Render(sub.Short))
+						style.Success.Render(fmt.Sprintf("%-12s", sub.Name())),
+						style.Desc.Render(sub.Short))
 				}
 			}
 			section(&b, "COMMANDS", strings.TrimRight(rows.String(), "\n"))
@@ -64,7 +56,7 @@ func setCustomHelp(cmd *cobra.Command) {
 		}
 
 		if c.HasAvailableSubCommands() {
-			fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(
+			fmt.Fprintf(&b, "\n%s\n", style.Dim.Render(
 				fmt.Sprintf("Use \"%s [command] --help\" for more information about a command.", c.CommandPath()),
 			))
 		}
@@ -75,7 +67,7 @@ func setCustomHelp(cmd *cobra.Command) {
 
 // section writes a blank line, a styled header, then body.
 func section(b *strings.Builder, title, body string) {
-	fmt.Fprintf(b, "\n%s\n%s\n", headerStyle.Render(title), body)
+	fmt.Fprintf(b, "\n%s\n%s\n", style.Header.Render(title), body)
 }
 
 // indent prefixes every line with two spaces.
@@ -95,7 +87,7 @@ func indent(s string) string {
 func renderFlags(usage string) string {
 	lines := strings.Split(strings.TrimRight(usage, "\n"), "\n")
 	for i, line := range lines {
-		lines[i] = flagStyle.Render(strings.TrimRight(line, " "))
+		lines[i] = style.Warn.Render(strings.TrimRight(line, " "))
 	}
 	return strings.Join(lines, "\n")
 }

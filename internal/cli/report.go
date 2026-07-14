@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jammutkarsh/wandersort/pkg/style"
 	"github.com/spf13/cobra"
 	_ "modernc.org/sqlite"
 )
@@ -18,9 +19,9 @@ type Report struct {
 }
 
 var (
-	labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	labelStyle = style.Dim
 	valueStyle = lipgloss.NewStyle().Bold(true)
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).MarginBottom(1)
+	titleStyle = style.Header.MarginBottom(1)
 )
 
 func (a *App) newReportCmd() *cobra.Command {

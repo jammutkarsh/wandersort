@@ -8,13 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/jammutkarsh/wandersort/internal/lock"
+	"github.com/jammutkarsh/wandersort/pkg/style"
 	"github.com/spf13/cobra"
-)
-
-var (
-	warnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true)
 )
 
 func (a *App) newResetCmd() *cobra.Command {
@@ -49,11 +45,11 @@ func (a *App) runReset() error {
 		}
 	}
 
-	lock, err := acquireOutputLock(filepath.Dir(a.Config.LogFile))
+	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
-	defer lock.Unlock()
+	defer l.Unlock()
 
 	ctx := context.Background()
 
@@ -70,12 +66,12 @@ func (a *App) runReset() error {
 		a.Log.Warn("database optimization after reset failed", "error", err)
 	}
 
-	fmt.Fprintln(os.Stderr, successStyle.Render("All wandersort data deleted."))
+	fmt.Fprintln(os.Stderr, style.Success.Render("All wandersort data deleted."))
 	return nil
 }
 
 func confirmReset() bool {
-	fmt.Fprint(os.Stderr, warnStyle.Render("Delete all wandersort data?")+" (y/N): ")
+	fmt.Fprint(os.Stderr, style.Warn.Render("Delete all wandersort data?")+" (y/N): ")
 	reader := bufio.NewReader(os.Stdin)
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(strings.ToLower(input))

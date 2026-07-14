@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jammutkarsh/wandersort/internal/lock"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -31,15 +31,15 @@ func (a *App) runSetup() error {
 
 	// A running scan/serve installs dependencies itself and takes precedence, so
 	// if anything is already installing, step aside instead of installing twice.
-	lock, err := utils.Acquire(ctx, a.installDir(), installLockFileName, false)
-	if errors.Is(err, utils.ErrLockHeld) {
+	l, err := lock.AcquireInstall(ctx, a.installDir(), false)
+	if errors.Is(err, lock.ErrHeld) {
 		a.Log.Info("Dependencies are already being installed by another process; nothing to do")
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("install lock: %w", err)
 	}
-	defer lock.Unlock()
+	defer l.Unlock()
 
 	if _, err := exiftool.Setup(ctx, a.Log, a.Config.ExecutablePath); err != nil {
 		return fmt.Errorf("exiftool: %w", err)

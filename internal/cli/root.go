@@ -7,13 +7,13 @@ import (
 
 	"github.com/jammutkarsh/wandersort/internal/api/admin"
 	"github.com/jammutkarsh/wandersort/internal/api/pipeline"
+	"github.com/jammutkarsh/wandersort/internal/lock"
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/utils"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -84,11 +84,11 @@ func (a *App) installDir() string {
 // wait for an in-progress install to finish, then continue (a no-op if it is
 // already done).
 func (a *App) EnsureDependencies(ctx context.Context) error {
-	lock, err := utils.Acquire(ctx, a.installDir(), installLockFileName, true)
+	l, err := lock.AcquireInstall(ctx, a.installDir(), true)
 	if err != nil {
 		return fmt.Errorf("wait for dependency install: %w", err)
 	}
-	defer lock.Unlock()
+	defer l.Unlock()
 
 	if err := a.InitLocationResolver(ctx); err != nil {
 		return err
