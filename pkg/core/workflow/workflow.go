@@ -56,44 +56,24 @@ const (
 	defaultFinalizeTimeout = 15 * time.Second
 )
 
-func (kind workflowPhaseKind) inProgressStatus() string {
-	switch kind {
-	case workflowPhaseScan:
-		return db.StatusScanning
-	case workflowPhaseHash:
-		return db.StatusHashing
-	case workflowPhaseScore:
-		return db.StatusScoring
-	default:
-		return db.StatusFailed
-	}
+// phaseStatus holds the status transitions and console message for a workflow phase.
+type phaseStatus struct {
+	inProgress string
+	completed  string
+	message    string
 }
 
-func (kind workflowPhaseKind) completedStatus() string {
-	switch kind {
-	case workflowPhaseScan:
-		return db.StatusScanned
-	case workflowPhaseHash:
-		return db.StatusHashed
-	case workflowPhaseScore:
-		return db.StatusScored
-	default:
-		return db.StatusFailed
-	}
+var phaseStatusByKind = map[workflowPhaseKind]phaseStatus{
+	workflowPhaseScan:  {db.StatusScanning, db.StatusScanned, "Scanning your files…"},
+	workflowPhaseHash:  {db.StatusHashing, db.StatusHashed, "Looking for duplicate files…"},
+	workflowPhaseScore: {db.StatusScoring, db.StatusScored, "Selecting the best copy of each duplicate…"},
 }
 
-// userMessage is the human-readable line shown on the console when a phase starts.
-func (kind workflowPhaseKind) userMessage() string {
-	switch kind {
-	case workflowPhaseScan:
-		return "Scanning your files…"
-	case workflowPhaseHash:
-		return "Looking for duplicate files…"
-	case workflowPhaseScore:
-		return "Selecting the best copy of each duplicate…"
-	default:
-		return "Working…"
+func (kind workflowPhaseKind) status() phaseStatus {
+	if s, ok := phaseStatusByKind[kind]; ok {
+		return s
 	}
+	return phaseStatus{db.StatusFailed, db.StatusFailed, "Working…"}
 }
 
 // NewWorkflow creates a new workflow instance
@@ -271,34 +251,33 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 // final status, error message (if any), and a boolean indicating success
 func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhaseKind, phaseFunc func() (int, error)) (int, string, *string, bool) {
 	success := true
-	inProgressStatus := phase.inProgressStatus()
-	if err := wf.setSessionStatus(wf.ctx, sessionID, inProgressStatus); err != nil {
-		msg := fmt.Errorf("failed to set %s status: %w", inProgressStatus, err).Error()
+	status := phase.status()
+	if err := wf.setSessionStatus(wf.ctx, sessionID, status.inProgress); err != nil {
+		msg := fmt.Errorf("failed to set %s status: %w", status.inProgress, err).Error()
 		return 0, db.StatusFailed, &msg, !success
 	}
 
-	wf.log.Info(phase.userMessage(), logger.UserKey, true, "sessionId", sessionID)
+	wf.log.Info(status.message, logger.UserKey, true, "sessionId", sessionID)
 	count, err := phaseFunc()
 	if err != nil {
 		var finalStatus string
 		var finalErr string
 		if errors.Is(err, context.Canceled) {
 			finalStatus = db.StatusCancelled
-			finalErr = fmt.Sprintf("pipeline cancelled during %s phase", inProgressStatus)
+			finalErr = fmt.Sprintf("pipeline cancelled during %s phase", status.inProgress)
 		} else {
 			finalStatus = db.StatusFailed
-			finalErr = fmt.Sprintf("%s phase failed: %v", inProgressStatus, err)
+			finalErr = fmt.Sprintf("%s phase failed: %v", status.inProgress, err)
 		}
 		return count, finalStatus, &finalErr, !success
 	}
 
 	wf.db.Writer.Flush()
 
-	completedStatus := phase.completedStatus()
-	if err := wf.setSessionStatus(wf.ctx, sessionID, completedStatus); err != nil {
-		msg := fmt.Errorf("failed to set %s status: %w", completedStatus, err).Error()
+	if err := wf.setSessionStatus(wf.ctx, sessionID, status.completed); err != nil {
+		msg := fmt.Errorf("failed to set %s status: %w", status.completed, err).Error()
 		return count, db.StatusFailed, &msg, !success
 	}
 
-	return count, completedStatus, nil, success
+	return count, status.completed, nil, success
 }
