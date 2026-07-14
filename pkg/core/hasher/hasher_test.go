@@ -208,7 +208,7 @@ func TestHashFile_WithRealTempDir(t *testing.T) {
 
 	for name, content := range files {
 		p := filepath.Join(root, name)
-		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		hash, err := h.hashFile(p)

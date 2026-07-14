@@ -47,7 +47,6 @@ func (wf *Workflow) finalizeSession(sessionID uuid.UUID, finalStatus string, fin
 		SET completed_at = ?, status = ?, last_error = ?
 		WHERE id = ?
 	`, completedAt, finalStatus, finalErr, sessionID.String())
-
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			wf.log.Error("Finalization timed out", "sessionId", sessionID, "timeout", defaultFinalizeTimeout)

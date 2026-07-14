@@ -9,10 +9,11 @@ package db
 import (
 	"context"
 	"fmt"
-	"github.com/jmoiron/sqlx"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )

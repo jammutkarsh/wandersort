@@ -54,7 +54,7 @@ type locationMeta struct {
 }
 
 func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver, error) {
-	metaPath := filepath.Join(filepath.Dir(dbLocationPath), db.LocationMetaFileName)
+	metaPath := filepath.Join(filepath.Dir(dbLocationPath), LocationMetaFileName)
 
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
@@ -67,7 +67,8 @@ func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver
 	}
 
 	var count int
-	err = locationDB.QueryRowContext(context.Background(),
+	err = locationDB.QueryRowContext(
+		context.Background(),
 		`SELECT COUNT(*) FROM geonames_cities`,
 	).Scan(&count)
 	if err != nil {

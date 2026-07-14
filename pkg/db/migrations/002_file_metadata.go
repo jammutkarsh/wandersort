@@ -7,7 +7,7 @@
 package migrations
 
 var schema002 = Migration{
-	Version:     002,
+	Version:     0o02,
 	Description: "file_metadata_schema",
 	SQL: []string{
 		fileMetadata,

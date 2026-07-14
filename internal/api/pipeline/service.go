@@ -31,6 +31,8 @@ func NewService(log logger.Logger, workflow *workflow.Workflow, repo *Repository
 	return &Service{pipeline: workflow, repo: repo, logger: log, path: path.New()}
 }
 
+// StartScan validates roots and submits an async scan (HTTP server path).
+// Returns as soon as the session is created; progress is read from the logs.
 func (s *Service) StartScan(paths []string) (uuid.UUID, []string, error) {
 	effectivePaths, err := s.prepareScanRoots(paths)
 	if err != nil {
@@ -40,6 +42,22 @@ func (s *Service) StartScan(paths []string) (uuid.UUID, []string, error) {
 	sessionID, err := s.pipeline.SubmitScan(effectivePaths)
 	if err != nil {
 		return uuid.Nil, nil, err
+	}
+
+	return sessionID, effectivePaths, nil
+}
+
+// RunScan validates roots and runs the scan synchronously (CLI path), blocking
+// until the pipeline finishes and returning any terminal failure.
+func (s *Service) RunScan(paths []string) (uuid.UUID, []string, error) {
+	effectivePaths, err := s.prepareScanRoots(paths)
+	if err != nil {
+		return uuid.Nil, nil, err
+	}
+
+	sessionID, err := s.pipeline.RunScan(effectivePaths)
+	if err != nil {
+		return sessionID, effectivePaths, err
 	}
 
 	return sessionID, effectivePaths, nil

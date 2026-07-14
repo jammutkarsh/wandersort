@@ -32,7 +32,7 @@ func (h *Handler) SetupRoutes(v1 *gin.RouterGroup) {
 
 // HandleReset godoc
 // @Summary Reset all application data
-// @Description Deletes all scan sessions, file registry entries, content groups and group members in a single transaction. Irreversible
+// @Description Deletes all scan sessions, file registry entries, and file metadata in a single transaction. Irreversible
 // @Tags Admin
 // @Produce json
 // @Success 200 {object} ResetResponse
@@ -46,10 +46,9 @@ func (h *Handler) HandleReset(c *gin.Context) {
 	}
 
 	h.logger.Warn("Admin reset completed",
-		"scan_sessions", resp.ScanSessionsDeleted,
+		"scanSessions", resp.ScanSessionsDeleted,
 		"files", resp.FilesDeleted,
-		"content_groups", resp.ContentGroupsDeleted,
-		"group_members", resp.GroupMembersDeleted)
+		"fileMetadata", resp.FileMetadataDeleted)
 
 	api.RespondOK(c, http.StatusOK, resp)
 }

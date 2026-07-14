@@ -8,8 +8,9 @@ package migrations
 
 import (
 	"fmt"
-	"github.com/jmoiron/sqlx"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 // Migration describes a single schema migration step

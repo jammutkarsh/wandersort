@@ -188,6 +188,7 @@ func TestDatePattern(t *testing.T) {
 		})
 	}
 }
+
 func setupTestDB(t *testing.T) *db.DB {
 	t.Helper()
 
