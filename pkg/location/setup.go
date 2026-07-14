@@ -6,9 +6,20 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/utils"
+)
+
+const (
+	// LocationDownloadBaseURL is the download URL for the locationDB asset
+	// Upstream update schedules and data details can be found at the source URL
+	LocationDownloadBaseURL = "https://locationdb.utkarshchourasia.in"
+
+	LocationDBFileName = "location.db"
+
+	// locationMetaFileName is the metadata JSON published alongside the LocationDB
+	// location.json holds the dynamic metadata (version, date) used to determine if a re-download is required
+	LocationMetaFileName = "location.json"
 )
 
 // Setup downloads the location database and its metadata if they do not exist
@@ -22,15 +33,15 @@ func Setup(ctx context.Context, log logger.Logger, dbPath string) error {
 		return nil
 	}
 
-	log.Info("Downloading location database…", logger.UserKey, true, "url", db.LocationDownloadBaseURL+"/"+db.LocationDBFileName)
+	log.Info("Downloading location database…", logger.UserKey, true, "url", LocationDownloadBaseURL+"/"+LocationDBFileName)
 
-	if err := utils.DownloadFile(ctx, dbPath, db.LocationDownloadBaseURL+"/"+db.LocationDBFileName); err != nil {
-		return fmt.Errorf("download %s: %w", db.LocationDBFileName, err)
+	if err := utils.DownloadFile(ctx, dbPath, LocationDownloadBaseURL+"/"+LocationDBFileName); err != nil {
+		return fmt.Errorf("download %s: %w", LocationDBFileName, err)
 	}
 
-	metaPath := filepath.Join(filepath.Dir(dbPath), db.LocationMetaFileName)
-	if err := utils.DownloadFile(ctx, metaPath, db.LocationDownloadBaseURL+"/"+db.LocationMetaFileName); err != nil {
-		log.Warn("location db: could not download metadata (non-fatal)", "file", db.LocationMetaFileName, "error", err)
+	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
+	if err := utils.DownloadFile(ctx, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName); err != nil {
+		log.Warn("location db: could not download metadata (non-fatal)", "file", LocationMetaFileName, "error", err)
 	}
 
 	return nil

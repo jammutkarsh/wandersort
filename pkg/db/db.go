@@ -24,18 +24,6 @@ const (
 	LocationDB
 )
 
-const (
-	// LocationDownloadBaseURL is the download URL for the locationDB asset
-	// Upstream update schedules and data details can be found at the source URL
-	LocationDownloadBaseURL = "https://locationdb.utkarshchourasia.in"
-
-	LocationDBFileName = "location.db"
-
-	// locationMetaFileName is the metadata JSON published alongside the LocationDB
-	// location.json holds the dynamic metadata (version, date) used to determine if a re-download is required
-	LocationMetaFileName = "location.json"
-)
-
 // Pattern: -ING = active phase, -ED = completed/terminal
 const (
 	StatusStarted    = "STARTED"
@@ -82,7 +70,7 @@ func New(ctx context.Context, dbPath string, dbType DBType, log logger.Logger) (
 	case AppDB:
 		return openAppDB(dbPath, log)
 	case LocationDB:
-		return openLocationDB(ctx, dbPath, log)
+		return openLocationDB(dbPath, log)
 	default:
 		return nil, fmt.Errorf("unknown DBType %d", dbType)
 	}
@@ -167,7 +155,7 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 }
 
 // openLocationDB opens the read-only location database.
-func openLocationDB(ctx context.Context, dbPath string, log logger.Logger) (*DB, error) {
+func openLocationDB(dbPath string, log logger.Logger) (*DB, error) {
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil, fmt.Errorf("location database not found at %s: %w", dbPath, err)
 	}
