@@ -166,8 +166,17 @@ func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context
 					continue
 				}
 
+				if ctx.Err() != nil {
+					return // pipeline cancelled; stop cleanly
+				}
 				exifData, err := h.exiftool.Extract(ctx, file.absPath)
 				if err != nil {
+					// A cancelled pipeline SIGKILLs the exiftool child ("signal: killed")
+					// and fails the next call with "context canceled" — that is shutdown,
+					// not a bad file, so don't report it as an extraction failure.
+					if ctx.Err() != nil {
+						return
+					}
 					h.log.Warn("Failed to extract exif data", "sessionId", sessionID, "fileId", file.id, "path", file.absPath, "error", err)
 				}
 
@@ -221,7 +230,8 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 		}
 
 		ok := h.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
-			_, err := tx.ExecContext(ctx, `
+			_, err := tx.ExecContext(
+				ctx, `
 				INSERT INTO file_metadata (
 					file_hash, file_id,
 					exif_image_width, exif_image_height,

@@ -1,7 +1,7 @@
 package migrations
 
 var schema001 = Migration{
-	Version:     001,
+	Version:     0o01,
 	Description: "scanner_schema",
 	SQL: []string{
 		scanSessions,

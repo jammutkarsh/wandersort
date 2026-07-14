@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/utils"
 )
 
 const (
@@ -41,10 +41,17 @@ func exiftoolBin() string {
 	return "exiftool"
 }
 
-// Verify checks exiftool is available, either on $PATH or in WanderSort's
+// Setup checks exiftool is available, either on $PATH or in WanderSort's
 // own install directory. If the found version is below the requirement, it
 // downloads and installs a bundled copy into ~/.wandersort/bin
-func Verify(ctx context.Context, log logger.Logger, binDir string) (string, error) {
+func Setup(ctx context.Context, log logger.Logger, binDir string) (string, error) {
+	if path, err := findExiftool(log, binDir); err == nil {
+		return path, nil
+	}
+	return installExiftool(ctx, log, binDir)
+}
+
+func findExiftool(log logger.Logger, binDir string) (string, error) {
 	// Check PATH — only accept if version meets requirement
 	if path, err := exec.LookPath(exiftoolBin()); err == nil {
 		if ok, _ := checkVersion(path, log); ok {
@@ -65,11 +72,16 @@ func Verify(ctx context.Context, log logger.Logger, binDir string) (string, erro
 		log.Info("exiftool is outdated; installing bundled version", "path", binaryPath)
 	}
 
-	log.Info("exiftool not found; downloading", "dir", binDir, "os", runtime.GOOS)
+	return "", fmt.Errorf("exiftool not found at %s", binaryPath)
+}
+
+func installExiftool(ctx context.Context, log logger.Logger, binDir string) (string, error) {
+	log.Info("Downloading ExifTool…", logger.UserKey, true, "dir", binDir, "os", runtime.GOOS)
 	if err := install(ctx, binDir, log); err != nil {
 		return "", fmt.Errorf("install exiftool: %w", err)
 	}
 
+	binaryPath := filepath.Join(binDir, exiftoolBin())
 	if _, err := os.Stat(binaryPath); err == nil {
 		return binaryPath, nil
 	}
@@ -102,7 +114,7 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 	}
 
 	if _, err := os.Stat(archiveName); err != nil {
-		if err := db.DownloadFile(ctx, archiveName, url); err != nil {
+		if err := utils.DownloadFile(ctx, archiveName, url); err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
 	}

@@ -40,7 +40,8 @@ func RecoveryMiddleware(log logger.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error("panic recovered",
+				log.Error(
+					"panic recovered",
 					"error", fmt.Sprintf("%v", r),
 					"stack", string(debug.Stack()),
 					"path", c.Request.URL.Path,

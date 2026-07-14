@@ -3,13 +3,14 @@ package scanner
 import (
 	"context"
 	"fmt"
-	"github.com/jmoiron/sqlx"
 	"io/fs"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 
 	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
@@ -181,10 +182,10 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 		mediaType, shouldProcess, shouldIgnore := s.classifier.ClassifyName(d.Name())
 		switch {
 		case shouldIgnore:
-			s.log.Debug("Ignoring file", "sessionId", sessionID, "inputPath", path, "walkingPath", s.path.RelativeToHome(p))
+			s.log.Warn("Ignoring file", "sessionId", sessionID, "inputPath", path, "walkingPath", s.path.RelativeToHome(p))
 			return nil
 		case !shouldProcess:
-			s.log.Debug("Unsupported file type", "sessionId", sessionID, "walkingPath", s.path.RelativeToHome(p))
+			s.log.Warn("Unsupported file type", "sessionId", sessionID, "walkingPath", s.path.RelativeToHome(p))
 			return nil
 		}
 
@@ -223,7 +224,6 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 
 		return nil
 	})
-
 	if err != nil {
 		return fmt.Errorf("walk %q: %w", absRoot, err)
 	}

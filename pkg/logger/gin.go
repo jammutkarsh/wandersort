@@ -35,7 +35,8 @@ func GinLogger(l Logger) gin.HandlerFunc {
 		}
 
 		latency := time.Since(start)
-		l.Info("http_request",
+		l.Info(
+			"http_request",
 			"status", status,
 			"method", c.Request.Method,
 			"path", path,

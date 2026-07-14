@@ -129,6 +129,40 @@ WanderSort never touches your files until you tell it to. The entire pipeline is
 
 ---
 
+## Getting Started
+
+WanderSort is a single, self-contained command-line binary.
+
+### Install
+
+Build from source (requires Go 1.26+):
+
+```bash
+git clone https://github.com/jammutkarsh/wandersort.git
+cd wandersort
+make build          # produces ./bin/wandersort
+```
+
+### Usage
+
+```bash
+# 1. Scan one or more directories. Runs in the foreground until it finishes.
+#    Dependencies (ExifTool + location database) install automatically on
+#    first run — no separate setup step required.
+wandersort scan --paths ~/Pictures,/Volumes/SD
+
+# 2. See what was found — scanned, hashed, and duplicate counts.
+wandersort report
+```
+
+> Prefer to pre-install the dependencies instead of downloading mid-scan? Run `wandersort setup` first (optional).
+
+Run `wandersort --help`, or `wandersort <command> --help`, for the full command and flag reference. Any flag can also be set through an environment variable (e.g. `OUTPUT_PATH`, `WORKERS`).
+
+An optional REST API server is available via `wandersort serve` for programmatic integrations.
+
+---
+
 ## Metadata Extraction
 
 WanderSort extracts deep EXIF metadata from your files using [ExifTool](https://exiftool.org/) — and it understands 11 different file format structures natively:
@@ -147,14 +181,14 @@ This metadata powers the scoring engine and, ultimately, the folder structure de
 
 ## Architecture
 
-WanderSort runs as a local server with an API-driven architecture. The backend is written in Go for raw performance — concurrent file walking, parallel hashing, and batched database writes make it capable of processing terabytes without breaking a sweat.
+WanderSort is a command-line application that runs entirely on your machine — no daemon required. The same pipeline is also exposed over an optional local REST API (`wandersort serve`) for integrations. The backend is written in Go for raw performance — concurrent file walking, parallel hashing, and batched database writes make it capable of processing terabytes without breaking a sweat.
 
 **Key internals:**
 
 - **SQLite** for the file registry — portable, zero-config, single-file database
 - **BLAKE3** for hashing — cryptographic-grade speed, streaming with constant memory
 - **Concurrent pipeline** — worker pools for scanning, hashing, and scoring with bounded concurrency
-- **WebSocket status streaming** — real-time progress updates as files are processed
+- **Structured progress logs** — every pipeline event is emitted as a structured log line keyed by session ID, so progress is traceable live or after the fact
 - **Serialised writes** — a bulk writer ensures database consistency without sacrificing throughput
 - **Capture grouping** — understands iPhone and DSLR filename conventions natively
 
@@ -167,12 +201,13 @@ WanderSort is under active development. Here's what's built and what's coming:
 | Stage | Status |
 | --- | --- |
 | File scanner with concurrent directory walking | ✅ Done |
-| File classifier (13 media formats, 4 categories) | ✅ Done |
+| File classifier (11 media formats, 4 categories) | ✅ Done |
 | Capture group detection (iPhone & DSLR patterns) | ✅ Done |
 | BLAKE3 hashing with content group deduplication | ✅ Done |
 | EXIF metadata extraction (11 format-specific parsers) | ✅ Done |
 | SQLite schema with full file registry | ✅ Done |
-| API with WebSocket real-time status | ✅ Done |
+| Command-line interface (setup, scan, report, reset) | ✅ Done |
+| REST API server with structured session logs | ✅ Done |
 | Metadata scoring engine | 🔧 In progress |
 | Deduplication with master file selection | 🔧 In progress |
 | Virtual folder tree builder | 📋 Planned |

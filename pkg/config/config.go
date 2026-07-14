@@ -5,79 +5,48 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 )
 
 const (
-	defaultLibraryDir  = "WanderSortLibrary"
-	defaultLogFileName = ".wandersort.log"
-	defaultDBFileName  = ".wandersort.db"
+	DefaultLibraryDir  = "WanderSortLibrary"
+	DefaultLogFileName = ".wandersort.log"
+	DefaultDBFileName  = ".wandersort.db"
 	locationDBFileName = "location.db"
 	defaultLogLevel    = "info"
-	defaultPort        = "8080"
+	defaultPort        = "7658"
 )
 
 type Configuration struct {
 	ServerPort     string
-	Host           string
 	AppDBPath      string
 	LocationDBPath string
 	LogLevel       string
 	LogConsole     bool
 	LogFile        string
 	Workers        int
-	BinDir         string
+	ExecutablePath string
 }
 
-// Load reads environment variables and builds the application Configuration
-// Defaults: info log level, port 8080, WanderSortLibrary output dir, and runtime.NumCPU() workers
-func Load() (*Configuration, error) {
+// Defaults returns a Configuration populated with hardcoded defaults only.
+// No environment variables are read. Use for CLI where ENV > CLI > defaults predecence applies.
+func Defaults() (*Configuration, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve user home directory: %w", err)
 	}
 
-	// appDir is WanderSort's per-user configuration directory
 	appDir := filepath.Join(home, ".wandersort")
-
-	// binDir stores downloaded helper executables such as exiftool
-	binDir := filepath.Join(appDir, "bin")
-
-	outputPath := os.Getenv("OUTPUT_PATH")
-	if outputPath == "" {
-		outputPath = filepath.Join(home, defaultLibraryDir)
-	}
-
-	logPath := filepath.Join(outputPath, defaultLogFileName)
-	dbPath := filepath.Join(outputPath, defaultDBFileName)
-	dbLocationPath := filepath.Join(appDir, locationDBFileName)
-
-	logLevel := os.Getenv("LOG_LEVEL")
-	if logLevel == "" {
-		logLevel = defaultLogLevel
-	}
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = defaultPort
-	}
-
-	workerCount := runtime.NumCPU()
-	if workersEnv := os.Getenv("WORKERS"); workersEnv != "" {
-		if workers, err := strconv.Atoi(workersEnv); err == nil && workers > 0 {
-			workerCount = workers
-		}
-	}
+	executablesDirectory := filepath.Join(appDir, "bin")
+	outputPath := filepath.Join(home, DefaultLibraryDir)
 
 	return &Configuration{
-		ServerPort:     port,
-		Host:           "localhost",
-		AppDBPath:      dbPath,
-		LocationDBPath: dbLocationPath,
-		LogLevel:       logLevel,
+		ServerPort:     defaultPort,
+		AppDBPath:      filepath.Join(outputPath, DefaultDBFileName),
+		LocationDBPath: filepath.Join(appDir, locationDBFileName),
+		LogLevel:       defaultLogLevel,
 		LogConsole:     true,
-		LogFile:        logPath,
-		Workers:        workerCount,
-		BinDir:         binDir,
+		LogFile:        filepath.Join(outputPath, DefaultLogFileName),
+		Workers:        runtime.NumCPU(),
+		ExecutablePath: executablesDirectory,
 	}, nil
 }
