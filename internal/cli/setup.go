@@ -33,7 +33,7 @@ func (a *App) runSetup() error {
 	// if anything is already installing, step aside instead of installing twice.
 	l, err := lock.AcquireInstall(ctx, a.installDir(), false)
 	if errors.Is(err, lock.ErrHeld) {
-		a.Log.Info("Dependencies are already being installed by another process; nothing to do")
+		a.Log.Info("Dependencies are already being installed by another process; nothing to do", logger.UserKey, true)
 		return nil
 	}
 	if err != nil {

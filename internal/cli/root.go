@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -84,7 +85,11 @@ func (a *App) installDir() string {
 // wait for an in-progress install to finish, then continue (a no-op if it is
 // already done).
 func (a *App) EnsureDependencies(ctx context.Context) error {
-	l, err := lock.AcquireInstall(ctx, a.installDir(), true)
+	l, err := lock.AcquireInstall(ctx, a.installDir(), false)
+	if errors.Is(err, lock.ErrHeld) {
+		a.Log.Info("Waiting for another process to finish installing dependencies...", logger.UserKey, true)
+		l, err = lock.AcquireInstall(ctx, a.installDir(), true)
+	}
 	if err != nil {
 		return fmt.Errorf("wait for dependency install: %w", err)
 	}
