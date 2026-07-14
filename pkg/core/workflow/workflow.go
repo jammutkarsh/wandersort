@@ -166,8 +166,8 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UU
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create scan session: %w", err)
 	}
-
-	wf.log.Info(fmt.Sprintf("Started session %s", sessionID), logger.UserKey, true, "sessionId", sessionID, "rootPaths", storedPaths)
+	msg := fmt.Sprintf("Started session %s", sessionID)
+	wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID, "rootPaths", storedPaths)
 
 	return sessionID, nil
 }
@@ -214,7 +214,8 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 				return wf.scanner.Run(wf.ctx, sessionID, paths)
 			},
 			onSuccess: func(count int) {
-				wf.log.Info(fmt.Sprintf("Found %d files", count), logger.UserKey, true, "sessionId", sessionID)
+				msg := fmt.Sprintf("Scanned %d files", count)
+				wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
 			},
 		},
 		/*
@@ -231,7 +232,8 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 				return wf.hasher.Run(wf.ctx, sessionID)
 			},
 			onSuccess: func(count int) {
-				wf.log.Info(fmt.Sprintf("Checked %d files for duplicates", count), logger.UserKey, true, "sessionId", sessionID)
+				msg := fmt.Sprintf("Checked %d files for duplicates", count)
+				wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
 			},
 		},
 		{
@@ -240,7 +242,8 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 				return wf.scorer.Run(wf.ctx, sessionID)
 			},
 			onSuccess: func(count int) {
-				wf.log.Info(fmt.Sprintf("Reviewed %d duplicate groups", count), logger.UserKey, true, "sessionId", sessionID)
+				msg := fmt.Sprintf("Reviewed %d duplicate groups", count)
+				wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
 			},
 		},
 	}
@@ -257,7 +260,8 @@ func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhaseKind, phaseFunc 
 		return 0, db.StatusFailed, &msg, !success
 	}
 
-	wf.log.Info(status.message, logger.UserKey, true, "sessionId", sessionID)
+	msg := fmt.Sprintf("Starting %s phase", status.inProgress)
+	wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
 	count, err := phaseFunc()
 	if err != nil {
 		var finalStatus string
