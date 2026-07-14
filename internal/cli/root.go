@@ -27,6 +27,7 @@ const (
 	flagWorkers    = "workers"
 	flagPort       = "port"
 	flagYes        = "yes"
+	flagVertical   = "vertical"
 )
 
 type App struct {

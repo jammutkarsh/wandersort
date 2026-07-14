@@ -34,7 +34,15 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
   - `setup.go` — downloads exiftool + location DB. **Optional** — scan/serve
     auto-install missing deps via `App.EnsureDependencies`. Uses a *non-blocking*
     install lock: if a scan/serve is already installing, setup steps aside.
-  - `report.go` — read-only summary of last scan (opens its own RO sqlite conn).
+  - `report.go` — read-only per-session summary (opens its own RO sqlite conn).
+    Lists every `scan_sessions` row (newest first), each with its own
+    scanned/hashed/duplicate counts — duplicates are scoped to that session's
+    own files via `scan_session_id` (two sessions over different roots can
+    have unrelated duplicate pictures, so counts never bleed across sessions).
+    Errors out if the DB has no sessions yet; flags the newest session as
+    partial if its status isn't terminal (`COMPLETED`/`FAILED`/`CANCELLED`).
+    Default output is a bordered table; `--vertical`/`-x` (psql `\x`-style)
+    prints each session as expanded label:value pairs for narrow terminals.
   - `report_issue.go` — `report-issue` cmd: zips the log (renamed
     `wandersort.log`) + `about.txt`; db opt-in via `--include-db` (holds paths/GPS).
   - `reset.go` — wipe scan data (confirm prompt unless `--yes`).
@@ -50,6 +58,10 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
       "already running" message) and `AcquireInstall` (install coordination
       across scan/serve/setup: blocking for scan/serve, non-blocking for
       setup) — and the lock filenames (`OutputFileName`, `InstallFileName`).
+      `EnsureDependencies` (in `root.go`) tries the install lock non-blocking
+      first so it can log a `UserKey`-tagged "waiting for another process…"
+      line before falling back to the blocking acquire — without that, a
+      scan/serve waiting behind an in-progress install just looks hung.
       Only `cli` uses locking, so this isn't split out to `pkg/utils` — it was
       merged out of there.
     - `pkg/style/` — shared lipgloss palette/styles (`style.Err`,
