@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 )
 
 const (
@@ -80,11 +79,13 @@ type CommonMetadata struct {
 	GPSPosition    string `json:"GPSPosition"`    // combined "lat, lon" string from exiftool
 }
 
-// itoa and ftoa are package-level helpers used by ToCommon adapters
-func itoa(v int) string     { return strconv.Itoa(v) }
+// ftoa formats a float without a trailing exponent or ".0".
 func ftoa(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
-// numStr converts an any value that may be a json.Number, string, or float64 to string.
+// numStr converts a decoded JSON value (string, number, or bool) to its string
+// form. This is what makes parsing tolerant: exiftool is inconsistent about
+// whether a given tag is emitted as a string or a number, and reading through
+// `any` accepts either instead of failing the whole decode.
 func numStr(v any) string {
 	switch v := v.(type) {
 	case string:
@@ -96,56 +97,70 @@ func numStr(v any) string {
 	}
 }
 
-// Metadata is the common interface implemented by all file-type metadata structs
-type Metadata interface {
-	MediaType() string
-	ToCommon() CommonMetadata
-}
-
-// ParseFromBytes decodes a JSON byte slice into the target metadata struct T
-func ParseFromBytes[T Metadata](data []byte) (T, error) {
-	var m T
-	if err := json.Unmarshal(data, &m); err != nil {
-		return m, fmt.Errorf("unmarshal: %w", err)
-	}
-	return m, nil
-}
-
-// ParseMetadata parses the raw JSON bytes representing EXIF metadata for a given file extension
-// and returns the unified CommonMetadata representation
+// ParseMetadata parses raw exiftool JSON for a file and returns the unified
+// CommonMetadata. It decodes into a generic map and reads only the keys it
+// needs, so a type mismatch on any single tag (a string where a number was
+// expected, or vice-versa) no longer drops all metadata for the file.
 func ParseMetadata(ext string, data []byte) (CommonMetadata, error) {
-	var m Metadata
-	var err error
-
-	switch strings.ToLower(ext) {
-	case ".jpg":
-		m, err = ParseFromBytes[Jpg](data)
-	case ".jpeg":
-		m, err = ParseFromBytes[Jpeg](data)
-	case ".heic":
-		m, err = ParseFromBytes[Heic](data)
-	case ".png":
-		m, err = ParseFromBytes[Png](data)
-	case ".bmp":
-		m, err = ParseFromBytes[Bmp](data)
-	case ".webp":
-		m, err = ParseFromBytes[Webp](data)
-	case ".cr2":
-		m, err = ParseFromBytes[Cr2](data)
-	case ".dng":
-		m, err = ParseFromBytes[Dng](data)
-	case ".mp4":
-		m, err = ParseFromBytes[Mp4](data)
-	case ".mov":
-		m, err = ParseFromBytes[Mov](data)
-	case ".aae":
-		m, err = ParseFromBytes[Aae](data)
-	default:
-		return CommonMetadata{}, fmt.Errorf("unsupported extension: %q", ext)
-	}
-
-	if err != nil {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return CommonMetadata{}, fmt.Errorf("parse %s: %w", ext, err)
 	}
-	return m.ToCommon(), nil
+
+	get := func(key string) string {
+		if v, ok := raw[key]; ok && v != nil {
+			return numStr(v)
+		}
+		return ""
+	}
+
+	return CommonMetadata{
+		ExifToolVersion:     get("ExifToolVersion"),
+		SourceFile:          get("SourceFile"),
+		Directory:           get("Directory"),
+		FileName:            get("FileName"),
+		FileSize:            get("FileSize"),
+		FilePermissions:     get("FilePermissions"),
+		FileType:            get("FileType"),
+		FileTypeExtension:   get("FileTypeExtension"),
+		MIMEType:            get("MIMEType"),
+		FileModifyDate:      get("FileModifyDate"),
+		FileAccessDate:      get("FileAccessDate"),
+		FileInodeChangeDate: get("FileInodeChangeDate"),
+
+		ImageWidth:  get("ImageWidth"),
+		ImageHeight: get("ImageHeight"),
+		ImageSize:   get("ImageSize"),
+		Megapixels:  get("Megapixels"),
+
+		Orientation: get("Orientation"),
+
+		Make:      get("Make"),
+		Model:     get("Model"),
+		LensModel: get("LensModel"),
+		Software:  get("Software"),
+
+		CreateDate:       get("CreateDate"),
+		ModifyDate:       get("ModifyDate"),
+		DateTimeOriginal: get("DateTimeOriginal"),
+
+		ISO:                  get("ISO"),
+		Aperture:             get("Aperture"),
+		FNumber:              get("FNumber"),
+		FocalLength:          get("FocalLength"),
+		ExposureTime:         get("ExposureTime"),
+		ShutterSpeed:         get("ShutterSpeed"),
+		ExposureMode:         get("ExposureMode"),
+		ExposureProgram:      get("ExposureProgram"),
+		ExposureCompensation: get("ExposureCompensation"),
+		Flash:                get("Flash"),
+		MeteringMode:         get("MeteringMode"),
+		WhiteBalance:         get("WhiteBalance"),
+
+		GPSLatitude:    get("GPSLatitude"),
+		GPSLongitude:   get("GPSLongitude"),
+		GPSAltitude:    get("GPSAltitude"),
+		GPSAltitudeRef: get("GPSAltitudeRef"),
+		GPSPosition:    get("GPSPosition"),
+	}, nil
 }
