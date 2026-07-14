@@ -92,7 +92,11 @@ Only used by `serve`. Standard handler→service→repository split per domain:
 - `location/` — offline reverse-geocode resolver + its own sqlite DB. `Setup()`
   downloads DB+meta if missing (idempotent); `exiftool.Setup()` is the same idea
   for the binary. Both are called lazily by `EnsureDependencies`.
-- `classifier/` — media type detection, one file per format (jpeg/heic/mov/…).
+- `classifier/` — extension-based media type detection (`classifier.go`) and
+  `ParseMetadata` (`models.go`), which decodes exiftool JSON into a generic map
+  and reads only the `CommonMetadata` keys it needs. **Tolerant by design:** a
+  type mismatch on any single exiftool tag no longer fails the whole decode
+  (this replaced 11 giant strict per-format structs). No per-format files.
 - `exiftool/` — bundled exiftool wrapper + verify.
 - `path/` — path canonicalization / home-relative helpers.
 - `utils/download.go` — atomic HTTP download (temp file + rename).

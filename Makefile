@@ -23,7 +23,7 @@ test:
 
 swagger:
 	@which swag >/dev/null 2>&1 || (echo "Swag CLI not found. Install with 'go install github.com/swaggo/swag/cmd/swag@latest'"; exit 1)
-	swag init -g internal/cli/serve.go -o docs
+	swag init -g internal/cli/serve.go -o swagger
 
 lint:
 	@which gofumpt >/dev/null 2>&1 || (echo "gofumpt not found. Install with 'go install mvdan.cc/gofumpt@latest'"; exit 1)

@@ -9,7 +9,7 @@
     "paths": {
         "/internal/v1/admin/reset": {
             "post": {
-                "description": "Deletes all scan sessions, file registry entries, content groups and group members in a single transaction. Irreversible",
+                "description": "Deletes all scan sessions, file registry entries, and file metadata in a single transaction. Irreversible",
                 "produces": [
                     "application/json"
                 ],
@@ -86,13 +86,10 @@
         "admin.ResetResponse": {
             "type": "object",
             "properties": {
-                "contentGroupsDeleted": {
+                "fileMetadataDeleted": {
                     "type": "integer"
                 },
                 "filesDeleted": {
-                    "type": "integer"
-                },
-                "groupMembersDeleted": {
                     "type": "integer"
                 },
                 "scanSessionsDeleted": {
