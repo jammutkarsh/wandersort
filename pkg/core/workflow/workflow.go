@@ -38,12 +38,36 @@ type Workflow struct {
 	path *path.Resolver
 
 	/* Pipeline components */
-	scanner *scanner.Scanner
-	hasher  *hasher.Hasher
-	scorer  *scorer.Scorer
+	scanner Scanner
+	hasher  Hasher
+	scorer  Scorer
 
 	wg sync.WaitGroup
 }
+
+// Scanner, Hasher and Scorer are the three pipeline phases. Interfaces so
+// tests and alternate strategies (see TODO #22 on hashing) can substitute
+// implementations without touching the orchestrator.
+type (
+	Scanner interface {
+		Run(ctx context.Context, sessionID uuid.UUID, paths []string) (int, error)
+	}
+	Hasher interface {
+		Run(ctx context.Context, sessionID uuid.UUID) (int, error)
+	}
+	Scorer interface {
+		Run(ctx context.Context, sessionID uuid.UUID) (int, error)
+	}
+)
+
+// Option overrides a default pipeline component on NewWorkflow.
+type Option func(*Workflow)
+
+func WithScanner(s Scanner) Option { return func(wf *Workflow) { wf.scanner = s } }
+
+func WithHasher(h Hasher) Option { return func(wf *Workflow) { wf.hasher = h } }
+
+func WithScorer(s Scorer) Option { return func(wf *Workflow) { wf.scorer = s } }
 
 type workflowPhase struct {
 	kind      workflowPhaseKind
@@ -83,9 +107,9 @@ func (kind workflowPhaseKind) status() phaseStatus {
 }
 
 // NewWorkflow creates a new workflow instance
-func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration, exiftoolPath string) *Workflow {
+func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration, exiftoolPath string, opts ...Option) *Workflow {
 	log.Info("Pipeline configured", "workers", cfg.Workers)
-	return &Workflow{
+	wf := &Workflow{
 		ctx:              ctx,
 		db:               db,
 		locationResolver: locationResolver,
@@ -95,6 +119,10 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 		log:              log,
 		path:             path.New(),
 	}
+	for _, opt := range opts {
+		opt(wf)
+	}
+	return wf
 }
 
 // SubmitScan creates a new scan session and runs the pipeline in a background

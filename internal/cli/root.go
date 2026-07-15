@@ -44,6 +44,9 @@ type App struct {
 	AppDB            *db.DB
 	LocationDB       *db.DB
 	LocationResolver *location.Resolver
+	// Commands are extra subcommands registered on the root command, so
+	// embedders and tests can extend the CLI without editing newRootCmd.
+	Commands []*cobra.Command
 }
 
 func (a *App) InitAppDB(ctx context.Context) error {
@@ -211,6 +214,7 @@ Flags take precedence over environment variables.`,
 	rootCmd.AddCommand(a.newReportCmd())
 	rootCmd.AddCommand(a.newReportIssueCmd())
 	rootCmd.AddCommand(a.newResetCmd())
+	rootCmd.AddCommand(a.Commands...)
 
 	rootCmd.InitDefaultCompletionCmd()
 	for _, cmd := range rootCmd.Commands() {
