@@ -27,7 +27,16 @@ func (r *Repository) Reset(ctx context.Context) (ResetResponse, error) {
 
 	var count int64
 
-	result, err := tx.ExecContext(ctx, `DELETE FROM file_metadata`)
+	// virtual_fs_entries references file_registry with no ON DELETE action,
+	// so it must go before the registry delete
+	result, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries`)
+	if err != nil {
+		return ResetResponse{}, fmt.Errorf("reset: delete vfs entries: %w", err)
+	}
+	count, _ = result.RowsAffected()
+	resp.VFSEntriesDeleted = count
+
+	result, err = tx.ExecContext(ctx, `DELETE FROM file_metadata`)
 	if err != nil {
 		return ResetResponse{}, fmt.Errorf("reset: delete metadata: %w", err)
 	}
@@ -47,6 +56,15 @@ func (r *Repository) Reset(ctx context.Context) (ResetResponse, error) {
 	}
 	count, _ = result.RowsAffected()
 	resp.ScanSessionsDeleted = count
+
+	// Factory wipe: confirmed folder names and anchors go too, so a reset
+	// output dir behaves exactly like a brand-new one
+	result, err = tx.ExecContext(ctx, `DELETE FROM user_labels`)
+	if err != nil {
+		return ResetResponse{}, fmt.Errorf("reset: delete user labels: %w", err)
+	}
+	count, _ = result.RowsAffected()
+	resp.UserLabelsDeleted = count
 
 	if err := tx.Commit(); err != nil {
 		return ResetResponse{}, fmt.Errorf("reset: commit: %w", err)

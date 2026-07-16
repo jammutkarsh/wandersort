@@ -1,11 +1,16 @@
 package hasher
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/google/uuid"
+	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
 const (
@@ -217,5 +222,87 @@ func TestHashFile_WithRealTempDir(t *testing.T) {
 	}
 	if hashes["img1.jpg"] == hashes["video.mp4"] {
 		t.Errorf("files with different content should hash differently: %q", hashes["img1.jpg"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Run — stale metadata replacement on re-hash
+// ---------------------------------------------------------------------------
+
+func TestRunReplacesStaleMetadata(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.New(ctx, filepath.Join(t.TempDir(), "test.db"), db.AppDB, logger.NewNoopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "photo.jpg"), []byte("current bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionID := uuid.New()
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'SCANNED', '/tmp')`,
+		sessionID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
+		VALUES (1, 'photo.jpg', 13, '2024-01-01T00:00:00Z', ?, ?, '.jpg', 'IMAGE')`,
+		sessionID.String(), root); err != nil {
+		t.Fatal(err)
+	}
+	// Stale metadata from a previous pipeline run; the insert trigger flips
+	// scan_status to HASHED, so reset it to DISCOVERED as the scanner's
+	// change detection would after the file was modified
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO file_metadata (file_hash, file_id, is_master) VALUES ('stale-hash', 1, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx,
+		`UPDATE file_registry SET scan_status = 'DISCOVERED' WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A nonexistent exiftool path is fine: extraction failures are tolerated
+	h := New(ctx, d, logger.NewNoopLogger(), filepath.Join(t.TempDir(), "missing-exiftool"), 1)
+	count, err := h.Run(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("Run hashed %d files, want 1", count)
+	}
+	d.Writer.Flush()
+
+	var rows []struct {
+		FileHash string `db:"file_hash"`
+		IsMaster bool   `db:"is_master"`
+	}
+	if err := d.SQL.Select(&rows, `SELECT file_hash, is_master FROM file_metadata WHERE file_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("file has %d metadata rows after re-hash, want exactly 1", len(rows))
+	}
+	wantHash, err := h.hashFile(filepath.Join(root, "photo.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows[0].FileHash != wantHash {
+		t.Errorf("re-hashed metadata hash = %s, want %s", rows[0].FileHash, wantHash)
+	}
+	if !rows[0].IsMaster {
+		t.Error("re-hashed metadata should return to the is_master default (1)")
+	}
+
+	var status string
+	if err := d.SQL.Get(&status, `SELECT scan_status FROM file_registry WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if status != db.StatusHashed {
+		t.Errorf("scan_status = %s, want HASHED", status)
 	}
 }

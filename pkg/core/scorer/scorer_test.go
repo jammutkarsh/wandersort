@@ -270,4 +270,60 @@ func TestRun(t *testing.T) {
 	assertMasters()
 	// Re-running is idempotent: same winners, no flapping.
 	assertMasters()
+
+	// A demoted file whose duplicate group shrank to one member (the rest
+	// swept by a re-scan) must be re-promoted, or it stays invisible to VFS.
+	if _, err := d.ExecContext(ctx, `UPDATE file_metadata SET is_master = 0 WHERE file_id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	assertMasters()
+}
+
+func TestRunDeterministicTieBreak(t *testing.T) {
+	d := setupTestDB(t)
+	ctx := context.Background()
+	sessionId := uuid.New()
+
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'HASHED', '/tmp')`,
+		sessionId.String()); err != nil {
+		t.Fatal(err)
+	}
+	// Two duplicates with identical score and identical path length; the
+	// (source_root, file_path) ordering must decide the winner, not the
+	// insertion order — so insert the expected loser first
+	seed := []struct {
+		id   int64
+		path string
+	}{
+		{1, "trips/goa/beach_b.jpg"},
+		{2, "trips/goa/beach_a.jpg"},
+	}
+	for _, f := range seed {
+		if _, err := d.ExecContext(ctx, `
+			INSERT INTO file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
+			VALUES (?, ?, 1024, '2024-01-01', ?, '/photos', '.jpg', 'IMAGE')`,
+			f.id, f.path, sessionId.String()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.ExecContext(ctx,
+			`INSERT INTO file_metadata (file_hash, file_id) VALUES ('tied', ?)`, f.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := &Scorer{db: d, log: logger.NewNoopLogger()}
+	if _, err := s.Run(ctx, sessionId); err != nil {
+		t.Fatal(err)
+	}
+	d.Writer.Flush()
+
+	var masterID int64
+	if err := d.SQL.GetContext(ctx, &masterID,
+		`SELECT file_id FROM file_metadata WHERE is_master = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if masterID != 2 {
+		t.Errorf("tie-break master = file %d, want file 2 (first by file_path order)", masterID)
+	}
 }

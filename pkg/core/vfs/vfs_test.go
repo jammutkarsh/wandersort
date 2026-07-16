@@ -432,3 +432,57 @@ func TestRebuildIsIdempotent(t *testing.T) {
 		t.Errorf("rebuild changed entries: %v vs %v", first[id], second[id])
 	}
 }
+
+// TestLibraryScopeAcrossSessions covers the incremental re-scan contract: a
+// master indexed by an earlier session is still proposed by a later run, and
+// the later run replaces the previous proposal set wholesale
+func TestLibraryScopeAcrossSessions(t *testing.T) {
+	h := newHarness(t)
+	// File belongs to the harness's (old) session…
+	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
+	// …with a stale proposal persisted by that old session
+	if _, err := h.d.ExecContext(context.Background(), `
+		INSERT INTO virtual_fs_entries (session_id, file_id, source_path, target_path)
+		VALUES (?, ?, '/src/dump/IMG_0001.HEIC', 'stale/IMG_0001.HEIC')`,
+		h.sessionID.String(), id); err != nil {
+		t.Fatal(err)
+	}
+
+	// A brand-new session runs the VFS phase without having indexed anything
+	newSession := uuid.New()
+	if _, err := h.d.ExecContext(context.Background(),
+		`INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'SCORED', '/src')`,
+		newSession.String()); err != nil {
+		t.Fatal(err)
+	}
+	vfs := &VFS{
+		db:      h.d,
+		log:     logger.NewNoopLogger(),
+		extract: h.extractor,
+		path:    path.New(),
+		cfg:     DefaultConfig(2),
+	}
+	count, err := vfs.Run(context.Background(), newSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("Run proposed %d entries, want 1 (old-session master must be included)", count)
+	}
+	h.d.Writer.Flush()
+
+	var rows []entryRow
+	if err := h.d.SQL.Select(&rows,
+		`SELECT file_id, target_path, cluster_id, status, suggestion, suggestion_source FROM virtual_fs_entries`); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("library has %d proposal rows, want exactly 1 (stale rows wiped)", len(rows))
+	}
+	if rows[0].FileID != id {
+		t.Errorf("proposal file_id = %d, want %d", rows[0].FileID, id)
+	}
+	if rows[0].TargetPath == "stale/IMG_0001.HEIC" {
+		t.Error("stale proposal survived the rebuild")
+	}
+}

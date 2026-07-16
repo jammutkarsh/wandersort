@@ -65,6 +65,17 @@ func New(db *db.DB, log logger.Logger) *Scorer {
 func (s *Scorer) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	s.log.Info("Scoring session", "sessionId", sessionID)
 
+	// Re-promote solo files stuck at is_master = 0: when a re-scan sweeps every
+	// other member of a duplicate group, the demoted survivor is no longer in
+	// any COUNT(*) > 1 group below, so nothing else would ever elect it again
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE file_metadata SET is_master = 1
+		WHERE is_master = 0 AND file_hash IN (
+			SELECT file_hash FROM file_metadata
+			GROUP BY file_hash HAVING COUNT(*) = 1)`); err != nil {
+		return 0, fmt.Errorf("re-promote solo masters: %w", err)
+	}
+
 	type member struct {
 		FileHash   string `db:"file_hash"`
 		FileID     int64  `db:"file_id"`
@@ -72,6 +83,9 @@ func (s *Scorer) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 		SourceRoot string `db:"source_root"`
 	}
 
+	// Ordering by (source_root, file_path) within each hash makes the election
+	// deterministic: ties on score and path length keep the first member seen,
+	// which must not depend on AUTOINCREMENT insertion order across re-scans
 	var rows []member
 	if err := s.db.SQL.SelectContext(ctx, &rows, `
 		SELECT fm.file_hash, fm.file_id,
@@ -81,7 +95,7 @@ func (s *Scorer) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 		WHERE fm.file_hash IN (
 			SELECT file_hash FROM file_metadata
 			GROUP BY file_hash HAVING COUNT(*) > 1 )
-		ORDER BY fm.file_hash`); err != nil {
+		ORDER BY fm.file_hash, fr.source_root, fr.file_path`); err != nil {
 		return 0, fmt.Errorf("query members: %w", err)
 	}
 
