@@ -42,6 +42,11 @@ const (
 	StatusCancelled  = "CANCELLED"
 	StatusDiscovered = "DISCOVERED"
 	StatusError      = "ERROR"
+
+	// virtual_fs_entries lifecycle
+	StatusProposed = "PROPOSED"
+	StatusApproved = "APPROVED"
+	StatusDone     = "DONE"
 )
 
 // SQLite connection pool and retry tuning
