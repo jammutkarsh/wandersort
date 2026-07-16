@@ -11,7 +11,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jammutkarsh/wandersort/internal/lock"
+	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
