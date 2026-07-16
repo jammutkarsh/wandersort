@@ -1,8 +1,10 @@
 // Package vfs is phase 4 of the pipeline. It proposes a destination folder
-// hierarchy for every master file of a session without touching anything on
-// disk, persisting the proposal as PROPOSED rows in virtual_fs_entries.
-// The review flow (issue #8) approves or corrects it; a future Execute phase
-// performs the actual copy/move.
+// hierarchy for every master file in the library — regardless of which scan
+// session indexed it — without touching anything on disk, persisting the
+// proposal as PROPOSED rows in virtual_fs_entries. Each run replaces the
+// previous proposal wholesale, so the same set of source files always yields
+// the same proposal. The review flow (issue #8) approves or corrects it; a
+// future Execute phase performs the actual copy/move.
 package vfs
 
 import (
@@ -60,11 +62,12 @@ func New(database *db.DB, resolver *location.Resolver, log logger.Logger, exifto
 	return v
 }
 
-// Run builds the virtual filesystem proposal for a session's master files
+// Run builds the virtual filesystem proposal for the whole library's master
+// files; sessionID only stamps provenance on the rows it writes
 func (v *VFS) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	v.log.Info("Building virtual filesystem", "sessionId", sessionID)
 
-	masters, err := v.loadMasters(ctx, sessionID)
+	masters, err := v.loadMasters(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -99,8 +102,13 @@ func (v *VFS) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	return count, nil
 }
 
-// loadMasters reads the session's master files joined with their hashed metadata
-func (v *VFS) loadMasters(ctx context.Context, sessionID uuid.UUID) ([]masterFile, error) {
+// loadMasters reads every master file in the library joined with its hashed
+// metadata. Deliberately not session-scoped: the proposal must cover files
+// indexed by earlier sessions too, or the output would depend on session
+// history. The (source_root, file_path) order makes clustering and collision
+// suffixes deterministic (clusterAndSuggest sorts stably), unlike
+// AUTOINCREMENT ids which vary with concurrent-worker insertion order
+func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 	var masters []masterFile
 	if err := v.db.SQL.SelectContext(ctx, &masters, `
 		SELECT fr.id, fr.file_path, fr.source_root, fr.media_type, fr.file_extension, fr.file_modified_at,
@@ -108,8 +116,8 @@ func (v *VFS) loadMasters(ctx context.Context, sessionID uuid.UUID) ([]masterFil
 			fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date
 		FROM file_registry fr
 		JOIN file_metadata fm ON fm.file_id = fr.id
-		WHERE fr.scan_session_id = ? AND fm.is_master = 1
-		ORDER BY fr.id`, sessionID.String()); err != nil {
+		WHERE fm.is_master = 1
+		ORDER BY fr.source_root, fr.file_path`); err != nil {
 		return nil, fmt.Errorf("query master files: %w", err)
 	}
 	for i := range masters {
@@ -343,13 +351,15 @@ func (v *VFS) dirFor(m *masterFile) string {
 	return strings.Join(parts, "/")
 }
 
-// persist replaces the session's previous proposal: the delete runs through
-// the same FIFO writer as the inserts, so a rebuild leaves no stale rows for
-// files that are no longer masters
+// persist replaces the whole previous proposal — one live proposal set for the
+// library, whichever sessions wrote it. The delete runs through the same FIFO
+// writer as the inserts, so a rebuild leaves no stale rows for files that are
+// no longer masters.
+// ponytail: revisit preserving APPROVED rows when the review/execute flow
+// (issue #8) lands — today every run regenerates from scratch
 func (v *VFS) persist(sessionID uuid.UUID, masters []masterFile) (int, error) {
 	if !v.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
-		_, err := tx.ExecContext(ctx,
-			`DELETE FROM virtual_fs_entries WHERE session_id = ?`, sessionID.String())
+		_, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries`)
 		return err
 	}) {
 		return 0, fmt.Errorf("clear previous vfs proposal: writer closed")

@@ -230,6 +230,14 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 		}
 
 		ok := h.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+			// A re-hashed file (size/mtime change reset it to DISCOVERED) still
+			// has its old metadata row; a plain INSERT would either violate
+			// UNIQUE(file_hash, file_id) or leave a stale duplicate in the
+			// scorer's hash grouping. Fresh files make this a no-op
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM file_metadata WHERE file_id = ?`, file.id); err != nil {
+				return err
+			}
 			_, err := tx.ExecContext(
 				ctx, `
 				INSERT INTO file_metadata (

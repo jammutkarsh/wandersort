@@ -48,6 +48,7 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string) 
 	s.log.Info("Scanner Phase: Processing all paths", "sessionId", sessionID, "pathCount", len(paths))
 
 	type scanResult struct {
+		path  string
 		count int
 		err   error
 	}
@@ -72,13 +73,7 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string) 
 	for range s.workers {
 		workers.Go(func() {
 			for path := range jobs {
-				discoveredChan, err := s.scan(ctx, sessionID, path, &newFiles, &errorCount)
-				if err != nil {
-					s.log.Error("Failed to scan path", "sessionId", sessionID, "path", path, "error", err)
-					errorCount.Add(1)
-					results <- scanResult{err: fmt.Errorf("scan failed for %s: %w", path, err)}
-					continue
-				}
+				discoveredChan, walkErr := s.scan(ctx, sessionID, path, &newFiles, &errorCount)
 
 				count := 0
 				// Drain the channel to both count stored discoveries and wait until
@@ -87,8 +82,15 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string) 
 					count++
 				}
 
+				if err := <-walkErr; err != nil {
+					s.log.Error("Failed to scan path", "sessionId", sessionID, "path", path, "error", err)
+					errorCount.Add(1)
+					results <- scanResult{path: path, count: count, err: fmt.Errorf("scan failed for %s: %w", path, err)}
+					continue
+				}
+
 				s.log.Info("Scanned path", "sessionId", sessionID, "path", path, "filesDiscovered", count)
-				results <- scanResult{count: count}
+				results <- scanResult{path: path, count: count}
 			}
 		})
 	}
@@ -97,12 +99,27 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string) 
 	workers.Wait()
 	close(results)
 
+	// Flush before sweeping: dbWritesWG tracks upsert execution inside the
+	// batch transaction, not its commit, so only a writer flush guarantees the
+	// sweep's own transaction sees every scan_session_id reassignment
+	s.db.Writer.Flush()
+
 	totalFiles := 0
 	var firstScanErr error
 	for result := range results {
 		totalFiles += result.count
-		if result.err != nil && firstScanErr == nil {
-			firstScanErr = result.err
+		if result.err != nil {
+			if firstScanErr == nil {
+				firstScanErr = result.err
+			}
+			continue
+		}
+		if err := s.sweep(ctx, sessionID, result.path); err != nil {
+			s.log.Error("Failed to sweep path", "sessionId", sessionID, "path", result.path, "error", err)
+			errorCount.Add(1)
+			if firstScanErr == nil {
+				firstScanErr = err
+			}
 		}
 	}
 
@@ -120,13 +137,16 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string) 
 	return totalFiles, firstScanErr
 }
 
-// scan executes a scan for a single directory path and returns a channel
-// of discovered files. It's meant to be called by worker goroutines asynchronously
-func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, path string, newFiles, errorCount *atomic.Int64) (<-chan FileDiscovery, error) {
+// scan executes a scan for a single directory path and returns a channel of
+// discovered files plus a single-shot channel carrying the walk's final error.
+// It's meant to be called by worker goroutines asynchronously; the error
+// channel resolves once the discovery channel is drained
+func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, path string, newFiles, errorCount *atomic.Int64) (<-chan FileDiscovery, <-chan error) {
 	s.log.Info("Scanning path", "sessionId", sessionID, "path", path)
 	// Channel for discovered files
 	fileDiscoveryChannel := make(chan FileDiscovery, 2*s.workers)
 	scanResultsChannel := make(chan FileDiscovery, 2*s.workers)
+	walkErr := make(chan error, 1)
 
 	// Start a goroutine to walk the directory and send discoveries to the channel
 	// We use a separate channel for walking results to decouple file discovery from database writes
@@ -135,9 +155,11 @@ func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, path string, ne
 	go func() {
 		defer close(scanResultsChannel)
 
-		if err := s.walkRoot(ctx, sessionID, path, scanResultsChannel); err != nil {
+		err := s.walkRoot(ctx, sessionID, path, scanResultsChannel)
+		if err != nil {
 			s.log.Error("Walk root failed", "sessionId", sessionID, "path", path, "error", err)
 		}
+		walkErr <- err
 	}()
 
 	// Consumer
@@ -145,7 +167,7 @@ func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, path string, ne
 		s.store(ctx, sessionID, scanResultsChannel, fileDiscoveryChannel, newFiles, errorCount)
 	}()
 
-	return fileDiscoveryChannel, nil
+	return fileDiscoveryChannel, walkErr
 }
 
 // walkRoot walks absPath and emits FileDiscovery records with relative paths
@@ -166,6 +188,11 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 
 		// Handle errors (permission denied, etc.)
 		if err != nil {
+			// An unreadable root means the whole scan of this path failed —
+			// it must not look like "root is empty" (which would sweep the index)
+			if p == absRoot {
+				return fmt.Errorf("root unreadable: %w", err)
+			}
 			s.log.Error("Walk error", "sessionId", sessionID, "inputPath", path, "walkingPath", s.path.RelativeToHome(p), "error", err)
 			return nil // Continue walking
 		}
@@ -230,6 +257,52 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 	return nil
 }
 
+// sweep deletes rows for files under root that this session did not re-see.
+// The upsert reassigns scan_session_id on every live file, so any row still
+// pointing at an older session was deleted or moved on disk. Timestamps are
+// deliberately not compared (last_seen_at is datetime('now'), session
+// started_at is RFC3339 — string comparison across the two is broken).
+// Runs only for roots whose walk finished cleanly, so an unplugged drive or
+// unreadable root never wipes its index.
+// ponytail: walkRoot swallows per-file errors, so an unreadable subtree is
+// swept here and re-indexed on the next clean scan; the VFS never touches
+// disk, so nothing outside the database is at risk
+func (s *Scanner) sweep(ctx context.Context, sessionID uuid.UUID, root string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sweep %q: begin tx: %w", root, err)
+	}
+	defer tx.Rollback()
+
+	// Delete order is forced by foreign keys: virtual_fs_entries.file_id has
+	// no ON DELETE action, and file_metadata's SET NULL would leave orphan
+	// rows that still participate in the scorer's hash grouping
+	statements := []string{
+		`DELETE FROM virtual_fs_entries WHERE file_id IN
+			(SELECT id FROM file_registry WHERE source_root = ? AND scan_session_id != ?)`,
+		`DELETE FROM file_metadata WHERE file_id IN
+			(SELECT id FROM file_registry WHERE source_root = ? AND scan_session_id != ?)`,
+		`DELETE FROM file_registry WHERE source_root = ? AND scan_session_id != ?`,
+	}
+	var swept int64
+	for _, stmt := range statements {
+		result, err := tx.ExecContext(ctx, stmt, root, sessionID.String())
+		if err != nil {
+			return fmt.Errorf("sweep %q: %w", root, err)
+		}
+		swept, _ = result.RowsAffected()
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sweep %q: commit: %w", root, err)
+	}
+
+	if swept > 0 {
+		s.log.Info("Swept vanished files", "sessionId", sessionID, "path", root, "filesRemoved", swept)
+	}
+	return nil
+}
+
 // store drains the discovery channel and enqueues each file to the BulkWriter
 func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-chan FileDiscovery, storedFiles chan<- FileDiscovery, newFiles, errorCount *atomic.Int64) {
 	var dbWritesWG sync.WaitGroup
@@ -269,7 +342,11 @@ func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG
 			scan_session_id = excluded.scan_session_id,
 			file_origin = excluded.file_origin,
 			file_size = excluded.file_size,
-			file_modified_at = excluded.file_modified_at
+			file_modified_at = excluded.file_modified_at,
+			scan_status = CASE WHEN file_registry.file_size != excluded.file_size
+					OR file_registry.file_modified_at != excluded.file_modified_at
+					OR file_registry.scan_status IN ('HASHING','ERROR')
+				THEN 'DISCOVERED' ELSE file_registry.scan_status END
 		RETURNING id, (discovered_at = last_seen_at) AS is_new`
 
 	queryFileState := func(dbCtx context.Context, tx *sqlx.Tx) (int64, int, error) {
