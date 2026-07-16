@@ -43,12 +43,12 @@ func TestDeriveCapture(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.filename, func(t *testing.T) {
-			got := deriveCapture(tt.filename, tt.ext, tt.mediaType)
-			if got.captureKey != tt.wantStem {
-				t.Errorf("Stem = %q, want %q", got.captureKey, tt.wantStem)
+			got := DeriveCapture(tt.filename, tt.ext, tt.mediaType)
+			if got.Key != tt.wantStem {
+				t.Errorf("Stem = %q, want %q", got.Key, tt.wantStem)
 			}
-			if got.variant != tt.wantRole {
-				t.Errorf("Role = %q, want %q", got.variant, tt.wantRole)
+			if got.Role != tt.wantRole {
+				t.Errorf("Role = %q, want %q", got.Role, tt.wantRole)
 			}
 		})
 	}
@@ -72,8 +72,8 @@ func TestDeriveCaptureGrouping(t *testing.T) {
 
 	stems := make(map[string]bool)
 	for _, f := range group {
-		info := deriveCapture(f.filename, f.ext, f.mediaType)
-		stems[info.captureKey] = true
+		info := DeriveCapture(f.filename, f.ext, f.mediaType)
+		stems[info.Key] = true
 	}
 
 	if len(stems) != 1 {

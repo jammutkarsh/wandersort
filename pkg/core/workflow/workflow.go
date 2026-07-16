@@ -13,6 +13,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/hasher"
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/core/scorer"
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -35,6 +36,7 @@ type Workflow struct {
 	scanner Scanner
 	hasher  Hasher
 	scorer  Scorer
+	vfs     VFS
 
 	wg sync.WaitGroup
 }
@@ -52,6 +54,9 @@ type (
 	Scorer interface {
 		Run(ctx context.Context, sessionID uuid.UUID) (int, error)
 	}
+	VFS interface {
+		Run(ctx context.Context, sessionID uuid.UUID) (int, error)
+	}
 )
 
 // Option overrides a default pipeline component on NewWorkflow.
@@ -62,6 +67,8 @@ func WithScanner(s Scanner) Option { return func(wf *Workflow) { wf.scanner = s 
 func WithHasher(h Hasher) Option { return func(wf *Workflow) { wf.hasher = h } }
 
 func WithScorer(s Scorer) Option { return func(wf *Workflow) { wf.scorer = s } }
+
+func WithVFS(v VFS) Option { return func(wf *Workflow) { wf.vfs = v } }
 
 type workflowPhase struct {
 	kind      workflowPhaseKind
@@ -75,6 +82,7 @@ const (
 	workflowPhaseScan  workflowPhaseKind = "scan"
 	workflowPhaseHash  workflowPhaseKind = "hash"
 	workflowPhaseScore workflowPhaseKind = "score"
+	workflowPhaseVFS   workflowPhaseKind = "vfs"
 	// defaultFinalizeTimeout is the deadline for writing the final session
 	// status when the pipeline completed without interruption
 	defaultFinalizeTimeout = 15 * time.Second
@@ -91,6 +99,7 @@ var phaseStatusByKind = map[workflowPhaseKind]phaseStatus{
 	workflowPhaseScan:  {db.StatusScanning, db.StatusScanned, "Scanning your files…"},
 	workflowPhaseHash:  {db.StatusHashing, db.StatusHashed, "Looking for duplicate files…"},
 	workflowPhaseScore: {db.StatusScoring, db.StatusScored, "Selecting the best copy of each duplicate…"},
+	workflowPhaseVFS:   {db.StatusOrganizing, db.StatusOrganized, "Proposing an organized folder structure…"},
 }
 
 func (kind workflowPhaseKind) status() phaseStatus {
@@ -110,6 +119,7 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 		scanner:          scanner.New(db, log, cfg.Workers),
 		hasher:           hasher.New(ctx, db, log, exiftoolPath, cfg.Workers),
 		scorer:           scorer.New(db, log),
+		vfs:              vfs.New(db, locationResolver, log, exiftoolPath, vfs.DefaultConfig(cfg.Workers)),
 		log:              log,
 		path:             path.New(),
 	}
@@ -208,7 +218,7 @@ func (wf *Workflow) runSession(sessionID uuid.UUID, paths []string) (finalStatus
 		wf.finalizeSession(sessionID, finalStatus, finalErr)
 	}()
 
-	wf.log.Info("Workflow session started", "sessionId", sessionID, "phases", "scanning → hashing → scoring")
+	wf.log.Info("Workflow session started", "sessionId", sessionID, "phases", "scanning → hashing → scoring → organizing")
 
 	phases := wf.workflowPhases(sessionID, paths)
 
@@ -271,6 +281,16 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 			},
 			onSuccess: func(count int) {
 				msg := fmt.Sprintf("Reviewed %d duplicate groups", count)
+				wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
+			},
+		},
+		{
+			kind: workflowPhaseVFS,
+			run: func() (int, error) {
+				return wf.vfs.Run(wf.ctx, sessionID)
+			},
+			onSuccess: func(count int) {
+				msg := fmt.Sprintf("Proposed destinations for %d files", count)
 				wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
 			},
 		},

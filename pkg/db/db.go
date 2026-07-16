@@ -33,6 +33,8 @@ const (
 	StatusHashed     = "HASHED"
 	StatusScoring    = "SCORING"
 	StatusScored     = "SCORED"
+	StatusOrganizing = "ORGANIZING"
+	StatusOrganized  = "ORGANIZED"
 	StatusAnalyzing  = "ANALYZING"
 	StatusAnalyzed   = "ANALYZED"
 	StatusCompleted  = "COMPLETED"
@@ -40,6 +42,11 @@ const (
 	StatusCancelled  = "CANCELLED"
 	StatusDiscovered = "DISCOVERED"
 	StatusError      = "ERROR"
+
+	// virtual_fs_entries lifecycle
+	StatusProposed = "PROPOSED"
+	StatusApproved = "APPROVED"
+	StatusDone     = "DONE"
 )
 
 // SQLite connection pool and retry tuning

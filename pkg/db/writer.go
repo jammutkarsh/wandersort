@@ -141,6 +141,22 @@ func (bw *BulkWriter) start() {
 				flush()
 			}
 		case req := <-bw.flushReqs:
+			// Drain everything already enqueued before reporting the flush
+			// done: ops sent before Flush() was called are guaranteed to be
+			// in the channel buffer, but select order is random, so this
+			// request may have been picked before those ops were received
+		drain:
+			for {
+				select {
+				case op, ok := <-bw.ops:
+					if !ok {
+						break drain // closed; main loop handles shutdown
+					}
+					batch = append(batch, op)
+				default:
+					break drain
+				}
+			}
 			flush()
 			close(req.done)
 		case <-ticker.C:
