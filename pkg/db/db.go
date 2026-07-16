@@ -33,6 +33,8 @@ const (
 	StatusHashed     = "HASHED"
 	StatusScoring    = "SCORING"
 	StatusScored     = "SCORED"
+	StatusOrganizing = "ORGANIZING"
+	StatusOrganized  = "ORGANIZED"
 	StatusAnalyzing  = "ANALYZING"
 	StatusAnalyzed   = "ANALYZED"
 	StatusCompleted  = "COMPLETED"
