@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
+
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -109,6 +111,18 @@ func (s *Scorer) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 				bestScore = score
 				bestPathLen = pathLen
 			}
+		}
+
+		if !s.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE file_metadata
+				SET is_master = CASE WHEN file_id = ? THEN 1 ELSE 0 END
+				WHERE file_hash = ?`, master.FileID, master.FileHash); err != nil {
+				return fmt.Errorf("persist master for hash %s: %w", master.FileHash, err)
+			}
+			return nil
+		}) {
+			return count, fmt.Errorf("persist master for hash %s: writer closed", master.FileHash)
 		}
 
 		s.log.Debug("Persisted group master", "sessionId", sessionID, "hash", master.FileHash,
