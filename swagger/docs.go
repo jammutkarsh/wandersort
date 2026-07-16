@@ -102,6 +102,12 @@ const docTemplate = `{
                 },
                 "scanSessionsDeleted": {
                     "type": "integer"
+                },
+                "userLabelsDeleted": {
+                    "type": "integer"
+                },
+                "vfsEntriesDeleted": {
+                    "type": "integer"
                 }
             }
         },
