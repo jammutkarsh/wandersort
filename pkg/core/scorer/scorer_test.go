@@ -215,6 +215,12 @@ func TestRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	_, err = d.ExecContext(ctx, `INSERT INTO file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
+		VALUES (3, 'trips/goa/beach.jpg', 2048, '2024-01-01', ?, '/photos', '.jpg', 'IMAGE')`, sessionId.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	_, err = d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES ('abc', 1)`)
 	if err != nil {
 		t.Fatal(err)
@@ -223,13 +229,45 @@ func TestRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	s := &Scorer{db: d, log: logger.NewNoopLogger()}
-	n, err := s.Run(ctx, sessionId)
+	_, err = d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES ('solo', 3)`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Errorf("Run = %d, want 1", n)
+
+	s := &Scorer{db: d, log: logger.NewNoopLogger()}
+
+	assertMasters := func() {
+		t.Helper()
+		n, err := s.Run(ctx, sessionId)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Errorf("Run = %d, want 1", n)
+		}
+		d.Writer.Flush()
+
+		masters := map[int64]bool{}
+		rows := []struct {
+			FileID   int64 `db:"file_id"`
+			IsMaster bool  `db:"is_master"`
+		}{}
+		if err := d.SQL.SelectContext(ctx, &rows, `SELECT file_id, is_master FROM file_metadata`); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			masters[r.FileID] = r.IsMaster
+		}
+		// File 1 (meaningful name, non-generic dir) beats file 2 (camera name in DCIM).
+		want := map[int64]bool{1: true, 2: false, 3: true}
+		for id, wantMaster := range want {
+			if masters[id] != wantMaster {
+				t.Errorf("file %d is_master = %v, want %v", id, masters[id], wantMaster)
+			}
+		}
 	}
+
+	assertMasters()
+	// Re-running is idempotent: same winners, no flapping.
+	assertMasters()
 }

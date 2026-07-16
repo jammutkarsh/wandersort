@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS file_metadata (
     exif_date_time_original TEXT,
     exif_create_date        TEXT,
 
+    -- every file is a master by default; the scorer demotes the losers of
+    -- each duplicate group, solo files are never touched
+    is_master INTEGER NOT NULL DEFAULT 1,
+
     created_at TEXT DEFAULT (datetime('now'))
 );
 
