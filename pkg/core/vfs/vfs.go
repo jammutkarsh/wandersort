@@ -86,6 +86,9 @@ func (v *VFS) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	clusterAndSuggest(masters, labels, v.cfg.ClusterGap)
 	v.applyNameCase(masters)
 	v.buildTargets(masters)
+	if ctx.Err() != nil { // don't persist a half-built proposal on cancel
+		return 0, ctx.Err()
+	}
 
 	count, err := v.persist(sessionID, masters)
 	if err != nil {
@@ -168,6 +171,11 @@ func (v *VFS) enrich(ctx context.Context, m *masterFile) {
 		deref(m.DBDateTaken), deref(m.DBCreateDate), m.ModifiedAt)
 	m.width = firstInt(meta.ImageWidth, m.DBWidth)
 	m.height = firstInt(meta.ImageHeight, m.DBHeight)
+	// EXIF orientations 5-8 mean the stored pixels are rotated 90°/270°;
+	// swap so the orientation slot reflects how the shot is viewed
+	if o, ok := parseFloat(meta.Orientation); ok && o >= 5 && o <= 8 {
+		m.width, m.height = m.height, m.width
+	}
 
 	if lat, ok := parseFloat(meta.GPSLatitude); ok {
 		if lon, ok := parseFloat(meta.GPSLongitude); ok {
@@ -192,6 +200,9 @@ func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile) {
 		return
 	}
 	for i := range masters {
+		if ctx.Err() != nil {
+			return
+		}
 		m := &masters[i]
 		if !m.hasGPS {
 			continue
@@ -207,12 +218,14 @@ func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile) {
 
 // applyNameCase normalises derived names (locations, suggestions) to the
 // configured case style, in one place after all naming decisions are made.
-// Device names and filenames are left alone — re-casing "iPhone" or a user's
-// file would do more harm than good
+// Device names, filenames, and user-confirmed labels are left alone —
+// re-casing "iPhone" or a name the user typed would do more harm than good
 func (v *VFS) applyNameCase(masters []masterFile) {
 	for i := range masters {
 		masters[i].location = caseName(masters[i].location, v.cfg.NameCase)
-		masters[i].suggestion = caseName(masters[i].suggestion, v.cfg.NameCase)
+		if masters[i].suggestionSource != SuggestionUserLabel {
+			masters[i].suggestion = caseName(masters[i].suggestion, v.cfg.NameCase)
+		}
 	}
 }
 
@@ -221,7 +234,6 @@ func (v *VFS) applyNameCase(masters []masterFile) {
 // always land in the directory derived from the group's original member
 func (v *VFS) buildTargets(masters []masterFile) {
 	type group struct {
-		key     string
 		leader  int   // index of the ORIGINAL member (or first seen)
 		members []int // indices into masters
 	}
@@ -235,7 +247,7 @@ func (v *VFS) buildTargets(masters []masterFile) {
 		key := m.SourceRoot + "|" + filepath.Dir(m.FilePath) + "|" + info.Key
 		g, ok := index[key]
 		if !ok {
-			g = &group{key: info.Key, leader: i}
+			g = &group{leader: i}
 			index[key] = g
 			groups = append(groups, g)
 		}
@@ -246,21 +258,36 @@ func (v *VFS) buildTargets(masters []masterFile) {
 	}
 
 	// collisions: the suffix is decided per capture group so members keep a
-	// common stem and move together
-	taken := map[string]int{}
+	// common stem and move together. Every final path is reserved, so a
+	// suffixed name can't collide with a stem that already ends in _N
+	memberPath := func(i int, dir, suffix string) string {
+		name := filepath.Base(masters[i].FilePath)
+		stem := strings.TrimSuffix(name, filepath.Ext(name))
+		return dir + "/" + stem + suffix + filepath.Ext(name)
+	}
+	taken := map[string]bool{}
 	for _, g := range groups {
 		dir := v.dirFor(&masters[g.leader])
-		collisionKey := dir + "|" + strings.ToLower(g.key)
-		n := taken[collisionKey]
-		taken[collisionKey] = n + 1
 		suffix := ""
-		if n > 0 {
-			suffix = fmt.Sprintf("_%d", n+1)
+		for n := 1; ; n++ {
+			if n > 1 {
+				suffix = fmt.Sprintf("_%d", n)
+			}
+			free := true
+			for _, i := range g.members {
+				if taken[strings.ToLower(memberPath(i, dir, suffix))] {
+					free = false
+					break
+				}
+			}
+			if free {
+				break
+			}
 		}
 		for _, i := range g.members {
-			name := filepath.Base(masters[i].FilePath)
-			stem := strings.TrimSuffix(name, filepath.Ext(name))
-			masters[i].targetPath = dir + "/" + stem + suffix + filepath.Ext(name)
+			p := memberPath(i, dir, suffix)
+			masters[i].targetPath = p
+			taken[strings.ToLower(p)] = true
 		}
 	}
 }
@@ -316,23 +343,24 @@ func (v *VFS) dirFor(m *masterFile) string {
 	return strings.Join(parts, "/")
 }
 
-// persist upserts one PROPOSED entry per master through the batched writer,
-// so rebuilding a session replaces its previous proposal
+// persist replaces the session's previous proposal: the delete runs through
+// the same FIFO writer as the inserts, so a rebuild leaves no stale rows for
+// files that are no longer masters
 func (v *VFS) persist(sessionID uuid.UUID, masters []masterFile) (int, error) {
+	if !v.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`DELETE FROM virtual_fs_entries WHERE session_id = ?`, sessionID.String())
+		return err
+	}) {
+		return 0, fmt.Errorf("clear previous vfs proposal: writer closed")
+	}
 	for i := range masters {
 		m := masters[i]
 		if !v.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO virtual_fs_entries
 					(session_id, file_id, source_path, target_path, cluster_id, status, suggestion, suggestion_source)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(session_id, file_id) DO UPDATE SET
-					source_path = excluded.source_path,
-					target_path = excluded.target_path,
-					cluster_id = excluded.cluster_id,
-					status = excluded.status,
-					suggestion = excluded.suggestion,
-					suggestion_source = excluded.suggestion_source`,
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				sessionID.String(), m.FileID, m.absPath, m.targetPath,
 				nullable(m.clusterID), db.StatusProposed,
 				nullable(m.suggestion), nullable(m.suggestionSource)); err != nil {

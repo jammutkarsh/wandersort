@@ -208,16 +208,17 @@ func TestUnresolvedEventSegmentAndGapSplit(t *testing.T) {
 func TestUserLabelSuggestion(t *testing.T) {
 	h := newHarness(t)
 	h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
+	// label casing is user-chosen and must survive NameCase normalisation
 	if _, err := h.d.ExecContext(context.Background(), `
 		INSERT INTO user_labels (label, kind, time_start, time_end)
-		VALUES ('Manali Trip', 'EVENT', '2024-06-02T00:00:00Z', '2024-06-06T00:00:00Z')`); err != nil {
+		VALUES ('Manali TRIP', 'EVENT', '2024-06-02T00:00:00Z', '2024-06-06T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 
 	rows := h.build(t, DefaultConfig(2), nil)
 	for _, r := range rows {
-		if r.Suggestion == nil || *r.Suggestion != "Manali Trip" {
-			t.Errorf("suggestion = %v, want 'Manali Trip'", r.Suggestion)
+		if r.Suggestion == nil || *r.Suggestion != "Manali TRIP" {
+			t.Errorf("suggestion = %v, want 'Manali TRIP'", r.Suggestion)
 		}
 		if r.SuggestionSource == nil || *r.SuggestionSource != SuggestionUserLabel {
 			t.Errorf("suggestion_source = %v, want USER_LABEL", r.SuggestionSource)
@@ -364,6 +365,59 @@ func TestNameCase(t *testing.T) {
 				t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 			}
 		})
+	}
+}
+
+func TestOrientationTagSwapsDimensions(t *testing.T) {
+	h := newHarness(t)
+	// stored landscape (4032x3024) but Orientation 6 = rotated 90° → viewed vertical
+	meta := metaWith("2024:06:03 14:00:00", 15.5, 73.8, 4032, 3024)
+	meta.Orientation = "6"
+	id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", meta)
+	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
+
+	rows := h.build(t, DefaultConfig(2), geo)
+	want := "2024/06_June/Goa/Vertical/Photos/IMG_0001.HEIC"
+	if rows[id].TargetPath != want {
+		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
+	}
+}
+
+func TestCollisionWithLiteralSuffixStem(t *testing.T) {
+	h := newHarness(t)
+	// d3's real stem IMG_1_2 must not be clobbered by d2's collision suffix
+	a := h.addFile(t, "d1/IMG_1.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
+	b := h.addFile(t, "d2/IMG_1.JPG", "IMAGE", metaWith("2024:06:03 10:05:00", 0, 0, 4000, 3000))
+	c := h.addFile(t, "d3/IMG_1_2.JPG", "IMAGE", metaWith("2024:06:03 10:10:00", 0, 0, 4000, 3000))
+
+	rows := h.build(t, DefaultConfig(2), nil)
+	paths := map[string]bool{}
+	for _, id := range []int64{a, b, c} {
+		if paths[rows[id].TargetPath] {
+			t.Errorf("duplicate target %q", rows[id].TargetPath)
+		}
+		paths[rows[id].TargetPath] = true
+	}
+}
+
+func TestRebuildRemovesStaleEntries(t *testing.T) {
+	h := newHarness(t)
+	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
+	keep := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5, 73.8, 3024, 4032))
+	gone := h.addFile(t, "d/IMG_0002.HEIC", "IMAGE", metaWith("2024:06:03 15:00:00", 15.5, 73.8, 3024, 4032))
+	h.build(t, DefaultConfig(2), geo)
+
+	// second file loses master status between builds (e.g. re-scored)
+	if _, err := h.d.ExecContext(context.Background(),
+		`UPDATE file_metadata SET is_master = 0 WHERE file_id = ?`, gone); err != nil {
+		t.Fatal(err)
+	}
+	rows := h.build(t, DefaultConfig(2), geo)
+	if len(rows) != 1 {
+		t.Fatalf("entries after rebuild = %d, want 1", len(rows))
+	}
+	if _, ok := rows[keep]; !ok {
+		t.Errorf("surviving master missing from rebuild")
 	}
 }
 

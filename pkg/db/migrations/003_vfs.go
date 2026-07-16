@@ -1,7 +1,7 @@
 package migrations
 
 var schema003 = Migration{
-	Version:     0o03,
+	Version:     3,
 	Description: "vfs_schema",
 	SQL: []string{
 		virtualFSEntries,
