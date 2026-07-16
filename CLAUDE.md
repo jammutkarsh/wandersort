@@ -52,7 +52,7 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
   - `internal/cli` holds **only** `root.go` + one file per subcommand (plus the
     `help.go` exception above) — everything else that used to live here moved
     out to its own package so a future TUI entry point can reuse it:
-    - `internal/lock/` — all wandersort file locking: generic PID/O_EXCL
+    - `pkg/lock/` — all wandersort file locking: generic PID/O_EXCL
       acquire/reclaim mechanics (`acquire`, `Lock`, `ErrHeld`) plus the two
       domain wrappers — `AcquireOutput` (one scan/serve per output dir, styled
       "already running" message) and `AcquireInstall` (install coordination
@@ -62,8 +62,8 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
       first so it can log a `UserKey`-tagged "waiting for another process…"
       line before falling back to the blocking acquire — without that, a
       scan/serve waiting behind an in-progress install just looks hung.
-      Only `cli` uses locking, so this isn't split out to `pkg/utils` — it was
-      merged out of there.
+      Only `cli` uses locking today, but the mechanics are generic, so it
+      lives in `pkg/` for reuse by other entry points.
     - `pkg/style/` — shared lipgloss palette/styles (`style.Err`,
       `style.Success`, `style.Warn`, `style.Header`, `style.Dim`,
       `style.Desc`). One place to change a color; used by `cli` today, meant
@@ -147,7 +147,7 @@ go build ./... # quick compile check
 - `report.go` builds a raw sqlite DSN + inline SQL in the CLI layer, bypassing
   `pkg/db`/repository. Read-only by design, but a layering shortcut — move to a
   repository method if it grows.
-- **Concurrency wall:** `lock.AcquireOutput` (`internal/lock/`) takes an
+- **Concurrency wall:** `lock.AcquireOutput` (`pkg/lock/`) takes an
   exclusive PID lock on the output dir, so only one scan *or* serve runs
   against a dir at a time. Log
   lines are already `sessionId`-tagged, so multiple sessions sharing one log
