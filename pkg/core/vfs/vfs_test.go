@@ -339,6 +339,34 @@ func TestConcurrentExtraction(t *testing.T) {
 	}
 }
 
+func TestNameCase(t *testing.T) {
+	cases := []struct {
+		style string
+		want  string
+	}{
+		{CaseTitle, "Goa Beach"},
+		{CaseLower, "goa beach"},
+		{CaseUpper, "GOA BEACH"},
+		{CaseAsIs, "goa BEACH"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.style, func(t *testing.T) {
+			h := newHarness(t)
+			id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5, 73.8, 3024, 4032))
+			geo := &fakeGeo{cities: map[int]string{15: "goa BEACH"}}
+
+			cfg := DefaultConfig(2)
+			cfg.NameCase = tc.style
+			rows := h.build(t, cfg, geo)
+
+			want := "2024/06_June/" + tc.want + "/Vertical/Photos/IMG_0001.HEIC"
+			if rows[id].TargetPath != want {
+				t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
+			}
+		})
+	}
+}
+
 func TestRebuildIsIdempotent(t *testing.T) {
 	h := newHarness(t)
 	id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5, 73.8, 3024, 4032))

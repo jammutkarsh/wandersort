@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -83,6 +84,7 @@ func (v *VFS) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	}
 	v.resolveLocations(ctx, masters)
 	clusterAndSuggest(masters, labels, v.cfg.ClusterGap)
+	v.applyNameCase(masters)
 	v.buildTargets(masters)
 
 	count, err := v.persist(sessionID, masters)
@@ -200,6 +202,17 @@ func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile) {
 			continue
 		}
 		m.location = city
+	}
+}
+
+// applyNameCase normalises derived names (locations, suggestions) to the
+// configured case style, in one place after all naming decisions are made.
+// Device names and filenames are left alone — re-casing "iPhone" or a user's
+// file would do more harm than good
+func (v *VFS) applyNameCase(masters []masterFile) {
+	for i := range masters {
+		masters[i].location = caseName(masters[i].location, v.cfg.NameCase)
+		masters[i].suggestion = caseName(masters[i].suggestion, v.cfg.NameCase)
 	}
 }
 
@@ -405,6 +418,37 @@ func nullable(s string) any {
 		return nil
 	}
 	return s
+}
+
+// caseName applies the configured case style to a derived name.
+// Title case uppercases the first letter of every word (after a space,
+// underscore, or hyphen) and lowercases the rest
+func caseName(name, style string) string {
+	switch style {
+	case CaseLower:
+		return strings.ToLower(name)
+	case CaseUpper:
+		return strings.ToUpper(name)
+	case CaseAsIs:
+		return name
+	default: // CaseTitle
+		var b strings.Builder
+		b.Grow(len(name))
+		startOfWord := true
+		for _, r := range name {
+			switch {
+			case r == ' ' || r == '_' || r == '-':
+				startOfWord = true
+				b.WriteRune(r)
+			case startOfWord:
+				startOfWord = false
+				b.WriteRune(unicode.ToUpper(r))
+			default:
+				b.WriteRune(unicode.ToLower(r))
+			}
+		}
+		return b.String()
+	}
 }
 
 // deviceName joins Make and Model, avoiding duplication when the model

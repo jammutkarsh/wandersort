@@ -18,6 +18,15 @@ const (
 	SuggestionSourceFolder = "SOURCE_FOLDER"
 )
 
+// Case styles for derived folder names (locations, suggestions).
+// Device names and filenames are never re-cased
+const (
+	CaseTitle = "title" // "goa beach" → "Goa Beach"
+	CaseLower = "lower" // "Goa Beach" → "goa beach"
+	CaseUpper = "upper" // "Goa Beach" → "GOA BEACH"
+	CaseAsIs  = "asis"  // keep whatever the source provided
+)
+
 // defaultClusterGap is the capture-time gap that starts a new event cluster
 const defaultClusterGap = 12 * time.Hour
 
@@ -27,6 +36,7 @@ type Config struct {
 	Fallback   string        // last-resort path segment when nothing can be derived
 	ClusterGap time.Duration // capture-time gap that starts a new event cluster
 	Workers    int           // bounded fan-out for exiftool extraction
+	NameCase   string        // case style for derived names; see Case* constants
 }
 
 func DefaultConfig(workers int) Config {
@@ -35,6 +45,7 @@ func DefaultConfig(workers int) Config {
 		Fallback:   "Unsorted",
 		ClusterGap: defaultClusterGap,
 		Workers:    max(workers, 1),
+		NameCase:   CaseTitle,
 	}
 }
 
