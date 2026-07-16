@@ -147,7 +147,7 @@ func perFileScore(filePath string) int {
 	if datePattern.MatchString(name) {
 		score += scoreDatePattern
 	}
-	if !isInGenericDir(dir) {
+	if !IsInGenericDir(dir) {
 		score += scoreDirBonus
 	}
 	// Penalize duplicate-copy suffixes, which are common in camera roll imports and cloud syncs.
@@ -157,9 +157,9 @@ func perFileScore(filePath string) int {
 	return score
 }
 
-// isInGenericDir reports whether any segment of dir is a known or
+// IsInGenericDir reports whether any segment of dir is a known or
 // pattern-matched low-signal folder name (DCIM, Backup, temp, etc).
-func isInGenericDir(dir string) bool {
+func IsInGenericDir(dir string) bool {
 	dir = filepath.Clean(dir)
 	for dir != "." && dir != "/" && dir != "" {
 		seg := strings.ToLower(filepath.Base(dir))

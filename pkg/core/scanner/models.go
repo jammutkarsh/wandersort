@@ -102,6 +102,6 @@ type ScanSession struct {
 
 // CaptureInfo holds the derived capture-group fields for a single file
 type CaptureInfo struct {
-	captureKey string // e.g. "IMG_3162", "_MG_1721"
-	variant    string // one of the CaptureRole* constants
+	Key  string // capture stem, e.g. "IMG_3162", "_MG_1721"
+	Role string // one of the CaptureRole* constants
 }

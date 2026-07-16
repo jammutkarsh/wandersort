@@ -124,9 +124,9 @@ func TestIsInGenericDir(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isInGenericDir(tt.dir)
+			got := IsInGenericDir(tt.dir)
 			if got != tt.want {
-				t.Errorf("isInGenericDir(%q) = %v, want %v", tt.dir, got, tt.want)
+				t.Errorf("IsInGenericDir(%q) = %v, want %v", tt.dir, got, tt.want)
 			}
 		})
 	}

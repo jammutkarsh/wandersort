@@ -24,15 +24,20 @@ const (
 	CaptureRoleOriginalSidecar = "ORIGINAL_SIDECAR"
 )
 
-// variantPrefix maps known iPhone variant prefixes to a normalisation rule
-// The key is the prefix (e.g. "IMG_E"), the value is the canonical prefix
-// that replaces it (e.g. "IMG_") to recover the original capture stem
-var variantPrefixes = []CaptureInfo{
-	{variant: "IMG_E", captureKey: "IMG_"}, // Edited version of an original photo or video
-	{variant: "IMG_O", captureKey: "IMG_"}, // Original-state sidecar (e.g. AAE edits without a paired HEIC)
+// prefixRule maps a known iPhone variant prefix (e.g. "IMG_E") to the
+// canonical prefix that replaces it (e.g. "IMG_") to recover the original
+// capture stem
+type prefixRule struct {
+	variant   string
+	canonical string
 }
 
-// deriveCapture computes the capture stem and role from a filename, its
+var variantPrefixes = []prefixRule{
+	{variant: "IMG_E", canonical: "IMG_"}, // Edited version of an original photo or video
+	{variant: "IMG_O", canonical: "IMG_"}, // Original-state sidecar (e.g. AAE edits without a paired HEIC)
+}
+
+// DeriveCapture computes the capture stem and role from a filename, its
 // lowercased extension, and its classified media type
 //
 // The stem is the base filename (no extension) with any variant prefix
@@ -41,7 +46,7 @@ var variantPrefixes = []CaptureInfo{
 // Commonly found in iPhone images and videos, this logic is designed to group related files together
 // (e.g. RAW + JPG pairs, edited + original variants) while distinguishing different capture groups
 // (e.g. separate shoots or different devices) that happen to share the same filename
-func deriveCapture(filename, ext, mediaType string) CaptureInfo {
+func DeriveCapture(filename, ext, mediaType string) CaptureInfo {
 	base := strings.TrimSuffix(filename, filepath.Ext(filename)) // strip extension preserving case
 
 	variant := ""
@@ -51,9 +56,9 @@ func deriveCapture(filename, ext, mediaType string) CaptureInfo {
 			start := len(prefix.variant)
 			// Handle edge case where filename is just the variant prefix with no stem (e.g. "IMG_E.jpg")
 			if len(base) > start {
-				base = prefix.captureKey + base[start:] // normalise to canonical prefix
+				base = prefix.canonical + base[start:] // normalise to canonical prefix
 			} else {
-				base = prefix.captureKey // edge case: filename is just the variant prefix
+				base = prefix.canonical // edge case: filename is just the variant prefix
 			}
 			break
 		}
@@ -61,7 +66,7 @@ func deriveCapture(filename, ext, mediaType string) CaptureInfo {
 
 	role := deriveRole(variant, ext, mediaType)
 
-	return CaptureInfo{captureKey: base, variant: role}
+	return CaptureInfo{Key: base, Role: role}
 }
 
 // deriveRole determines the capture role from variant prefix, extension, and media type

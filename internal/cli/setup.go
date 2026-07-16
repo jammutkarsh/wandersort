@@ -11,9 +11,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/location"
+	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/spf13/cobra"
 )
