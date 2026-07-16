@@ -17,7 +17,7 @@ type Migration struct {
 
 // schemas is the ordered list of migrations. Append new migrations at the end;
 // never reorder or mutate existing entries
-var schemas = []Migration{schema001, schema002}
+var schemas = []Migration{schema001, schema002, schema003}
 
 // Run applies, in version order, any migrations not yet recorded in the
 // database. Each version is tracked individually, so a lower-numbered
