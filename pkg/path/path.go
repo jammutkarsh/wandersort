@@ -68,6 +68,17 @@ func (r *Resolver) RelativeToHome(path string) string {
 	return path
 }
 
+// Overlaps reports whether a and b name the same directory or one is nested
+// inside the other. Both must already be canonical absolute paths
+func Overlaps(a, b string) bool {
+	sep := string(filepath.Separator)
+	// the filesystem root contains every absolute path
+	if a == b || a == sep || b == sep {
+		return true
+	}
+	return strings.HasPrefix(b, a+sep) || strings.HasPrefix(a, b+sep)
+}
+
 // MakeRelative returns filePath relative to sourceRoot
 func (r *Resolver) MakeRelative(filePath, sourceRoot string) (string, error) {
 	absFile, err := r.RealPath(filePath)

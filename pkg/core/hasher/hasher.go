@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 
@@ -17,7 +18,6 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/path"
 	"lukechampine.com/blake3"
 )
 
@@ -31,7 +31,6 @@ type Hasher struct {
 	ctx      context.Context
 	db       *db.DB
 	log      logger.Logger
-	path     *path.Resolver
 	exiftool *exiftool.Extractor
 	workers  int
 }
@@ -41,7 +40,6 @@ func New(ctx context.Context, db *db.DB, log logger.Logger, exiftoolPath string,
 		ctx:      ctx,
 		db:       db,
 		log:      log,
-		path:     path.New(),
 		exiftool: exiftool.New(exiftoolPath),
 		workers:  workers,
 	}
@@ -116,23 +114,23 @@ func (h *Hasher) producer(ctx context.Context, sessionID uuid.UUID, cancel conte
 // getFile atomically claims the next undiscovered file and returns its record
 func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, bool, error) {
 	var id int64
-	var filePath, sourceRoot string
+	var fileDir, fileName string
 	query := `
 	UPDATE file_registry
 	SET scan_status = ?
 	WHERE id = (
 		SELECT id
-		FROM file_registry
+		FROM live_files
 		WHERE scan_session_id = ?
 			AND scan_status = ?
 		ORDER BY id
 		LIMIT 1
 	)
-	RETURNING id, file_path, source_root`
+	RETURNING id, file_dir, file_name`
 
 	err := h.db.
 		QueryRowContext(ctx, query, db.StatusHashing, sessionID.String(), db.StatusDiscovered).
-		Scan(&id, &filePath, &sourceRoot)
+		Scan(&id, &fileDir, &fileName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fileRecord{}, false, nil
 	}
@@ -140,7 +138,7 @@ func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, 
 		return fileRecord{}, false, fmt.Errorf("claim next hash row: %w", err)
 	}
 
-	return fileRecord{id: id, absPath: h.path.MakeAbsolute(filePath, sourceRoot)}, true, nil
+	return fileRecord{id: id, absPath: filepath.Join(fileDir, fileName)}, true, nil
 }
 
 // hasher runs the bounded worker pool that computes BLAKE3 hashes and extracts EXIF
@@ -158,6 +156,13 @@ func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context
 				if err != nil {
 					h.log.Error("Failed to hash file", "sessionId", sessionID, "fileId", file.id, "path", file.absPath, "error", err)
 					h.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+						// The file's content is unknown now, so any previous
+						// metadata row (old hash, old EXIF) is stale — drop it
+						// rather than let the scorer/VFS keep acting on it
+						if _, err := tx.ExecContext(ctx,
+							`DELETE FROM file_metadata WHERE file_id = ?`, file.id); err != nil {
+							return err
+						}
 						_, err := tx.ExecContext(ctx, ` UPDATE file_registry
 							SET scan_status = 'ERROR' WHERE id = ?`, file.id)
 						return err
@@ -230,18 +235,27 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 		}
 
 		ok := h.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+			// A re-hashed file (size/mtime change reset it to DISCOVERED) still
+			// has its old metadata row; a plain INSERT would either violate
+			// UNIQUE(file_hash, file_id) or leave a stale duplicate in the
+			// scorer's hash grouping. Fresh files make this a no-op
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM file_metadata WHERE file_id = ?`, file.id); err != nil {
+				return err
+			}
 			_, err := tx.ExecContext(
 				ctx, `
 				INSERT INTO file_metadata (
 					file_hash, file_id,
-					exif_image_width, exif_image_height,
+					exif_image_width, exif_image_height, exif_orientation,
 					exif_gps_latitude, exif_gps_longitude,
 					exif_make, exif_model,
 					exif_date_time_original, exif_create_date
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`, file.hash, file.id,
 				db.IntOrNil(file.exif.ImageWidth),
 				db.IntOrNil(file.exif.ImageHeight),
+				db.IntOrNil(file.exif.Orientation),
 				db.FloatOrNil(file.exif.GPSLatitude),
 				db.FloatOrNil(file.exif.GPSLongitude),
 				db.StrOrNil(file.exif.Make),

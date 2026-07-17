@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS virtual_fs_entries (
         CHECK (status IN ('PROPOSED','APPROVED','DONE','ERROR')),
     suggestion TEXT,
     suggestion_source TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_vfs_session_file ON virtual_fs_entries(session_id, file_id);
@@ -44,6 +44,6 @@ CREATE TABLE IF NOT EXISTS user_labels (
     time_end TEXT,
     gps_lat REAL,
     gps_lon REAL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
 );
 `

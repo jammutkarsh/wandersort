@@ -20,14 +20,15 @@ func (r *Repository) GetFileCount(ctx context.Context) (FileCountResponse, error
 
 	if err := r.db.QueryRowContext(
 		ctx,
-		`SELECT COUNT(*) FROM file_registry`,
+		`SELECT COUNT(*) FROM live_files`,
 	).Scan(&resp.FilesScanned); err != nil {
 		return FileCountResponse{}, err
 	}
 
 	if err := r.db.QueryRowContext(
 		ctx,
-		`SELECT COUNT(*) FROM file_metadata`,
+		`SELECT COUNT(*) FROM file_metadata fm
+		JOIN live_files fr ON fr.id = fm.file_id`,
 	).Scan(&resp.FilesHashed); err != nil {
 		return FileCountResponse{}, err
 	}

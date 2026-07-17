@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -31,12 +32,22 @@ type Workflow struct {
 
 	/* Utilities */
 	path *path.Resolver
+	// outputDir is where the organized library (and the DB) lives; used for
+	// the free-space preflight after each scan
+	outputDir string
 
 	/* Pipeline components */
 	scanner Scanner
 	hasher  Hasher
 	scorer  Scorer
 	vfs     VFS
+
+	// activeRoots tracks the scan roots of in-flight sessions so overlapping
+	// scans are rejected before they can re-stamp each other's registry rows.
+	// In-memory is sufficient: the output-dir lock guarantees a single
+	// scan/serve process, so every live session lives in this Workflow
+	mu          sync.Mutex
+	activeRoots map[uuid.UUID][]string
 
 	wg sync.WaitGroup
 }
@@ -119,9 +130,11 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 		scanner:          scanner.New(db, log, cfg.Workers),
 		hasher:           hasher.New(ctx, db, log, exiftoolPath, cfg.Workers),
 		scorer:           scorer.New(db, log),
-		vfs:              vfs.New(db, locationResolver, log, exiftoolPath, vfs.DefaultConfig(cfg.Workers)),
+		vfs:              vfs.New(db, locationResolver, log, vfs.DefaultConfig()),
 		log:              log,
 		path:             path.New(),
+		outputDir:        filepath.Dir(cfg.AppDBPath),
+		activeRoots:      map[uuid.UUID][]string{},
 	}
 	for _, opt := range opts {
 		opt(wf)
@@ -196,18 +209,51 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UU
 	if sessionID == uuid.Nil {
 		sessionID = uuid.New()
 	}
-	startedAt := time.Now().UTC()
+
+	if err := wf.claimRoots(sessionID, paths); err != nil {
+		return uuid.Nil, err
+	}
+
 	_, err := wf.db.ExecContext(ctx, `
 		INSERT INTO scan_sessions (id, started_at, status, root_paths)
 		VALUES (?, ?, ?, ?)
-	`, sessionID, startedAt.Format(time.RFC3339), db.StatusStarted, strings.Join(storedPaths, ","))
+	`, sessionID, db.FormatTime(time.Now()), db.StatusStarted, strings.Join(storedPaths, ","))
 	if err != nil {
+		wf.releaseRoots(sessionID)
 		return uuid.Nil, fmt.Errorf("failed to create scan session: %w", err)
 	}
 	msg := fmt.Sprintf("Started session %s", sessionID)
 	wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID, "rootPaths", storedPaths)
 
 	return sessionID, nil
+}
+
+// claimRoots atomically checks the new session's roots against every
+// in-flight session and registers them. Overlapping concurrent scans are
+// rejected: the sweep treats "row not re-stamped by me" as proof a file
+// vanished, so two sessions over the same tree would soft-delete each
+// other's live rows
+func (wf *Workflow) claimRoots(sessionID uuid.UUID, paths []string) error {
+	wf.mu.Lock()
+	defer wf.mu.Unlock()
+	for activeID, activePaths := range wf.activeRoots {
+		for _, active := range activePaths {
+			for _, p := range paths {
+				if path.Overlaps(active, p) {
+					return fmt.Errorf("path %s overlaps %s, which session %s is still scanning", p, active, activeID)
+				}
+			}
+		}
+	}
+	wf.activeRoots[sessionID] = paths
+	return nil
+}
+
+// releaseRoots frees a session's claimed scan roots
+func (wf *Workflow) releaseRoots(sessionID uuid.UUID) {
+	wf.mu.Lock()
+	defer wf.mu.Unlock()
+	delete(wf.activeRoots, sessionID)
 }
 
 // runSession executes the sequential phases for a single scan session and
@@ -254,16 +300,9 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 			onSuccess: func(count int) {
 				msg := fmt.Sprintf("Scanned %d files", count)
 				wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
+				wf.warnIfLowSpace(sessionID)
 			},
 		},
-		/*
-			TODO(#22): the hasher currently uses BLAKE3 on the full file bytes, so two
-			pixel-identical photos with different embedded metadata (EXIF, ICC profile)
-			produce different hashes and land in separate content groups.  This means the
-			scorer cannot elect between them — each becomes a solo master and both
-			survive.  Until pixel-level and perceptual hashing layers are added, the
-			only signal available for picking the best copy is the folder-naming heuristics in the scorer.
-		*/
 		{
 			kind: workflowPhaseHash,
 			run: func() (int, error) {

@@ -12,7 +12,7 @@ var schema001 = Migration{
 const scanSessions = `
 CREATE TABLE IF NOT EXISTS scan_sessions (
     id TEXT PRIMARY KEY,
-    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `,
     completed_at TEXT,
     status TEXT NOT NULL DEFAULT 'STARTED',
 
@@ -35,16 +35,25 @@ const fileRegistry = `
 CREATE TABLE IF NOT EXISTS file_registry (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-    -- Physical identity
-    file_path        TEXT    NOT NULL,
+    -- Physical identity: absolute directory + name. One row per file on disk,
+    -- no matter which scan root the file was discovered through
+    file_dir         TEXT    NOT NULL,
+    file_name        TEXT    NOT NULL,
     file_size        INTEGER NOT NULL,
     file_modified_at TEXT    NOT NULL,
 
+    -- Volume the file lives on; lets a future re-anchor pass rewrite paths
+    -- when an external drive remounts elsewhere. NULL when unresolvable
+    volume_uuid TEXT,
+
     -- Discovery metadata
-    discovered_at   TEXT NOT NULL DEFAULT (datetime('now')),
-    last_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    discovered_at   TEXT NOT NULL,
+    last_seen_at    TEXT NOT NULL,
     scan_session_id TEXT NOT NULL REFERENCES scan_sessions(id),
-    source_root     TEXT NOT NULL,
+
+    -- Soft delete: stamped when a clean scan of the file's root no longer
+    -- sees it, cleared if the file reappears, hard-purged after retention
+    deleted_at TEXT,
 
     -- File classification
     media_type     TEXT,
@@ -52,16 +61,23 @@ CREATE TABLE IF NOT EXISTS file_registry (
 
     -- Processing state machine
     scan_status TEXT NOT NULL DEFAULT 'DISCOVERED',
-    
-    -- Path storage
-    path_type   TEXT NOT NULL DEFAULT 'RELATIVE',
+
     file_origin TEXT NOT NULL DEFAULT 'SOURCE',
 
     CHECK (media_type  IN ('IMAGE', 'VIDEO', 'SIDECAR', 'RAW', 'UNKNOWN')),
     CHECK (scan_status IN ('DISCOVERED', 'HASHING', 'HASHED', 'ANALYZING', 'ANALYZED', 'ERROR'))
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_file_registry_path_root ON file_registry(file_path, source_root);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_file_registry_dir_name ON file_registry(file_dir, file_name);
 CREATE INDEX IF NOT EXISTS idx_file_registry_session ON file_registry(scan_session_id);
 CREATE INDEX IF NOT EXISTS idx_file_registry_status ON file_registry(scan_status);
+-- Partial over deleted rows only, for purgeExpired's cutoff scan. Live-row
+-- filters (deleted_at IS NULL) match the vast majority of rows, so an index
+-- would not beat the table scan there — deliberate, not an oversight
+CREATE INDEX IF NOT EXISTS idx_file_registry_deleted ON file_registry(deleted_at) WHERE deleted_at IS NOT NULL;
+
+-- The single definition of "live": every read query goes through this view
+-- instead of hand-writing deleted_at IS NULL (UPDATEs still hit the table)
+CREATE VIEW IF NOT EXISTS live_files AS
+    SELECT * FROM file_registry WHERE deleted_at IS NULL;
 `

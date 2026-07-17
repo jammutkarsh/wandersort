@@ -7,7 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  test:
+
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -19,5 +20,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Vet and race tests
+      - name: Test
+        run: make test
+
+      - name: Test with race detector
         run: make test-race
+
+      - name: Build all platforms
+        run: make build-all

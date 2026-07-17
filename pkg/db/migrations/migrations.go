@@ -8,6 +8,11 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+// sqlNowDefault is the SQL-side DEFAULT for timestamp columns. %f yields
+// millisecond precision; the literal zeros pad to the fixed-width 9-digit
+// fraction db.TimeLayout expects
+const sqlNowDefault = `(strftime('%Y-%m-%dT%H:%M:%f000000Z','now'))`
+
 // Migration describes a single schema migration step
 type Migration struct {
 	Version     uint
@@ -27,7 +32,7 @@ func Run(db *sqlx.DB) (int, error) {
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version INTEGER PRIMARY KEY,
-			run_at  TEXT NOT NULL DEFAULT (datetime('now'))
+			run_at  TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
 		)
 	`); err != nil {
 		return 0, fmt.Errorf("error creating schema_migrations table: %w", err)

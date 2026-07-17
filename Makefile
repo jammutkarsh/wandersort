@@ -2,8 +2,9 @@ APP_NAME := wandersort
 IMAGE := $(APP_NAME):latest
 BINARY := bin/wandersort
 GO_MAIN := .
+GOOS_LIST := linux darwin windows
 
-.PHONY: help build swagger lint test test-race run
+.PHONY: help build build-all swagger lint test test-race run
 
 help:
 	@printf "Usage:\n"
@@ -11,6 +12,7 @@ help:
 	@printf "  make test              Run all tests\n"
 	@printf "  make test-race         Run all tests with the race detector (CI)\n"
 	@printf "  make build             Build the binary locally\n"
+	@printf "  make build-all         Cross-build binary for linux/darwin/windows\n"
 	@printf "  make lint              Run gofumpt -l -w .\n"
 	@printf "  make swagger		 Generate Swagger docs (swag required)\n"
 
@@ -18,6 +20,14 @@ build:
 	@echo "Building the binary locally"
 	mkdir -p $(dir $(BINARY))
 	go build -ldflags='-s -w' -o $(BINARY) $(GO_MAIN)
+
+build-all:
+	mkdir -p $(dir $(BINARY))
+	@for goos in $(GOOS_LIST); do \
+		echo "Building for $$goos"; \
+		ext=""; [ "$$goos" = "windows" ] && ext=".exe"; \
+		GOOS=$$goos go build -ldflags='-s -w' -o $(BINARY)-$$goos$$ext $(GO_MAIN) || exit 1; \
+	done
 
 test:
 	go test -v ./...

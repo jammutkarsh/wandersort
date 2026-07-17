@@ -165,13 +165,15 @@ func suggestFor(masters []masterFile, c *cluster, labels []userLabel, anchors []
 		return anchors[0], SuggestionAnchor
 	}
 
-	// most common meaningful source folder among the cluster's members
+	// most common meaningful source folder among the cluster's members.
+	// Only the immediate parent folder's name is judged — file_dir is
+	// absolute now, and generic segments higher up (Users, Downloads) must
+	// not disqualify a meaningful leaf folder
 	counts := map[string]int{}
 	best, bestN := "", 0
 	for _, i := range c.members {
-		dir := filepath.Dir(masters[i].FilePath)
-		base := filepath.Base(dir)
-		if dir == "." || base == "." || base == "/" || scorer.IsInGenericDir(dir) {
+		base := filepath.Base(masters[i].FileDir)
+		if base == "." || base == "/" || scorer.IsGenericDirName(base) {
 			continue
 		}
 		counts[base]++
