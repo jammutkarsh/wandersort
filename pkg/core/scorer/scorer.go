@@ -72,11 +72,10 @@ func (s *Scorer) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE file_metadata SET is_master = 1
 		WHERE is_master = 0
-		AND file_id IN (SELECT id FROM file_registry WHERE deleted_at IS NULL)
+		AND EXISTS (SELECT 1 FROM live_files lf WHERE lf.id = file_metadata.file_id)
 		AND file_hash IN (
 			SELECT fm.file_hash FROM file_metadata fm
-			JOIN file_registry fr ON fr.id = fm.file_id
-			WHERE fr.deleted_at IS NULL
+			JOIN live_files fr ON fr.id = fm.file_id
 			GROUP BY fm.file_hash HAVING COUNT(*) = 1)`); err != nil {
 		return 0, fmt.Errorf("re-promote solo masters: %w", err)
 	}
@@ -96,11 +95,10 @@ func (s *Scorer) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 		SELECT fm.file_hash, fm.file_id,
 			fr.file_dir, fr.file_name
 		FROM file_metadata fm
-		JOIN file_registry fr ON fr.id = fm.file_id
-		WHERE fr.deleted_at IS NULL AND fm.file_hash IN (
+		JOIN live_files fr ON fr.id = fm.file_id
+		WHERE fm.file_hash IN (
 			SELECT fm2.file_hash FROM file_metadata fm2
-			JOIN file_registry fr2 ON fr2.id = fm2.file_id
-			WHERE fr2.deleted_at IS NULL
+			JOIN live_files fr2 ON fr2.id = fm2.file_id
 			GROUP BY fm2.file_hash HAVING COUNT(*) > 1 )
 		ORDER BY fm.file_hash, fr.file_dir, fr.file_name`); err != nil {
 		return 0, fmt.Errorf("query members: %w", err)
@@ -164,8 +162,8 @@ func perFileScore(filePath string) int {
 	}
 	// Judge only the immediate parent folder — file_dir is absolute, and
 	// generic segments higher up (Users, Photos, Downloads) must not
-	// disqualify a meaningful leaf folder (same rule as vfs/cluster.go)
-	if !IsInGenericDir(filepath.Base(dir)) {
+	// disqualify a meaningful leaf folder
+	if !IsGenericDirName(filepath.Base(dir)) {
 		score += scoreDirBonus
 	}
 	// Penalize duplicate-copy suffixes, which are common in camera roll imports and cloud syncs.
@@ -175,16 +173,10 @@ func perFileScore(filePath string) int {
 	return score
 }
 
-// IsInGenericDir reports whether any segment of dir is a known or
-// pattern-matched low-signal folder name (DCIM, Backup, temp, etc).
-func IsInGenericDir(dir string) bool {
-	dir = filepath.Clean(dir)
-	for dir != "." && dir != "/" && dir != "" {
-		seg := strings.ToLower(filepath.Base(dir))
-		if genericDirs[seg] || genericDirPattern.MatchString(seg) {
-			return true
-		}
-		dir = filepath.Dir(dir)
-	}
-	return false
+// IsGenericDirName reports whether a single folder name — one path segment,
+// e.g. filepath.Base of a dir, never a full path — is a known or
+// pattern-matched low-signal name (DCIM, Backup, temp, etc).
+func IsGenericDirName(name string) bool {
+	seg := strings.ToLower(name)
+	return genericDirs[seg] || genericDirPattern.MatchString(seg)
 }

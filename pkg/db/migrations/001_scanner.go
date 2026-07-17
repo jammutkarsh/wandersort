@@ -12,7 +12,7 @@ var schema001 = Migration{
 const scanSessions = `
 CREATE TABLE IF NOT EXISTS scan_sessions (
     id TEXT PRIMARY KEY,
-    started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f000000Z','now')),
+    started_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `,
     completed_at TEXT,
     status TEXT NOT NULL DEFAULT 'STARTED',
 
@@ -71,5 +71,13 @@ CREATE TABLE IF NOT EXISTS file_registry (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_registry_dir_name ON file_registry(file_dir, file_name);
 CREATE INDEX IF NOT EXISTS idx_file_registry_session ON file_registry(scan_session_id);
 CREATE INDEX IF NOT EXISTS idx_file_registry_status ON file_registry(scan_status);
+-- Partial over deleted rows only, for purgeExpired's cutoff scan. Live-row
+-- filters (deleted_at IS NULL) match the vast majority of rows, so an index
+-- would not beat the table scan there — deliberate, not an oversight
 CREATE INDEX IF NOT EXISTS idx_file_registry_deleted ON file_registry(deleted_at) WHERE deleted_at IS NOT NULL;
+
+-- The single definition of "live": every read query goes through this view
+-- instead of hand-writing deleted_at IS NULL (UPDATEs still hit the table)
+CREATE VIEW IF NOT EXISTS live_files AS
+    SELECT * FROM file_registry WHERE deleted_at IS NULL;
 `

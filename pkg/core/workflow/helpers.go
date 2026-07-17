@@ -26,7 +26,7 @@ func (wf *Workflow) Close() {
 func (wf *Workflow) warnIfLowSpace(sessionID uuid.UUID) {
 	var librarySize int64
 	if err := wf.db.SQL.GetContext(wf.ctx, &librarySize,
-		`SELECT COALESCE(SUM(file_size), 0) FROM file_registry WHERE deleted_at IS NULL`); err != nil {
+		`SELECT COALESCE(SUM(file_size), 0) FROM live_files`); err != nil {
 		wf.log.Error("Failed to size the library", "sessionId", sessionID, "error", err)
 		return
 	}

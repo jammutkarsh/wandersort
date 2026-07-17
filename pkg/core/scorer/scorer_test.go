@@ -71,26 +71,28 @@ func TestIsMeaningfulName(t *testing.T) {
 	}
 }
 
-func TestIsInGenericDir(t *testing.T) {
+func TestIsGenericDirName(t *testing.T) {
 	tests := []struct {
 		name string
 		dir  string
 		want bool
 	}{
 		// Exact matches
-		{"dcim root", "dcim", true},
-		{"DCIM with subdir", "DCIM/100APPLE", true},
-		{"deeply nested in backups", "old/backup/photos", true},
+		{"dcim", "dcim", true},
+		{"DCIM uppercase", "DCIM", true},
+		{"backup", "backup", true},
 		{"downloads", "Downloads", true},
 		{"desktop", "Desktop", true},
-		{"misc", "misc/files", true},
-		{"temp dir", "/tmp/temp", true},
-		{"photos at root", "photos", true},
-		{"camera folder", "camera/2024", true},
+		{"misc", "misc", true},
+		{"temp", "temp", true},
+		{"photos", "photos", true},
+		{"camera", "camera", true},
+		{"sync", "sync", true},
+		{"cache", "cache", true},
 
 		// Pattern matches (genericDirPattern)
 		{"WhatsApp Images", "WhatsApp Images", true},
-		{"Telegram media", "Telegram Images/Sent", true},
+		{"Telegram media", "Telegram Images", true},
 		{"Signal videos", "Signal Media", true},
 		{"New Folder", "New Folder", true},
 		{"new folder (2)", "New Folder (2)", true},
@@ -99,27 +101,26 @@ func TestIsInGenericDir(t *testing.T) {
 		{"old backup num", "old backup 3", true},
 		{"backup 2023", "backup_2023", true},
 		{"dcim variant", "DCIM 1", true},
-		{"temp variant", "tmp_123/abc", true},
+		{"temp variant", "tmp_123", true},
 		{".thumbnails", ".thumbnails", true},
-		{".thumbnails hidden", ".thumbnails/cache", true},
 		{"trashed", "Trashed documents", true},
-		{"sync folder", "sync/data", true},
-		{"cache dir", "cache/thumbnails", true},
 
-		// Good directories
-		{"trips", "trips/goa", false},
-		{"year month", "2024/05", false},
-		{"event name with photos", "wedding/photos", true},
-		{"named folder", "family/2023", false},
-		{"empty dir", "", false},
+		// Good names — a single meaningful segment earns the bonus even when
+		// generic folders sit above it in the real path
+		{"trips", "trips", false},
+		{"goa", "goa", false},
+		{"year", "2024", false},
+		{"wedding", "wedding", false},
+		{"family", "family", false},
+		{"empty name", "", false},
 		{"root", "/", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := IsInGenericDir(tt.dir)
+			got := IsGenericDirName(tt.dir)
 			if got != tt.want {
-				t.Errorf("IsInGenericDir(%q) = %v, want %v", tt.dir, got, tt.want)
+				t.Errorf("IsGenericDirName(%q) = %v, want %v", tt.dir, got, tt.want)
 			}
 		})
 	}

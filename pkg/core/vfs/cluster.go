@@ -173,7 +173,7 @@ func suggestFor(masters []masterFile, c *cluster, labels []userLabel, anchors []
 	best, bestN := "", 0
 	for _, i := range c.members {
 		base := filepath.Base(masters[i].FileDir)
-		if base == "." || base == "/" || scorer.IsInGenericDir(base) {
+		if base == "." || base == "/" || scorer.IsGenericDirName(base) {
 			continue
 		}
 		counts[base]++

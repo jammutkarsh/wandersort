@@ -120,10 +120,9 @@ func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, 
 	SET scan_status = ?
 	WHERE id = (
 		SELECT id
-		FROM file_registry
+		FROM live_files
 		WHERE scan_session_id = ?
 			AND scan_status = ?
-			AND deleted_at IS NULL
 		ORDER BY id
 		LIMIT 1
 	)
