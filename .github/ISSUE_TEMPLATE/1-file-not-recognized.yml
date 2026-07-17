@@ -1,0 +1,69 @@
+name: "📷 A file wasn't recognized or sorted right"
+description: WanderSort skipped one of your photos/videos, or put it in the wrong group.
+title: "[File type] "
+labels: ["file-support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this! You don't need to be technical — just tell us
+        what you expected and what happened. The more detail, the faster we can fix it.
+
+  - type: input
+    id: file-type
+    attributes:
+      label: What kind of file is it?
+      description: The bit after the dot in the file name.
+      placeholder: "e.g. .heic, .cr3, .avi, .gif"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: what-happened
+    attributes:
+      label: What went wrong?
+      options:
+        - The file was skipped / ignored completely
+        - It was sorted into the wrong type (e.g. my video was treated as a photo)
+        - Related files (photo + its Live Photo video) weren't grouped together
+        - Something else (explain below)
+    validations:
+      required: true
+
+  - type: input
+    id: camera
+    attributes:
+      label: What device or camera made this file?
+      description: If you know it. Totally fine to leave blank.
+      placeholder: "e.g. iPhone 15 Pro, Canon R6, DJI drone"
+    validations:
+      required: false
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Anything else?
+      description: An example file name helps a lot (e.g. `IMG_3162.HEIC`).
+      placeholder: "The file is IMG_4821.CR3 from my Canon and WanderSort ignored it."
+    validations:
+      required: false
+
+  - type: textarea
+    id: sample
+    attributes:
+      label: Can you attach a sample photo/video?
+      description: >
+        If you're comfortable sharing one, drag an example file (or a few) into
+        this box — being able to test against the real thing is the fastest way
+        for us to fix it. Only attach files you're OK making public. Totally fine
+        to skip.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and didn't find this file type already reported.
+          required: true

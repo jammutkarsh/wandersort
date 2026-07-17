@@ -1,0 +1,69 @@
+name: "💥 Something broke or crashed"
+description: WanderSort stopped, showed an error, or didn't do what you expected.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sorry it broke! Fill in what you can — even a rough description helps.
+
+  - type: dropdown
+    id: command
+    attributes:
+      label: What were you doing when it happened?
+      options:
+        - Scanning my files (scan)
+        - Looking at the summary (report)
+        - Setting up / downloading dependencies (setup)
+        - Resetting my data (reset)
+        - Running the server (serve)
+        - Something else (explain below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: In your own words. What did you expect, and what did it do instead?
+      placeholder: "I ran scan on my SD card and it stopped halfway with a red error message."
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: The error message (if any)
+      description: Copy-paste anything red or that looks like an error. It's fine if you can't.
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: Which computer are you on?
+      placeholder: "e.g. Mac (Apple Silicon), Windows 11, Ubuntu Linux"
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ### 📎 One thing that helps us a LOT
+        Run this command **in the same folder you were scanning into** (the same
+        output directory), then drag the file it creates into this issue:
+        ```
+        wandersort report-issue
+        ```
+        Running it somewhere else packages an empty log by mistake. It bundles the
+        logs only (no photos, no personal files) so we can see what went wrong.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and didn't find the same problem.
+          required: true
