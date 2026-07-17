@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Utkarsh Chourasia
+
+name: "💡 An idea or something you wish it did"
+description: A feature you'd like, or a way WanderSort could work better for you.
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like WanderSort to do?
+      description: Describe it however makes sense to you.
+      placeholder: "I wish it could sort my photos by the person in them."
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why would that help you?
+      description: What are you trying to get done? This helps us build the right thing.
+      placeholder: "I have thousands of family photos and want to find everyone by name."
+    validations:
+      required: false

@@ -28,6 +28,12 @@ func (a *App) newReportIssueCmd() *cobra.Command {
 goes wrong — send it to the maintainer, or paste the log into any AI assistant
 to diagnose the problem yourself.
 
+Attach the zip to a new issue at:
+  https://github.com/jammutkarsh/wandersort/issues/new/choose
+
+Run this in the same output directory you ran the scan in (or pass the same
+--output-path), otherwise it packages a different, empty log.
+
 The database is not included by default because it holds file paths and photo
 metadata; add --include-db only if you are comfortable sharing that.`,
 		Example: `wandersort report-issue

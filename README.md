@@ -107,29 +107,17 @@ The hash creates **content groups**: byte-identical files across *any* location 
 
 **Capture groups tell you what belongs together. Content groups tell you what's duplicated.**
 
-### Stage 4 — Score *(work in progress)*
+### Stage 4 — Score
 
-Once files are hashed and grouped, WanderSort scores each copy to determine which one should be the **master** — the definitive version to keep. Scoring considers:
+Once files are hashed and grouped, WanderSort scores each copy in a duplicate group to elect the **master** — the definitive version to keep. Scoring leans on the storage context: a folder named `2024/Goa` beats `New Folder/Untitled`, date-stamped names beat generic camera sequences.
 
-- Metadata richness (EXIF data, GPS coordinates, timestamps)
-- Directory path quality (a folder named `2024/Goa` beats `New Folder/Untitled`)
-- Filename patterns (date-stamped names score higher than generic camera sequences)
+### Stage 5 — Organise *(proposal built; move pending)*
 
-### Stage 5 — Organise *(work in progress)*
-
-The final stage: WanderSort builds a virtual folder tree based on the metadata it has gathered — dates, locations, device info — and proposes the new structure. You review it. You approve it. Only then does it move (or copy) your files.
-
-Nothing moves without your explicit sign-off.
+WanderSort builds a virtual folder tree from the metadata it gathered — dates, locations, device info — and proposes the new structure. Building the proposal works today. The final step — reviewing it and moving files — is what you'll approve; **nothing moves without your explicit sign-off**, and the move engine itself is still being built.
 
 ---
 
-## The Pipeline Philosophy
-
-```text
-Scan → Deduce → Review → Execute
-```
-
-WanderSort never touches your files until you tell it to. The entire pipeline is designed around **non-destructive discovery**: scan everything, figure out the relationships and duplicates, show you the plan, and only act when you say go.
+**WanderSort never touches your files until you tell it to.** The entire pipeline is built around non-destructive discovery: scan everything, figure out the relationships and duplicates, show you the plan, and only act when you say go.
 
 ---
 
@@ -167,56 +155,9 @@ An optional REST API server is available via `wandersort serve` for programmatic
 
 ---
 
-## Metadata Extraction
-
-WanderSort extracts deep EXIF metadata from your files using [ExifTool](https://exiftool.org/) — and it understands 11 different file format structures natively:
-
-| Data | What WanderSort Reads |
-| --- | --- |
-| **Camera** | Make, Model, Lens, Software |
-| **Timestamps** | Original capture date, modification date, file system dates |
-| **Exposure** | ISO, Aperture, Shutter Speed, Focal Length, Flash, Metering Mode |
-| **GPS** | Latitude, Longitude, Altitude |
-| **Dimensions** | Width, Height, Megapixels, Orientation |
-
-This metadata powers the scoring engine and, ultimately, the folder structure decisions.
-
----
-
 ## Architecture
 
-WanderSort is a command-line application that runs entirely on your machine — no daemon required. The same pipeline is also exposed over an optional local REST API (`wandersort serve`) for integrations. The backend is written in Go for raw performance — concurrent file walking, parallel hashing, and batched database writes make it capable of processing terabytes without breaking a sweat.
-
-**Key internals:**
-
-- **SQLite** for the file registry — portable, zero-config, single-file database
-- **BLAKE3** for hashing — cryptographic-grade speed, streaming with constant memory
-- **Concurrent pipeline** — worker pools for scanning, hashing, and scoring with bounded concurrency
-- **Structured progress logs** — every pipeline event is emitted as a structured log line keyed by session ID, so progress is traceable live or after the fact
-- **Serialised writes** — a bulk writer ensures database consistency without sacrificing throughput
-- **Capture grouping** — understands iPhone and DSLR filename conventions natively
-
----
-
-## Current Status
-
-WanderSort is under active development. Here's what's built and what's coming:
-
-| Stage | Status |
-| --- | --- |
-| File scanner with concurrent directory walking | ✅ Done |
-| File classifier (11 media formats, 4 categories) | ✅ Done |
-| Capture group detection (iPhone & DSLR patterns) | ✅ Done |
-| BLAKE3 hashing with content group deduplication | ✅ Done |
-| EXIF metadata extraction (11 format-specific parsers) | ✅ Done |
-| SQLite schema with full file registry | ✅ Done |
-| Command-line interface (setup, scan, report, reset) | ✅ Done |
-| REST API server with structured session logs | ✅ Done |
-| Metadata scoring engine | 🔧 In progress |
-| Deduplication with master file selection | 🔧 In progress |
-| Virtual folder tree builder | 📋 Planned |
-| Review UI for approving organisation proposals | 📋 Planned |
-| Safe copy/move engine with verification | 📋 Planned |
+WanderSort runs entirely on your machine — no daemon required — and is written in Go for concurrent file walking, parallel hashing, and batched SQLite writes that scale to terabytes. For a tour of the codebase — the pipeline phases, the CLI, the HTTP layer, and the supporting packages — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 

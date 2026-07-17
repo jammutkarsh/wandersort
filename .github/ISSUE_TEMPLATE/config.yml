@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Utkarsh Chourasia
+
+blank_issues_enabled: false
+contact_links:
+  - name: Question or general help
+    url: https://github.com/jammutkarsh/wandersort/discussions
+    about: Not sure it's a bug? Ask here first — happy to help.
