@@ -118,7 +118,10 @@ Only used by `serve`. Standard handler→service→repository split per domain:
   All stored timestamps are UTC fixed-width nanoseconds via `db.FormatTime`
   (`db.TimeLayout`); convert to the user's local zone only at display time.
 - `volume/` — best-effort volume-UUID resolution per scan root (diskutil on
-  darwin, /dev/disk/by-uuid on linux, "" elsewhere), cached per path.
+  darwin, /dev/disk/by-uuid on linux, volume GUID via winapi on windows —
+  cross-compiled only, untested on real hardware), cached per path; also
+  `FreeBytes` for the post-scan output-volume space preflight (warn-only,
+  `workflow.warnIfLowSpace`).
 - `logger/` — slog-based `Logger` interface; fans out to two handlers. The
   **console** handler (`console.go`) is deliberately minimal for CLI users: a
   coloured level tag + message + dimmed `key=value` attrs, no timestamp/source.

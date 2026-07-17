@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,9 @@ type Workflow struct {
 
 	/* Utilities */
 	path *path.Resolver
+	// outputDir is where the organized library (and the DB) lives; used for
+	// the free-space preflight after each scan
+	outputDir string
 
 	/* Pipeline components */
 	scanner Scanner
@@ -129,6 +133,7 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 		vfs:              vfs.New(db, locationResolver, log, vfs.DefaultConfig()),
 		log:              log,
 		path:             path.New(),
+		outputDir:        filepath.Dir(cfg.AppDBPath),
 		activeRoots:      map[uuid.UUID][]string{},
 	}
 	for _, opt := range opts {
@@ -295,6 +300,7 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 			onSuccess: func(count int) {
 				msg := fmt.Sprintf("Scanned %d files", count)
 				wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
+				wf.warnIfLowSpace(sessionID)
 			},
 		},
 		{

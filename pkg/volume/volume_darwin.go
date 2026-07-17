@@ -34,6 +34,16 @@ func uuidForPath(path string) (string, error) {
 	return string(m[1]), nil
 }
 
+// FreeBytes returns the bytes available to the current user on the volume
+// containing path
+func FreeBytes(path string) (uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, fmt.Errorf("statfs %q: %w", path, err)
+	}
+	return st.Bavail * uint64(st.Bsize), nil
+}
+
 // cString converts a NUL-terminated C char array to a Go string
 func cString(chars []int8) string {
 	b := make([]byte, 0, len(chars))

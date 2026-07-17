@@ -8,12 +8,54 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 // Close gracefully waits for all in-flight sessions to finish
 // Call this before closing the database to prevent panics
 func (wf *Workflow) Close() {
 	wf.wg.Wait()
+}
+
+// warnIfLowSpace preempts a doomed Execute run right after the scan phase:
+// if every live file were copied into the output directory today, would the
+// volume hold it? Warn-only — nothing is copied yet.
+// ponytail: the sum counts every live file, an upper bound; narrow it to
+// master copies when the Execute phase lands
+func (wf *Workflow) warnIfLowSpace(sessionID uuid.UUID) {
+	var librarySize int64
+	if err := wf.db.SQL.GetContext(wf.ctx, &librarySize,
+		`SELECT COALESCE(SUM(file_size), 0) FROM file_registry WHERE deleted_at IS NULL`); err != nil {
+		wf.log.Error("Failed to size the library", "sessionId", sessionID, "error", err)
+		return
+	}
+
+	free, err := volume.FreeBytes(wf.outputDir)
+	if err != nil {
+		wf.log.Warn("Cannot check output volume free space", "sessionId", sessionID, "path", wf.outputDir, "error", err)
+		return
+	}
+
+	if uint64(librarySize) > free {
+		msg := fmt.Sprintf("Output volume may be too small: organizing the library needs up to %s, but only %s is free at %s",
+			humanBytes(uint64(librarySize)), humanBytes(free), wf.outputDir)
+		wf.log.Warn(msg, logger.UserKey, true, "sessionId", sessionID)
+	}
+}
+
+// humanBytes renders n as a short base-1024 size, e.g. "1.5 GiB"
+func humanBytes(n uint64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := uint64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 /*-------------------- STATUS UPDATES --------------------*/

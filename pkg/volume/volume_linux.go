@@ -8,7 +8,18 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
+
+// FreeBytes returns the bytes available to the current user on the volume
+// containing path
+func FreeBytes(path string) (uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, fmt.Errorf("statfs %q: %w", path, err)
+	}
+	return st.Bavail * uint64(st.Bsize), nil
+}
 
 // uuidForPath resolves the block device backing path's longest mount-point
 // prefix from /proc/self/mounts, then matches that device against the
