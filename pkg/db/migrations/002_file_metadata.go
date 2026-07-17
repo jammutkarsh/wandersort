@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS file_metadata (
     -- each duplicate group, solo files are never touched
     is_master INTEGER NOT NULL DEFAULT 1,
 
-    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%f000000Z','now'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_metadata_hash_file ON file_metadata(file_hash, file_id);

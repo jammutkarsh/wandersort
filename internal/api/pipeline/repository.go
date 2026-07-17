@@ -20,14 +20,16 @@ func (r *Repository) GetFileCount(ctx context.Context) (FileCountResponse, error
 
 	if err := r.db.QueryRowContext(
 		ctx,
-		`SELECT COUNT(*) FROM file_registry`,
+		`SELECT COUNT(*) FROM file_registry WHERE deleted_at IS NULL`,
 	).Scan(&resp.FilesScanned); err != nil {
 		return FileCountResponse{}, err
 	}
 
 	if err := r.db.QueryRowContext(
 		ctx,
-		`SELECT COUNT(*) FROM file_metadata`,
+		`SELECT COUNT(*) FROM file_metadata fm
+		JOIN file_registry fr ON fr.id = fm.file_id
+		WHERE fr.deleted_at IS NULL`,
 	).Scan(&resp.FilesHashed); err != nil {
 		return FileCountResponse{}, err
 	}

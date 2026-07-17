@@ -263,6 +263,48 @@ func TestRun(t *testing.T) {
 	if !master1 {
 		t.Error("survivor of a soft-deleted group was not re-promoted")
 	}
+	// The soft-deleted member must not be re-promoted alongside the survivor
+	var master2 bool
+	if err := d.SQL.GetContext(ctx, &master2,
+		`SELECT is_master FROM file_metadata WHERE file_id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if master2 {
+		t.Error("soft-deleted member was re-promoted to master")
+	}
+}
+
+func TestRunDirBonusIgnoresGenericAncestors(t *testing.T) {
+	d := dbtest.New(t)
+	ctx := context.Background()
+	sessionId := dbtest.NewSession(t, d, db.StatusHashed)
+
+	// Same camera filename, absolute dirs sharing a generic ancestor (Photos).
+	// Only the leaf folder may decide the dir bonus: the meaningful leaf must
+	// win even though the generic-leaf path is shorter
+	dbtest.SeedFile(t, d, sessionId, 1, "/Users/x/Photos/dcim", "IMG_1.jpg", 1024)
+	dbtest.SeedFile(t, d, sessionId, 2, "/Users/x/Photos/Goa Trip 2024", "IMG_1.jpg", 1024)
+	for _, id := range []int64{1, 2} {
+		if _, err := d.ExecContext(ctx,
+			`INSERT INTO file_metadata (file_hash, file_id) VALUES ('dup', ?)`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := &Scorer{db: d, log: logger.NewNoopLogger()}
+	if _, err := s.Run(ctx, sessionId); err != nil {
+		t.Fatal(err)
+	}
+	d.Writer.Flush()
+
+	var masterID int64
+	if err := d.SQL.GetContext(ctx, &masterID,
+		`SELECT file_id FROM file_metadata WHERE is_master = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if masterID != 2 {
+		t.Errorf("master = file %d, want file 2 (meaningful leaf folder must earn dir bonus)", masterID)
+	}
 }
 
 func TestRunDeterministicTieBreak(t *testing.T) {

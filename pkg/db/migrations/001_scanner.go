@@ -12,7 +12,7 @@ var schema001 = Migration{
 const scanSessions = `
 CREATE TABLE IF NOT EXISTS scan_sessions (
     id TEXT PRIMARY KEY,
-    started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f000000Z','now')),
     completed_at TEXT,
     status TEXT NOT NULL DEFAULT 'STARTED',
 

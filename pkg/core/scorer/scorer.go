@@ -71,7 +71,9 @@ func (s *Scorer) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	// Soft-deleted files don't count as group members anywhere in this phase
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE file_metadata SET is_master = 1
-		WHERE is_master = 0 AND file_hash IN (
+		WHERE is_master = 0
+		AND file_id IN (SELECT id FROM file_registry WHERE deleted_at IS NULL)
+		AND file_hash IN (
 			SELECT fm.file_hash FROM file_metadata fm
 			JOIN file_registry fr ON fr.id = fm.file_id
 			WHERE fr.deleted_at IS NULL
@@ -160,7 +162,10 @@ func perFileScore(filePath string) int {
 	if datePattern.MatchString(name) {
 		score += scoreDatePattern
 	}
-	if !IsInGenericDir(dir) {
+	// Judge only the immediate parent folder — file_dir is absolute, and
+	// generic segments higher up (Users, Photos, Downloads) must not
+	// disqualify a meaningful leaf folder (same rule as vfs/cluster.go)
+	if !IsInGenericDir(filepath.Base(dir)) {
 		score += scoreDirBonus
 	}
 	// Penalize duplicate-copy suffixes, which are common in camera roll imports and cloud syncs.

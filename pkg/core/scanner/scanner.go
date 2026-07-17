@@ -275,15 +275,17 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, absRoot, vo
 // failure (unreadable subtree, one bad upsert) heals on the next clean scan.
 // Runs only for roots whose walk finished cleanly
 func (s *Scanner) sweep(ctx context.Context, sessionID uuid.UUID, root string) error {
-	// Prefix match via substr instead of LIKE so roots containing % or _
-	// need no escaping
+	// Prefix match as an index range on (file_dir, file_name):
+	// [root+sep, root+succ(sep)) covers every path under root without a full
+	// table scan, and needs no LIKE escaping for roots containing % or _
 	prefix := root + string(filepath.Separator)
+	prefixEnd := root + string(filepath.Separator+1)
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE file_registry SET deleted_at = ?
 		WHERE deleted_at IS NULL
 			AND scan_session_id != ?
-			AND (file_dir = ? OR substr(file_dir, 1, ?) = ?)`,
-		db.FormatTime(time.Now()), sessionID.String(), root, len(prefix), prefix)
+			AND (file_dir = ? OR (file_dir >= ? AND file_dir < ?))`,
+		db.FormatTime(time.Now()), sessionID.String(), root, prefix, prefixEnd)
 	if err != nil {
 		return fmt.Errorf("sweep %q: %w", root, err)
 	}
@@ -373,7 +375,7 @@ func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG
 			file_origin = excluded.file_origin,
 			file_size = excluded.file_size,
 			file_modified_at = excluded.file_modified_at,
-			volume_uuid = excluded.volume_uuid,
+			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid),
 			deleted_at = NULL,
 			scan_status = CASE WHEN file_registry.file_size != excluded.file_size
 					OR file_registry.file_modified_at != excluded.file_modified_at

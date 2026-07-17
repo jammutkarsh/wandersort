@@ -118,7 +118,7 @@ func (a *App) generateReport(ctx context.Context, dbPath string) ([]SessionRepor
 
 	for i := range sessions {
 		if err := sqlDB.QueryRowContext(
-			ctx, `SELECT COUNT(*) FROM file_registry WHERE scan_session_id = ?`, sessions[i].SessionID,
+			ctx, `SELECT COUNT(*) FROM file_registry WHERE scan_session_id = ? AND deleted_at IS NULL`, sessions[i].SessionID,
 		).Scan(&sessions[i].FilesScanned); err != nil {
 			return nil, fmt.Errorf("count file_registry for session %s: %w", sessions[i].SessionID, err)
 		}
@@ -127,7 +127,7 @@ func (a *App) generateReport(ctx context.Context, dbPath string) ([]SessionRepor
 			ctx, `
 			SELECT COUNT(*) FROM file_metadata fm
 			JOIN file_registry fr ON fr.id = fm.file_id
-			WHERE fr.scan_session_id = ?`, sessions[i].SessionID,
+			WHERE fr.scan_session_id = ? AND fr.deleted_at IS NULL`, sessions[i].SessionID,
 		).Scan(&sessions[i].FilesHashed); err != nil {
 			return nil, fmt.Errorf("count file_metadata for session %s: %w", sessions[i].SessionID, err)
 		}
@@ -136,10 +136,10 @@ func (a *App) generateReport(ctx context.Context, dbPath string) ([]SessionRepor
 			ctx, `
 			SELECT COUNT(*) FROM file_metadata fm
 			JOIN file_registry fr ON fr.id = fm.file_id
-			WHERE fr.scan_session_id = ? AND fm.file_hash IN (
+			WHERE fr.scan_session_id = ? AND fr.deleted_at IS NULL AND fm.file_hash IN (
 				SELECT fm2.file_hash FROM file_metadata fm2
 				JOIN file_registry fr2 ON fr2.id = fm2.file_id
-				WHERE fr2.scan_session_id = ?
+				WHERE fr2.scan_session_id = ? AND fr2.deleted_at IS NULL
 				GROUP BY fm2.file_hash HAVING COUNT(*) > 1
 			)`, sessions[i].SessionID, sessions[i].SessionID,
 		).Scan(&sessions[i].FilesDuplicated); err != nil {
