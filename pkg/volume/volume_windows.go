@@ -42,11 +42,11 @@ func uuidForPath(path string) (string, error) {
 	}
 
 	s := windows.UTF16ToString(guidPath)
-	open, close := strings.Index(s, "{"), strings.Index(s, "}")
-	if open < 0 || close <= open {
+	lo, hi := strings.Index(s, "{"), strings.Index(s, "}")
+	if lo < 0 || hi <= lo {
 		return "", fmt.Errorf("unexpected volume GUID path %q", s)
 	}
-	return s[open+1 : close], nil
+	return s[lo+1 : hi], nil
 }
 
 // FreeBytes returns the bytes available to the current user on the volume

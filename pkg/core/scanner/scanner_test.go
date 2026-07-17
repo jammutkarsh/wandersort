@@ -286,6 +286,30 @@ func TestRunRescan(t *testing.T) {
 	}
 }
 
+// TestSweepFilesystemRoot: sweeping the filesystem root itself must still
+// cover every stored file_dir — the naive prefix range ["//", "/0") contains
+// no path at all, so an unswept "/" scan would silently keep ghosts alive
+func TestSweepFilesystemRoot(t *testing.T) {
+	ctx := context.Background()
+	sc, d := newDBScanner(t)
+
+	stale := dbtest.NewSession(t, d, db.StatusCompleted)
+	dbtest.SeedFile(t, d, stale, 1, "/photos/trips", "gone.jpg", 10)
+	dbtest.SeedFile(t, d, stale, 2, "/", "root.jpg", 10)
+
+	current := dbtest.NewSession(t, d, db.StatusStarted)
+	if err := sc.sweep(ctx, current, "/"); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	rows := registryByName(t, d)
+	for _, name := range []string{"gone.jpg", "root.jpg"} {
+		if rows[name].DeletedAt == nil {
+			t.Errorf("%s not swept under filesystem root", name)
+		}
+	}
+}
+
 func TestRunFailedRootDoesNotSweep(t *testing.T) {
 	ctx := context.Background()
 	sc, d := newDBScanner(t)
@@ -320,6 +344,56 @@ func TestRunFailedRootDoesNotSweep(t *testing.T) {
 	}
 	if rows["photo.jpg"].SessionID != session1.String() {
 		t.Errorf("surviving row reassigned to session %s", rows["photo.jpg"].SessionID)
+	}
+}
+
+// TestRunPartialRootFailureSweepsOnlyCleanRoots: with two disjoint roots where
+// one vanishes (unplugged drive), the surviving root still sweeps its own
+// vanished files, the dead root's index stays untouched, and the scan fails
+func TestRunPartialRootFailureSweepsOnlyCleanRoots(t *testing.T) {
+	ctx := context.Background()
+	sc, d := newDBScanner(t)
+	rootA, rootB := t.TempDir(), t.TempDir()
+
+	for path, content := range map[string]string{
+		filepath.Join(rootA, "keep.jpg"):  "kept bytes",
+		filepath.Join(rootA, "gone.jpg"):  "doomed bytes",
+		filepath.Join(rootB, "photo.jpg"): "drive bytes",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session1 := dbtest.NewSession(t, d, db.StatusStarted)
+	if _, err := sc.Run(ctx, session1, []string{rootA, rootB}); err != nil {
+		t.Fatalf("first scan: %v", err)
+	}
+	d.Writer.Flush()
+
+	if err := os.Remove(filepath.Join(rootA, "gone.jpg")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(rootB); err != nil {
+		t.Fatal(err)
+	}
+	session2 := dbtest.NewSession(t, d, db.StatusStarted)
+	if _, err := sc.Run(ctx, session2, []string{rootA, rootB}); err == nil {
+		t.Fatal("scan with a missing root should fail")
+	}
+	d.Writer.Flush()
+
+	rows := registryByName(t, d)
+	if rows["gone.jpg"].DeletedAt == nil {
+		t.Error("clean root's vanished file was not swept")
+	}
+	if rows["keep.jpg"].DeletedAt != nil {
+		t.Error("clean root's live file was swept")
+	}
+	if rows["photo.jpg"].DeletedAt != nil {
+		t.Error("failed root's file was swept despite the walk never running")
+	}
+	if rows["photo.jpg"].SessionID != session1.String() {
+		t.Errorf("failed root's row reassigned to session %s", rows["photo.jpg"].SessionID)
 	}
 }
 

@@ -277,15 +277,18 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, absRoot, vo
 func (s *Scanner) sweep(ctx context.Context, sessionID uuid.UUID, root string) error {
 	// Prefix match as an index range on (file_dir, file_name):
 	// [root+sep, root+succ(sep)) covers every path under root without a full
-	// table scan, and needs no LIKE escaping for roots containing % or _
-	prefix := root + string(filepath.Separator)
-	prefixEnd := root + string(filepath.Separator+1)
+	// table scan, and needs no LIKE escaping for roots containing % or _.
+	// Trim a trailing separator first: for the filesystem root the range
+	// would otherwise be ["//", "/0"), which no file_dir ever falls into
+	trimmed := strings.TrimSuffix(root, string(filepath.Separator))
+	prefix := trimmed + string(filepath.Separator)
+	prefixEnd := trimmed + string(filepath.Separator+1)
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE file_registry SET deleted_at = ?
 		WHERE deleted_at IS NULL
 			AND scan_session_id != ?
 			AND (file_dir = ? OR (file_dir >= ? AND file_dir < ?))`,
-		db.FormatTime(time.Now()), sessionID.String(), root, prefix, prefixEnd)
+		db.FormatTime(time.Now()), sessionID.String(), trimmed, prefix, prefixEnd)
 	if err != nil {
 		return fmt.Errorf("sweep %q: %w", root, err)
 	}

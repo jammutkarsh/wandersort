@@ -21,3 +21,21 @@ jobs:
 
       - name: Vet and race tests
         run: make test-race
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build for ${{ matrix.goos }}
+        run: GOOS=${{ matrix.goos }} go build ./...

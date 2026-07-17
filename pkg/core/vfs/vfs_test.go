@@ -301,7 +301,7 @@ func TestCustomSlotOrder(t *testing.T) {
 	}
 }
 
-func TestConcurrentExtraction(t *testing.T) {
+func TestBuildManyFiles(t *testing.T) {
 	h := newHarness(t)
 	const n = 60
 	ids := make([]int64, 0, n)
