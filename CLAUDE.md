@@ -13,8 +13,9 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
 2. **Hash + EXIF** — content-hash for duplicate detection, extract EXIF for later.
 3. **Score** — within a duplicate group, elect one master copy (same bytes,
    different storage context — e.g. folder named `Goa Trip 2024`).
-4. **VFS** *(not built yet)* — place masters into a hierarchy, using the user's
-   prior folder-naming as context when EXIF is absent.
+4. **VFS** — propose a destination hierarchy for every live master in the
+   library (not just the session's), using the user's prior folder-naming as
+   context when EXIF is absent. Nothing on disk is touched.
 
 ## Entry point & CLI
 
@@ -78,15 +79,26 @@ come from `pkg/config`.
 ## Core pipeline (`pkg/core/`)
 
 - `workflow/` — orchestrator. Two entry points over the same `runSession` phase
-  loop (scan→hash→score): `RunScan` (synchronous, CLI) and `SubmitScan`
-  (background goroutine, `serve`; `Close()` waits). `helpers.go` = session
-  status/finalize writes.
-- `scanner/` — phase 1. Bounded-worker directory walk. `capture.go` = capture-
-  time extraction.
-- `hasher/` — phase 2. BLAKE3 over full bytes + exiftool EXIF. **Known gap
-  (TODO #22 in workflow.go):** full-byte hash means pixel-identical files with
-  differing metadata land in separate groups.
-- `scorer/` — phase 3. Elects master via folder-naming heuristics.
+  loop (scan→hash→score→vfs): `RunScan` (synchronous, CLI) and `SubmitScan`
+  (background goroutine, `serve`; `Close()` waits). `claimRoots` rejects a new
+  session whose roots overlap an in-flight session's (in-memory — the output
+  lock guarantees one process). `helpers.go` = session status/finalize writes.
+- `scanner/` — phase 1. Bounded-worker directory walk. Files are identified by
+  absolute `(file_dir, file_name)`; each root's volume UUID is stamped for
+  future drive re-anchoring. After a clean walk, `sweep` **soft-deletes**
+  (`deleted_at`) rows the session didn't re-see; `purgeExpired` hard-deletes
+  them after 30 days (`deletedRetention`), so unplugged drives and transient
+  errors self-heal. `capture.go` = capture-time extraction.
+- `hasher/` — phase 2. BLAKE3 over full bytes + exiftool EXIF (the full tag
+  set the VFS needs — exiftool runs exactly once per file, at hash time).
+  A failed hash clears the file's stale metadata row. **Known gap:** full-byte
+  hash means pixel-identical files with differing metadata land in separate
+  groups.
+- `scorer/` — phase 3. Elects master via folder-naming heuristics over live
+  (`deleted_at IS NULL`) rows; re-promotes solo survivors of shrunken groups.
+- `vfs/` — phase 4. Proposes destinations for every live master in the library
+  from the persisted metadata (never re-reads files); each run replaces the
+  proposal set wholesale.
 
 ## HTTP layer (`internal/api/`)
 
@@ -101,7 +113,12 @@ Only used by `serve`. Standard handler→service→repository split per domain:
 
 - `config/` — `Defaults()`, hardcoded config only (no env reads).
 - `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry; `writer.go` batched
-  writes; `migrations/` numbered Go migrations.
+  writes; `migrations/` numbered Go migrations; `dbtest/` shared test fixtures
+  (fresh migrated DB + seed helpers) used by every pipeline package's tests.
+  All stored timestamps are UTC fixed-width nanoseconds via `db.FormatTime`
+  (`db.TimeLayout`); convert to the user's local zone only at display time.
+- `volume/` — best-effort volume-UUID resolution per scan root (diskutil on
+  darwin, /dev/disk/by-uuid on linux, "" elsewhere), cached per path.
 - `logger/` — slog-based `Logger` interface; fans out to two handlers. The
   **console** handler (`console.go`) is deliberately minimal for CLI users: a
   coloured level tag + message + dimmed `key=value` attrs, no timestamp/source.

@@ -49,6 +49,17 @@ const (
 	StatusDone     = "DONE"
 )
 
+// TimeLayout is RFC3339 with fixed-width nanoseconds. Fixed width keeps
+// lexicographic string comparison in SQL consistent with time order; values
+// are always stored in UTC via FormatTime and shown in the user's local zone
+// only at display time
+const TimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// FormatTime renders t in the canonical stored form: UTC, fixed-width nanos
+func FormatTime(t time.Time) string {
+	return t.UTC().Format(TimeLayout)
+}
+
 // SQLite connection pool and retry tuning
 const (
 	// maxOpenConns is 1 because SQLite is single-writer — one Go-level connection

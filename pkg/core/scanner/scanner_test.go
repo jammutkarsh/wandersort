@@ -11,8 +11,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
+	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 // ---------------------------------------------------------------------------
@@ -75,6 +77,7 @@ func newTestScanner(t *testing.T) *Scanner {
 		classifier: classifier.NewFileClassifier(),
 		log:        logger.NewNoopLogger(),
 		path:       &path.Resolver{HomeDir: "/tmp"},
+		volumes:    volume.New(),
 	}
 }
 
@@ -82,7 +85,7 @@ func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 	root := createTestTree(t)
 	sc := newTestScanner(t)
 	filesChan := make(chan FileDiscovery, 200)
-	err := sc.walkRoot(context.Background(), uuid.Nil, root, filesChan)
+	err := sc.walkRoot(context.Background(), uuid.Nil, root, "", filesChan)
 	close(filesChan)
 	if err != nil {
 		t.Fatalf("walkRoot: %v", err)
@@ -99,7 +102,7 @@ func TestWalkRoot_DiscoverySmokeTest(t *testing.T) {
 	if len(discoveries) != 5 {
 		names := make([]string, len(discoveries))
 		for i, d := range discoveries {
-			names[i] = d.Path
+			names[i] = d.Name
 		}
 		t.Fatalf("expected 5 discoveries, got %d: %v", len(discoveries), names)
 	}
@@ -113,7 +116,7 @@ func TestWalkRoot_ContextCancellation(t *testing.T) {
 	cancel() // cancel immediately
 
 	filesChan := make(chan FileDiscovery, 200)
-	err := sc.walkRoot(ctx, uuid.Nil, root, filesChan)
+	err := sc.walkRoot(ctx, uuid.Nil, root, "", filesChan)
 	close(filesChan)
 
 	if err == nil {
@@ -135,7 +138,7 @@ func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 	var wg sync.WaitGroup
 	for range walkers {
 		wg.Go(func() {
-			_ = sc.walkRoot(context.Background(), uuid.Nil, root, filesChan)
+			_ = sc.walkRoot(context.Background(), uuid.Nil, root, "", filesChan)
 		})
 	}
 
@@ -162,44 +165,32 @@ func TestWalkRoot_ConcurrentWalkers(t *testing.T) {
 
 func newDBScanner(t *testing.T) (*Scanner, *db.DB) {
 	t.Helper()
-	d, err := db.New(context.Background(), filepath.Join(t.TempDir(), "test.db"), db.AppDB, logger.NewNoopLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
+	d := dbtest.New(t)
 	return New(d, logger.NewNoopLogger(), 2), d
 }
 
-func newSession(t *testing.T, d *db.DB) uuid.UUID {
-	t.Helper()
-	id := uuid.New()
-	if _, err := d.ExecContext(context.Background(),
-		`INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'STARTED', '/tmp')`,
-		id.String()); err != nil {
-		t.Fatal(err)
-	}
-	return id
-}
-
 type registryRow struct {
-	ID         int64  `db:"id"`
-	FilePath   string `db:"file_path"`
-	ScanStatus string `db:"scan_status"`
-	SessionID  string `db:"scan_session_id"`
+	ID        int64   `db:"id"`
+	FileName  string  `db:"file_name"`
+	Status    string  `db:"scan_status"`
+	SessionID string  `db:"scan_session_id"`
+	DeletedAt *string `db:"deleted_at"`
 }
 
-func registryByPath(t *testing.T, d *db.DB, root string) map[string]registryRow {
+// registryByName keys every registry row by file name; test trees use unique
+// names so the file_dir does not matter for lookups
+func registryByName(t *testing.T, d *db.DB) map[string]registryRow {
 	t.Helper()
 	var rows []registryRow
 	if err := d.SQL.Select(&rows,
-		`SELECT id, file_path, scan_status, scan_session_id FROM file_registry WHERE source_root = ?`, root); err != nil {
+		`SELECT id, file_name, scan_status, scan_session_id, deleted_at FROM file_registry`); err != nil {
 		t.Fatal(err)
 	}
-	byPath := map[string]registryRow{}
+	byName := map[string]registryRow{}
 	for _, r := range rows {
-		byPath[r.FilePath] = r
+		byName[r.FileName] = r
 	}
-	return byPath
+	return byName
 }
 
 func TestRunRescan(t *testing.T) {
@@ -217,31 +208,24 @@ func TestRunRescan(t *testing.T) {
 		}
 	}
 
-	session1 := newSession(t, d)
+	session1 := dbtest.NewSession(t, d, db.StatusStarted)
 	if _, err := sc.Run(ctx, session1, []string{root}); err != nil {
 		t.Fatalf("first scan: %v", err)
 	}
 	d.Writer.Flush()
 
-	rows := registryByPath(t, d, root)
+	rows := registryByName(t, d)
 	if len(rows) != 3 {
 		t.Fatalf("first scan indexed %d files, want 3", len(rows))
 	}
 
 	// Simulate a completed pipeline: metadata rows flip scan_status to HASHED
-	// via the trg_file_metadata_hashed trigger; delete.jpg also gets a stale
-	// vfs proposal that the sweep must remove
+	// via the trg_file_metadata_hashed trigger
 	for _, name := range []string{"keep.jpg", "modify.jpg", "delete.jpg"} {
 		if _, err := d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES (?, ?)`,
 			"hash-"+name, rows[name].ID); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if _, err := d.ExecContext(ctx, `
-		INSERT INTO virtual_fs_entries (session_id, file_id, source_path, target_path)
-		VALUES (?, ?, '/src/delete.jpg', 'stale/delete.jpg')`,
-		session1.String(), rows["delete.jpg"].ID); err != nil {
-		t.Fatal(err)
 	}
 
 	// Mutate the tree: touch one file, remove one, add one
@@ -259,40 +243,46 @@ func TestRunRescan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	session2 := newSession(t, d)
+	session2 := dbtest.NewSession(t, d, db.StatusStarted)
 	if _, err := sc.Run(ctx, session2, []string{root}); err != nil {
 		t.Fatalf("re-scan: %v", err)
 	}
 	d.Writer.Flush()
 
-	rows = registryByPath(t, d, root)
-	if len(rows) != 3 {
-		t.Fatalf("re-scan left %d files, want 3 (keep, modify, new)", len(rows))
+	rows = registryByName(t, d)
+	if len(rows) != 4 {
+		t.Fatalf("re-scan left %d rows, want 4 (keep, modify, new + soft-deleted delete)", len(rows))
 	}
-	if got := rows["keep.jpg"].ScanStatus; got != db.StatusHashed {
+	if got := rows["keep.jpg"].Status; got != db.StatusHashed {
 		t.Errorf("unchanged file scan_status = %s, want HASHED", got)
 	}
-	if got := rows["modify.jpg"].ScanStatus; got != db.StatusDiscovered {
+	if got := rows["modify.jpg"].Status; got != db.StatusDiscovered {
 		t.Errorf("modified file scan_status = %s, want DISCOVERED (re-hash)", got)
 	}
-	if got := rows["new.jpg"].ScanStatus; got != db.StatusDiscovered {
+	if got := rows["new.jpg"].Status; got != db.StatusDiscovered {
 		t.Errorf("added file scan_status = %s, want DISCOVERED", got)
 	}
-	if _, ok := rows["delete.jpg"]; ok {
-		t.Error("deleted file still present in file_registry after sweep")
+	for _, name := range []string{"keep.jpg", "modify.jpg", "new.jpg"} {
+		if rows[name].DeletedAt != nil {
+			t.Errorf("live file %s carries deleted_at %v", name, *rows[name].DeletedAt)
+		}
 	}
-	var stale int
-	if err := d.SQL.Get(&stale, `SELECT count(*) FROM file_metadata WHERE file_hash = 'hash-delete.jpg'`); err != nil {
+	if rows["delete.jpg"].DeletedAt == nil {
+		t.Error("vanished file was not soft-deleted by the sweep")
+	}
+
+	// The vanished file resurrects when it reappears on disk unchanged
+	if err := os.WriteFile(filepath.Join(root, "delete.jpg"), []byte("doomed bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if stale != 0 {
-		t.Error("deleted file's metadata row survived the sweep")
+	session3 := dbtest.NewSession(t, d, db.StatusStarted)
+	if _, err := sc.Run(ctx, session3, []string{root}); err != nil {
+		t.Fatalf("resurrect scan: %v", err)
 	}
-	if err := d.SQL.Get(&stale, `SELECT count(*) FROM virtual_fs_entries WHERE target_path = 'stale/delete.jpg'`); err != nil {
-		t.Fatal(err)
-	}
-	if stale != 0 {
-		t.Error("deleted file's vfs entry survived the sweep")
+	d.Writer.Flush()
+	rows = registryByName(t, d)
+	if rows["delete.jpg"].DeletedAt != nil {
+		t.Error("reappeared file is still marked deleted")
 	}
 }
 
@@ -304,28 +294,91 @@ func TestRunFailedRootDoesNotSweep(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "photo.jpg"), []byte("bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	session1 := newSession(t, d)
+	session1 := dbtest.NewSession(t, d, db.StatusStarted)
 	if _, err := sc.Run(ctx, session1, []string{root}); err != nil {
 		t.Fatalf("first scan: %v", err)
 	}
 	d.Writer.Flush()
 
-	// Unplugged-drive scenario: the root vanishes entirely. The walk must fail
-	// the scan and the index must survive untouched
+	// Unplugged-drive scenario: the root vanishes entirely. The scan must fail
+	// and the index must survive untouched
 	if err := os.RemoveAll(root); err != nil {
 		t.Fatal(err)
 	}
-	session2 := newSession(t, d)
+	session2 := dbtest.NewSession(t, d, db.StatusStarted)
 	if _, err := sc.Run(ctx, session2, []string{root}); err == nil {
 		t.Fatal("scan of a missing root should fail")
 	}
 	d.Writer.Flush()
 
-	rows := registryByPath(t, d, root)
+	rows := registryByName(t, d)
 	if len(rows) != 1 {
 		t.Fatalf("missing root swept the index: %d rows left, want 1", len(rows))
 	}
+	if rows["photo.jpg"].DeletedAt != nil {
+		t.Error("missing root soft-deleted a file it never scanned")
+	}
 	if rows["photo.jpg"].SessionID != session1.String() {
 		t.Errorf("surviving row reassigned to session %s", rows["photo.jpg"].SessionID)
+	}
+}
+
+func TestRunPurgesExpiredRows(t *testing.T) {
+	ctx := context.Background()
+	sc, d := newDBScanner(t)
+
+	// A file soft-deleted beyond the retention window, with dependent
+	// metadata and vfs rows that must be purged in FK order
+	old := dbtest.NewSession(t, d, db.StatusCompleted)
+	dbtest.SeedFile(t, d, old, 1, "/gone", "expired.jpg", 10)
+	if _, err := d.ExecContext(ctx,
+		`UPDATE file_registry SET deleted_at = ? WHERE id = 1`,
+		db.FormatTime(time.Now().Add(-deletedRetention-time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO file_metadata (file_hash, file_id) VALUES ('expired-hash', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO virtual_fs_entries (session_id, file_id, source_path, target_path)
+		VALUES (?, 1, '/gone/expired.jpg', 'stale/expired.jpg')`, old.String()); err != nil {
+		t.Fatal(err)
+	}
+	// A file inside the retention window survives the purge
+	dbtest.SeedFile(t, d, old, 2, "/gone", "recent.jpg", 10)
+	if _, err := d.ExecContext(ctx,
+		`UPDATE file_registry SET deleted_at = ? WHERE id = 2`,
+		db.FormatTime(time.Now().Add(-time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+
+	session := dbtest.NewSession(t, d, db.StatusStarted)
+	if _, err := sc.Run(ctx, session, []string{t.TempDir()}); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	d.Writer.Flush()
+
+	rows := registryByName(t, d)
+	if _, ok := rows["expired.jpg"]; ok {
+		t.Error("expired soft-deleted row survived the purge")
+	}
+	if _, ok := rows["recent.jpg"]; !ok {
+		t.Error("recently soft-deleted row was purged before its retention ran out")
+	}
+	var leftovers int
+	if err := d.SQL.Get(&leftovers, `
+		SELECT count(*) FROM file_metadata WHERE file_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if leftovers != 0 {
+		t.Error("purged file left metadata rows behind")
+	}
+	if err := d.SQL.Get(&leftovers, `
+		SELECT count(*) FROM virtual_fs_entries WHERE file_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if leftovers != 0 {
+		t.Error("purged file left vfs rows behind")
 	}
 }

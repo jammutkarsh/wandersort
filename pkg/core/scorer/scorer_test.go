@@ -2,11 +2,10 @@ package scorer
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -183,55 +182,23 @@ func TestDatePattern(t *testing.T) {
 	}
 }
 
-func setupTestDB(t *testing.T) *db.DB {
-	t.Helper()
-
-	path := filepath.Join(t.TempDir(), "test.db")
-	d, err := db.New(context.Background(), path, db.AppDB, logger.NewNoopLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
-	return d
-}
-
 func TestRun(t *testing.T) {
-	d := setupTestDB(t)
+	d := dbtest.New(t)
 	ctx := context.Background()
-	sessionId := uuid.New()
+	sessionId := dbtest.NewSession(t, d, db.StatusHashed)
 
-	_, err := d.ExecContext(ctx, `INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'HASHED', '/tmp')`, sessionId.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = d.ExecContext(ctx, `INSERT INTO file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
-		VALUES (1, 'trips/goa/sunset.jpg', 1024, '2024-01-01', ?, '/photos', '.jpg', 'IMAGE')`, sessionId.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = d.ExecContext(ctx, `INSERT INTO file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
-		VALUES (2, 'dcim/IMG_3162.jpg', 1024, '2024-01-01', ?, '/backup', '.jpg', 'IMAGE')`, sessionId.String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SeedFile(t, d, sessionId, 1, "/photos/trips/goa", "sunset.jpg", 1024)
+	dbtest.SeedFile(t, d, sessionId, 2, "/backup/dcim", "IMG_3162.jpg", 1024)
+	dbtest.SeedFile(t, d, sessionId, 3, "/photos/trips/goa", "beach.jpg", 2048)
 
-	_, err = d.ExecContext(ctx, `INSERT INTO file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
-		VALUES (3, 'trips/goa/beach.jpg', 2048, '2024-01-01', ?, '/photos', '.jpg', 'IMAGE')`, sessionId.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES ('abc', 1)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES ('abc', 2)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES ('solo', 3)`)
-	if err != nil {
-		t.Fatal(err)
+	for _, seed := range []struct {
+		hash   string
+		fileID int64
+	}{{"abc", 1}, {"abc", 2}, {"solo", 3}} {
+		if _, err := d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES (?, ?)`,
+			seed.hash, seed.fileID); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	s := &Scorer{db: d, log: logger.NewNoopLogger()}
@@ -277,35 +244,44 @@ func TestRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertMasters()
+
+	// A soft-deleted duplicate must stop counting as a group member: file 2
+	// vanishes, so file 1 becomes a solo master and file 2 keeps its demotion
+	if _, err := d.ExecContext(ctx,
+		`UPDATE file_registry SET deleted_at = '2026-01-01T00:00:00.000000000Z' WHERE id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Scorer{db: d, log: logger.NewNoopLogger()}).Run(ctx, sessionId); err != nil {
+		t.Fatal(err)
+	}
+	d.Writer.Flush()
+	var master1 bool
+	if err := d.SQL.GetContext(ctx, &master1,
+		`SELECT is_master FROM file_metadata WHERE file_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if !master1 {
+		t.Error("survivor of a soft-deleted group was not re-promoted")
+	}
 }
 
 func TestRunDeterministicTieBreak(t *testing.T) {
-	d := setupTestDB(t)
+	d := dbtest.New(t)
 	ctx := context.Background()
-	sessionId := uuid.New()
+	sessionId := dbtest.NewSession(t, d, db.StatusHashed)
 
-	if _, err := d.ExecContext(ctx,
-		`INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'HASHED', '/tmp')`,
-		sessionId.String()); err != nil {
-		t.Fatal(err)
-	}
 	// Two duplicates with identical score and identical path length; the
-	// (source_root, file_path) ordering must decide the winner, not the
+	// (file_dir, file_name) ordering must decide the winner, not the
 	// insertion order — so insert the expected loser first
 	seed := []struct {
 		id   int64
-		path string
+		name string
 	}{
-		{1, "trips/goa/beach_b.jpg"},
-		{2, "trips/goa/beach_a.jpg"},
+		{1, "beach_b.jpg"},
+		{2, "beach_a.jpg"},
 	}
 	for _, f := range seed {
-		if _, err := d.ExecContext(ctx, `
-			INSERT INTO file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
-			VALUES (?, ?, 1024, '2024-01-01', ?, '/photos', '.jpg', 'IMAGE')`,
-			f.id, f.path, sessionId.String()); err != nil {
-			t.Fatal(err)
-		}
+		dbtest.SeedFile(t, d, sessionId, f.id, "/photos/trips/goa", f.name, 1024)
 		if _, err := d.ExecContext(ctx,
 			`INSERT INTO file_metadata (file_hash, file_id) VALUES ('tied', ?)`, f.id); err != nil {
 			t.Fatal(err)
@@ -324,6 +300,6 @@ func TestRunDeterministicTieBreak(t *testing.T) {
 		t.Fatal(err)
 	}
 	if masterID != 2 {
-		t.Errorf("tie-break master = file %d, want file 2 (first by file_path order)", masterID)
+		t.Errorf("tie-break master = file %d, want file 2 (first by file_name order)", masterID)
 	}
 }

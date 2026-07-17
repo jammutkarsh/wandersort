@@ -21,6 +21,8 @@ func (wf *Workflow) Close() {
 // finalizeSession writes the terminal status/time/error for a scan session
 // It uses a detached context for cancelled sessions and a timeout for normal ones
 func (wf *Workflow) finalizeSession(sessionID uuid.UUID, finalStatus string, finalErr *string) {
+	wf.releaseRoots(sessionID)
+
 	// We select a context based on whether the pipeline was interrupted
 	// 1. If CANCELLED: The session context is already dead; use a detached one for the final write
 	// 2. If COMPLETED/FAILED: The pipeline was running without interruption; use the app context
@@ -34,7 +36,7 @@ func (wf *Workflow) finalizeSession(sessionID uuid.UUID, finalStatus string, fin
 	defer cancel()
 
 	wf.log.Info("Completing pipeline session", "sessionId", sessionID, "status", finalStatus)
-	completedAt := time.Now().UTC().Format(time.RFC3339)
+	completedAt := db.FormatTime(time.Now())
 
 	_, err := wf.db.ExecRetry(finalizeCtx, `
 		UPDATE scan_sessions

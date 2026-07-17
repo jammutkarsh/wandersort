@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -23,16 +22,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/path"
 )
-
-// metadataExtractor is the exiftool seam; *exiftool.Extractor satisfies it
-type metadataExtractor interface {
-	Extract(ctx context.Context, path string) (classifier.CommonMetadata, error)
-}
 
 // geoResolver is the reverse-geocode seam; *location.Resolver satisfies it
 type geoResolver interface {
@@ -43,18 +35,14 @@ type VFS struct {
 	db       *db.DB
 	resolver geoResolver
 	log      logger.Logger
-	extract  metadataExtractor
-	path     *path.Resolver
 	cfg      Config
 }
 
-func New(database *db.DB, resolver *location.Resolver, log logger.Logger, exiftoolPath string, cfg Config) *VFS {
+func New(database *db.DB, resolver *location.Resolver, log logger.Logger, cfg Config) *VFS {
 	v := &VFS{
-		db:      database,
-		log:     log,
-		extract: exiftool.New(exiftoolPath),
-		path:    path.New(),
-		cfg:     cfg,
+		db:  database,
+		log: log,
+		cfg: cfg,
 	}
 	if resolver != nil { // avoid a typed-nil interface; Run treats nil as "no geocoding"
 		v.resolver = resolver
@@ -81,10 +69,7 @@ func (v *VFS) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 		return 0, err
 	}
 
-	v.enrichAll(ctx, masters)
-	if ctx.Err() != nil {
-		return 0, ctx.Err()
-	}
+	deriveAll(masters)
 	v.resolveLocations(ctx, masters)
 	clusterAndSuggest(masters, labels, v.cfg.ClusterGap)
 	v.applyNameCase(masters)
@@ -102,26 +87,27 @@ func (v *VFS) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	return count, nil
 }
 
-// loadMasters reads every master file in the library joined with its hashed
-// metadata. Deliberately not session-scoped: the proposal must cover files
-// indexed by earlier sessions too, or the output would depend on session
-// history. The (source_root, file_path) order makes clustering and collision
+// loadMasters reads every live master file in the library joined with its
+// hashed metadata. Deliberately not session-scoped: the proposal must cover
+// files indexed by earlier sessions too, or the output would depend on session
+// history. The (file_dir, file_name) order makes clustering and collision
 // suffixes deterministic (clusterAndSuggest sorts stably), unlike
 // AUTOINCREMENT ids which vary with concurrent-worker insertion order
 func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 	var masters []masterFile
 	if err := v.db.SQL.SelectContext(ctx, &masters, `
-		SELECT fr.id, fr.file_path, fr.source_root, fr.media_type, fr.file_extension, fr.file_modified_at,
-			fm.exif_image_width, fm.exif_image_height, fm.exif_gps_latitude, fm.exif_gps_longitude,
+		SELECT fr.id, fr.file_dir, fr.file_name, fr.media_type, fr.file_extension, fr.file_modified_at,
+			fm.exif_image_width, fm.exif_image_height, fm.exif_orientation,
+			fm.exif_gps_latitude, fm.exif_gps_longitude,
 			fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date
 		FROM file_registry fr
 		JOIN file_metadata fm ON fm.file_id = fr.id
-		WHERE fm.is_master = 1
-		ORDER BY fr.source_root, fr.file_path`); err != nil {
+		WHERE fm.is_master = 1 AND fr.deleted_at IS NULL
+		ORDER BY fr.file_dir, fr.file_name`); err != nil {
 		return nil, fmt.Errorf("query master files: %w", err)
 	}
 	for i := range masters {
-		masters[i].absPath = v.path.MakeAbsolute(masters[i].FilePath, masters[i].SourceRoot)
+		masters[i].absPath = filepath.Join(masters[i].FileDir, masters[i].FileName)
 	}
 	return masters, nil
 }
@@ -135,69 +121,32 @@ func (v *VFS) loadLabels(ctx context.Context) ([]userLabel, error) {
 	return labels, nil
 }
 
-// enrichAll re-extracts EXIF from every master file on disk with a bounded
-// worker pool. Fresh extraction is required because hashing persists only a
-// small subset of the tags the VFS needs
-func (v *VFS) enrichAll(ctx context.Context, masters []masterFile) {
-	jobs := make(chan int)
-	var wg sync.WaitGroup
-	for range v.cfg.Workers {
-		wg.Go(func() {
-			for i := range jobs {
-				if ctx.Err() != nil {
-					continue // drain remaining jobs without work
-				}
-				v.enrich(ctx, &masters[i])
-			}
-		})
-	}
-
-feed:
+// deriveAll fills the derived fields of every master from the metadata
+// persisted during hashing — exiftool already ran once per file there, so the
+// VFS phase never has to touch the files on disk again
+func deriveAll(masters []masterFile) {
 	for i := range masters {
-		select {
-		case jobs <- i:
-		case <-ctx.Done():
-			break feed
+		m := &masters[i]
+
+		m.takenAt = firstTime(deref(m.DBDateTaken), deref(m.DBCreateDate), m.ModifiedAt)
+		if m.DBWidth != nil {
+			m.width = *m.DBWidth
 		}
-	}
-	close(jobs)
-	wg.Wait()
-}
-
-// enrich fills the derived fields of a single master from fresh EXIF,
-// falling back to the metadata persisted during hashing
-func (v *VFS) enrich(ctx context.Context, m *masterFile) {
-	meta, err := v.extract.Extract(ctx, m.absPath)
-	if err != nil {
-		if ctx.Err() != nil {
-			return
+		if m.DBHeight != nil {
+			m.height = *m.DBHeight
 		}
-		v.log.Warn("EXIF extraction failed; using stored metadata", "path", m.absPath, "error", err)
-	}
-
-	m.takenAt = firstTime(meta.DateTimeOriginal, meta.CreateDate,
-		deref(m.DBDateTaken), deref(m.DBCreateDate), m.ModifiedAt)
-	m.width = firstInt(meta.ImageWidth, m.DBWidth)
-	m.height = firstInt(meta.ImageHeight, m.DBHeight)
-	// EXIF orientations 5-8 mean the stored pixels are rotated 90°/270°;
-	// swap so the orientation slot reflects how the shot is viewed
-	if o, ok := parseFloat(meta.Orientation); ok && o >= 5 && o <= 8 {
-		m.width, m.height = m.height, m.width
-	}
-
-	if lat, ok := parseFloat(meta.GPSLatitude); ok {
-		if lon, ok := parseFloat(meta.GPSLongitude); ok {
-			m.hasGPS, m.lat, m.lon = true, lat, lon
+		// EXIF orientations 5-8 mean the stored pixels are rotated 90°/270°;
+		// swap so the orientation slot reflects how the shot is viewed
+		if o := m.DBOrientation; o != nil && *o >= 5 && *o <= 8 {
+			m.width, m.height = m.height, m.width
 		}
-	}
-	if !m.hasGPS && m.DBLat != nil && m.DBLon != nil {
-		m.hasGPS, m.lat, m.lon = true, *m.DBLat, *m.DBLon
-	}
 
-	m.device = deviceName(
-		firstStr(meta.Make, deref(m.DBMake)),
-		firstStr(meta.Model, deref(m.DBModel)),
-	)
+		if m.DBLat != nil && m.DBLon != nil {
+			m.hasGPS, m.lat, m.lon = true, *m.DBLat, *m.DBLon
+		}
+
+		m.device = deviceName(deref(m.DBMake), deref(m.DBModel))
+	}
 }
 
 // resolveLocations reverse-geocodes every GPS-tagged master.
@@ -250,9 +199,9 @@ func (v *VFS) buildTargets(masters []masterFile) {
 	index := map[string]*group{}
 	for i := range masters {
 		m := &masters[i]
-		info := scanner.DeriveCapture(filepath.Base(m.FilePath), strings.ToLower(m.Extension), m.MediaType)
+		info := scanner.DeriveCapture(m.FileName, strings.ToLower(m.Extension), m.MediaType)
 		// same source directory + same capture stem = same capture event
-		key := m.SourceRoot + "|" + filepath.Dir(m.FilePath) + "|" + info.Key
+		key := m.FileDir + "|" + info.Key
 		g, ok := index[key]
 		if !ok {
 			g = &group{leader: i}
@@ -269,7 +218,7 @@ func (v *VFS) buildTargets(masters []masterFile) {
 	// common stem and move together. Every final path is reserved, so a
 	// suffixed name can't collide with a stem that already ends in _N
 	memberPath := func(i int, dir, suffix string) string {
-		name := filepath.Base(masters[i].FilePath)
+		name := masters[i].FileName
 		stem := strings.TrimSuffix(name, filepath.Ext(name))
 		return dir + "/" + stem + suffix + filepath.Ext(name)
 	}
@@ -418,30 +367,6 @@ func firstTime(candidates ...string) time.Time {
 		}
 	}
 	return time.Time{}
-}
-
-func parseFloat(s string) (float64, bool) {
-	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
-	return f, err == nil
-}
-
-func firstInt(fresh string, stored *int64) int64 {
-	if f, ok := parseFloat(fresh); ok {
-		return int64(f)
-	}
-	if stored != nil {
-		return *stored
-	}
-	return 0
-}
-
-func firstStr(candidates ...string) string {
-	for _, c := range candidates {
-		if strings.TrimSpace(c) != "" {
-			return strings.TrimSpace(c)
-		}
-	}
-	return ""
 }
 
 func deref(s *string) string {

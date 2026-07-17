@@ -67,35 +67,40 @@ func (s *Scorer) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 
 	// Re-promote solo files stuck at is_master = 0: when a re-scan sweeps every
 	// other member of a duplicate group, the demoted survivor is no longer in
-	// any COUNT(*) > 1 group below, so nothing else would ever elect it again
+	// any COUNT(*) > 1 group below, so nothing else would ever elect it again.
+	// Soft-deleted files don't count as group members anywhere in this phase
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE file_metadata SET is_master = 1
 		WHERE is_master = 0 AND file_hash IN (
-			SELECT file_hash FROM file_metadata
-			GROUP BY file_hash HAVING COUNT(*) = 1)`); err != nil {
+			SELECT fm.file_hash FROM file_metadata fm
+			JOIN file_registry fr ON fr.id = fm.file_id
+			WHERE fr.deleted_at IS NULL
+			GROUP BY fm.file_hash HAVING COUNT(*) = 1)`); err != nil {
 		return 0, fmt.Errorf("re-promote solo masters: %w", err)
 	}
 
 	type member struct {
-		FileHash   string `db:"file_hash"`
-		FileID     int64  `db:"file_id"`
-		FilePath   string `db:"file_path"`
-		SourceRoot string `db:"source_root"`
+		FileHash string `db:"file_hash"`
+		FileID   int64  `db:"file_id"`
+		FileDir  string `db:"file_dir"`
+		FileName string `db:"file_name"`
 	}
 
-	// Ordering by (source_root, file_path) within each hash makes the election
+	// Ordering by (file_dir, file_name) within each hash makes the election
 	// deterministic: ties on score and path length keep the first member seen,
 	// which must not depend on AUTOINCREMENT insertion order across re-scans
 	var rows []member
 	if err := s.db.SQL.SelectContext(ctx, &rows, `
 		SELECT fm.file_hash, fm.file_id,
-			fr.file_path, fr.source_root
+			fr.file_dir, fr.file_name
 		FROM file_metadata fm
 		JOIN file_registry fr ON fr.id = fm.file_id
-		WHERE fm.file_hash IN (
-			SELECT file_hash FROM file_metadata
-			GROUP BY file_hash HAVING COUNT(*) > 1 )
-		ORDER BY fm.file_hash, fr.source_root, fr.file_path`); err != nil {
+		WHERE fr.deleted_at IS NULL AND fm.file_hash IN (
+			SELECT fm2.file_hash FROM file_metadata fm2
+			JOIN file_registry fr2 ON fr2.id = fm2.file_id
+			WHERE fr2.deleted_at IS NULL
+			GROUP BY fm2.file_hash HAVING COUNT(*) > 1 )
+		ORDER BY fm.file_hash, fr.file_dir, fr.file_name`); err != nil {
 		return 0, fmt.Errorf("query members: %w", err)
 	}
 
@@ -112,8 +117,8 @@ func (s *Scorer) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 
 		bestScore, bestPathLen, master := math.MinInt, math.MaxInt, member{}
 		for _, dupe := range duplicates {
-			score := perFileScore(dupe.FilePath)
-			pathLen := len(dupe.SourceRoot) + len(dupe.FilePath)
+			score := perFileScore(filepath.Join(dupe.FileDir, dupe.FileName))
+			pathLen := len(dupe.FileDir) + len(dupe.FileName)
 			if score > bestScore || (score == bestScore && pathLen < bestPathLen) {
 				master = dupe
 				bestScore = score

@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS file_metadata (
 
     exif_image_width        INTEGER,
     exif_image_height       INTEGER,
+    -- EXIF orientation 1-8; 5-8 mean the pixels are stored rotated 90°/270°
+    exif_orientation        INTEGER,
     exif_gps_latitude       REAL,
     exif_gps_longitude      REAL,
     exif_make               TEXT,
@@ -27,7 +29,7 @@ CREATE TABLE IF NOT EXISTS file_metadata (
     -- each duplicate group, solo files are never touched
     is_master INTEGER NOT NULL DEFAULT 1,
 
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_metadata_hash_file ON file_metadata(file_hash, file_id);

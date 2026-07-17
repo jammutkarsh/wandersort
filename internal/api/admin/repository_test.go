@@ -2,30 +2,22 @@ package admin
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 )
 
 func TestResetWipesAllTables(t *testing.T) {
 	ctx := context.Background()
-	d, err := db.New(ctx, filepath.Join(t.TempDir(), "test.db"), db.AppDB, logger.NewNoopLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
+	d := dbtest.New(t)
 
-	sessionID := uuid.New()
+	sessionID := dbtest.NewSession(t, d, db.StatusCompleted)
+	dbtest.SeedFile(t, d, sessionID, 1, "/src", "photo.jpg", 1024)
 	seed := []struct {
 		query string
 		args  []any
 	}{
-		{`INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'COMPLETED', '/src')`, []any{sessionID.String()}},
-		{`INSERT INTO file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
-			VALUES (1, 'photo.jpg', 1024, '2024-01-01', ?, '/src', '.jpg', 'IMAGE')`, []any{sessionID.String()}},
 		{`INSERT INTO file_metadata (file_hash, file_id) VALUES ('abc', 1)`, nil},
 		{`INSERT INTO virtual_fs_entries (session_id, file_id, source_path, target_path)
 			VALUES (?, 1, '/src/photo.jpg', '2024/06_June/photo.jpg')`, []any{sessionID.String()}},

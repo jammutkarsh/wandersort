@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -231,29 +231,15 @@ func TestHashFile_WithRealTempDir(t *testing.T) {
 
 func TestRunReplacesStaleMetadata(t *testing.T) {
 	ctx := context.Background()
-	d, err := db.New(ctx, filepath.Join(t.TempDir(), "test.db"), db.AppDB, logger.NewNoopLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
+	d := dbtest.New(t)
 
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "photo.jpg"), []byte("current bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	sessionID := uuid.New()
-	if _, err := d.ExecContext(ctx,
-		`INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'SCANNED', '/tmp')`,
-		sessionID.String()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.ExecContext(ctx, `
-		INSERT INTO file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
-		VALUES (1, 'photo.jpg', 13, '2024-01-01T00:00:00Z', ?, ?, '.jpg', 'IMAGE')`,
-		sessionID.String(), root); err != nil {
-		t.Fatal(err)
-	}
+	sessionID := dbtest.NewSession(t, d, db.StatusScanned)
+	dbtest.SeedFile(t, d, sessionID, 1, root, "photo.jpg", 13)
 	// Stale metadata from a previous pipeline run; the insert trigger flips
 	// scan_status to HASHED, so reset it to DISCOVERED as the scanner's
 	// change detection would after the file was modified
@@ -304,5 +290,46 @@ func TestRunReplacesStaleMetadata(t *testing.T) {
 	}
 	if status != db.StatusHashed {
 		t.Errorf("scan_status = %s, want HASHED", status)
+	}
+}
+
+// TestRunHashFailureClearsStaleMetadata: a file whose re-hash fails must not
+// keep its previous metadata row — the content is unknown, so the old hash
+// would keep feeding the scorer and VFS stale data
+func TestRunHashFailureClearsStaleMetadata(t *testing.T) {
+	ctx := context.Background()
+	d := dbtest.New(t)
+
+	sessionID := dbtest.NewSession(t, d, db.StatusScanned)
+	// Registry points at a file that does not exist, so hashing fails
+	dbtest.SeedFile(t, d, sessionID, 1, t.TempDir(), "gone.jpg", 13)
+	if _, err := d.ExecContext(ctx,
+		`INSERT INTO file_metadata (file_hash, file_id) VALUES ('stale-hash', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx,
+		`UPDATE file_registry SET scan_status = 'DISCOVERED' WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	h := New(ctx, d, logger.NewNoopLogger(), filepath.Join(t.TempDir(), "missing-exiftool"), 1)
+	if _, err := h.Run(ctx, sessionID); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	d.Writer.Flush()
+
+	var metadataRows int
+	if err := d.SQL.Get(&metadataRows, `SELECT count(*) FROM file_metadata WHERE file_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if metadataRows != 0 {
+		t.Errorf("failed hash left %d stale metadata rows, want 0", metadataRows)
+	}
+	var status string
+	if err := d.SQL.Get(&status, `SELECT scan_status FROM file_registry WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if status != db.StatusError {
+		t.Errorf("scan_status = %s, want ERROR", status)
 	}
 }
