@@ -55,6 +55,17 @@ const (
 	StatusDone     = "DONE"
 )
 
+// TimeLayout is RFC3339 with fixed-width nanoseconds. Fixed width keeps
+// lexicographic string comparison in SQL consistent with time order; values
+// are always stored in UTC via FormatTime and shown in the user's local zone
+// only at display time
+const TimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// FormatTime renders t in the canonical stored form: UTC, fixed-width nanos
+func FormatTime(t time.Time) string {
+	return t.UTC().Format(TimeLayout)
+}
+
 // SQLite connection pool and retry tuning
 const (
 	// maxOpenConns is 1 because SQLite is single-writer — one Go-level connection
@@ -120,6 +131,11 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 	}
 
 	appID := appIDFromTag()
+	if err := verifyAppID(sqlDB, dbPath, appID); err != nil {
+		sqlDB.Close()
+		return nil, err
+	}
+
 	pragmas := []string{
 		"PRAGMA page_size=32768",             //  32KB for better I/O efficiency
 		"PRAGMA journal_mode=WAL",            // Better concurrency and durability
@@ -273,6 +289,29 @@ func isSQLITEBusy(err error) bool {
 func appIDFromTag() int32 {
 	const tag = "WAND"
 	return int32(binary.BigEndian.Uint32([]byte(tag)))
+}
+
+// verifyAppID refuses to claim a sqlite file that already belongs to another
+// application: a non-empty database whose application_id isn't ours would
+// otherwise be silently stamped and migrated. A fresh or empty file passes and
+// is stamped by the pragma loop that follows
+func verifyAppID(sqlDB *sql.DB, dbPath string, wantID int32) error {
+	var gotID int32
+	if err := sqlDB.QueryRow("PRAGMA application_id").Scan(&gotID); err != nil {
+		return fmt.Errorf("reading application_id: %w", err)
+	}
+	if gotID == wantID {
+		return nil
+	}
+
+	var objects int
+	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_master").Scan(&objects); err != nil {
+		return fmt.Errorf("inspecting database schema: %w", err)
+	}
+	if objects > 0 {
+		return fmt.Errorf("%s is not a wandersort database (application_id %d)", dbPath, gotID)
+	}
+	return nil
 }
 
 // IntOrNil parses s as an int, returning nil if s is empty or invalid.

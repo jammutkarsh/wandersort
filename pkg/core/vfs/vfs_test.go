@@ -16,21 +16,9 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/path"
 )
-
-// fakeExtractor serves canned metadata keyed by absolute path
-type fakeExtractor struct {
-	meta map[string]classifier.CommonMetadata
-}
-
-func (f *fakeExtractor) Extract(_ context.Context, p string) (classifier.CommonMetadata, error) {
-	if m, ok := f.meta[p]; ok {
-		return m, nil
-	}
-	return classifier.CommonMetadata{}, fmt.Errorf("no metadata for %s", p)
-}
 
 // fakeGeo resolves every coordinate to a fixed city per rough lat bucket
 type fakeGeo struct {
@@ -56,57 +44,53 @@ type entryRow struct {
 type harness struct {
 	d         *db.DB
 	sessionID uuid.UUID
-	extractor *fakeExtractor
 	nextID    int64
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	d, err := db.New(context.Background(), dbPath, db.AppDB, logger.NewNoopLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
-
-	sessionID := uuid.New()
-	if _, err := d.ExecContext(context.Background(),
-		`INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'SCORED', '/src')`,
-		sessionID.String()); err != nil {
-		t.Fatal(err)
-	}
-	return &harness{d: d, sessionID: sessionID, extractor: &fakeExtractor{meta: map[string]classifier.CommonMetadata{}}}
+	d := dbtest.New(t)
+	return &harness{d: d, sessionID: dbtest.NewSession(t, d, db.StatusScored)}
 }
 
-// addFile seeds a registry row + master metadata row and registers its fake EXIF
+// addFile seeds a registry row (under the /src root) plus a master metadata
+// row carrying the given EXIF values, as the hash phase would have persisted
 func (h *harness) addFile(t *testing.T, relPath, mediaType string, meta classifier.CommonMetadata) int64 {
 	t.Helper()
 	h.nextID++
 	id := h.nextID
-	ext := filepath.Ext(relPath)
+	dir := filepath.Join("/src", filepath.Dir(relPath))
+	name := filepath.Base(relPath)
 	if _, err := h.d.ExecContext(context.Background(), `
-		INSERT INTO file_registry (id, file_path, file_size, file_modified_at, scan_session_id, source_root, file_extension, media_type)
-		VALUES (?, ?, 1024, '2024-06-01T10:00:00Z', ?, '/src', ?, ?)`,
-		id, relPath, h.sessionID.String(), ext, mediaType); err != nil {
+		INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
+			scan_session_id, file_extension, media_type, discovered_at, last_seen_at)
+		VALUES (?, ?, ?, 1024, '2024-06-01T10:00:00.000000000Z', ?, ?, ?,
+			'2024-06-01T10:00:00.000000000Z', '2024-06-01T10:00:00.000000000Z')`,
+		id, dir, name, h.sessionID.String(), filepath.Ext(name), mediaType); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.d.ExecContext(context.Background(),
-		`INSERT INTO file_metadata (file_hash, file_id) VALUES (?, ?)`,
-		fmt.Sprintf("hash-%d", id), id); err != nil {
+	if _, err := h.d.ExecContext(context.Background(), `
+		INSERT INTO file_metadata (file_hash, file_id,
+			exif_image_width, exif_image_height, exif_orientation,
+			exif_gps_latitude, exif_gps_longitude, exif_make, exif_model,
+			exif_date_time_original, exif_create_date)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		fmt.Sprintf("hash-%d", id), id,
+		db.IntOrNil(meta.ImageWidth), db.IntOrNil(meta.ImageHeight), db.IntOrNil(meta.Orientation),
+		db.FloatOrNil(meta.GPSLatitude), db.FloatOrNil(meta.GPSLongitude),
+		db.StrOrNil(meta.Make), db.StrOrNil(meta.Model),
+		db.StrOrNil(meta.DateTimeOriginal), db.StrOrNil(meta.CreateDate)); err != nil {
 		t.Fatal(err)
 	}
-	h.extractor.meta[path.New().MakeAbsolute(relPath, "/src")] = meta
 	return id
 }
 
 func (h *harness) build(t *testing.T, cfg Config, geo geoResolver) map[int64]entryRow {
 	t.Helper()
 	vfs := &VFS{
-		db:      h.d,
-		log:     logger.NewNoopLogger(),
-		extract: h.extractor,
-		path:    path.New(),
-		cfg:     cfg,
+		db:  h.d,
+		log: logger.NewNoopLogger(),
+		cfg: cfg,
 	}
 	if geo != nil {
 		vfs.resolver = geo
@@ -147,7 +131,7 @@ func TestBuildFullExif(t *testing.T) {
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5, 73.8, 3024, 4032))
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 
-	rows := h.build(t, DefaultConfig(2), geo)
+	rows := h.build(t, DefaultConfig(), geo)
 
 	want := "2024/06_June/Goa/Vertical/Photos/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
@@ -169,7 +153,7 @@ func TestClusterSpillover(t *testing.T) {
 	c := h.addFile(t, "dump/IMG_0003.HEIC", "IMAGE", metaWith("2024:06:03 11:00:00", 32.2, 77.1, 3024, 4032))
 	geo := &fakeGeo{cities: map[int]string{32: "Manali"}}
 
-	rows := h.build(t, DefaultConfig(2), geo)
+	rows := h.build(t, DefaultConfig(), geo)
 
 	for _, id := range []int64{a, b} {
 		if got := rows[id].TargetPath; got != "2024/06_June/Manali/Horizontal/Photos/"+filepath.Base(rows[id].TargetPath) {
@@ -196,7 +180,7 @@ func TestUnresolvedEventSegmentAndGapSplit(t *testing.T) {
 	a := h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
 	b := h.addFile(t, "dump/DSC_0002.JPG", "IMAGE", metaWith("2024:06:05 09:00:00", 0, 0, 4000, 3000))
 
-	rows := h.build(t, DefaultConfig(2), nil)
+	rows := h.build(t, DefaultConfig(), nil)
 
 	wantA := "2024/06_June/Jun_03/Horizontal/Photos/DSC_0001.JPG"
 	wantB := "2024/06_June/Jun_05/Horizontal/Photos/DSC_0002.JPG"
@@ -221,7 +205,7 @@ func TestUserLabelSuggestion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows := h.build(t, DefaultConfig(2), nil)
+	rows := h.build(t, DefaultConfig(), nil)
 	for _, r := range rows {
 		if r.Suggestion == nil || *r.Suggestion != "Manali TRIP" {
 			t.Errorf("suggestion = %v, want 'Manali TRIP'", r.Suggestion)
@@ -241,7 +225,7 @@ func TestAnchorSuggestion(t *testing.T) {
 	u := h.addFile(t, "dump/DSC_0009.JPG", "IMAGE", metaWith("2024:06:20 10:00:00", 0, 0, 4000, 3000))
 	geo := &fakeGeo{cities: map[int]string{22: "Indore"}}
 
-	rows := h.build(t, DefaultConfig(2), geo)
+	rows := h.build(t, DefaultConfig(), geo)
 	if rows[u].Suggestion == nil || *rows[u].Suggestion != "Indore" {
 		t.Errorf("suggestion = %v, want 'Indore'", rows[u].Suggestion)
 	}
@@ -254,7 +238,7 @@ func TestSourceFolderSuggestion(t *testing.T) {
 	h := newHarness(t)
 	u := h.addFile(t, "Goa Trip 2024/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
 
-	rows := h.build(t, DefaultConfig(2), nil)
+	rows := h.build(t, DefaultConfig(), nil)
 	if rows[u].Suggestion == nil || *rows[u].Suggestion != "Goa Trip 2024" {
 		t.Errorf("suggestion = %v, want 'Goa Trip 2024'", rows[u].Suggestion)
 	}
@@ -270,7 +254,7 @@ func TestCoalescingSameCity(t *testing.T) {
 	b := h.addFile(t, "d/IMG_0002.HEIC", "IMAGE", metaWith("2024:06:20 10:00:00", 22.7, 75.8, 3024, 4032))
 	geo := &fakeGeo{cities: map[int]string{22: "Indore"}}
 
-	rows := h.build(t, DefaultConfig(2), geo)
+	rows := h.build(t, DefaultConfig(), geo)
 	dirA := filepath.Dir(rows[a].TargetPath)
 	dirB := filepath.Dir(rows[b].TargetPath)
 	if dirA != dirB {
@@ -283,7 +267,7 @@ func TestCollisionSuffix(t *testing.T) {
 	a := h.addFile(t, "d1/IMG_3162.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
 	b := h.addFile(t, "d2/IMG_3162.JPG", "IMAGE", metaWith("2024:06:03 11:00:00", 0, 0, 4000, 3000))
 
-	rows := h.build(t, DefaultConfig(2), nil)
+	rows := h.build(t, DefaultConfig(), nil)
 	names := map[string]bool{
 		filepath.Base(rows[a].TargetPath): true,
 		filepath.Base(rows[b].TargetPath): true,
@@ -300,7 +284,7 @@ func TestCaptureGroupMovesTogether(t *testing.T) {
 	b := h.addFile(t, "d/IMG_0042.MOV", "VIDEO", metaWith("2024:06:03 10:00:00", 15.5, 73.8, 1920, 1080))
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 
-	rows := h.build(t, DefaultConfig(2), geo)
+	rows := h.build(t, DefaultConfig(), geo)
 	dirA := filepath.Dir(rows[a].TargetPath)
 	dirB := filepath.Dir(rows[b].TargetPath)
 	if dirA != dirB {
@@ -313,7 +297,7 @@ func TestCustomSlotOrder(t *testing.T) {
 	id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5, 73.8, 3024, 4032))
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 
-	cfg := DefaultConfig(2)
+	cfg := DefaultConfig()
 	cfg.Slots = []string{SlotMedia, SlotLocation}
 	rows := h.build(t, cfg, geo)
 
@@ -323,7 +307,7 @@ func TestCustomSlotOrder(t *testing.T) {
 	}
 }
 
-func TestConcurrentExtraction(t *testing.T) {
+func TestBuildManyFiles(t *testing.T) {
 	h := newHarness(t)
 	const n = 60
 	ids := make([]int64, 0, n)
@@ -334,7 +318,7 @@ func TestConcurrentExtraction(t *testing.T) {
 	}
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 
-	cfg := DefaultConfig(8)
+	cfg := DefaultConfig()
 	rows := h.build(t, cfg, geo)
 	if len(rows) != n {
 		t.Fatalf("entries = %d, want %d", len(rows), n)
@@ -362,7 +346,7 @@ func TestNameCase(t *testing.T) {
 			id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5, 73.8, 3024, 4032))
 			geo := &fakeGeo{cities: map[int]string{15: "goa BEACH"}}
 
-			cfg := DefaultConfig(2)
+			cfg := DefaultConfig()
 			cfg.NameCase = tc.style
 			rows := h.build(t, cfg, geo)
 
@@ -382,7 +366,7 @@ func TestOrientationTagSwapsDimensions(t *testing.T) {
 	id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", meta)
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 
-	rows := h.build(t, DefaultConfig(2), geo)
+	rows := h.build(t, DefaultConfig(), geo)
 	want := "2024/06_June/Goa/Vertical/Photos/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
 		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
@@ -396,7 +380,7 @@ func TestCollisionWithLiteralSuffixStem(t *testing.T) {
 	b := h.addFile(t, "d2/IMG_1.JPG", "IMAGE", metaWith("2024:06:03 10:05:00", 0, 0, 4000, 3000))
 	c := h.addFile(t, "d3/IMG_1_2.JPG", "IMAGE", metaWith("2024:06:03 10:10:00", 0, 0, 4000, 3000))
 
-	rows := h.build(t, DefaultConfig(2), nil)
+	rows := h.build(t, DefaultConfig(), nil)
 	paths := map[string]bool{}
 	for _, id := range []int64{a, b, c} {
 		if paths[rows[id].TargetPath] {
@@ -411,14 +395,14 @@ func TestRebuildRemovesStaleEntries(t *testing.T) {
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 	keep := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5, 73.8, 3024, 4032))
 	gone := h.addFile(t, "d/IMG_0002.HEIC", "IMAGE", metaWith("2024:06:03 15:00:00", 15.5, 73.8, 3024, 4032))
-	h.build(t, DefaultConfig(2), geo)
+	h.build(t, DefaultConfig(), geo)
 
 	// second file loses master status between builds (e.g. re-scored)
 	if _, err := h.d.ExecContext(context.Background(),
 		`UPDATE file_metadata SET is_master = 0 WHERE file_id = ?`, gone); err != nil {
 		t.Fatal(err)
 	}
-	rows := h.build(t, DefaultConfig(2), geo)
+	rows := h.build(t, DefaultConfig(), geo)
 	if len(rows) != 1 {
 		t.Fatalf("entries after rebuild = %d, want 1", len(rows))
 	}
@@ -432,9 +416,61 @@ func TestRebuildIsIdempotent(t *testing.T) {
 	id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5, 73.8, 3024, 4032))
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 
-	first := h.build(t, DefaultConfig(2), geo)
-	second := h.build(t, DefaultConfig(2), geo)
+	first := h.build(t, DefaultConfig(), geo)
+	second := h.build(t, DefaultConfig(), geo)
 	if len(second) != 1 || second[id].TargetPath != first[id].TargetPath {
 		t.Errorf("rebuild changed entries: %v vs %v", first[id], second[id])
+	}
+}
+
+// TestLibraryScopeAcrossSessions covers the incremental re-scan contract: a
+// master indexed by an earlier session is still proposed by a later run, and
+// the later run replaces the previous proposal set wholesale
+func TestLibraryScopeAcrossSessions(t *testing.T) {
+	h := newHarness(t)
+	// File belongs to the harness's (old) session…
+	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
+	// …with a stale proposal persisted by that old session
+	if _, err := h.d.ExecContext(context.Background(), `
+		INSERT INTO virtual_fs_entries (session_id, file_id, source_path, target_path)
+		VALUES (?, ?, '/src/dump/IMG_0001.HEIC', 'stale/IMG_0001.HEIC')`,
+		h.sessionID.String(), id); err != nil {
+		t.Fatal(err)
+	}
+
+	// A brand-new session runs the VFS phase without having indexed anything
+	newSession := uuid.New()
+	if _, err := h.d.ExecContext(context.Background(),
+		`INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'SCORED', '/src')`,
+		newSession.String()); err != nil {
+		t.Fatal(err)
+	}
+	vfs := &VFS{
+		db:  h.d,
+		log: logger.NewNoopLogger(),
+		cfg: DefaultConfig(),
+	}
+	count, err := vfs.Run(context.Background(), newSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("Run proposed %d entries, want 1 (old-session master must be included)", count)
+	}
+	h.d.Writer.Flush()
+
+	var rows []entryRow
+	if err := h.d.SQL.Select(&rows,
+		`SELECT file_id, target_path, cluster_id, status, suggestion, suggestion_source FROM virtual_fs_entries`); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("library has %d proposal rows, want exactly 1 (stale rows wiped)", len(rows))
+	}
+	if rows[0].FileID != id {
+		t.Errorf("proposal file_id = %d, want %d", rows[0].FileID, id)
+	}
+	if rows[0].TargetPath == "stale/IMG_0001.HEIC" {
+		t.Error("stale proposal survived the rebuild")
 	}
 }

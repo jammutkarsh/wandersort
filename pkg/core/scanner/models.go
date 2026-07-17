@@ -7,37 +7,33 @@
 package scanner
 
 import (
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
-	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 type FileRegistry struct {
 	ID             int64     `db:"id"`
-	FilePath       string    `db:"file_path"`
+	FileDir        string    `db:"file_dir"`
+	FileName       string    `db:"file_name"`
 	FileSize       int64     `db:"file_size"`
 	FileModifiedAt time.Time `db:"file_modified_at"`
 
-	DiscoveredAt  time.Time `db:"discovered_at"`
-	LastSeenAt    time.Time `db:"last_seen_at"`
-	ScanSessionID uuid.UUID `db:"scan_session_id"`
-	SourceRoot    string    `db:"source_root"`
+	VolumeUUID *string `db:"volume_uuid"`
+
+	DiscoveredAt  time.Time  `db:"discovered_at"`
+	LastSeenAt    time.Time  `db:"last_seen_at"`
+	ScanSessionID uuid.UUID  `db:"scan_session_id"`
+	DeletedAt     *time.Time `db:"deleted_at"`
 
 	MediaType     string `db:"media_type"`
 	FileExtension string `db:"file_extension"`
 	ScanStatus    string `db:"scan_status"`
 
-	PathType   string `db:"path_type" json:"pathType"`
 	FileOrigin string `db:"file_origin" json:"fileOrigin"`
 }
-
-// Path type constants
-const (
-	PathTypeRelative = "RELATIVE"
-	PathTypeAbsolute = "ABSOLUTE"
-)
 
 // File origin constants
 const (
@@ -46,12 +42,9 @@ const (
 	FileOriginUnknown   = "UNKNOWN"
 )
 
-// GetAbsolutePath returns the full absolute path, expanding relative paths using source root
-func (fr *FileRegistry) GetAbsolutePath(path *path.Resolver) string {
-	if fr.PathType == PathTypeAbsolute {
-		return fr.FilePath
-	}
-	return path.MakeAbsolute(fr.FilePath, fr.SourceRoot)
+// AbsolutePath returns the full absolute path of the file
+func (fr *FileRegistry) AbsolutePath() string {
+	return filepath.Join(fr.FileDir, fr.FileName)
 }
 
 // IsPrimarySource reports whether this registry entry is an original/canonical file
@@ -72,14 +65,16 @@ func (fr *FileRegistry) NeedsTranscoding() bool {
 	return fr.MediaType == classifier.MediaTypeRaw
 }
 
-// FileDiscovery is the lightweight struct used during directory walking
+// FileDiscovery is the lightweight struct used during directory walking.
+// Dir is the file's absolute parent directory
 type FileDiscovery struct {
 	ID         int64
-	Path       string
+	Dir        string
+	Name       string
 	Size       int64
 	ModTime    time.Time
 	Extension  string
-	SourceRoot string
+	VolumeUUID string
 	MediaType  string
 }
 

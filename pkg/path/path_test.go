@@ -84,3 +84,24 @@ func TestPathUtil_RoundTrip(t *testing.T) {
 		t.Errorf("round-trip failed: got %q, want %q", reconstructed, absPath)
 	}
 }
+
+func TestOverlaps(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"equal", "/photos", "/photos", true},
+		{"child", "/photos", "/photos/sub", true},
+		{"parent", "/photos/sub", "/photos", true},
+		{"sibling", "/photos", "/videos", false},
+		{"prefix but not nested", "/photos", "/photos2", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Overlaps(tt.a, tt.b); got != tt.want {
+				t.Errorf("Overlaps(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}

@@ -23,7 +23,13 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
+	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
+
+// deletedRetention is the grace window before a vanished file's rows are
+// hard-purged: long enough to survive an unplugged drive or a temporarily
+// unreadable subtree, short enough that the index doesn't hoard ghosts
+const deletedRetention = 30 * 24 * time.Hour
 
 // Scanner handles file discovery and registry population
 // It is stateless with respect to individual scan runs; all mutable state
@@ -34,6 +40,7 @@ type Scanner struct {
 	classifier *classifier.FileClassifier
 	log        logger.Logger
 	path       *path.Resolver
+	volumes    *volume.Resolver
 	workers    int
 }
 
@@ -43,6 +50,7 @@ func New(db *db.DB, log logger.Logger, workers int) *Scanner {
 		classifier: classifier.NewFileClassifier(),
 		log:        log,
 		path:       path.New(),
+		volumes:    volume.New(),
 		workers:    workers,
 	}
 }
@@ -54,6 +62,7 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string) 
 	s.log.Info("Scanner Phase: Processing all paths", "sessionId", sessionID, "pathCount", len(paths))
 
 	type scanResult struct {
+		root  string // canonical absolute root, "" when canonicalization failed
 		count int
 		err   error
 	}
@@ -78,13 +87,18 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string) 
 	for range s.workers {
 		workers.Go(func() {
 			for path := range jobs {
-				discoveredChan, err := s.scan(ctx, sessionID, path, &newFiles, &errorCount)
+				// Canonicalize once; every stored file_dir and the sweep must
+				// agree on the same absolute root spelling
+				absRoot, err := s.path.RealPath(path)
 				if err != nil {
-					s.log.Error("Failed to scan path", "sessionId", sessionID, "path", path, "error", err)
+					s.log.Error("Failed to resolve path", "sessionId", sessionID, "path", path, "error", err)
 					errorCount.Add(1)
-					results <- scanResult{err: fmt.Errorf("scan failed for %s: %w", path, err)}
+					results <- scanResult{err: fmt.Errorf("resolve %s: %w", path, err)}
 					continue
 				}
+
+				volumeUUID := s.volumes.ForPath(absRoot)
+				discoveredChan, walkErr := s.scan(ctx, sessionID, absRoot, volumeUUID, &newFiles, &errorCount)
 
 				count := 0
 				// Drain the channel to both count stored discoveries and wait until
@@ -93,8 +107,15 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string) 
 					count++
 				}
 
-				s.log.Info("Scanned path", "sessionId", sessionID, "path", path, "filesDiscovered", count)
-				results <- scanResult{count: count}
+				if err := <-walkErr; err != nil {
+					s.log.Error("Failed to scan path", "sessionId", sessionID, "path", absRoot, "error", err)
+					errorCount.Add(1)
+					results <- scanResult{root: absRoot, count: count, err: fmt.Errorf("scan failed for %s: %w", path, err)}
+					continue
+				}
+
+				s.log.Info("Scanned path", "sessionId", sessionID, "path", absRoot, "filesDiscovered", count)
+				results <- scanResult{root: absRoot, count: count}
 			}
 		})
 	}
@@ -103,13 +124,33 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string) 
 	workers.Wait()
 	close(results)
 
+	// Flush before sweeping: dbWritesWG tracks upsert execution inside the
+	// batch transaction, not its commit, so only a writer flush guarantees the
+	// sweep's own statement sees every scan_session_id reassignment
+	s.db.Writer.Flush()
+
 	totalFiles := 0
 	var firstScanErr error
 	for result := range results {
 		totalFiles += result.count
-		if result.err != nil && firstScanErr == nil {
-			firstScanErr = result.err
+		if result.err != nil {
+			if firstScanErr == nil {
+				firstScanErr = result.err
+			}
+			continue
 		}
+		if err := s.sweep(ctx, sessionID, result.root); err != nil {
+			s.log.Error("Failed to sweep path", "sessionId", sessionID, "path", result.root, "error", err)
+			errorCount.Add(1)
+			if firstScanErr == nil {
+				firstScanErr = err
+			}
+		}
+	}
+
+	// GC failure keeps ghosts a little longer; never fail the scan over it
+	if err := s.purgeExpired(ctx, sessionID); err != nil {
+		s.log.Error("Failed to purge expired files", "sessionId", sessionID, "error", err)
 	}
 
 	newCount := newFiles.Load()
@@ -126,13 +167,16 @@ func (s *Scanner) Run(ctx context.Context, sessionID uuid.UUID, paths []string) 
 	return totalFiles, firstScanErr
 }
 
-// scan executes a scan for a single directory path and returns a channel
-// of discovered files. It's meant to be called by worker goroutines asynchronously
-func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, path string, newFiles, errorCount *atomic.Int64) (<-chan FileDiscovery, error) {
-	s.log.Info("Scanning path", "sessionId", sessionID, "path", path)
+// scan executes a scan for a single directory root and returns a channel of
+// discovered files plus a single-shot channel carrying the walk's final error.
+// It's meant to be called by worker goroutines asynchronously; the error
+// channel resolves once the discovery channel is drained
+func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, absRoot, volumeUUID string, newFiles, errorCount *atomic.Int64) (<-chan FileDiscovery, <-chan error) {
+	s.log.Info("Scanning path", "sessionId", sessionID, "path", absRoot)
 	// Channel for discovered files
 	fileDiscoveryChannel := make(chan FileDiscovery, 2*s.workers)
 	scanResultsChannel := make(chan FileDiscovery, 2*s.workers)
+	walkErr := make(chan error, 1)
 
 	// Start a goroutine to walk the directory and send discoveries to the channel
 	// We use a separate channel for walking results to decouple file discovery from database writes
@@ -141,9 +185,11 @@ func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, path string, ne
 	go func() {
 		defer close(scanResultsChannel)
 
-		if err := s.walkRoot(ctx, sessionID, path, scanResultsChannel); err != nil {
-			s.log.Error("Walk root failed", "sessionId", sessionID, "path", path, "error", err)
+		err := s.walkRoot(ctx, sessionID, absRoot, volumeUUID, scanResultsChannel)
+		if err != nil {
+			s.log.Error("Walk root failed", "sessionId", sessionID, "path", absRoot, "error", err)
 		}
+		walkErr <- err
 	}()
 
 	// Consumer
@@ -151,18 +197,13 @@ func (s *Scanner) scan(ctx context.Context, sessionID uuid.UUID, path string, ne
 		s.store(ctx, sessionID, scanResultsChannel, fileDiscoveryChannel, newFiles, errorCount)
 	}()
 
-	return fileDiscoveryChannel, nil
+	return fileDiscoveryChannel, walkErr
 }
 
-// walkRoot walks absPath and emits FileDiscovery records with relative paths
-// absPath is the absolute filesystem path
-func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string, output chan<- FileDiscovery) error {
-	absRoot, err := s.path.RealPath(path)
-	if err != nil {
-		return fmt.Errorf("realpath %q: %w", path, err)
-	}
-
-	err = filepath.WalkDir(absRoot, func(p string, d fs.DirEntry, err error) error {
+// walkRoot walks absRoot (already canonical) and emits FileDiscovery records
+// carrying the file's absolute directory and name
+func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, absRoot, volumeUUID string, output chan<- FileDiscovery) error {
+	err := filepath.WalkDir(absRoot, func(p string, d fs.DirEntry, err error) error {
 		// Check for context cancellation
 		select {
 		case <-ctx.Done():
@@ -172,7 +213,12 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 
 		// Handle errors (permission denied, etc.)
 		if err != nil {
-			s.log.Error("Walk error", "sessionId", sessionID, "inputPath", path, "walkingPath", s.path.RelativeToHome(p), "error", err)
+			// An unreadable root means the whole scan of this path failed —
+			// it must not look like "root is empty" (which would sweep the index)
+			if p == absRoot {
+				return fmt.Errorf("root unreadable: %w", err)
+			}
+			s.log.Error("Walk error", "sessionId", sessionID, "inputPath", absRoot, "walkingPath", s.path.RelativeToHome(p), "error", err)
 			return nil // Continue walking
 		}
 
@@ -188,7 +234,7 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 		mediaType, shouldProcess, shouldIgnore := s.classifier.ClassifyName(d.Name())
 		switch {
 		case shouldIgnore:
-			s.log.Warn("Ignoring file", "sessionId", sessionID, "inputPath", path, "walkingPath", s.path.RelativeToHome(p))
+			s.log.Warn("Ignoring file", "sessionId", sessionID, "inputPath", absRoot, "walkingPath", s.path.RelativeToHome(p))
 			return nil
 		case !shouldProcess:
 			s.log.Warn("Unsupported file type", "sessionId", sessionID, "walkingPath", s.path.RelativeToHome(p))
@@ -198,26 +244,17 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 		// Get file info
 		info, err := d.Info()
 		if err != nil {
-			s.log.Warn("Failed to get file info", "sessionId", sessionID, "inputPath", path, "walkingPath", s.path.RelativeToHome(p), "error", err)
+			s.log.Warn("Failed to get file info", "sessionId", sessionID, "inputPath", absRoot, "walkingPath", s.path.RelativeToHome(p), "error", err)
 			return nil
 		}
 
-		// absRoot = /home/user/pics
-		// p = /home/user/pics/2024/sunset.jpg
-		// relativeToSource = 2024/sunset.jpg
-		relativeToSource, err := filepath.Rel(absRoot, p)
-		if err != nil {
-			s.log.Warn("Failed to make path relative", "sessionId", sessionID, "inputPath", path, "walkingPath", s.path.RelativeToHome(p), "error", err)
-			return nil
-		}
-
-		// Persist file path relative to source root for portability
 		file := FileDiscovery{
-			Path:       relativeToSource,
+			Dir:        filepath.Dir(p),
+			Name:       d.Name(),
 			Size:       info.Size(),
 			ModTime:    info.ModTime(),
 			Extension:  strings.ToLower(filepath.Ext(p)),
-			SourceRoot: path,
+			VolumeUUID: volumeUUID,
 			MediaType:  mediaType,
 		}
 
@@ -232,6 +269,77 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string
 	})
 	if err != nil {
 		return fmt.Errorf("walk %q: %w", absRoot, err)
+	}
+	return nil
+}
+
+// sweep soft-deletes rows for files under root that this session did not
+// re-see. The upsert reassigns scan_session_id (and clears deleted_at) on
+// every live file, so any live row still pointing at an older session was
+// deleted or moved on disk. Rows only get stamped, never removed here —
+// purgeExpired hard-deletes them after the retention window, so a transient
+// failure (unreadable subtree, one bad upsert) heals on the next clean scan.
+// Runs only for roots whose walk finished cleanly
+func (s *Scanner) sweep(ctx context.Context, sessionID uuid.UUID, root string) error {
+	// Prefix match as an index range on (file_dir, file_name):
+	// [root+sep, root+succ(sep)) covers every path under root without a full
+	// table scan, and needs no LIKE escaping for roots containing % or _.
+	// Trim a trailing separator first: for the filesystem root the range
+	// would otherwise be ["//", "/0"), which no file_dir ever falls into
+	trimmed := strings.TrimSuffix(root, string(filepath.Separator))
+	prefix := trimmed + string(filepath.Separator)
+	prefixEnd := trimmed + string(filepath.Separator+1)
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE file_registry SET deleted_at = ?
+		WHERE deleted_at IS NULL
+			AND scan_session_id != ?
+			AND (file_dir = ? OR (file_dir >= ? AND file_dir < ?))`,
+		db.FormatTime(time.Now()), sessionID.String(), trimmed, prefix, prefixEnd)
+	if err != nil {
+		return fmt.Errorf("sweep %q: %w", root, err)
+	}
+
+	if swept, _ := result.RowsAffected(); swept > 0 {
+		s.log.Info("Marked vanished files", "sessionId", sessionID, "path", root, "filesRemoved", swept)
+	}
+	return nil
+}
+
+// purgeExpired hard-deletes rows soft-deleted longer than deletedRetention ago
+func (s *Scanner) purgeExpired(ctx context.Context, sessionID uuid.UUID) error {
+	cutoff := db.FormatTime(time.Now().Add(-deletedRetention))
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("purge expired: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Delete order is forced by foreign keys: virtual_fs_entries.file_id has
+	// no ON DELETE action, and file_metadata's SET NULL would leave orphan
+	// rows that still participate in the scorer's hash grouping
+	statements := []string{
+		`DELETE FROM virtual_fs_entries WHERE file_id IN
+			(SELECT id FROM file_registry WHERE deleted_at < ?)`,
+		`DELETE FROM file_metadata WHERE file_id IN
+			(SELECT id FROM file_registry WHERE deleted_at < ?)`,
+		`DELETE FROM file_registry WHERE deleted_at < ?`,
+	}
+	var purged int64
+	for _, stmt := range statements {
+		result, err := tx.ExecContext(ctx, stmt, cutoff)
+		if err != nil {
+			return fmt.Errorf("purge expired: %w", err)
+		}
+		purged, _ = result.RowsAffected()
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("purge expired: commit: %w", err)
+	}
+
+	if purged > 0 {
+		s.log.Info("Purged expired files", "sessionId", sessionID, "filesPurged", purged)
 	}
 	return nil
 }
@@ -251,7 +359,7 @@ func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-
 		enqueued := s.db.Writer.Write(operation)
 		if !enqueued {
 			dbWritesWG.Done()
-			s.log.Warn("Bulk writer closed; dropping discovery write", "path", file.Path, "sessionId", sessionID)
+			s.log.Warn("Bulk writer closed; dropping discovery write", "path", file.Name, "sessionId", sessionID)
 		}
 	}
 }
@@ -265,35 +373,44 @@ func (s *Scanner) store(ctx context.Context, sessionID uuid.UUID, discoveries <-
 func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG *sync.WaitGroup, storedFiles chan<- FileDiscovery, file FileDiscovery, newFiles, errorCount *atomic.Int64) db.DBOperation {
 	const query = `
 		INSERT INTO file_registry (
-			file_path, file_size, file_modified_at,
-			scan_session_id, source_root, media_type, file_extension,
-			scan_status, path_type, file_origin,
+			file_dir, file_name, file_size, file_modified_at,
+			scan_session_id, volume_uuid, media_type, file_extension,
+			scan_status, file_origin,
 			discovered_at, last_seen_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-		ON CONFLICT (file_path, source_root) DO UPDATE SET
-			last_seen_at = datetime('now'),
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (file_dir, file_name) DO UPDATE SET
+			last_seen_at = excluded.last_seen_at,
 			scan_session_id = excluded.scan_session_id,
 			file_origin = excluded.file_origin,
 			file_size = excluded.file_size,
-			file_modified_at = excluded.file_modified_at
+			file_modified_at = excluded.file_modified_at,
+			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid),
+			deleted_at = NULL,
+			scan_status = CASE WHEN file_registry.file_size != excluded.file_size
+					OR file_registry.file_modified_at != excluded.file_modified_at
+					OR file_registry.scan_status IN ('HASHING','ERROR')
+				THEN 'DISCOVERED' ELSE file_registry.scan_status END
 		RETURNING id, (discovered_at = last_seen_at) AS is_new`
 
 	queryFileState := func(dbCtx context.Context, tx *sqlx.Tx) (int64, int, error) {
 		var fileID int64
 		var isNew int // SQLite does not have a real BOOLEAN storage class
+		now := db.FormatTime(time.Now())
 		err := tx.QueryRowContext(
 			dbCtx,
 			query,
-			file.Path,
+			file.Dir,
+			file.Name,
 			file.Size,
-			file.ModTime.Format(time.RFC3339),
+			db.FormatTime(file.ModTime),
 			sessionID.String(),
-			file.SourceRoot,
+			db.StrOrNil(file.VolumeUUID),
 			file.MediaType,
 			file.Extension,
 			db.StatusDiscovered,
-			PathTypeRelative,
 			FileOriginSource,
+			now,
+			now,
 		).Scan(&fileID, &isNew)
 		return fileID, isNew, err
 	}
@@ -308,7 +425,7 @@ func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG
 
 		fileID, isNew, err := queryFileState(dbCtx, tx)
 		if err != nil {
-			s.log.Warn("Failed to upsert file", "sessionId", sessionID, "path", file.Path, "error", err)
+			s.log.Warn("Failed to upsert file", "sessionId", sessionID, "path", file.Name, "error", err)
 			errorCount.Add(1)
 			return nil // Continue processing other files in batch
 		}
