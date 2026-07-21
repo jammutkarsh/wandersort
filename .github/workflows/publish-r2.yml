@@ -1,0 +1,84 @@
+name: Mirror ExifTool to R2
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "0 0 1 * *"
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip libarchive-tools cpio
+
+      - name: Install AWS CLI
+        run: |
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          sudo ./aws/install --update
+          rm -rf aws awscliv2.zip
+
+      - name: Extract exiftool version
+        id: version
+        run: |
+          VERSION=$(grep -oP 'exiftoolVersion = "\K[0-9.]+' pkg/exiftool/verify.go)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Repackages each platform's upstream archive into a common flat
+      # tar.gz (contents = binDir layout, no wrapping directory, launcher
+      # already renamed) so pkg/exiftool/verify.go needs one generic
+      # extractor instead of a zip/pkg/tar.gz-specific one per platform.
+      - name: Repackage windows zip
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          curl -L "https://sourceforge.net/projects/exiftool/files/exiftool-${VERSION}_64.zip/download" -o archive.zip
+          unzip -q archive.zip -d extracted-windows
+          dir=$(ls extracted-windows)
+          mv "extracted-windows/$dir/exiftool(-k).exe" "extracted-windows/$dir/exiftool.exe"
+          tar czf "exiftool-${VERSION}-windows.tar.gz" -C "extracted-windows/$dir" .
+
+      - name: Repackage linux tar.gz
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          curl -L "https://sourceforge.net/projects/exiftool/files/Image-ExifTool-${VERSION}.tar.gz/download" -o archive.tar.gz
+          mkdir extracted-linux
+          tar xzf archive.tar.gz -C extracted-linux
+          dir=$(ls extracted-linux)
+          tar czf "exiftool-${VERSION}-linux.tar.gz" -C "extracted-linux/$dir" .
+
+      # .pkg is a xar archive (bsdtar/libarchive reads it directly — the `xar`
+      # package itself was dropped from Ubuntu's repos); Payload is a gzip'd
+      # cpio holding usr/local/bin/*, same contents pkgutil --expand-full
+      # would produce, no macOS runner needed. cpio restores AppleDouble
+      # resource-fork shadow files (._*) which we don't need — strip them.
+      - name: Repackage macOS pkg
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          curl -L "https://sourceforge.net/projects/exiftool/files/ExifTool-${VERSION}.pkg/download" -o archive.pkg
+          bsdtar --no-xattrs --no-acls -xf archive.pkg -C .
+          mkdir payload-darwin
+          gzip -dc Payload | (cd payload-darwin && cpio -idm)
+          find payload-darwin -name '._*' -delete
+          tar czf "exiftool-${VERSION}-darwin.tar.gz" -C payload-darwin/usr/local/bin .
+
+      - name: Upload to R2
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          aws s3 cp "exiftool-${VERSION}-windows.tar.gz" "s3://wandersort/files/exiftool-${VERSION}-windows.tar.gz"
+          aws s3 cp "exiftool-${VERSION}-linux.tar.gz" "s3://wandersort/files/exiftool-${VERSION}-linux.tar.gz"
+          aws s3 cp "exiftool-${VERSION}-darwin.tar.gz" "s3://wandersort/files/exiftool-${VERSION}-darwin.tar.gz"
