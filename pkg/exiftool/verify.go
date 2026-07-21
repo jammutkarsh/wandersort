@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/utils"
 )
 
@@ -114,7 +115,6 @@ func findExiftool(log logger.Logger, binDir string) (string, error) {
 }
 
 func installExiftool(ctx context.Context, log logger.Logger, binDir string) (string, error) {
-	log.Info("Downloading ExifTool…", logger.UserKey, true, "dir", binDir, "os", runtime.GOOS)
 	if err := install(ctx, binDir, log); err != nil {
 		return "", fmt.Errorf("install exiftool: %w", err)
 	}
@@ -143,6 +143,8 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 
 	archiveName := filepath.Join(binDir, fileMeta.Name)
 	url := filesBaseURL + "/" + fileMeta.Name
+
+	log.Info("Downloading ExifTool…", logger.UserKey, true, "dir", path.New().RelativeToHome(binDir), "url", url, "os", runtime.GOOS)
 
 	// Reuse a cached archive only if its checksum still matches — a mismatch
 	// means either corruption or tampering, so re-download either way
