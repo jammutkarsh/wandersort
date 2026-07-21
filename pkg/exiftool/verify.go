@@ -7,7 +7,8 @@
 package exiftool
 
 import (
-	"archive/zip"
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -31,11 +32,18 @@ const (
 	linux   = "linux"
 )
 
-// downloadURLs maps GOOS to the SourceForge download URL for the portable archive
-var downloadURLs = map[string]string{
-	windows: fmt.Sprintf("https://sourceforge.net/projects/exiftool/files/exiftool-%s_64.zip/download", exiftoolVersion),
-	linux:   fmt.Sprintf("https://sourceforge.net/projects/exiftool/files/Image-ExifTool-%s.tar.gz/download", exiftoolVersion),
-	macOS:   fmt.Sprintf("https://sourceforge.net/projects/exiftool/files/ExifTool-%s.pkg/download", exiftoolVersion),
+// supportedGOOS are the platforms .github/workflows/publish-r2.yml mirrors
+var supportedGOOS = map[string]bool{windows: true, macOS: true, linux: true}
+
+// downloadURL returns WanderSort's R2 mirror of the portable archive for
+// goos. Every platform is repackaged by CI into the same flat tar.gz layout
+// (contents = binDir, no wrapping directory, launcher pre-renamed), so a
+// single naming scheme and a single extractor cover all of them.
+func downloadURL(goos string) (string, bool) {
+	if !supportedGOOS[goos] {
+		return "", false
+	}
+	return fmt.Sprintf("https://wandersort.utkarschourasia.in/files/exiftool-%s-%s.tar.gz", exiftoolVersion, goos), true
 }
 
 // exiftoolBin returns the platform-specific binary name
@@ -100,14 +108,14 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 		return fmt.Errorf("create dir %q: %w", binDir, err)
 	}
 
-	url, ok := downloadURLs[runtime.GOOS]
+	url, ok := downloadURL(runtime.GOOS)
 	if !ok {
 		return fmt.Errorf("automatic install not supported on %s", runtime.GOOS)
 	}
 
-	// https://sourceforge.net/projects/exiftool/files/exiftool-13.59_64.zip/download -> exiftool-13.59_64.zip
+	// https://wandersort.utkarschourasia.in/files/exiftool-13.59-darwin.tar.gz -> exiftool-13.59-darwin.tar.gz
 	parts := strings.Split(strings.TrimRight(url, "/"), "/")
-	archiveName := filepath.Join(binDir, parts[len(parts)-2])
+	archiveName := filepath.Join(binDir, parts[len(parts)-1])
 
 	// Reuse a cached archive if it passes integrity check
 	if _, err := os.Stat(archiveName); err == nil {
@@ -125,20 +133,10 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 		}
 	}
 
-	switch runtime.GOOS {
-	case windows:
-		if err := installFromZip(archiveName, binDir, log); err != nil {
-			return fmt.Errorf("zip: %w", err)
-		}
-	case macOS:
-		if err := installFromPkg(archiveName, binDir, log); err != nil {
-			return fmt.Errorf("pkg: %w", err)
-		}
-	default:
-		if err := installFromTarGz(archiveName, binDir, log); err != nil {
-			return fmt.Errorf("tar.gz: %w", err)
-		}
+	if err := extractTarGz(archiveName, binDir); err != nil {
+		return fmt.Errorf("extract: %w", err)
 	}
+	log.Info("extracted exiftool", "dir", binDir)
 
 	if err := os.Remove(archiveName); err != nil {
 		log.Warn("failed to remove downloaded archive", "path", archiveName, "error", err)
@@ -146,176 +144,54 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 	return nil
 }
 
-// installFromZip extracts the Windows zip and renames the launcher
-//
-// Zip structure:
-//
-//	exiftool-{ver}_64/
-//	  exiftool(-k).exe       ← PE32+ launcher
-//	  exiftool_files/        ← Strawberry Perl runtime (perl.exe, perl532.dll, lib/…)
-func installFromZip(zipPath, binDir string, log logger.Logger) error {
-	tmpDir, err := os.MkdirTemp("", "exiftool-zip-*")
+// extractTarGz extracts a tar.gz produced by publish-r2.yml directly into
+// destDir. CI already normalizes every platform's upstream archive to this
+// layout (contents flat at the root, launcher pre-renamed), so extraction
+// needs no per-platform unwrapping or renaming step.
+func extractTarGz(tgzPath, destDir string) error {
+	f, err := os.Open(tgzPath)
 	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
+		return fmt.Errorf("open %s: %w", tgzPath, err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer f.Close()
 
-	if err := extractZip(zipPath, tmpDir); err != nil {
-		return fmt.Errorf("unzip: %w", err)
-	}
-
-	// Find the single versioned top-level directory (e.g. exiftool-13.59_64/)
-	entries, err := os.ReadDir(tmpDir)
+	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return fmt.Errorf("read tmp dir: %w", err)
+		return fmt.Errorf("gzip reader: %w", err)
 	}
-	if len(entries) != 1 || !entries[0].IsDir() {
-		return fmt.Errorf("unexpected zip structure")
-	}
+	defer gz.Close()
 
-	// Move everything from that directory into binDir
-	srcDir := filepath.Join(tmpDir, entries[0].Name())
-	if err := moveContents(srcDir, binDir); err != nil {
-		return fmt.Errorf("move contents: %w", err)
-	}
-
-	// Rename the launcher: exiftool(-k).exe → exiftool.exe (or exiftool on non-Windows)
-	launcher := filepath.Join(binDir, "exiftool(-k).exe")
-	if _, err := os.Stat(launcher); err == nil {
-		if err := os.Rename(launcher, filepath.Join(binDir, exiftoolBin())); err != nil {
-			return fmt.Errorf("rename launcher: %w", err)
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil
 		}
-	}
+		if err != nil {
+			return fmt.Errorf("read tar entry: %w", err)
+		}
 
-	log.Info("extracted windows zip", "dir", binDir)
-	return nil
-}
-
-// extractZip extracts all files from a zip archive into destDir using archive/zip
-func extractZip(zipPath, destDir string) error {
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return fmt.Errorf("open zip: %w", err)
-	}
-	defer r.Close()
-
-	// Windows doesn't have zip/unzup command preinstalled
-	// hence using Go's standard library to extract the archive
-	for _, f := range r.File {
-		dst := filepath.Join(destDir, filepath.FromSlash(f.Name))
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(dst, f.Mode()); err != nil {
+		dst := filepath.Join(destDir, filepath.FromSlash(hdr.Name))
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(dst, 0o755); err != nil {
 				return fmt.Errorf("mkdir %s: %w", dst, err)
 			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return fmt.Errorf("mkdir parent %s: %w", dst, err)
-		}
-		out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode())
-		if err != nil {
-			return fmt.Errorf("create %s: %w", dst, err)
-		}
-		rc, err := f.Open()
-		if err != nil {
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return fmt.Errorf("mkdir parent %s: %w", dst, err)
+			}
+			out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
+			if err != nil {
+				return fmt.Errorf("create %s: %w", dst, err)
+			}
+			_, copyErr := io.Copy(out, tr)
 			out.Close()
-			return fmt.Errorf("open zip entry %s: %w", f.Name, err)
-		}
-		_, copyErr := io.Copy(out, rc)
-		rc.Close()
-		out.Close()
-		if copyErr != nil {
-			return fmt.Errorf("write %s: %w", dst, copyErr)
+			if copyErr != nil {
+				return fmt.Errorf("write %s: %w", dst, copyErr)
+			}
 		}
 	}
-	return nil
-}
-
-// installFromTarGz extracts the Linux / portable tar.gz
-//
-// Tarball structure:
-//
-//	Image-ExifTool-{ver}/
-//	  exiftool              ← Perl script
-//	  lib/                  ← Perl library modules (~20 MB)
-//	  html/, fmt_files/, …
-func installFromTarGz(tgzPath, destDir string, log logger.Logger) error {
-	tmpDir, err := os.MkdirTemp("", "exiftool-tar-*")
-	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Use system tar — available on all major Linux distros
-	cmd := exec.Command("tar", "xzf", tgzPath, "-C", tmpDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tar: %w\n%s", err, output)
-	}
-
-	// Find the single versioned top-level directory (e.g. Image-ExifTool-13.59/)
-	entries, err := os.ReadDir(tmpDir)
-	if err != nil {
-		return fmt.Errorf("read tmp dir: %w", err)
-	}
-	if len(entries) != 1 || !entries[0].IsDir() {
-		return fmt.Errorf("unexpected tarball structure")
-	}
-
-	// Move everything from that directory into destDir
-	srcDir := filepath.Join(tmpDir, entries[0].Name())
-	if err := moveContents(srcDir, destDir); err != nil {
-		return fmt.Errorf("move contents: %w", err)
-	}
-
-	log.Info("extracted tar.gz", "dir", destDir)
-	return nil
-}
-
-// installFromPkg extracts the macOS .pkg and copies files to binDir
-//
-// Pkg layout (via pkgutil --expand-full):
-//
-//	Payload/usr/local/bin/
-//	  exiftool              ← Perl script
-//	  lib/                  ← Perl library modules
-func installFromPkg(pkgPath, destDir string, log logger.Logger) error {
-	parentDir, err := os.MkdirTemp("", "exiftool-pkg-*")
-	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
-	}
-	defer os.RemoveAll(parentDir)
-
-	// Let pkgutil create the output directory itself
-	extractDir := filepath.Join(parentDir, "expanded")
-	cmd := exec.Command("pkgutil", "--expand-full", pkgPath, extractDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("pkgutil --expand-full: %w\n%s", err, output)
-	}
-
-	// Move everything from Payload/usr/local/bin into destDir
-	srcDir := filepath.Join(extractDir, "Payload", "usr", "local", "bin")
-	if err := moveContents(srcDir, destDir); err != nil {
-		return fmt.Errorf("move pkg contents: %w", err)
-	}
-
-	log.Info("extracted macOS pkg", "dir", destDir)
-	return nil
-}
-
-// moveContents moves all entries from srcDir into dstDir using os.Rename
-func moveContents(srcDir, dstDir string) error {
-	entries, err := os.ReadDir(srcDir)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", srcDir, err)
-	}
-	for _, entry := range entries {
-		src := filepath.Join(srcDir, entry.Name())
-		dst := filepath.Join(dstDir, entry.Name())
-		if err := os.Rename(src, dst); err != nil {
-			return fmt.Errorf("rename %s -> %s: %w", src, dst, err)
-		}
-	}
-	return nil
 }
 
 // checkVersion runs exiftool -ver on the given binary and returns true if its
@@ -351,21 +227,29 @@ func checkVersion(path string, log logger.Logger) (bool, error) {
 	return false, nil
 }
 
-// archiveValid verifies the downloaded archive is not corrupt
+// archiveValid verifies the downloaded tar.gz is not corrupt by reading it
+// through to EOF, which surfaces gzip checksum and tar structure errors
 func archiveValid(path string) bool {
-	switch {
-	case strings.HasSuffix(path, ".zip"):
-		// zip.OpenReader verifies the central directory and CRCs of all entries
-		r, err := zip.OpenReader(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return false
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		_, err := tr.Next()
+		if err == io.EOF {
+			return true
+		}
 		if err != nil {
 			return false
 		}
-		r.Close()
-		return true
-	case strings.HasSuffix(path, ".tar.gz"):
-		return exec.Command("tar", "tzf", path).Run() == nil
-	case strings.HasSuffix(path, ".pkg"):
-		return exec.Command("pkgutil", "--payload-files", path).Run() == nil
 	}
-	return false
 }
