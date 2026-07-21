@@ -88,6 +88,76 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "/internal/v1/sessions/{id}/vfs": {
+            "get": {
+                "description": "Returns the proposed destination hierarchy (folder names only) for a session's files, for review before the move",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "VFS"
+                ],
+                "summary": "Get the proposed VFS directory tree",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/vfs.TreeResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/v1/sessions/{id}/vfs/confirm": {
+            "post": {
+                "description": "Accepts the possibly edited tree, applies renames to target paths, marks entries APPROVED, and remembers renamed locations for future scans",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "VFS"
+                ],
+                "summary": "Confirm (approve/correct) the VFS directory tree",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Edited tree",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/vfs.ConfirmRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/vfs.ConfirmResponse"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -153,6 +223,91 @@ const docTemplate = `{
                 },
                 "status": {
                     "type": "string"
+                }
+            }
+        },
+        "vfs.ConfirmRequest": {
+            "type": "object",
+            "required": [
+                "tree"
+            ],
+            "properties": {
+                "tree": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/vfs.Node"
+                    }
+                }
+            }
+        },
+        "vfs.ConfirmResponse": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string"
+                },
+                "sessionId": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "vfs.Node": {
+            "type": "object",
+            "properties": {
+                "children": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/vfs.Node"
+                    }
+                },
+                "fileCount": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "samples": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "suggestions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/vfs.Suggestion"
+                    }
+                }
+            }
+        },
+        "vfs.Suggestion": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                }
+            }
+        },
+        "vfs.TreeResponse": {
+            "type": "object",
+            "properties": {
+                "sessionId": {
+                    "type": "string"
+                },
+                "tree": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/vfs.Node"
+                    }
                 }
             }
         }
