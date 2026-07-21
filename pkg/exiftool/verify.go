@@ -37,7 +37,7 @@ func downloadURL(goos string) (string, bool) {
 	if !supportedGOOS[goos] {
 		return "", false
 	}
-	return fmt.Sprintf("https://wandersort.utkarschourasia.in/files/exiftool-%s-%s.tar.gz", exiftoolVersion, goos), true
+	return fmt.Sprintf("https://wandersort.utkarshchourasia.in/files/exiftool-%s-%s.tar.gz", exiftoolVersion, goos), true
 }
 
 // exiftoolBin returns the platform-specific binary name
@@ -107,7 +107,7 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 		return fmt.Errorf("automatic install not supported on %s", runtime.GOOS)
 	}
 
-	// https://wandersort.utkarschourasia.in/files/exiftool-13.59-darwin.tar.gz -> exiftool-13.59-darwin.tar.gz
+	// https://wandersort.utkarshchourasia.in/files/exiftool-13.59-darwin.tar.gz -> exiftool-13.59-darwin.tar.gz
 	parts := strings.Split(strings.TrimRight(url, "/"), "/")
 	archiveName := filepath.Join(binDir, parts[len(parts)-1])
 
