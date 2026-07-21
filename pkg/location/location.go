@@ -16,6 +16,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/utils"
 	_ "modernc.org/sqlite"
 )
 
@@ -58,6 +59,14 @@ func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver
 	var meta locationMeta
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("unable to parse location meta: %w", err)
+	}
+
+	sum, err := utils.SHA256File(dbLocationPath)
+	if err != nil {
+		return nil, fmt.Errorf("checksum location db: %w", err)
+	}
+	if sum != meta.Hash {
+		return nil, fmt.Errorf("location db checksum mismatch: got %s, want %s", sum, meta.Hash)
 	}
 
 	var count int

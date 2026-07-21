@@ -71,6 +71,32 @@ jobs:
           find payload-darwin -name '._*' -delete
           tar czf "exiftool-${VERSION}-darwin.tar.gz" -C payload-darwin/usr/local/bin .
 
+      # pkg/exiftool/verify.go trusts this manifest's sha256 over the R2
+      # bucket contents themselves, so a compromised bucket alone can't
+      # swap an archive out unnoticed
+      - name: Generate checksums metadata
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          file_entry() {
+            name="exiftool-${VERSION}-$1.tar.gz"
+            sha=$(sha256sum "$name" | awk '{print $1}')
+            size=$(stat -c%s "$name")
+            printf '"%s":{"name":"%s","sha256":"%s","size":%s}' "$1" "$name" "$sha" "$size"
+          }
+
+          cat > exiftool.json <<EOF
+          {
+            "version": "${VERSION}",
+            "updated": "$(date -u +%FT%TZ)",
+            "files": {
+              $(file_entry windows),
+              $(file_entry linux),
+              $(file_entry darwin)
+            }
+          }
+          EOF
+
       - name: Upload to R2
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -82,3 +108,4 @@ jobs:
           aws s3 cp "exiftool-${VERSION}-windows.tar.gz" "s3://wandersort/files/exiftool-${VERSION}-windows.tar.gz"
           aws s3 cp "exiftool-${VERSION}-linux.tar.gz" "s3://wandersort/files/exiftool-${VERSION}-linux.tar.gz"
           aws s3 cp "exiftool-${VERSION}-darwin.tar.gz" "s3://wandersort/files/exiftool-${VERSION}-darwin.tar.gz"
+          aws s3 cp exiftool.json "s3://wandersort/files/exiftool.json"
