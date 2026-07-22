@@ -15,6 +15,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/google/uuid"
+	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -28,20 +29,36 @@ const (
 
 // Hasher handles file hashing and content group management
 type Hasher struct {
-	ctx      context.Context
-	db       *db.DB
-	log      logger.Logger
-	exiftool *exiftool.Extractor
-	workers  int
+	ctx        context.Context
+	db         *db.DB
+	log        logger.Logger
+	exiftool   *exiftool.Extractor
+	classifier *classifier.FileClassifier
+	workers    int
 }
 
 func New(ctx context.Context, db *db.DB, log logger.Logger, exiftoolPath string, workers int) *Hasher {
 	return &Hasher{
-		ctx:      ctx,
-		db:       db,
-		log:      log,
-		exiftool: exiftool.New(exiftoolPath),
-		workers:  workers,
+		ctx:        ctx,
+		db:         db,
+		log:        log,
+		exiftool:   exiftool.New(exiftoolPath),
+		classifier: classifier.NewFileClassifier(),
+		workers:    workers,
+	}
+}
+
+// logEvery returns how many processed files should pass between progress
+// log lines, scaled so small and large libraries both get a reasonable
+// number of updates
+func logEvery(total int) int {
+	switch {
+	case total <= 100:
+		return 10
+	case total <= 1000:
+		return 100
+	default:
+		return 500
 	}
 }
 
@@ -61,8 +78,15 @@ func (h *Hasher) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 
 	h.log.Info("Hashing session", "sessionId", sessionID)
 
+	var total int
+	if err := h.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM live_files WHERE scan_session_id = ? AND scan_status = ?
+	`, sessionID.String(), db.StatusDiscovered).Scan(&total); err != nil {
+		h.log.Warn("Failed to count files to hash", "sessionId", sessionID, "error", err)
+	}
+
 	go h.producer(ctxWithCancel, sessionID, cancel, toHash, producerErr)
-	go h.hasher(ctxWithCancel, sessionID, cancel, toHash, toStore, &errorCount)
+	go h.hasher(ctxWithCancel, sessionID, cancel, toHash, toStore, &errorCount, total)
 	go h.store(ctxWithCancel, cancel, toStore, &hashedCount, hasherErr)
 
 	if err := <-producerErr; err != nil {
@@ -72,18 +96,18 @@ func (h *Hasher) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 		return 0, err
 	}
 
-	total := int(hashedCount.Load())
+	persisted := int(hashedCount.Load())
 	errorTotal := errorCount.Load()
 	if _, upErr := h.db.ExecContext(ctx, `
 		UPDATE scan_sessions
 		SET files_hashed = ?, errors_encountered = errors_encountered + ?
 		WHERE id = ?
-	`, total, errorTotal, sessionID.String()); upErr != nil {
+	`, persisted, errorTotal, sessionID.String()); upErr != nil {
 		h.log.Error("Failed to update hash counters", "sessionId", sessionID, "error", upErr)
 	}
 
-	h.log.Info("Hashing complete", "sessionId", sessionID, "filesHashed", total)
-	return total, nil
+	h.log.Info("Hashing complete", "sessionId", sessionID, "filesHashed", persisted)
+	return persisted, nil
 }
 
 // producer fetches hashable files from the database and feeds them into the toHash channel
@@ -142,7 +166,9 @@ func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, 
 }
 
 // hasher runs the bounded worker pool that computes BLAKE3 hashes and extracts EXIF
-func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, toHash <-chan fileRecord, toPersist chan<- hashedRecord, errorCount *atomic.Int64) {
+func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, toHash <-chan fileRecord, toPersist chan<- hashedRecord, errorCount *atomic.Int64, total int) {
+	interval := int64(logEvery(total))
+	var hashedN, exifN atomic.Int64
 	var hashWG sync.WaitGroup
 
 	for range h.workers {
@@ -170,19 +196,32 @@ func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context
 					errorCount.Add(1)
 					continue
 				}
+				if n := hashedN.Add(1); n%interval == 0 {
+					h.log.Info("Hashing progress", logger.UserKey, true, "sessionId", sessionID, "hashed", n, "total", total)
+				}
 
 				if ctx.Err() != nil {
 					return // pipeline cancelled; stop cleanly
 				}
-				exifData, err := h.exiftool.Extract(ctx, file.absPath)
-				if err != nil {
-					// A cancelled pipeline SIGKILLs the exiftool child ("signal: killed")
-					// and fails the next call with "context canceled" — that is shutdown,
-					// not a bad file, so don't report it as an extraction failure.
-					if ctx.Err() != nil {
-						return
+				var exifData classifier.CommonMetadata
+				// Sidecar files (e.g. iPhone .AAE edit sidecars) carry no
+				// EXIF of their own — running exiftool on them is wasted work
+				mediaType, _, _ := h.classifier.ClassifyName(filepath.Base(file.absPath))
+				if mediaType != classifier.MediaTypeSidecar {
+					var err error
+					exifData, err = h.exiftool.Extract(ctx, file.absPath)
+					if err != nil {
+						// A cancelled pipeline SIGKILLs the exiftool child ("signal: killed")
+						// and fails the next call with "context canceled" — that is shutdown,
+						// not a bad file, so don't report it as an extraction failure.
+						if ctx.Err() != nil {
+							return
+						}
+						h.log.Warn("Failed to extract exif data", "sessionId", sessionID, "fileId", file.id, "path", file.absPath, "error", err)
 					}
-					h.log.Warn("Failed to extract exif data", "sessionId", sessionID, "fileId", file.id, "path", file.absPath, "error", err)
+				}
+				if n := exifN.Add(1); n%interval == 0 {
+					h.log.Info("Exif extraction progress", logger.UserKey, true, "sessionId", sessionID, "extracted", n, "total", total)
 				}
 
 				select {

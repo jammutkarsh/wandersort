@@ -68,6 +68,7 @@ func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver
 	if sum != meta.Hash {
 		return nil, fmt.Errorf("location db checksum mismatch: got %s, want %s", sum, meta.Hash)
 	}
+	log.Info("location db checksum verified", "path", dbLocationPath, "hash", sum)
 
 	var count int
 	err = locationDB.QueryRowContext(
@@ -82,6 +83,7 @@ func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver
 		return nil, fmt.Errorf("row count mismatch: db has %d, meta expects %d", count, meta.Rows["geonames_cities"])
 	}
 
+	log.Info("location db verified", "path", dbLocationPath, "rows", count)
 	return &Resolver{db: locationDB, log: log}, nil
 }
 

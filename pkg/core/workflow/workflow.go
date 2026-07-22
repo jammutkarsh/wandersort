@@ -348,7 +348,9 @@ func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhaseKind, phaseFunc 
 	}
 
 	wf.log.Info(status.message, logger.UserKey, true, "sessionId", sessionID)
+	start := time.Now()
 	count, err := phaseFunc()
+	elapsed := time.Since(start)
 	if err != nil {
 		var finalStatus string
 		var finalErr string
@@ -363,6 +365,8 @@ func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhaseKind, phaseFunc 
 	}
 
 	wf.db.Writer.Flush()
+
+	wf.log.Info(fmt.Sprintf("%s phase took %s", phase, elapsed.Round(time.Millisecond)), "sessionId", sessionID)
 
 	if err := wf.setSessionStatus(wf.ctx, sessionID, status.completed); err != nil {
 		msg := fmt.Errorf("failed to set %s status: %w", status.completed, err).Error()

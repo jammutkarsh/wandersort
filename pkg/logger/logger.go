@@ -53,7 +53,7 @@ func New(logLevel string, console bool, logFile string) Logger {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "WARN: failed to open log file %s: %v (file logging disabled)\n", logFile, err)
 		} else {
-			jsonH := slog.NewJSONHandler(file, &slog.HandlerOptions{Level: level, AddSource: true})
+			jsonH := slog.NewJSONHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true})
 			handlers = append(handlers, jsonH)
 		}
 	}
