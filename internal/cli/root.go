@@ -205,6 +205,7 @@ Flags take precedence over environment variables.`,
 	rootCmd.AddCommand(a.newSetupCmd())
 	rootCmd.AddCommand(a.newScanCmd())
 	rootCmd.AddCommand(a.newServeCmd())
+	rootCmd.AddCommand(a.newReviewCmd())
 	rootCmd.AddCommand(a.newReportCmd())
 	rootCmd.AddCommand(a.newReportIssueCmd())
 	rootCmd.AddCommand(a.newResetCmd())

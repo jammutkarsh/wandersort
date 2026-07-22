@@ -75,6 +75,40 @@ func (bw *BulkWriter) Write(op DBOperation) bool {
 	return true
 }
 
+// WriteSync enqueues op, blocks until it has actually been executed, and
+// returns the op's error. Use it for user-initiated writes whose outcome must
+// be reported (a review confirm), as opposed to pipeline writes where Write's
+// fire-and-forget batching is the point.
+func (bw *BulkWriter) WriteSync(op DBOperation) error {
+	// buffered for both attempts: the batch tx, then the individual-tx
+	// fallback the batch failure path replays every op through
+	res := make(chan error, 2)
+	wrapped := func(ctx context.Context, tx *sqlx.Tx) error {
+		err := op(ctx, tx)
+		res <- err
+		return err
+	}
+	if !bw.Write(wrapped) {
+		return fmt.Errorf("writer closed")
+	}
+	bw.Flush()
+	// Flush returning means every enqueued op (including a fallback replay)
+	// has run, so the last result is the authoritative one
+	var err error
+	got := false
+	for {
+		select {
+		case e := <-res:
+			err, got = e, true
+		default:
+			if !got {
+				return fmt.Errorf("writer closed before write executed")
+			}
+			return err
+		}
+	}
+}
+
 // Flush blocks until all currently-enqueued operations have been written to the
 // database. Use this at phase boundaries to guarantee visibility before reads
 func (bw *BulkWriter) Flush() {
