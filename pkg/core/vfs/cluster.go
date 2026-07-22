@@ -195,15 +195,15 @@ func suggestFor(masters []masterFile, c *cluster, labels []userLabel, anchors []
 }
 
 // eventSegment renders the dated placeholder segment for an unresolved
-// cluster, e.g. "Jun_03", "Jun_03-05", or "Jun_30-Jul_01"
+// cluster. It sits under the month folder, so days alone suffice — e.g. "03",
+// "03-05" — and only a cross-month span keeps month names: "Jun_30-Jul_01".
 func eventSegment(start, end time.Time) string {
-	s := start.Format("Jan_02")
 	switch {
 	case start.Year() == end.Year() && start.YearDay() == end.YearDay():
-		return s
+		return start.Format("02")
 	case start.Year() == end.Year() && start.Month() == end.Month():
-		return s + "-" + end.Format("02")
+		return start.Format("02") + "-" + end.Format("02")
 	default:
-		return s + "-" + end.Format("Jan_02")
+		return start.Format("Jan_02") + "-" + end.Format("Jan_02")
 	}
 }

@@ -37,3 +37,7 @@ func BadRequest(code, message string, details map[string]any) APIError {
 func InternalError(code, message string, details map[string]any) APIError {
 	return newAPIError(http.StatusInternalServerError, code, message, details)
 }
+
+func NotFound(code, message string, details map[string]any) APIError {
+	return newAPIError(http.StatusNotFound, code, message, details)
+}

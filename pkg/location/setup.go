@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/utils"
 )
 
@@ -39,7 +40,7 @@ func Setup(ctx context.Context, log logger.Logger, dbPath string) error {
 		return nil
 	}
 
-	log.Info("Downloading location database…", logger.UserKey, true, "url", LocationDownloadBaseURL+"/"+LocationDBFileName)
+	log.Info("Downloading location database…", logger.UserKey, true, "dir", path.New().RelativeToHome(dbPath), "url", LocationDownloadBaseURL+"/"+LocationDBFileName)
 
 	if err := utils.DownloadFile(ctx, dbPath, LocationDownloadBaseURL+"/"+LocationDBFileName); err != nil {
 		return fmt.Errorf("download %s: %w", LocationDBFileName, err)

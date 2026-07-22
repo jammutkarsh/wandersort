@@ -21,6 +21,7 @@ import (
 	"github.com/jammutkarsh/wandersort/internal/api"
 	"github.com/jammutkarsh/wandersort/internal/api/admin"
 	"github.com/jammutkarsh/wandersort/internal/api/pipeline"
+	vfsapi "github.com/jammutkarsh/wandersort/internal/api/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -80,8 +81,9 @@ func (a *App) runServe() error {
 
 	adminHandler := admin.NewHandler(a.Log, a.AdminService())
 	pipelineHandler := pipeline.NewHandler(a.Log, a.PipelineService(wf))
+	vfsHandler := vfsapi.NewHandler(a.Log, a.AppDB)
 
-	router := setupRouter(a.Log, adminHandler, pipelineHandler)
+	router := setupRouter(a.Log, adminHandler, pipelineHandler, vfsHandler)
 
 	server := &http.Server{
 		Addr:              ":" + a.Config.ServerPort,

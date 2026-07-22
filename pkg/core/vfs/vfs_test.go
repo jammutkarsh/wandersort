@@ -133,7 +133,7 @@ func TestBuildFullExif(t *testing.T) {
 
 	rows := h.build(t, DefaultConfig(), geo)
 
-	want := "2024/06_June/Goa/Vertical/Photos/IMG_0001.HEIC"
+	want := "2024/June/Goa/Vertical/Photos/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
 		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 	}
@@ -156,9 +156,9 @@ func TestClusterSpillover(t *testing.T) {
 	rows := h.build(t, DefaultConfig(), geo)
 
 	for _, id := range []int64{a, b} {
-		if got := rows[id].TargetPath; got != "2024/06_June/Manali/Horizontal/Photos/"+filepath.Base(rows[id].TargetPath) {
+		if got := rows[id].TargetPath; got != "2024/June/Manali/Horizontal/Photos/"+filepath.Base(rows[id].TargetPath) {
 			// location segment is what matters
-			if want := "2024/06_June/Manali/"; len(got) < len(want) || got[:len(want)] != want {
+			if want := "2024/June/Manali/"; len(got) < len(want) || got[:len(want)] != want {
 				t.Errorf("file %d target = %q, want prefix %q", id, got, want)
 			}
 		}
@@ -182,8 +182,8 @@ func TestUnresolvedEventSegmentAndGapSplit(t *testing.T) {
 
 	rows := h.build(t, DefaultConfig(), nil)
 
-	wantA := "2024/06_June/Jun_03/Horizontal/Photos/DSC_0001.JPG"
-	wantB := "2024/06_June/Jun_05/Horizontal/Photos/DSC_0002.JPG"
+	wantA := "2024/June/03/Horizontal/Photos/DSC_0001.JPG"
+	wantB := "2024/June/05/Horizontal/Photos/DSC_0002.JPG"
 	if rows[a].TargetPath != wantA {
 		t.Errorf("a = %q, want %q", rows[a].TargetPath, wantA)
 	}
@@ -301,7 +301,7 @@ func TestCustomSlotOrder(t *testing.T) {
 	cfg.Slots = []string{SlotMedia, SlotLocation}
 	rows := h.build(t, cfg, geo)
 
-	want := "2024/06_June/Photos/Goa/IMG_0001.HEIC"
+	want := "2024/June/Photos/Goa/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
 		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 	}
@@ -350,7 +350,7 @@ func TestNameCase(t *testing.T) {
 			cfg.NameCase = tc.style
 			rows := h.build(t, cfg, geo)
 
-			want := "2024/06_June/" + tc.want + "/Vertical/Photos/IMG_0001.HEIC"
+			want := "2024/June/" + tc.want + "/Vertical/Photos/IMG_0001.HEIC"
 			if rows[id].TargetPath != want {
 				t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 			}
@@ -367,7 +367,7 @@ func TestOrientationTagSwapsDimensions(t *testing.T) {
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 
 	rows := h.build(t, DefaultConfig(), geo)
-	want := "2024/06_June/Goa/Vertical/Photos/IMG_0001.HEIC"
+	want := "2024/June/Goa/Vertical/Photos/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
 		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 	}

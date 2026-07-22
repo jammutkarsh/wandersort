@@ -10,8 +10,10 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/utils"
 )
 
@@ -30,20 +33,48 @@ const (
 	windows = "windows"
 	macOS   = "darwin"
 	linux   = "linux"
+
+	filesBaseURL        = "https://wandersort.utkarshchourasia.in/files"
+	releaseMetaFileName = "exiftool.json"
 )
 
-// supportedGOOS are the platforms .github/workflows/publish-r2.yml mirrors
-var supportedGOOS = map[string]bool{windows: true, macOS: true, linux: true}
+// releaseMeta is published by .github/workflows/publish-r2.yml alongside
+// the mirrored archives, e.g.:
+//
+//	{"version":"13.59","updated":"...","files":{"darwin":{"name":"exiftool-13.59-darwin.tar.gz","sha256":"...","size":123}}}
+type releaseMeta struct {
+	Version string                     `json:"version"`
+	Files   map[string]releaseMetaFile `json:"files"`
+}
 
-// downloadURL returns WanderSort's R2 mirror of the portable archive for
-// goos. Every platform is repackaged by CI into the same flat tar.gz layout
-// (contents = binDir, no wrapping directory, launcher pre-renamed), so a
-// single naming scheme and a single extractor cover all of them.
-func downloadURL(goos string) (string, bool) {
-	if !supportedGOOS[goos] {
-		return "", false
+type releaseMetaFile struct {
+	Name   string `json:"name"`
+	SHA256 string `json:"sha256"`
+}
+
+// fetchReleaseMeta downloads and parses the checksum manifest for the
+// mirrored archives — the only trusted source for expected file names and
+// hashes, so a compromised R2 bucket can't just swap an archive out silently
+func fetchReleaseMeta(ctx context.Context) (releaseMeta, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, filesBaseURL+"/"+releaseMetaFileName, nil)
+	if err != nil {
+		return releaseMeta{}, fmt.Errorf("create request: %w", err)
 	}
-	return fmt.Sprintf("https://wandersort.utkarshchourasia.in/files/exiftool-%s-%s.tar.gz", exiftoolVersion, goos), true
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return releaseMeta{}, fmt.Errorf("GET %s: %w", releaseMetaFileName, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return releaseMeta{}, fmt.Errorf("GET %s: unexpected status %s", releaseMetaFileName, resp.Status)
+	}
+
+	var meta releaseMeta
+	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+		return releaseMeta{}, fmt.Errorf("decode %s: %w", releaseMetaFileName, err)
+	}
+	return meta, nil
 }
 
 // exiftoolBin returns the platform-specific binary name
@@ -90,7 +121,6 @@ func findExiftool(log logger.Logger, binDir string) (string, error) {
 }
 
 func installExiftool(ctx context.Context, log logger.Logger, binDir string) (string, error) {
-	log.Info("Downloading ExifTool…", logger.UserKey, true, "dir", binDir, "os", runtime.GOOS)
 	if err := install(ctx, binDir, log); err != nil {
 		return "", fmt.Errorf("install exiftool: %w", err)
 	}
@@ -108,21 +138,28 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 		return fmt.Errorf("create dir %q: %w", binDir, err)
 	}
 
-	url, ok := downloadURL(runtime.GOOS)
+	meta, err := fetchReleaseMeta(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch release metadata: %w", err)
+	}
+	fileMeta, ok := meta.Files[runtime.GOOS]
 	if !ok {
 		return fmt.Errorf("automatic install not supported on %s", runtime.GOOS)
 	}
 
-	// https://wandersort.utkarshchourasia.in/files/exiftool-13.59-darwin.tar.gz -> exiftool-13.59-darwin.tar.gz
-	parts := strings.Split(strings.TrimRight(url, "/"), "/")
-	archiveName := filepath.Join(binDir, parts[len(parts)-1])
+	archiveName := filepath.Join(binDir, fileMeta.Name)
+	url := filesBaseURL + "/" + fileMeta.Name
 
-	// Reuse a cached archive if it passes integrity check
+	log.Info("Downloading ExifTool…", logger.UserKey, true, "dir", path.New().RelativeToHome(binDir), "url", url, "os", runtime.GOOS)
+
+	// Reuse a cached archive only if its checksum still matches — a mismatch
+	// means either corruption or tampering, so re-download either way
 	if _, err := os.Stat(archiveName); err == nil {
-		if archiveValid(archiveName) {
+		if sum, err := utils.SHA256File(archiveName); err == nil && sum == fileMeta.SHA256 {
+			log.Info("exiftool checksum verified", "path", archiveName, "hash", sum)
 			log.Info("using cached archive", "path", archiveName)
 		} else {
-			log.Warn("cached archive corrupt; re-downloading", "path", archiveName)
+			log.Warn("cached archive checksum mismatch; re-downloading", "path", archiveName)
 			os.Remove(archiveName)
 		}
 	}
@@ -132,6 +169,16 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 			return fmt.Errorf("download: %w", err)
 		}
 	}
+
+	sum, err := utils.SHA256File(archiveName)
+	if err != nil {
+		return fmt.Errorf("checksum %s: %w", archiveName, err)
+	}
+	if sum != fileMeta.SHA256 {
+		os.Remove(archiveName)
+		return fmt.Errorf("checksum mismatch for %s: got %s, want %s", fileMeta.Name, sum, fileMeta.SHA256)
+	}
+	log.Info("exiftool checksum verified", "path", archiveName, "hash", sum)
 
 	if err := extractTarGz(archiveName, binDir); err != nil {
 		return fmt.Errorf("extract: %w", err)
@@ -225,31 +272,4 @@ func checkVersion(path string, log logger.Logger) (bool, error) {
 
 	log.Info("exiftool version below requirement", "have", ver, "want", exiftoolVersion)
 	return false, nil
-}
-
-// archiveValid verifies the downloaded tar.gz is not corrupt by reading it
-// through to EOF, which surfaces gzip checksum and tar structure errors
-func archiveValid(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return false
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	for {
-		_, err := tr.Next()
-		if err == io.EOF {
-			return true
-		}
-		if err != nil {
-			return false
-		}
-	}
 }

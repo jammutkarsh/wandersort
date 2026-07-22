@@ -265,7 +265,7 @@ func (v *VFS) dirFor(m *masterFile) string {
 
 	parts := []string{
 		strconv.Itoa(m.takenAt.Year()),
-		fmt.Sprintf("%02d_%s", int(m.takenAt.Month()), m.takenAt.Month()),
+		m.takenAt.Month().String(),
 	}
 	for _, slot := range v.cfg.Slots {
 		seg := ""

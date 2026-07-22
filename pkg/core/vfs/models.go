@@ -82,7 +82,7 @@ type masterFile struct {
 	device           string
 	location         string // resolved city; "" when unknown
 	clusterID        string // set when the location decision came from cluster logic
-	eventSegment     string // dated segment for unresolved clusters, e.g. "Jun_03-05"
+	eventSegment     string // dated segment for unresolved clusters, e.g. "03-05"
 	suggestion       string
 	suggestionSource string
 	targetPath       string

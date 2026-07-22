@@ -22,6 +22,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/utils"
 	_ "modernc.org/sqlite"
 )
 
@@ -66,6 +67,15 @@ func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver
 		return nil, fmt.Errorf("unable to parse location meta: %w", err)
 	}
 
+	sum, err := utils.SHA256File(dbLocationPath)
+	if err != nil {
+		return nil, fmt.Errorf("checksum location db: %w", err)
+	}
+	if sum != meta.Hash {
+		return nil, fmt.Errorf("location db checksum mismatch: got %s, want %s", sum, meta.Hash)
+	}
+	log.Info("location db checksum verified", "path", dbLocationPath, "hash", sum)
+
 	var count int
 	err = locationDB.QueryRowContext(
 		context.Background(),
@@ -79,6 +89,7 @@ func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver
 		return nil, fmt.Errorf("row count mismatch: db has %d, meta expects %d", count, meta.Rows["geonames_cities"])
 	}
 
+	log.Info("location db verified", "path", dbLocationPath, "rows", count)
 	return &Resolver{db: locationDB, log: log}, nil
 }
 
