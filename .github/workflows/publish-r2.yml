@@ -3,9 +3,6 @@ name: Mirror ExifTool to R2
 on:
   workflow_dispatch:
 
-  schedule:
-    - cron: "0 0 1 * *"
-
 jobs:
   mirror:
     runs-on: ubuntu-latest
