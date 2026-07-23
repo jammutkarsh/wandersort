@@ -123,13 +123,7 @@ func (kind workflowPhaseKind) status() phaseStatus {
 // NewWorkflow creates a new workflow instance
 func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration, exiftoolPath string, opts ...Option) *Workflow {
 	log.Info("Pipeline configured", "workers", cfg.Workers)
-	vfsCfg := vfs.DefaultConfig()
-	switch {
-	case len(cfg.GroupBy) == 1 && cfg.GroupBy[0] == "none":
-		vfsCfg.GroupBy = nil
-	case len(cfg.GroupBy) > 0:
-		vfsCfg.GroupBy = cfg.GroupBy
-	}
+	vfsCfg := vfs.ConfigFor(cfg)
 	wf := &Workflow{
 		ctx:              ctx,
 		db:               db,

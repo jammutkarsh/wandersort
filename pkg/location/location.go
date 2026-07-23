@@ -238,20 +238,52 @@ func (r *Resolver) Candidates(ctx context.Context, lat, lon, deltaDegrees float6
 }
 
 // ResolveByName forward-geocodes a typed place name (e.g. a hometown) to
-// coordinates, for storing as an anchor label. Exact, case-insensitive match
-// only — good enough once the name came from PlaceMatch (SearchByName) rather
-// than free typing, so it's guaranteed to match the gazetteer exactly.
+// coordinates, for storing as an anchor label. Tries an exact, case-insensitive
+// match first, then falls back to comparing diacritic-stripped names: every
+// name this package hands out is stripped (SearchByName, Candidates), so a
+// gazetteer entry spelled "Banjār" is only ever saved as "Banjar" and the exact
+// match alone would never find its way back.
 func (r *Resolver) ResolveByName(ctx context.Context, name string) (lat, lon float64, err error) {
 	err = r.db.QueryRowContext(ctx,
 		`SELECT latitude, longitude FROM geonames_cities WHERE city = ? COLLATE NOCASE LIMIT 1`,
 		name).Scan(&lat, &lon)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, ErrNoLocation
+	if err == nil {
+		return lat, lon, nil
 	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, fmt.Errorf("locationResolver: resolve by name: %w", err)
+	}
+	return r.resolveStripped(ctx, name)
+}
+
+// resolveStripped is ResolveByName's fallback for names whose gazetteer entry
+// carries diacritics. SQLite's NOCASE collation is ASCII-only and there's no
+// stripped column to index, so this scans.
+// ponytail: full table scan, run at most twice per scan (home + work anchor)
+// and only when the exact match missed. Add a normalized column + index if it
+// ever lands on a hot path.
+func (r *Resolver) resolveStripped(ctx context.Context, name string) (lat, lon float64, err error) {
+	want := strings.ToLower(stripDiacritics(name))
+	rows, err := r.db.QueryContext(ctx, `SELECT city, latitude, longitude FROM geonames_cities`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("locationResolver: resolve by name: %w", err)
 	}
-	return lat, lon, nil
+	defer rows.Close()
+
+	for rows.Next() {
+		var city string
+		var clat, clon float64
+		if err := rows.Scan(&city, &clat, &clon); err != nil {
+			return 0, 0, fmt.Errorf("locationResolver: scan: %w", err)
+		}
+		if strings.ToLower(stripDiacritics(city)) == want {
+			return clat, clon, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	return 0, 0, ErrNoLocation
 }
 
 // PlaceMatch is one gazetteer entry matching a typed prefix, coordinates

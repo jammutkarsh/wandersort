@@ -29,6 +29,9 @@ type Configuration struct {
 	// means no levels at all (flat Year/Month). Validated against
 	// vfs.GroupBy* in cli.
 	GroupBy []string
+	// CollapseLevels drops a device/orientation/media folder level that has
+	// only one value across the whole library — see vfs.Config.CollapseLevels.
+	CollapseLevels bool
 }
 
 // Defaults returns a Configuration populated with hardcoded defaults only.
@@ -52,5 +55,6 @@ func Defaults() (*Configuration, error) {
 		LogFile:        filepath.Join(outputPath, DefaultLogFileName),
 		Workers:        runtime.NumCPU(),
 		ExecutablePath: executablesDirectory,
+		CollapseLevels: true,
 	}, nil
 }

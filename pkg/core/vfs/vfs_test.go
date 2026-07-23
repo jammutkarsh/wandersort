@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -128,7 +129,9 @@ func TestBuildFullExif(t *testing.T) {
 
 	rows := h.build(t, DefaultConfig(), geo)
 
-	want := "2024/June/Goa/Vertical/Photos/IMG_0001.HEIC"
+	// device/orientation/media all have a single value across this one-file
+	// library, so every one of those levels collapses away
+	want := "2024/06_June/Goa/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
 		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 	}
@@ -151,9 +154,9 @@ func TestClusterSpillover(t *testing.T) {
 	rows := h.build(t, DefaultConfig(), geo)
 
 	for _, id := range []int64{a, b} {
-		if got := rows[id].TargetPath; got != "2024/June/Manali/Horizontal/Photos/"+filepath.Base(rows[id].TargetPath) {
+		if got := rows[id].TargetPath; got != "2024/06_June/Manali/Horizontal/Photos/"+filepath.Base(rows[id].TargetPath) {
 			// location segment is what matters
-			if want := "2024/June/Manali/"; len(got) < len(want) || got[:len(want)] != want {
+			if want := "2024/06_June/Manali/"; len(got) < len(want) || got[:len(want)] != want {
 				t.Errorf("file %d target = %q, want prefix %q", id, got, want)
 			}
 		}
@@ -177,8 +180,8 @@ func TestUnresolvedEventSegmentAndGapSplit(t *testing.T) {
 
 	rows := h.build(t, DefaultConfig(), nil)
 
-	wantA := "2024/June/03/Horizontal/Photos/DSC_0001.JPG"
-	wantB := "2024/June/05/Horizontal/Photos/DSC_0002.JPG"
+	wantA := "2024/06_June/03/DSC_0001.JPG"
+	wantB := "2024/06_June/05/DSC_0002.JPG"
 	if rows[a].TargetPath != wantA {
 		t.Errorf("a = %q, want %q", rows[a].TargetPath, wantA)
 	}
@@ -365,7 +368,7 @@ func TestCustomGroupByOrder(t *testing.T) {
 	cfg.GroupBy = []string{GroupByMedia, GroupByLocation}
 	rows := h.build(t, cfg, geo)
 
-	want := "2024/June/Photos/Goa/IMG_0001.HEIC"
+	want := "2024/06_June/Goa/IMG_0001.HEIC" // the lone Photos level collapses
 	if rows[id].TargetPath != want {
 		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 	}
@@ -383,7 +386,7 @@ func TestEmptyGroupByIsFlatYearMonth(t *testing.T) {
 	cfg.GroupBy = nil
 	rows := h.build(t, cfg, geo)
 
-	want := "2024/June/IMG_0001.HEIC"
+	want := "2024/06_June/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
 		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 	}
@@ -406,7 +409,7 @@ func TestAnchorFoldsNearbySuburb(t *testing.T) {
 
 	rows := h.build(t, DefaultConfig(), geo)
 
-	want := "2024/June/Delhi/Vertical/Photos/IMG_0001.HEIC"
+	want := "2024/06_June/Delhi/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
 		t.Errorf("target = %q, want %q (anchor should fold the nearby suburb)", rows[id].TargetPath, want)
 	}
@@ -455,7 +458,7 @@ func TestNameCase(t *testing.T) {
 			cfg.NameCase = tc.style
 			rows := h.build(t, cfg, geo)
 
-			want := "2024/June/" + tc.want + "/Vertical/Photos/IMG_0001.HEIC"
+			want := "2024/06_June/" + tc.want + "/IMG_0001.HEIC"
 			if rows[id].TargetPath != want {
 				t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 			}
@@ -505,10 +508,15 @@ func TestOrientationTagSwapsDimensions(t *testing.T) {
 	meta := metaWith("2024:06:03 14:00:00", 15.5, 73.8, 4032, 3024)
 	meta.Orientation = "6"
 	id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", meta)
+	// a genuinely horizontal second file, or the orientation level would be
+	// collapsed away (one distinct value library-wide) and this would assert
+	// nothing about orientation at all
+	h.addFile(t, "d/IMG_0002.HEIC", "IMAGE", metaWith("2024:06:03 15:00:00", 15.5, 73.8, 4032, 3024))
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 
 	rows := h.build(t, DefaultConfig(), geo)
-	want := "2024/June/Goa/Vertical/Photos/IMG_0001.HEIC"
+	// media still collapses (both files are photos); orientation survives
+	want := "2024/06_June/Goa/Vertical/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
 		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 	}
@@ -613,5 +621,148 @@ func TestLibraryScopeAcrossSessions(t *testing.T) {
 	}
 	if rows[0].TargetPath == "stale/IMG_0001.HEIC" {
 		t.Error("stale proposal survived the rebuild")
+	}
+}
+
+// TestMonthFoldersSortChronologically covers the reported ordering bug: bare
+// month names sort alphabetically, so December came before November in the
+// review tree (and in any file browser). The segment is number-first now.
+func TestMonthFoldersSortChronologically(t *testing.T) {
+	months := []string{}
+	for m := time.January; m <= time.December; m++ {
+		months = append(months, time.Date(2025, m, 15, 12, 0, 0, 0, time.UTC).Format("01_January"))
+	}
+	if !sort.StringsAreSorted(months) {
+		t.Errorf("month segments %v are not in lexicographic order — they must be, since that's how both the review tree and the OS list them", months)
+	}
+}
+
+// TestDateLevelAddsDayFolder covers the Year/Month/Day/Location/... shape:
+// "date" is a real group-by level, placed wherever the user puts it.
+func TestDateLevelAddsDayFolder(t *testing.T) {
+	h := newHarness(t)
+	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5, 73.8, 3024, 4032))
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByDate, GroupByLocation}
+	rows := h.build(t, cfg, &fakeGeo{cities: map[int]string{15: "Goa"}})
+
+	want := "2024/06_June/03/Goa/IMG_0001.HEIC"
+	if got := rows[id].TargetPath; got != want {
+		t.Errorf("target = %q, want %q", got, want)
+	}
+}
+
+// TestDateLevelSuppressesDatedLocationPlaceholder covers the reported
+// duplication: with no resolvable GPS the location slot falls back to a dated
+// event segment, which next to a real Day level reads as "…/03/03-05/". The
+// slot must fall through to the next rung instead.
+func TestDateLevelSuppressesDatedLocationPlaceholder(t *testing.T) {
+	h := newHarness(t)
+	a := h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByDate, GroupByLocation}
+	rows := h.build(t, cfg, &fakeGeo{cities: map[int]string{}})
+
+	want := "2024/06_June/03/Apple iPhone 15 Pro/DSC_0001.JPG"
+	if got := rows[a].TargetPath; got != want {
+		t.Errorf("target = %q, want %q (ladder skips the dated placeholder and falls to the device)", got, want)
+	}
+}
+
+// TestSuggestionDirTracksTheLocationLevel covers the misplaced-suggestion bug:
+// with location second, the suggestion must attach to the location folder, not
+// to whatever sits at the old hardcoded depth 2 (here, the Day).
+func TestSuggestionDirTracksTheLocationLevel(t *testing.T) {
+	h := newHarness(t)
+	h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByDate, GroupByLocation}
+	h.build(t, cfg, &fakeGeo{cities: map[int]string{}})
+
+	var dirs []string
+	if err := h.d.SQL.Select(&dirs,
+		`SELECT suggestion_dir FROM virtual_fs_entries WHERE session_id = ?`, h.sessionID.String()); err != nil {
+		t.Fatal(err)
+	}
+	want := "2024/06_June/03/Apple iPhone 15 Pro"
+	if len(dirs) != 1 || dirs[0] != want {
+		t.Errorf("suggestion_dir = %v, want [%q] — the location folder, not the Day", dirs, want)
+	}
+}
+
+// TestCollapsesUninformativeLevels covers the reported case verbatim: every
+// file is a vertical iPhone shot, so the device and orientation folders never
+// distinguish anything and are dropped — but Photos/Videos survives, because
+// the library really does have both.
+func TestCollapsesUninformativeLevels(t *testing.T) {
+	h := newHarness(t)
+	photo := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5, 73.8, 3024, 4032))
+	video := h.addFile(t, "dump/IMG_0002.MOV", "VIDEO", metaWith("2024:06:03 11:00:00", 15.5, 73.8, 3024, 4032))
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByDate, GroupByLocation, GroupByDevice, GroupByOrientation, GroupByMedia}
+	rows := h.build(t, cfg, &fakeGeo{cities: map[int]string{15: "Goa"}})
+
+	for id, want := range map[int64]string{
+		photo: "2024/06_June/03/Goa/Photos/IMG_0001.HEIC",
+		video: "2024/06_June/03/Goa/Videos/IMG_0002.MOV",
+	} {
+		if got := rows[id].TargetPath; got != want {
+			t.Errorf("target = %q, want %q", got, want)
+		}
+	}
+}
+
+// TestCollapseKeepsDateAndLocation covers the exemption: even with one day and
+// one city in the whole library, those folders stay — they're how a person
+// recognizes the folder, and merging days is the review TUI's job.
+func TestCollapseKeepsDateAndLocation(t *testing.T) {
+	h := newHarness(t)
+	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5, 73.8, 3024, 4032))
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByDate, GroupByLocation, GroupByMedia}
+	rows := h.build(t, cfg, &fakeGeo{cities: map[int]string{15: "Goa"}})
+
+	want := "2024/06_June/03/Goa/IMG_0001.HEIC"
+	if got := rows[id].TargetPath; got != want {
+		t.Errorf("target = %q, want %q (day and city kept, lone Photos dropped)", got, want)
+	}
+}
+
+// TestCollapseReversesWhenALaterScanAddsAVideo covers the self-correcting
+// rebuild: the media level was dropped while the library was photo-only, and
+// must come back — with the existing photo moved inside it — as soon as a
+// video shows up. Nothing special does this; vfs.Run re-proposes the whole
+// library every time.
+func TestCollapseReversesWhenALaterScanAddsAVideo(t *testing.T) {
+	h := newHarness(t)
+	photo := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5, 73.8, 3024, 4032))
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation, GroupByMedia}
+	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
+
+	rows := h.build(t, cfg, geo)
+	if got, want := rows[photo].TargetPath, "2024/06_June/Goa/IMG_0001.HEIC"; got != want {
+		t.Fatalf("before: target = %q, want %q", got, want)
+	}
+
+	h.addFile(t, "dump/IMG_0002.MOV", "VIDEO", metaWith("2024:06:03 11:00:00", 15.5, 73.8, 3024, 4032))
+	rows = h.build(t, cfg, geo)
+	if got, want := rows[photo].TargetPath, "2024/06_June/Goa/Photos/IMG_0001.HEIC"; got != want {
+		t.Errorf("after: target = %q, want %q (Photos comes back and the photo moves into it)", got, want)
+	}
+}
+
+// TestCollapseDisabled covers the collapse-levels escape hatch: the full
+// nesting is proposed even where a level has one value.
+func TestCollapseDisabled(t *testing.T) {
+	h := newHarness(t)
+	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5, 73.8, 3024, 4032))
+	cfg := DefaultConfig()
+	cfg.CollapseLevels = false
+	rows := h.build(t, cfg, &fakeGeo{cities: map[int]string{15: "Goa"}})
+
+	want := "2024/06_June/Goa/Vertical/Photos/IMG_0001.HEIC"
+	if got := rows[id].TargetPath; got != want {
+		t.Errorf("target = %q, want %q", got, want)
 	}
 }

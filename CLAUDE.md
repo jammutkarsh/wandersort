@@ -31,9 +31,20 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     **creates** `~/.wandersort/config.yaml` from a commented template on the
     very first command of any kind (not just `setup`/`config`) via
     `config.EnsureGlobalConfigFile` — the file is always there to find and edit.
-  - `config.go` — `config` cmd: opens the global config file in `$EDITOR`, or
-    prints it if `$EDITOR` is unset. No flags of its own; just a shortcut to a
-    file `loadGlobalConfigFile` already guarantees exists.
+    **A config file that doesn't parse is a warning, not a failure**:
+    `loadGlobalConfigFile` returns the warning text (not an error), the run
+    continues on defaults, and it's logged with `UserKey` once the logger
+    exists so it reaches the log file too, not just the terminal. Hard-failing
+    would let one stray tab in an all-optional settings file brick every
+    command — including `wandersort config`, the one that opens the file to
+    fix it. Viper only commits parsed values on success, so nothing half-read
+    leaks into the settings.
+  - `config.go` — `config` cmd: opens the global config file in `$EDITOR`.
+    Prints it to stdout instead when `--print`/`-p` is given, when stdout
+    isn't a terminal (`wandersort config | grep …`, `> file`), or when
+    `$EDITOR` is unset — launching a full-screen editor into a pipe is never
+    what the caller meant. Just a shortcut to a file `loadGlobalConfigFile`
+    already guarantees exists.
   - `scan.go` — `scan` cmd (the pipeline). Runs **synchronously** in the
     foreground (`Service.RunScan` → `Workflow.RunScan`) so the user watches
     progress and the exit code reflects pipeline success; logs total elapsed
@@ -72,11 +83,20 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     files into a temp dir via `pkg/utils.CopyFiles` and opens that folder —
     read-only, nothing on disk is touched), `a` accept all, `V`/`m`/`u`
     Vim-style merge: `V` starts a contiguous range (sequential — no picking
-    rows out of order), `m` **folds every leaf row in the range into one node
-    under their lowest common ancestor** (`mergeSelection`, `commonPathPrefix`
-    + `findNodeByID`/`removeChildByID` — a real tree-splice, not just a
-    rename), named after the first leaf's resolved name, with the summed
-    `FileCount`. This is what makes merging work across different Month/Day
+    rows out of order), `m` **folds every row in the range at the anchor row's
+    depth into one node under their lowest common ancestor**
+    (`mergeSelection`, `commonPathPrefix` + `findNodeByID`/`removeChildByID` —
+    a real tree-splice, not just a rename), named after the first one's
+    resolved name, with the summed `FileCount`. **Anchor depth is the
+    selection rule** — rows deeper than the row `V` was pressed on are that
+    folder's own contents and ride along; shallower ones are scaffolding
+    spanned to reach the next branch. One rule covers both shapes: leaves from
+    different branches (anchor on a leaf) and whole parent folders (anchor on
+    a Day). **Merging parents merges their subtrees**: children whose *final*
+    names match (`finalName` honours a pending rename, since that's what
+    `Confirm` writes) collapse recursively via `mergeInto` — three days in Goa
+    give one Goa holding one merged device folder, not three the reviewer then
+    has to merge by hand. This is what makes merging work across different Month/Day
     branches (e.g. one camera's photos spread across three months, all folding
     under the Year) — a plain same-path rename only merges nodes that already
     share a parent, since the final path is parent-path + name. **The
@@ -95,12 +115,32 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     merged. Single-level undo (`u`) snapshots the whole tree
     (`deepCloneNodes`) before the splice, since a structural edit can't be
     undone by restoring per-row name strings the way a plain rename-merge
-    could. `L` cycles a fixed set of
+    could. `d`/`D` **drop a grouping level the reviewer doesn't want**
+    (`deleteFolders`): `d` drops the folder under the cursor, `D` drops every
+    folder at that depth across the whole tree (the reported case — the same
+    `Indore`/`Apple iPhone 13` pair repeated under every month, worthless as a
+    level). Deleted folders' children are lifted onto the parent and the
+    deleted ID (plus anything already folded into it) goes onto the parent's
+    `MergedIDs`, so files sitting *directly* in the dropped folder remap up
+    too — same machinery as merge. Top-level (Year) rows are refused: their
+    files would land in the library root. Deletion is undoable via the same
+    `[u]` snapshot. `L` cycles a fixed set of
     group-by presets and **rebuilds the whole proposal in place**
     (`vfs.New(...).Run` + `BuildTree` — safe mid-review since VFS only reads
     already-hashed masters and replaces the proposal wholesale; resets any
     in-progress renames, since a different depth means different node IDs),
-    `c` confirm, `q` quit. `--yes` accepts every suggestion non-interactively.
+    `c` **save & exit** (the only thing that writes — `q` discards, so `q`
+    with pending edits warns once and needs a second `q`; `hasEdits` derives
+    "pending" from the rows and the undo snapshot rather than a flag any edit
+    path could forget to set). `--yes` accepts every suggestion
+    non-interactively; `--rebuild` re-runs `vfs.Run` with the current
+    `--group-by`/`config.yaml` *before* reviewing, so a config change
+    re-proposes the hierarchy without a re-scan or re-hash (`--group-by` alone,
+    without `--rebuild`, changes nothing).
+    **The footer is measured, not assumed to be one line** (`footer()` +
+    `visibleRows`): the key help word-wraps to the terminal width (`wrapDim`),
+    and the old fixed `height-6` budget let a wrapped help bar push the bottom
+    tree rows off the screen.
     **Rename precedence is default name < location suggestion < user's own
     rename** — `enter`/`a` only ever fill from a suggestion when the row's
     `newName` is still empty, never clobbering something the reviewer already
@@ -223,7 +263,33 @@ round-trip would silently erase both.
   `Config` — see `review.go`'s `[L]` key). `Config.GroupBy` (below Year/Month)
   is `location`/`orientation`/`device`/`media` in any order, or empty for a
   flat `Year/Month` — set via `--group-by`/`config.yaml` (CLI) or cycled live
-  in the review TUI. `resolveLocations` folds a directly-resolved GPS city
+  in the review TUI. `date` is a Day level, so the full
+  `Year/Month/Day/Location/Device/Orientation/Media` shape is
+  `--group-by date,location,device,orientation,media`; when a `date` level is
+  present the location ladder **skips its dated `eventSegment` rung** (falling
+  through to device/fallback) — otherwise an unresolved location renders a
+  second date right next to the Day folder (`…/03/03-05/`).
+  **A collapsible level that resolves to one folder name library-wide is
+  dropped** (`uninformativeLevels` + `collapsibleLevels`): `…/Goa/iPhone/
+  Vertical/Photos/` is four folders deep to reach one folder when every file
+  is a vertical iPhone photo. Only `device`/`orientation`/`media` collapse —
+  `date` and `location` never do, since they're how a person recognizes a
+  folder and the review TUI's merge is the deliberate way to fold days
+  together. Measured **library-wide, not per-branch**: a level kept under one
+  Day and dropped under the next would give the tree a different depth
+  depending on where you stand, worse to navigate than one extra folder. It
+  self-corrects — `loadMasters` is library-wide and each run replaces the
+  proposal, so the first video a later scan finds brings `Photos` back and
+  re-proposes the existing photos inside it. `collapse-levels: false` in
+  `config.yaml` (or `COLLAPSE_LEVELS=false`) forces the full nesting; it has
+  no CLI flag. `vfs.ConfigFor` (which takes the whole `*config.Configuration`,
+  so a new vfs-relevant setting doesn't churn its signature — and is therefore
+  the one place `vfs` imports `pkg/config`, meaning `config` can never import
+  `vfs`) is the single place the `none` sentinel
+  is turned into a nil `GroupBy` — `workflow` and `review --rebuild` both go
+  through it. The month segment is **number-first (`06_June`)**: a bare month
+  name sorts alphabetically, which put `December` above `November` in the
+  review tree and in every file browser. `resolveLocations` folds a directly-resolved GPS city
   into a *confirmed* `ANCHOR_HOME`/`ANCHOR_WORK` label when within
   `location.MaxDistSquared` (~50km) of it, so a metro's suburbs land in one
   folder instead of fragmenting by neighbourhood — `anchorCities`
@@ -238,7 +304,18 @@ round-trip would silently erase both.
   before `Confirm` writes it back: `BuildTree` also carries one exemplar
   GPS coordinate per location node (`Node.Lat/Lon`) for the TUI's expand-radius
   rename, and `FilesUnder` lists a node's source files for the preview-copy
-  feature. **`Confirm` merges, it doesn't reject:** two nodes renamed to the
+  feature. **Suggestions attach by path, not by depth:** `dirFor` records the
+  folder it emitted for the location level as `virtual_fs_entries.suggestion_dir`,
+  and `BuildTree` hangs the suggestion + GPS off exactly that node. The old
+  fixed `suggestionDepth = 2` assumed location was GroupBy's first level, so
+  any other order (`--group-by device,location`, or a `date` level in front)
+  smeared every file's suggestion onto whatever shared Device/Day node sat at
+  depth 2 — reported as "one suggestion across the whole tree". No
+  `suggestion_dir` (no location level in this proposal) now means no suggestion
+  node at all, rather than a misplaced one. `suggestion_dir` arrived as
+  migration **004**, deliberately not as an edit to 003 (the usual pre-tag
+  rule): 003 has already run on real libraries, and re-creating the schema
+  would force a full re-hash. A plain `ALTER TABLE` costs nothing. **`Confirm` merges, it doesn't reject:** two nodes renamed to the
   same final path collapse onto one folder (e.g. two unresolved date clusters
   turning out to be the same place) — this used to be an error before a real
   user hit exactly that case. `Node.MergedIDs` is the other merge path: nodes
@@ -351,17 +428,6 @@ go build ./... # quick compile check
 - `vfs.resolveLocations`' anchor-fold radius is `location.MaxDistSquared`
   (~50km), not a separate per-user setting. Revisit if a single radius doesn't
   fit both dense and sprawling metros.
-- **Live** `pkg/core/vfs/review.go`'s `suggestionDepth` (fixed at 2) assumes
-  location is GroupBy's first (or only) level — true for `DefaultConfig` and
-  for the `[L]` "Location only" preset, false for "Orientation + Media (no
-  location)" and for any custom `--group-by` order that doesn't put location
-  first. When it's wrong, a suggestion/GPS-coordinate attaches to whatever
-  segment actually sits at depth 2 (e.g. an Orientation node), and since many
-  unrelated files can share that one non-location node, their distinct
-  suggestions collapse onto it — reads as "one suggestion smeared across the
-  whole tree." Needs the session's actual GroupBy threaded into `BuildTree`
-  (not currently persisted anywhere it can read it back from) to fix for real;
-  not yet done.
 - `classifier.ParseMetadata`'s `map[string]any` decode (deliberately tolerant,
   see the package note above) is a different thing from `exiftool.releaseMeta`
   — the latter (the binary's checksum manifest, `exiftool.json`) is already a

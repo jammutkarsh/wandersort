@@ -1,10 +1,15 @@
 package vfs
 
-import "time"
+import (
+	"time"
+
+	"github.com/jammutkarsh/wandersort/pkg/config"
+)
 
 // GroupBy names for Config.GroupBy — the configurable levels below <YEAR>/<MONTH>
 const (
 	GroupByLocation    = "location"
+	GroupByDate        = "date"
 	GroupByDevice      = "device"
 	GroupByOrientation = "orientation"
 	GroupByMedia       = "media"
@@ -36,15 +41,50 @@ type Config struct {
 	Fallback   string        // last-resort path segment when nothing can be derived
 	ClusterGap time.Duration // capture-time gap that starts a new event cluster
 	NameCase   string        // case style for derived names; see Case* constants
+	// CollapseLevels drops a device/orientation/media level that resolves to
+	// the same folder name for the whole library — it would be a folder every
+	// path passes through without ever distinguishing anything. Date and
+	// location are never dropped. See uninformativeLevels.
+	CollapseLevels bool
 }
 
 func DefaultConfig() Config {
 	return Config{
-		GroupBy:    []string{GroupByLocation, GroupByOrientation, GroupByMedia},
-		Fallback:   "Unsorted",
-		ClusterGap: defaultClusterGap,
-		NameCase:   CaseTitle,
+		GroupBy:        []string{GroupByLocation, GroupByOrientation, GroupByMedia},
+		Fallback:       "Unsorted",
+		ClusterGap:     defaultClusterGap,
+		NameCase:       CaseTitle,
+		CollapseLevels: true,
 	}
+}
+
+// GroupByNone is the --group-by sentinel for "no levels below Year/Month".
+// It's not a GroupBy level (dirFor knows nothing about it) — ConfigFor is the
+// only thing that interprets it, and the CLI rejects it mixed with real levels.
+const GroupByNone = "none"
+
+// ConfigFor is DefaultConfig with the user's config.yaml/flag settings applied:
+// an empty GroupBy keeps the default levels, and the GroupByNone sentinel means
+// a flat Year/Month with no levels below it. Every caller that turns app config
+// into a vfs.Config goes through here, so the sentinel is interpreted one way
+// only. It takes the whole *config.Configuration rather than loose fields so
+// another vfs-relevant setting doesn't churn the signature — this is the one
+// place vfs is allowed to know about the app's config package, which also means
+// config can never import vfs (the CLI validates GroupBy* tokens for that
+// reason).
+func ConfigFor(appCfg *config.Configuration) Config {
+	cfg := DefaultConfig()
+	if appCfg == nil {
+		return cfg
+	}
+	cfg.CollapseLevels = appCfg.CollapseLevels
+	switch {
+	case len(appCfg.GroupBy) == 1 && appCfg.GroupBy[0] == GroupByNone:
+		cfg.GroupBy = nil
+	case len(appCfg.GroupBy) > 0:
+		cfg.GroupBy = appCfg.GroupBy
+	}
+	return cfg
 }
 
 // masterFile carries one master file through the build:
@@ -81,6 +121,11 @@ type masterFile struct {
 	suggestion       string
 	suggestionSource string
 	targetPath       string
+	// suggestionDir is the directory the suggestion belongs to — the node a
+	// reviewer renames. Recorded by dirFor when it emits the location level, so
+	// the review tree never has to guess which depth that is (it moves with the
+	// GroupBy order, and there may be no location level at all).
+	suggestionDir string
 }
 
 // userLabel is a confirmed name from a previous review, read for suggestions

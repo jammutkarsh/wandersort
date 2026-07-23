@@ -44,7 +44,7 @@ wandersort serve --port 8080`,
 
 	cmd.Flags().StringP(flagPort, "p", "", "HTTP listen port (env: PORT)")
 	cmd.Flags().StringSlice(flagGroupBy, nil,
-		`Folder levels below Year/Month new proposals will use, i.e. group by (repeatable or comma-separated): location, orientation, device, media, or "none" for flat Year/Month`)
+		`Folder levels below Year/Month new proposals will use, i.e. group by (repeatable or comma-separated): location, date, device, orientation, media, or "none" for flat Year/Month`)
 	return cmd
 }
 
@@ -66,6 +66,12 @@ func (a *App) runServe() error {
 		return err
 	}
 	defer a.Close()
+
+	// same as scan: API-driven scans run the same VFS phase, so this library's
+	// DB needs the globally-saved anchors before anything proposes folders
+	if err := a.syncAnchorsFromConfig(ctx); err != nil {
+		return fmt.Errorf("anchors: %w", err)
+	}
 
 	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
 	if err != nil {

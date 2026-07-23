@@ -37,13 +37,20 @@ remembered and suggested automatically on future scans.`,
 wandersort review
 
 # Accept every suggestion without prompting
-wandersort review --yes`,
+wandersort review --yes
+
+# Re-propose the hierarchy with the current --group-by/config.yaml first
+wandersort review --rebuild --group-by device,media`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runReview()
 		},
 	}
 
 	cmd.Flags().Bool(flagYes, false, "Accept all suggestions without prompting")
+	cmd.Flags().Bool(flagRebuild, false,
+		"Re-run the VFS proposal with the current group-by before reviewing (no re-scan or re-hash)")
+	cmd.Flags().StringSlice(flagGroupBy, nil,
+		"Folder levels below Year/Month: location, date, device, orientation, media, or none (only with --rebuild)")
 	return cmd
 }
 
@@ -70,6 +77,36 @@ func (a *App) runReview() error {
 			return fmt.Errorf("no proposal to review — run 'wandersort scan' first")
 		}
 		return err
+	}
+
+	// --rebuild re-proposes the hierarchy from the metadata already in the DB,
+	// so a changed group-by (flag, env, or config.yaml — applyOverrides has
+	// resolved all three by now) takes effect without re-scanning or
+	// re-hashing anything. vfs.Run replaces the session's proposal wholesale.
+	if v.GetBool(flagRebuild) {
+		// vfs.Run deletes every existing entry, so a plan the user already
+		// confirmed (APPROVED rows carrying their edited target_path) is gone
+		// with it. The *names* survive in user_labels and come back as
+		// suggestions, but silently dropping confirmed work is not something
+		// to do on a bare flag — make it explicit.
+		approved, err := approvedCount(ctx, a.AppDB, sessionID)
+		if err != nil {
+			return err
+		}
+		if approved > 0 && !v.GetBool(flagYes) {
+			return fmt.Errorf("--rebuild would discard the confirmed plan for this session (%d approved files).\n"+
+				"Your confirmed folder names are remembered and will be re-suggested; re-run with --yes to rebuild and re-accept them", approved)
+		}
+		// EnsureDependencies already opens the resolver (and holds the install
+		// lock while it does), so no separate InitLocationResolver here.
+		if err := a.EnsureDependencies(ctx); err != nil {
+			return fmt.Errorf("dependencies: %w", err)
+		}
+		cfg := vfs.ConfigFor(a.Config)
+		a.Log.Info("Rebuilding folder proposal", "groupBy", cfg.GroupBy, logger.UserKey, true)
+		if _, err := vfs.New(a.AppDB, a.LocationResolver, a.Log, cfg).Run(ctx, sessionID); err != nil {
+			return fmt.Errorf("rebuild proposal: %w", err)
+		}
 	}
 
 	tree, err := vfs.BuildTree(ctx, sessionID, a.AppDB)
@@ -102,6 +139,12 @@ func (a *App) runReview() error {
 		rm := m.(reviewModel)
 		defer cleanupPreviewDirs(rm.previewDirs)
 		if !rm.confirmed {
+			if rm.relayouted {
+				// [L] already ran vfs.Run, which replaced the session's rows —
+				// claiming nothing changed would be a lie
+				return fmt.Errorf("review cancelled — folder names unchanged, but [L] rebuilt the proposal with layout %q; re-run 'wandersort scan' to go back",
+					layoutPresets[rm.layoutIdx].label)
+			}
 			return fmt.Errorf("review cancelled — nothing changed")
 		}
 		for _, r := range rm.rows {
@@ -120,6 +163,18 @@ func (a *App) runReview() error {
 	fmt.Fprintln(os.Stderr, style.Success.Render("Folder structure approved.")+
 		style.Dim.Render(" Confirmed names will be suggested on future scans."))
 	return nil
+}
+
+// approvedCount is how many of the session's entries the user already
+// confirmed — the size of the plan a --rebuild would throw away.
+func approvedCount(ctx context.Context, database *db.DB, sessionID uuid.UUID) (int, error) {
+	var n int
+	if err := database.SQL.GetContext(ctx, &n,
+		`SELECT COUNT(*) FROM virtual_fs_entries WHERE session_id = ? AND status = ?`,
+		sessionID.String(), db.StatusApproved); err != nil {
+		return 0, fmt.Errorf("count approved entries: %w", err)
+	}
+	return n, nil
 }
 
 // collectReviewable returns pointers to every node carrying suggestions, in
@@ -184,6 +239,10 @@ const maxPreviewBytes = 250 * 1024 * 1024
 // ctrl+e widens it by the same step (see location.queryNearest's own ladder).
 const defaultCandidateRadius = 0.09
 
+// maxSuggestions caps the rename dropdown — it renders above the key help, so
+// an unbounded list would push the tree off screen.
+const maxSuggestions = 8
+
 // layoutPreset is one selectable folder-depth shape, cycled with [L].
 type layoutPreset struct {
 	label   string
@@ -209,6 +268,7 @@ type reviewModel struct {
 	cursor    int
 	offset    int // first visible row (scroll position)
 	height    int
+	width     int
 	editing   bool
 	input     string
 	confirmed bool
@@ -219,19 +279,28 @@ type reviewModel struct {
 	resolver  *location.Resolver
 	log       logger.Logger
 
-	// rename autocomplete (populated while editing)
+	// Rename autocomplete. Both sources are fetched up front and filtered in
+	// memory per keystroke: labels once at startup (they change only on
+	// Confirm, after the TUI is gone), geoCands once per rename via
+	// loadGeoCandidates. radiusDelta is the live search width, seeded to
+	// defaultCandidateRadius when [r] opens the editor so the first ctrl+e
+	// genuinely widens instead of re-running the default.
 	suggestions []nameSuggestion
+	geoCands    []location.Candidate
+	labels      []string
 	radiusDelta float64
 
-	// visual-select + merge (Vim-style: V selects, m merges, u undoes).
-	// Merge reparents every leaf in the selected range under their lowest
-	// common ancestor (see mergeSelection) — a structural tree edit, so undo
-	// keeps a snapshot of the whole tree rather than per-row field values.
-	visualMode    bool
-	visualAnchor  int
-	lastMergeTree []vfs.Node
-	statusMsg     string
-	statusIsErr   bool // statusMsg is a rejection/failure, not confirmation — rendered in a warning color so it isn't mistaken for routine info text
+	// Structural edits (Vim-style: V selects, m merges, d/D delete a folder or
+	// a whole level, u undoes). Both reshape the tree rather than just editing
+	// names, so undo keeps a whole-tree snapshot instead of per-row field
+	// values — lastTree holds the state before the most recent one.
+	visualMode   bool
+	visualAnchor int
+	quitWarned   bool // [q] with pending edits warns once before discarding them
+	lastTree     []vfs.Node
+	lastEdit     string // what lastTree would undo ("merge", "delete") — for the status line
+	statusMsg    string
+	statusIsErr  bool // statusMsg is a rejection/failure, not confirmation — rendered in a warning color so it isn't mistaken for routine info text
 
 	// async preview copy (p key) — previewDirs caches one temp dir per node ID
 	// so re-peeking the same folder reopens it instead of copying again;
@@ -248,10 +317,13 @@ type reviewModel struct {
 	layoutIdx   int
 	relayouting bool
 	relayoutErr error
+	// relayouted records that [L] already persisted a new proposal set, so
+	// quitting can't claim nothing changed — it did, on disk, irreversibly.
+	relayouted bool
 }
 
 func newReviewModel(tree []vfs.Node, ctx context.Context, database *db.DB, sessionID uuid.UUID, resolver *location.Resolver, log logger.Logger) reviewModel {
-	return reviewModel{
+	m := reviewModel{
 		tree:        tree,
 		rows:        flattenTree(tree, 0, nil),
 		ctx:         ctx,
@@ -261,13 +333,76 @@ func newReviewModel(tree []vfs.Node, ctx context.Context, database *db.DB, sessi
 		log:         log,
 		previewDirs: map[string]string{},
 	}
+	// Confirm is the only thing that writes user_labels, and it runs after this
+	// TUI exits — so the set is fixed for the whole session and worth loading
+	// once here instead of re-querying it as the reviewer types. Failure just
+	// means no "used before" suggestions; not worth refusing to review over.
+	if database != nil {
+		if err := database.SQL.SelectContext(ctx, &m.labels,
+			`SELECT DISTINCT label FROM user_labels ORDER BY label`); err != nil && log != nil {
+			log.Warn("Could not load confirmed labels for rename suggestions", "error", err)
+		}
+	}
+	return m
 }
 
 func (m reviewModel) Init() tea.Cmd { return nil }
 
-// visibleRows is how many tree lines fit between the header and the help bar.
+// headerLines is the fixed block above the tree: title, subtitle, blank.
+const headerLines = 3
+
+// visibleRows is how many tree lines fit between the header and the footer.
+// The footer is measured, not assumed to be one line: the key help wraps to
+// several lines on a narrow terminal, and a fixed guess there pushed the tree
+// off the bottom of the screen.
 func (m reviewModel) visibleRows() int {
-	return max(m.height-6, 1)
+	return max(m.height-headerLines-strings.Count(m.footer(), "\n"), 1)
+}
+
+// wrapDim renders dimmed text word-wrapped to the terminal width, so a long
+// line (the key help, a status message) never runs off the edge. Width 0 means
+// no WindowSizeMsg has arrived yet — render unwrapped rather than to nothing.
+func (m reviewModel) wrapDim(s string) string {
+	if m.width <= 0 {
+		return style.Dim.Render(s)
+	}
+	return style.Dim.Width(m.width).Render(s)
+}
+
+// reflow rebuilds the row list after a structural edit (merge, delete, undo),
+// carrying every pending rename across by node ID. flattenTree allocates fresh
+// reviewRow values, so without this a splice silently discards renames typed
+// on rows it never touched. Cursor is clamped since the tree may have shrunk.
+func (m *reviewModel) reflow() {
+	pending := map[string]string{}
+	for _, r := range m.rows {
+		if r.newName != "" {
+			pending[r.node.ID] = r.newName
+		}
+	}
+	m.rows = flattenTree(m.tree, 0, nil)
+	for _, r := range m.rows {
+		if name, ok := pending[r.node.ID]; ok {
+			r.newName = name
+		}
+	}
+	m.cursor = min(m.cursor, len(m.rows)-1)
+}
+
+// hasEdits reports whether anything would be lost by quitting: a typed or
+// accepted rename, or a structural edit (lastTree is the pre-edit snapshot,
+// cleared again by undo). Derived rather than tracked with a flag so no edit
+// path can forget to set one.
+func (m reviewModel) hasEdits() bool {
+	if m.lastTree != nil {
+		return true
+	}
+	for _, r := range m.rows {
+		if r.newName != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // scrollIntoView keeps the cursor inside the visible window.
@@ -280,43 +415,57 @@ func (m *reviewModel) scrollIntoView() {
 	}
 }
 
-// refreshSuggestions repopulates the rename dropdown for the current row: geo
-// candidates from the location resolver (filtered by whatever's typed so
-// far), plus previously confirmed labels with the same prefix.
+// loadGeoCandidates queries the location resolver for the current row and
+// caches the result on the model. Called only when a rename actually starts
+// ([r]) or the reviewer widens the radius (ctrl+e) — never per keystroke, which
+// is what refreshSuggestions filters over in memory.
+func (m *reviewModel) loadGeoCandidates() {
+	m.geoCands = nil
+	row := m.rows[m.cursor]
+	if m.resolver == nil || row.node.Lat == nil || row.node.Lon == nil {
+		return
+	}
+	// generous limit: the typed prefix narrows this list in memory, so fetching
+	// once has to cover every prefix the reviewer might type, not just the
+	// handful shown at any moment
+	if cands, err := m.resolver.Candidates(m.ctx, *row.node.Lat, *row.node.Lon, m.radiusDelta, 64); err == nil {
+		m.geoCands = cands
+	}
+}
+
+// refreshSuggestions repopulates the rename dropdown from data already in
+// memory — nearby places fetched once by loadGeoCandidates, plus the confirmed
+// labels loaded once at startup. Pure filtering, no I/O: it runs on every
+// keystroke, and a query per keystroke made typing lag on a cold cache.
 func (m *reviewModel) refreshSuggestions() {
 	m.suggestions = nil
-	row := m.rows[m.cursor]
 	seen := map[string]bool{}
 	prefix := strings.ToLower(strings.TrimSpace(m.input))
 
-	if m.resolver != nil && row.node.Lat != nil && row.node.Lon != nil {
-		delta := m.radiusDelta
-		if delta == 0 {
-			delta = defaultCandidateRadius
+	for _, c := range m.geoCands {
+		if prefix != "" && !strings.HasPrefix(strings.ToLower(c.Name), prefix) {
+			continue
 		}
-		if cands, err := m.resolver.Candidates(m.ctx, *row.node.Lat, *row.node.Lon, delta, 8); err == nil {
-			for _, c := range cands {
-				if prefix != "" && !strings.HasPrefix(strings.ToLower(c.Name), prefix) {
-					continue
-				}
-				if !seen[c.Name] {
-					seen[c.Name] = true
-					m.suggestions = append(m.suggestions, nameSuggestion{name: c.Name, detail: fmt.Sprintf("~%.0fkm", c.DistKM)})
-				}
-			}
+		if !seen[c.Name] {
+			seen[c.Name] = true
+			m.suggestions = append(m.suggestions, nameSuggestion{name: c.Name, detail: fmt.Sprintf("~%.0fkm", c.DistKM)})
+		}
+		if len(m.suggestions) >= maxSuggestions {
+			return
 		}
 	}
 
-	if m.db != nil && prefix != "" {
-		var labels []string
-		if err := m.db.SQL.SelectContext(m.ctx, &labels,
-			`SELECT DISTINCT label FROM user_labels WHERE label LIKE ? || '%' COLLATE NOCASE ORDER BY label LIMIT 8`,
-			m.input); err == nil {
-			for _, l := range labels {
-				if !seen[l] {
-					seen[l] = true
-					m.suggestions = append(m.suggestions, nameSuggestion{name: l, detail: "used before"})
-				}
+	if prefix != "" {
+		for _, l := range m.labels {
+			if !strings.HasPrefix(strings.ToLower(l), prefix) {
+				continue
+			}
+			if !seen[l] {
+				seen[l] = true
+				m.suggestions = append(m.suggestions, nameSuggestion{name: l, detail: "used before"})
+			}
+			if len(m.suggestions) >= maxSuggestions {
+				return
 			}
 		}
 	}
@@ -325,7 +474,7 @@ func (m *reviewModel) refreshSuggestions() {
 func (m reviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.height = msg.Height
+		m.height, m.width = msg.Height, msg.Width
 		m.scrollIntoView()
 		return m, nil
 	case tickMsg:
@@ -346,10 +495,11 @@ func (m reviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.relayouting = false
 		m.relayoutErr = msg.err
 		if msg.err == nil {
+			m.relayouted = true
 			m.tree = msg.tree
 			m.rows = flattenTree(m.tree, 0, nil)
 			m.cursor, m.offset = 0, 0
-			m.visualMode, m.lastMergeTree = false, nil
+			m.visualMode, m.lastTree = false, nil
 			m.statusMsg, m.statusIsErr = "Layout: "+layoutPresets[m.layoutIdx].label+" — any in-progress renames were reset", false
 		}
 		return m, nil
@@ -388,14 +538,26 @@ func (m reviewModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case tea.KeyCtrlE:
 			m.radiusDelta += defaultCandidateRadius
+			m.loadGeoCandidates() // the only key that re-queries mid-rename
 			m.refreshSuggestions()
 		}
 		return m, nil
 	}
 
 	var cmd tea.Cmd
+	// the "press q again" warning only stands for the very next keypress
+	m.quitWarned = m.quitWarned && key.String() == "q"
 	switch key.String() {
-	case "ctrl+c", "q":
+	case "ctrl+c":
+		return m, tea.Quit
+	case "q":
+		// quitting throws away every rename and structural edit — make the
+		// reviewer say so twice, and point at the key that saves instead
+		if m.hasEdits() && !m.quitWarned {
+			m.quitWarned = true
+			m.statusMsg, m.statusIsErr = "unsaved changes — [c] saves and exits, press q again to discard them", true
+			break
+		}
 		return m, tea.Quit
 	case "esc":
 		m.visualMode = false
@@ -424,7 +586,8 @@ func (m reviewModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input = r.node.Name
 		}
 		m.editing = true
-		m.radiusDelta = 0
+		m.radiusDelta = defaultCandidateRadius
+		m.loadGeoCandidates()
 		m.refreshSuggestions()
 	case "p":
 		if !m.previewing {
@@ -462,12 +625,16 @@ func (m reviewModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "m":
 		m.mergeSelection()
+	case "d":
+		m.deleteFolders([]*reviewRow{m.rows[m.cursor]}, false)
+	case "D":
+		m.deleteFolders(m.rowsAtDepth(m.rows[m.cursor].depth), true)
 	case "u":
-		if m.lastMergeTree != nil {
-			m.tree = m.lastMergeTree
-			m.rows = flattenTree(m.tree, 0, nil)
-			m.lastMergeTree = nil
-			m.statusMsg, m.statusIsErr = "undid last merge", false
+		if m.lastTree != nil {
+			m.tree = m.lastTree
+			m.reflow()
+			m.lastTree = nil
+			m.statusMsg, m.statusIsErr = "undid last "+m.lastEdit, false
 		}
 	case "c":
 		m.confirmed = true
@@ -477,19 +644,24 @@ func (m reviewModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// mergeSelection folds every *leaf* row in the visually-selected range
-// (contiguous, sequential — no picking rows out of order) into a single node
-// under their lowest common ancestor, named after the first leaf's resolved
-// name. The merged-away leaves' IDs ride along on Node.MergedIDs so Confirm
-// still remaps their files onto the surviving node's path — the reviewer sees
-// exactly one folder with the combined file count, which is the whole point
-// of asking for a merge.
+// mergeSelection folds the selected folders into a single node under their
+// lowest common ancestor, named after the first one's resolved name. The
+// folded-away IDs ride along on Node.MergedIDs so Confirm still remaps their
+// files onto the surviving node's path — the reviewer sees exactly one folder
+// with the combined file count, which is the whole point of asking for a merge.
 //
-// Rows in the range that still have children (the Month/Day/etc. rows
-// spanned to reach a leaf in another branch) are structural scaffolding, not
-// merge candidates themselves — they don't merge, but any of them left with
-// no children at all once the leaves move out is pruned, since an empty
-// Month/Day folder is not something the reviewer should still be looking at.
+// Which rows count as "selected" is decided by the depth of the row [V] was
+// pressed on: every row in the range at that same depth. Deeper rows in the
+// range are those folders' own contents and come along with them; shallower
+// ones are scaffolding spanned to reach the next branch. That makes both
+// shapes work with one rule — leaves from different Month branches (anchor on
+// a leaf), and whole Day folders from one trip (anchor on a Day).
+//
+// Merging parents merges their subtrees: children with the same final name
+// collapse recursively (three days in Goa produce one Goa, not three), since
+// leaving the reviewer to merge each identical child by hand is exactly the
+// work they asked the parent merge to do. Ancestors emptied by the splice are
+// pruned.
 func (m *reviewModel) mergeSelection() {
 	if !m.visualMode {
 		m.statusMsg, m.statusIsErr = "press V to select folders, then m to merge", true
@@ -499,29 +671,30 @@ func (m *reviewModel) mergeSelection() {
 	if lo > hi {
 		lo, hi = hi, lo
 	}
+	depth := m.rows[m.visualAnchor].depth
 	sel := m.rows[lo : hi+1]
 	m.visualMode = false
 
-	type leaf struct {
+	type pick struct {
 		row    *reviewRow
 		id     string
 		parent *vfs.Node
 		value  vfs.Node
 	}
-	var leaves []leaf
+	var picks []pick
 	for _, r := range sel {
-		if len(r.node.Children) == 0 {
-			leaves = append(leaves, leaf{row: r, id: r.node.ID, parent: r.parent, value: *r.node})
+		if r.depth == depth {
+			picks = append(picks, pick{row: r, id: r.node.ID, parent: r.parent, value: *r.node})
 		}
 	}
-	if len(leaves) < 2 {
-		m.statusMsg, m.statusIsErr = "select at least two folders with no subfolders to merge", true
+	if len(picks) < 2 {
+		m.statusMsg, m.statusIsErr = "select at least two folders at the same level to merge", true
 		return
 	}
 
-	lcaID := leaves[0].id
-	for _, l := range leaves[1:] {
-		lcaID = commonPathPrefix(lcaID, l.id)
+	lcaID := picks[0].id
+	for _, p := range picks[1:] {
+		lcaID = commonPathPrefix(lcaID, p.id)
 	}
 	if lcaID == "" {
 		m.statusMsg, m.statusIsErr = "selected folders share no common ancestor to merge under", true
@@ -533,34 +706,144 @@ func (m *reviewModel) mergeSelection() {
 		return
 	}
 
-	m.lastMergeTree = deepCloneNodes(m.tree)
+	m.lastTree, m.lastEdit = deepCloneNodes(m.tree), "merge"
 
 	// which nodes are leaves *before* the splice — afterwards, a childless node
 	// is either one of these or an ancestor emptied by the merge (prune it)
 	leafIDs := map[string]bool{}
 	collectLeafIDs(m.tree, leafIDs)
 
-	target := resolvedName(leaves[0].row)
-	merged := leaves[0].value
-	for _, l := range leaves[1:] {
-		merged.MergedIDs = append(merged.MergedIDs, l.id)
-		merged.FileCount += l.value.FileCount
-		merged.Samples = append(merged.Samples, l.value.Samples...)
+	target := resolvedName(picks[0].row)
+	merged := picks[0].value
+	for _, p := range picks[1:] {
+		mergeInto(&merged, p.value, m.pendingNames())
 	}
-	for _, l := range leaves {
-		if l.parent != nil {
-			removeChildByID(l.parent, l.id)
+	for _, p := range picks {
+		if p.parent != nil {
+			removeChildByID(p.parent, p.id)
 		}
 	}
 	lca.Children = append(lca.Children, merged)
 	m.tree, _ = pruneEmptied(m.tree, leafIDs)
 
-	m.rows = flattenTree(m.tree, 0, nil)
+	m.reflow()
 	if row := nodeRowByID(m.rows, merged.ID); row != nil {
 		row.newName = target
 	}
 
-	m.statusMsg, m.statusIsErr = fmt.Sprintf("merged %d folders into %q under %q ([u] to undo)", len(leaves), target, lca.Name), false
+	m.statusMsg, m.statusIsErr = fmt.Sprintf("merged %d folders into %q under %q ([u] to undo)", len(picks), target, lca.Name), false
+}
+
+// pendingNames maps node ID → the rename typed for it, so a merge can tell
+// whether two folders will *end up* with the same name, not just whether they
+// start with it (Confirm uses the typed name when there is one).
+func (m *reviewModel) pendingNames() map[string]string {
+	pending := map[string]string{}
+	for _, r := range m.rows {
+		if r.newName != "" {
+			pending[r.node.ID] = r.newName
+		}
+	}
+	return pending
+}
+
+// mergeInto folds src into dst: counts add up, src's ID (and anything already
+// folded into src) is recorded for Confirm, and children are absorbed —
+// same-named ones recursively merged rather than left as duplicate siblings.
+func mergeInto(dst *vfs.Node, src vfs.Node, pending map[string]string) {
+	dst.FileCount += src.FileCount
+	dst.Samples = append(dst.Samples, src.Samples...)
+	dst.MergedIDs = append(dst.MergedIDs, src.ID)
+	dst.MergedIDs = append(dst.MergedIDs, src.MergedIDs...)
+	for _, c := range src.Children {
+		if twin := childByName(dst, finalName(c, pending), pending); twin != nil {
+			mergeInto(twin, c, pending)
+			continue
+		}
+		dst.Children = append(dst.Children, c)
+	}
+}
+
+// finalName is the segment a node will actually be written as: the reviewer's
+// rename if they typed one, else the proposed name. Suggestions don't count —
+// they only apply once accepted.
+func finalName(n vfs.Node, pending map[string]string) string {
+	if name, ok := pending[n.ID]; ok {
+		return name
+	}
+	return n.Name
+}
+
+// childByName finds parent's child that will end up named name, if any.
+func childByName(parent *vfs.Node, name string, pending map[string]string) *vfs.Node {
+	for i := range parent.Children {
+		if finalName(parent.Children[i], pending) == name {
+			return &parent.Children[i]
+		}
+	}
+	return nil
+}
+
+// rowsAtDepth returns every row at the given indent depth, in tree order —
+// the whole grouping level [D] deletes at once.
+func (m *reviewModel) rowsAtDepth(depth int) []*reviewRow {
+	var out []*reviewRow
+	for _, r := range m.rows {
+		if r.depth == depth {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// deleteFolders removes grouping levels the reviewer doesn't want: each
+// deleted folder's children are lifted onto its parent, and its own ID (plus
+// anything already folded into it) is recorded on the parent's MergedIDs so
+// Confirm remaps the files that sat directly in it up to the parent's path
+// too. Deleting "Apple iPhone 13" then "Indore" under 2023/April leaves
+// April holding the files directly — the group-by level is gone, nothing is
+// lost. Top-level rows are refused: their files have nowhere to go but the
+// library root.
+//
+// Rows are addressed by parent ID and re-found per deletion, since removing
+// one child reslices the parent's Children and invalidates the row pointers
+// into it. Callers pass rows at a single depth, so no row here is ever an
+// ancestor of another.
+func (m *reviewModel) deleteFolders(targets []*reviewRow, wholeLevel bool) {
+	type deletion struct {
+		parentID string
+		node     vfs.Node
+	}
+	var dels []deletion
+	for _, r := range targets {
+		if r.parent == nil {
+			m.statusMsg, m.statusIsErr = "can't delete a top-level folder — its files would land in the library root", true
+			return
+		}
+		dels = append(dels, deletion{parentID: r.parent.ID, node: *r.node})
+	}
+	if len(dels) == 0 {
+		return
+	}
+
+	m.lastTree, m.lastEdit = deepCloneNodes(m.tree), "delete"
+	for _, d := range dels {
+		parent := findNodeByID(m.tree, d.parentID)
+		if parent == nil {
+			continue
+		}
+		removeChildByID(parent, d.node.ID)
+		parent.Children = append(parent.Children, d.node.Children...)
+		parent.MergedIDs = append(parent.MergedIDs, append([]string{d.node.ID}, d.node.MergedIDs...)...)
+	}
+
+	m.reflow()
+	m.visualMode = false
+	what := fmt.Sprintf("deleted folder %q", dels[0].node.Name)
+	if wholeLevel {
+		what = fmt.Sprintf("deleted %d folders at that level", len(dels))
+	}
+	m.statusMsg, m.statusIsErr = what+" — files moved up one level ([u] to undo)", false
 }
 
 // collectLeafIDs records every childless node's ID, used to tell a real leaf
@@ -739,6 +1022,15 @@ func (m reviewModel) View() string {
 		}
 	}
 
+	b.WriteString(m.footer())
+	return b.String()
+}
+
+// footer is everything below the tree — the rename prompt, a spinner, or the
+// status line plus the key help. Its height varies with the terminal width
+// (the help wraps), so visibleRows measures it instead of assuming.
+func (m reviewModel) footer() string {
+	var b strings.Builder
 	fmt.Fprintln(&b)
 	switch {
 	case m.editing:
@@ -746,7 +1038,7 @@ func (m reviewModel) View() string {
 		for _, s := range m.suggestions {
 			fmt.Fprintf(&b, "  %s %s\n", s.name, style.Dim.Render("("+s.detail+")"))
 		}
-		fmt.Fprintln(&b, style.Dim.Render("[enter] apply  [tab] use top match  [ctrl+e] wider search  [esc] cancel"))
+		fmt.Fprintln(&b, m.wrapDim("[enter] apply  [tab] use top match  [ctrl+e] wider search  [esc] cancel"))
 	case m.previewing:
 		frames := []string{"|", "/", "-", "\\"}
 		fmt.Fprintf(&b, "%s Copying preview…\n", frames[m.spinnerFrame%len(frames)])
@@ -764,13 +1056,16 @@ func (m reviewModel) View() string {
 			if m.statusIsErr {
 				fmt.Fprintln(&b, style.Warn.Render(m.statusMsg))
 			} else {
-				fmt.Fprintln(&b, style.Dim.Render(m.statusMsg))
+				fmt.Fprintln(&b, m.wrapDim(m.statusMsg))
 			}
 		}
-		fmt.Fprintln(&b, style.Dim.Render("[↑/↓] move  [enter] accept suggestion  [r] rename  [p] peek  [a] accept all  [V] select  [m] merge  [u] undo  [L] layout  [c] confirm  [q] quit"))
+		fmt.Fprintln(&b, m.wrapDim(keyHelp))
 	}
 	return b.String()
 }
+
+const keyHelp = "[↑/↓] move  [enter] accept suggestion  [r] rename  [p] peek  [a] accept all  " +
+	"[V] select  [m] merge  [d] drop folder  [D] drop level  [u] undo  [L] layout  [c] save & exit  [q] discard"
 
 /* --- preview: copy up to maxPreviewBytes of a folder's files to a temp dir and open it --- */
 
@@ -822,6 +1117,9 @@ func peekCmd(ctx context.Context, database *db.DB, sessionID uuid.UUID, node *vf
 			return previewDoneMsg{err: err}
 		}
 		if _, err := utils.CopyFiles(ctx, files, dir, maxPreviewBytes, nil); err != nil {
+			// nothing records this dir on the error path, so cleanupPreviewDirs
+			// would never see it — drop the partial copy here instead
+			os.RemoveAll(dir)
 			return previewDoneMsg{err: err}
 		}
 		return previewDoneMsg{signature: sig, dir: dir}

@@ -40,7 +40,7 @@ wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
 	cmd.Flags().StringSliceP(flagPaths, "p", nil, "Directories to scan (repeatable, or comma-separated)")
 	cmd.Flags().IntP(flagWorkers, "w", 0, "Concurrent worker count")
 	cmd.Flags().StringSlice(flagGroupBy, nil,
-		`Folder levels below Year/Month the proposal will use, i.e. group by (repeatable or comma-separated): location, orientation, device, media, or "none" for flat Year/Month. Can also be changed later, per-session, from 'wandersort review' ([L] key)`)
+		`Folder levels below Year/Month the proposal will use, i.e. group by (repeatable or comma-separated): location, date, device, orientation, media, or "none" for flat Year/Month. Can also be changed later, per-session, from 'wandersort review' ([L] key)`)
 	cmd.MarkFlagRequired(flagPaths)
 	return cmd
 }

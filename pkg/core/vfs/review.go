@@ -67,20 +67,6 @@ type Node struct {
 
 const maxSamples = 3
 
-// suggestionDepth is the dir-path segment (0-indexed, below Year=0/Month=1)
-// that carries a file's location/event suggestion — the node a reviewer renames
-// ("Unlocated" → "Manali"). Matches DefaultConfig's first configurable GroupBy
-// level.
-// ponytail: assumes location is the first (or only) GroupBy level; a
-// different order or a location-less GroupBy (e.g. the review TUI's [L] key
-// cycled to "Orientation + Media") lands the hint on the wrong node instead —
-// the rename still reconciles, only the offered suggestion/label is
-// misplaced, or several unrelated files' suggestions end up sharing one
-// shared non-location node. BuildTree would need the session's actual
-// GroupBy (not currently persisted anywhere BuildTree can read it back from)
-// to compute this per-session instead of assuming.
-const suggestionDepth = 2
-
 // ProposalSession returns the session that wrote the current proposal set
 // (each VFS run replaces the set wholesale, so all rows share one session).
 func ProposalSession(ctx context.Context, database *db.DB) (uuid.UUID, error) {
@@ -110,14 +96,15 @@ func BuildTree(ctx context.Context, sessionID uuid.UUID, database *db.DB) ([]Nod
 		SourcePath       string   `db:"source_path"`
 		Suggestion       *string  `db:"suggestion"`
 		SuggestionSource *string  `db:"suggestion_source"`
+		SuggestionDir    *string  `db:"suggestion_dir"`
 		GPSLat           *float64 `db:"exif_gps_latitude"`
 		GPSLon           *float64 `db:"exif_gps_longitude"`
 	}
 	if err := database.SQL.SelectContext(ctx, &rows,
 		`SELECT vfe.target_path, vfe.source_path, vfe.suggestion, vfe.suggestion_source,
-		        fm.exif_gps_latitude, fm.exif_gps_longitude
+		        vfe.suggestion_dir, fm.exif_gps_latitude, fm.exif_gps_longitude
 		 FROM virtual_fs_entries vfe
-		 JOIN file_metadata fm ON fm.file_id = vfe.file_id
+		 LEFT JOIN file_metadata fm ON fm.file_id = vfe.file_id
 		 WHERE vfe.session_id = ? AND vfe.status IN (?, ?)`,
 		sessionID.String(), db.StatusProposed, db.StatusApproved); err != nil {
 		return nil, fmt.Errorf("query vfs entries: %w", err)
@@ -152,13 +139,20 @@ func BuildTree(ctx context.Context, sessionID uuid.UUID, database *db.DB) ([]Nod
 				cur.Samples = append(cur.Samples, r.SourcePath)
 			}
 		}
-		// the location/event suggestion attaches to the node a reviewer
-		// renames; paths too shallow to have one (fallback dir, custom slot
-		// configs) get no suggestion rather than a misplaced one on Year/Month
-		if len(nodes) <= suggestionDepth {
+		// the location/event suggestion attaches to the exact folder the VFS
+		// build recorded it against — not a guessed depth, which moved with the
+		// GroupBy order and smeared every file's suggestion onto one shared
+		// Device/Day node. No suggestion_dir (no location level in this
+		// proposal, or rows written before the column existed) means no
+		// suggestion node, rather than a misplaced one.
+		if r.SuggestionDir == nil || *r.SuggestionDir == "" {
 			continue
 		}
-		loc := nodes[suggestionDepth]
+		depth := strings.Count(*r.SuggestionDir, "/")
+		if depth >= len(nodes) || nodes[depth].ID != *r.SuggestionDir {
+			continue
+		}
+		loc := nodes[depth]
 		if loc.Lat == nil && r.GPSLat != nil && r.GPSLon != nil {
 			loc.Lat, loc.Lon = r.GPSLat, r.GPSLon
 		}
@@ -201,11 +195,14 @@ func BuildTree(ctx context.Context, sessionID uuid.UUID, database *db.DB) ([]Nod
 // TUI's preview to stage more than the handful of Samples a Node carries.
 func FilesUnder(ctx context.Context, sessionID uuid.UUID, nodeID string, database *db.DB) ([]string, error) {
 	var paths []string
+	// prefix compare, not GLOB/LIKE: a folder name can legitimately contain
+	// *, ?, [ or ], and a pattern match would read those as wildcards
+	prefix := nodeID + "/"
 	if err := database.SQL.SelectContext(ctx, &paths,
 		`SELECT source_path FROM virtual_fs_entries
-		 WHERE session_id = ? AND status IN (?, ?) AND target_path GLOB ?
+		 WHERE session_id = ? AND status IN (?, ?) AND substr(target_path, 1, length(?)) = ?
 		 ORDER BY source_path`,
-		sessionID.String(), db.StatusProposed, db.StatusApproved, nodeID+"/*"); err != nil {
+		sessionID.String(), db.StatusProposed, db.StatusApproved, prefix, prefix); err != nil {
 		return nil, fmt.Errorf("query files under %q: %w", nodeID, err)
 	}
 	return paths, nil
@@ -322,18 +319,50 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 		if len(entries) == 0 {
 			return fmt.Errorf("%w: proposal was replaced by a newer scan", ErrNoProposal)
 		}
+		// Collapsing several dirs onto one can land two different files on the
+		// same basename (distinct masters, reused camera counter). buildTargets'
+		// own uniqueness guarantee only held for the layout it generated, so
+		// re-establish it here: rows that aren't moving claim their path first,
+		// then moved rows take the next free _N suffix.
+		taken := map[string]bool{}
+		type move struct {
+			id      int64
+			dir     string
+			base    string
+			oldPath string
+		}
+		var moves []move
 		for _, e := range entries {
 			dir := path.Dir(e.TargetPath)
 			newDir, ok := remap[dir]
 			if !ok {
 				newDir, ok = remapUnderMerged(merged, dir)
 			}
-			if ok && newDir != dir {
-				if _, err := tx.ExecContext(ctx,
-					`UPDATE virtual_fs_entries SET target_path = ? WHERE id = ?`,
-					newDir+"/"+path.Base(e.TargetPath), e.ID); err != nil {
-					return err
+			if !ok || newDir == dir {
+				taken[strings.ToLower(e.TargetPath)] = true
+				continue
+			}
+			moves = append(moves, move{e.ID, newDir, path.Base(e.TargetPath), e.TargetPath})
+		}
+		for _, mv := range moves {
+			ext := path.Ext(mv.base)
+			stem := strings.TrimSuffix(mv.base, ext)
+			var newPath string
+			for n := 1; ; n++ {
+				suffix := ""
+				if n > 1 {
+					suffix = fmt.Sprintf("_%d", n)
 				}
+				newPath = mv.dir + "/" + stem + suffix + ext
+				if !taken[strings.ToLower(newPath)] {
+					taken[strings.ToLower(newPath)] = true
+					break
+				}
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE virtual_fs_entries SET target_path = ? WHERE id = ?`,
+				newPath, mv.id); err != nil {
+				return err
 			}
 		}
 		if _, err := tx.ExecContext(ctx,

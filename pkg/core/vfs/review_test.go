@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"path"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
@@ -233,5 +235,134 @@ func TestProposalSessionEmptyDB(t *testing.T) {
 	h := newHarness(t)
 	if _, err := ProposalSession(context.Background(), h.d); !errors.Is(err, ErrNoProposal) {
 		t.Fatalf("err = %v, want ErrNoProposal", err)
+	}
+}
+
+// TestConfirmSuffixesCollidingBasenames covers a data-loss risk opened when
+// Confirm stopped rejecting colliding renames: collapsing two dirs onto one
+// can land two *different* masters on the same basename (phone counters get
+// reused across shoots). buildTargets' uniqueness only held for the layout it
+// generated, so Confirm has to re-establish it or the Execute phase would copy
+// one file over the other.
+func TestConfirmSuffixesCollidingBasenames(t *testing.T) {
+	h := newHarness(t)
+	// two unlocated clusters days apart → two sibling event dirs, same filename
+	h.addFile(t, "dumpA/IMG_0042.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
+	h.addFile(t, "dumpB/IMG_0042.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
+	h.build(t, DefaultConfig(), nil)
+
+	ctx := context.Background()
+	tree, err := BuildTree(ctx, h.sessionID, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var suggested []*Node
+	var collect func([]Node)
+	collect = func(ns []Node) {
+		for i := range ns {
+			if len(ns[i].Suggestions) > 0 {
+				suggested = append(suggested, &ns[i])
+			}
+			collect(ns[i].Children)
+		}
+	}
+	collect(tree)
+	if len(suggested) != 2 {
+		t.Fatalf("want 2 renameable dirs, got %d", len(suggested))
+	}
+	// merge them onto one folder — both files now want the same basename
+	suggested[0].Name, suggested[1].Name = "Manali", "Manali"
+
+	if err := Confirm(ctx, h.sessionID, h.d, tree); err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+
+	var targets []string
+	if err := h.d.SQL.Select(&targets,
+		`SELECT target_path FROM virtual_fs_entries WHERE session_id = ? ORDER BY target_path`,
+		h.sessionID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("targets = %v, want 2", targets)
+	}
+	if targets[0] == targets[1] {
+		t.Fatalf("both files landed on %q — one would overwrite the other", targets[0])
+	}
+	for _, tp := range targets {
+		if !strings.Contains(tp, "/Manali/") {
+			t.Errorf("target_path = %q, want merged under Manali", tp)
+		}
+	}
+}
+
+// TestFilesUnderHandlesGlobMetacharacters covers folder names containing GLOB
+// wildcards. sanitizeSegment only rewrites path separators, so a reviewer can
+// legitimately name a folder "Goa [2024]" — read as a pattern its brackets are
+// a character class that matches nothing, and peek reported an empty folder
+// that plainly had files.
+func TestFilesUnderHandlesGlobMetacharacters(t *testing.T) {
+	h := newHarness(t)
+	h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
+	h.build(t, DefaultConfig(), nil)
+
+	ctx := context.Background()
+	tree, err := BuildTree(ctx, h.sessionID, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := renameFirstSuggested(tree, "Goa [2024]"); !ok {
+		t.Fatal("no renameable node in the proposal")
+	}
+	if err := Confirm(ctx, h.sessionID, h.d, tree); err != nil {
+		t.Fatal(err)
+	}
+
+	tree, err = BuildTree(ctx, h.sessionID, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bracketed string
+	var walk func([]Node)
+	walk = func(ns []Node) {
+		for i := range ns {
+			if strings.Contains(ns[i].ID, "[2024]") {
+				bracketed = ns[i].ID
+			}
+			walk(ns[i].Children)
+		}
+	}
+	walk(tree)
+	if bracketed == "" {
+		t.Fatal("rename to a bracketed name did not reach target_path")
+	}
+
+	files, err := FilesUnder(ctx, h.sessionID, bracketed, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Errorf("FilesUnder(%q) = %v, want the one file under it", bracketed, files)
+	}
+}
+
+func TestConfigForNoneSentinel(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		groupBy []string
+		want    []string
+	}{
+		{"none sentinel", []string{GroupByNone}, nil},
+		{"empty keeps defaults", nil, DefaultConfig().GroupBy},
+		{"explicit levels", []string{GroupByMedia}, []string{GroupByMedia}},
+	} {
+		got := ConfigFor(&config.Configuration{GroupBy: tc.groupBy}).GroupBy
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: GroupBy = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// a nil app config is DefaultConfig, not a panic
+	if got := ConfigFor(nil).GroupBy; !slices.Equal(got, DefaultConfig().GroupBy) {
+		t.Errorf("ConfigFor(nil).GroupBy = %v, want DefaultConfig's levels", got)
 	}
 }

@@ -41,8 +41,8 @@ type Global struct {
 const configTemplate = `# WanderSort global config.
 # Applies to every scan/serve unless overridden by a command-line flag or an
 # environment variable. Precedence: flag > env > this file > built-in default.
-# Run 'wandersort config' any time to reopen this file (in $EDITOR, or prints
-# it if $EDITOR isn't set).
+# Run 'wandersort config' any time to reopen this file in $EDITOR, or
+# 'wandersort config --print' to print it instead.
 
 # Default output directory (DB + logs). Same as --output-path / -o.
 # output-path: ~/WanderSortLibrary
@@ -53,11 +53,18 @@ const configTemplate = `# WanderSort global config.
 # Verbose logging. Same as --debug.
 # debug: false
 
-# Folder levels below Year/Month for new proposals, i.e. group by: location,
-# orientation, device, media, or "none" for flat Year/Month. Same as
-# scan/serve's --group-by, or change it per-session from the review TUI's
-# [L] key.
+# Folder levels below Year/Month for new proposals, in the order they nest:
+# location, date, device, orientation, media — or "none" for flat Year/Month.
+# Same as scan/serve's --group-by, or change it per-session from the review
+# TUI's [L] key. A full Year/Month/Day/Location/Device/Orientation/Media
+# hierarchy is: [date, location, device, orientation, media]
 # group-by: [location, orientation, media]
+
+# Drop a device/orientation/media folder level that turns out to have only one
+# value in your whole library — no point clicking through "iPhone/Vertical" when
+# every photo is one. Day and location folders are always kept. Set to false to
+# always get the full nesting.
+# collapse-levels: true
 
 # Confirmed home/work towns (set interactively via 'wandersort setup').
 # GPS within ~50km of either folds into that town's folder instead of

@@ -166,3 +166,26 @@ func TestSearchByName(t *testing.T) {
 		t.Errorf("matches = %+v, want Delhi and Delray Beach", matches)
 	}
 }
+
+// TestResolveByNameMatchesStrippedName covers the anchor round-trip: every name
+// this package hands out is diacritic-stripped (SearchByName, Candidates), so a
+// saved anchor "Banjar" must still resolve to the gazetteer's "Banjār". With
+// exact-match-only, anchors for such places silently never resolved and the
+// whole home/work folding feature was a no-op for those users.
+func TestResolveByNameMatchesStrippedName(t *testing.T) {
+	d := newTestLocationDB(t, [][3]any{{"Banjār", 31.6383, 77.3403}})
+	r := &Resolver{db: d, log: logger.NewNoopLogger()}
+
+	matches, err := r.SearchByName(context.Background(), "Banj", 8)
+	if err != nil || len(matches) != 1 || matches[0].Name != "Banjar" {
+		t.Fatalf("SearchByName = %+v, %v; want the stripped name the user would save", matches, err)
+	}
+
+	lat, lon, err := r.ResolveByName(context.Background(), matches[0].Name)
+	if err != nil {
+		t.Fatalf("ResolveByName(%q): %v", matches[0].Name, err)
+	}
+	if lat != 31.6383 || lon != 77.3403 {
+		t.Errorf("got (%v, %v), want Banjār's coordinates", lat, lon)
+	}
+}

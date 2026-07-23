@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,7 +30,7 @@ func sampleTree() []vfs.Node {
 func TestRelayoutDoneRebuildsRowsAndResetsState(t *testing.T) {
 	m := newReviewModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
 	m.cursor, m.offset = 5, 2
-	m.visualMode, m.lastMergeTree = true, []vfs.Node{{ID: "stale"}}
+	m.visualMode, m.lastTree = true, []vfs.Node{{ID: "stale"}}
 	m.relayouting = true
 	m.layoutIdx = 1
 
@@ -46,7 +47,7 @@ func TestRelayoutDoneRebuildsRowsAndResetsState(t *testing.T) {
 	if rm.cursor != 0 || rm.offset != 0 {
 		t.Errorf("cursor/offset = %d/%d, want reset to 0/0", rm.cursor, rm.offset)
 	}
-	if rm.visualMode || rm.lastMergeTree != nil {
+	if rm.visualMode || rm.lastTree != nil {
 		t.Error("visual selection / pending undo should be cleared after a relayout")
 	}
 	if rm.statusMsg == "" {
@@ -309,8 +310,8 @@ func TestMergeSiblingsSucceeds(t *testing.T) {
 	if m.visualMode {
 		t.Error("visualMode should be cleared after a merge")
 	}
-	if m.lastMergeTree == nil {
-		t.Error("expected lastMergeTree to be set for undo")
+	if m.lastTree == nil {
+		t.Error("expected lastTree to be set for undo")
 	}
 }
 
@@ -403,6 +404,123 @@ func TestMergeAcrossBranchesRejectsWithNoCommonAncestor(t *testing.T) {
 	}
 }
 
+// groupedTree is the reported shape: every month grouped by location and then
+// by device, where the device (and location) level is the same everywhere and
+// the reviewer doesn't want it.
+func groupedTree() []vfs.Node {
+	month := func(name string, n int) vfs.Node {
+		return vfs.Node{ID: "2023/" + name, Name: name, FileCount: n, Children: []vfs.Node{
+			{ID: "2023/" + name + "/Indore", Name: "Indore", FileCount: n, Children: []vfs.Node{
+				{ID: "2023/" + name + "/Indore/Apple iPhone 13", Name: "Apple iPhone 13", FileCount: n},
+			}},
+		}}
+	}
+	return []vfs.Node{{ID: "2023", Name: "2023", FileCount: 13, Children: []vfs.Node{
+		month("April", 10), month("August", 3),
+	}}}
+}
+
+// TestDeleteLevelRemovesGroupingEverywhere covers [D]: the reviewer doesn't
+// want the device (then location) breakdown, so the whole level goes at once —
+// every folder at that depth, across all months, not one per keypress.
+func TestDeleteLevelRemovesGroupingEverywhere(t *testing.T) {
+	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+	// rows: 0=2023, 1=April, 2=Indore, 3=iPhone, 4=August, 5=Indore, 6=iPhone
+	m.cursor = 3
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	rm := next.(reviewModel)
+	if rm.statusIsErr {
+		t.Fatalf("delete device level: %q", rm.statusMsg)
+	}
+	rm.cursor = 2 // April's Indore
+	next2, _ := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	rm = next2.(reviewModel)
+	if rm.statusIsErr {
+		t.Fatalf("delete location level: %q", rm.statusMsg)
+	}
+
+	if len(rm.rows) != 3 {
+		t.Fatalf("got %d rows, want 3 (2023 + two months, nothing below)", len(rm.rows))
+	}
+	april := findNodeByID(rm.tree, "2023/April")
+	if april == nil || len(april.Children) != 0 || april.FileCount != 10 {
+		t.Fatalf("April = %+v, want a childless node still holding 10 files", april)
+	}
+	// both dropped levels must be remapped, or the files sitting in the
+	// deepest one keep their old target_path when Confirm runs
+	want := map[string]bool{"2023/April/Indore": false, "2023/April/Indore/Apple iPhone 13": false}
+	for _, id := range april.MergedIDs {
+		if _, ok := want[id]; !ok {
+			t.Errorf("unexpected MergedID %q", id)
+		}
+		want[id] = true
+	}
+	for id, seen := range want {
+		if !seen {
+			t.Errorf("MergedIDs = %v, missing %q", april.MergedIDs, id)
+		}
+	}
+}
+
+// TestDeleteSingleFolderLiftsItsChildren covers [d]: one folder, its children
+// reattached to its parent rather than deleted along with it.
+func TestDeleteSingleFolderLiftsItsChildren(t *testing.T) {
+	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+	m.cursor = 2 // April's Indore, which still has the device child
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	rm := next.(reviewModel)
+
+	if rm.statusIsErr {
+		t.Fatalf("expected success, got %q", rm.statusMsg)
+	}
+	april := findNodeByID(rm.tree, "2023/April")
+	if len(april.Children) != 1 || april.Children[0].Name != "Apple iPhone 13" {
+		t.Fatalf("April children = %+v, want the lifted device node", april.Children)
+	}
+	if findNodeByID(rm.tree, "2023/August/Indore") == nil {
+		t.Error("[d] deleted more than the cursor's folder — August's Indore should be untouched")
+	}
+	if got := april.MergedIDs; len(got) != 1 || got[0] != "2023/April/Indore" {
+		t.Errorf("MergedIDs = %v, want just the deleted folder", got)
+	}
+}
+
+// TestDeleteTopLevelIsRejected covers the guard: a Year has no parent to lift
+// files into, so dropping it would dump them in the library root.
+func TestDeleteTopLevelIsRejected(t *testing.T) {
+	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+	m.cursor = 0
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	rm := next.(reviewModel)
+
+	if !rm.statusIsErr {
+		t.Errorf("expected rejection deleting a top-level folder, got %q", rm.statusMsg)
+	}
+	if len(rm.rows) != 7 {
+		t.Errorf("tree changed on a rejected delete: %d rows, want 7", len(rm.rows))
+	}
+}
+
+// TestUndoRestoresTreeAfterDelete covers [u] on a level delete — same
+// whole-tree snapshot the merge undo uses.
+func TestUndoRestoresTreeAfterDelete(t *testing.T) {
+	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+	m.cursor = 3
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	rm := next.(reviewModel)
+
+	next2, _ := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+	rm2 := next2.(reviewModel)
+
+	if findNodeByID(rm2.tree, "2023/April/Indore/Apple iPhone 13") == nil {
+		t.Error("device level should be back after undo")
+	}
+	if indore := findNodeByID(rm2.tree, "2023/April/Indore"); len(indore.MergedIDs) != 0 {
+		t.Errorf("undo left MergedIDs behind: %v", indore.MergedIDs)
+	}
+}
+
 // TestUndoRestoresTreeAfterCrossBranchMerge covers [u] on the new structural
 // merge: it must restore the whole pre-merge tree (the old per-row newName
 // undo can't undo a reparent), and only once (no redo).
@@ -429,14 +547,308 @@ func TestUndoRestoresTreeAfterCrossBranchMerge(t *testing.T) {
 			t.Error("2017 should not have a direct Canon EOS 700D child after undo")
 		}
 	}
-	if rm.lastMergeTree != nil {
-		t.Error("lastMergeTree should be cleared after undo (no redo)")
+	if rm.lastTree != nil {
+		t.Error("lastTree should be cleared after undo (no redo)")
 	}
 
 	// pressing u again with nothing pending must be a no-op, not a crash
 	next2, _ := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 	rm2 := next2.(reviewModel)
-	if rm2.lastMergeTree != nil {
+	if rm2.lastTree != nil {
 		t.Error("second undo should still be a no-op")
+	}
+}
+
+// TestVisibleRowsShrinksWhenHelpWraps covers the reported overflow: on a
+// narrow terminal the key help wraps to several lines, and the tree budget has
+// to shrink by exactly that much or the bottom rows run off the screen.
+func TestVisibleRowsShrinksWhenHelpWraps(t *testing.T) {
+	wide := newReviewModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
+	wide.height, wide.width = 24, 200
+	narrow := wide
+	narrow.width = 40
+
+	if wide.visibleRows() <= narrow.visibleRows() {
+		t.Errorf("visibleRows: wide %d, narrow %d — narrow must be smaller (help wraps into the tree's space)",
+			wide.visibleRows(), narrow.visibleRows())
+	}
+	// the whole frame must fit the terminal, however the help wrapped
+	for _, m := range []reviewModel{wide, narrow} {
+		total := headerLines + m.visibleRows() + strings.Count(m.footer(), "\n")
+		if total > m.height {
+			t.Errorf("width %d: frame is %d lines, want <= %d", m.width, total, m.height)
+		}
+	}
+}
+
+// TestQuitWarnsOnceBeforeDiscardingEdits covers the reported "no way to save":
+// [c] saves, [q] throws everything away — so [q] with pending edits must warn
+// first, and only quit if the reviewer insists.
+func TestQuitWarnsOnceBeforeDiscardingEdits(t *testing.T) {
+	m := newReviewModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
+	m.rows[1].newName = "Manali"
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	rm := next.(reviewModel)
+	if cmd != nil {
+		t.Fatal("first q with unsaved edits should not quit")
+	}
+	if !rm.statusIsErr || rm.statusMsg == "" {
+		t.Errorf("want a flagged unsaved-changes warning, got %q", rm.statusMsg)
+	}
+
+	if _, cmd := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd == nil {
+		t.Error("second q should quit")
+	}
+
+	// any other key in between resets the warning — no accidental quit later
+	moved, _ := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if _, cmd := moved.(reviewModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd != nil {
+		t.Error("q after moving should warn again, not quit")
+	}
+}
+
+// TestQuitWithNoEditsExitsImmediately covers the other side: nothing typed,
+// nothing to lose, no nagging.
+func TestQuitWithNoEditsExitsImmediately(t *testing.T) {
+	m := newReviewModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd == nil {
+		t.Error("q with a clean tree should quit straight away")
+	}
+}
+
+// TestStructuralEditKeepsPendingRenames covers a silent data-loss bug: merge,
+// delete and undo all rebuild the row list with flattenTree, which allocates
+// fresh reviewRow values. Without reflow carrying newName across by node ID,
+// every rename the reviewer typed on rows the edit never touched vanished.
+func TestStructuralEditKeepsPendingRenames(t *testing.T) {
+	m := newReviewModel(siblingTree(), nil, nil, uuid.Nil, nil, nil)
+	// rows: 0=2024, 1=June, 2=03, 3=09. Rename the year, then merge the leaves.
+	nodeByID(m.rows, "2024").newName = "Two Thousand Twenty Four"
+
+	m.visualMode, m.visualAnchor, m.cursor = true, 2, 3
+	m.mergeSelection()
+
+	if m.statusIsErr {
+		t.Fatalf("merge failed: %q", m.statusMsg)
+	}
+	if got := nodeByID(m.rows, "2024").newName; got != "Two Thousand Twenty Four" {
+		t.Errorf("after merge, year newName = %q, want the rename to survive", got)
+	}
+}
+
+// TestUndoKeepsPendingRenames is the undo half of the same bug.
+func TestUndoKeepsPendingRenames(t *testing.T) {
+	m := newReviewModel(siblingTree(), nil, nil, uuid.Nil, nil, nil)
+	nodeByID(m.rows, "2024").newName = "Renamed Year"
+	m.visualMode, m.visualAnchor, m.cursor = true, 2, 3
+	m.mergeSelection()
+
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+	rm := next.(reviewModel)
+	if got := nodeByID(rm.rows, "2024").newName; got != "Renamed Year" {
+		t.Errorf("after undo, year newName = %q, want %q", got, "Renamed Year")
+	}
+	if nodeByID(rm.rows, "2024/June/09") == nil {
+		t.Error("undo should have restored the folded-away leaf")
+	}
+}
+
+// TestRefreshSuggestionsFiltersInMemory covers that typing never touches the
+// DB or the resolver: both sources are pre-loaded, and each keystroke only
+// narrows what's already in memory. A nil db/resolver here would panic or
+// return nothing if refreshSuggestions still queried.
+func TestRefreshSuggestionsFiltersInMemory(t *testing.T) {
+	m := newReviewModel(sampleTree(), context.Background(), nil, uuid.Nil, nil, nil)
+	m.geoCands = []location.Candidate{
+		{Name: "Manali", DistKM: 3},
+		{Name: "Mandi", DistKM: 40},
+		{Name: "Kullu", DistKM: 12},
+	}
+	m.labels = []string{"Manali Trip", "Goa 2024"}
+
+	m.input = ""
+	m.refreshSuggestions()
+	if len(m.suggestions) != 3 {
+		t.Fatalf("no prefix: got %d suggestions, want all 3 geo candidates", len(m.suggestions))
+	}
+
+	m.input = "man"
+	m.refreshSuggestions()
+	var names []string
+	for _, s := range m.suggestions {
+		names = append(names, s.name)
+	}
+	if len(names) != 3 || names[0] != "Manali" || names[1] != "Mandi" || names[2] != "Manali Trip" {
+		t.Errorf("suggestions = %v, want [Manali Mandi Manali Trip] (geo first, then labels)", names)
+	}
+
+	m.input = "zzz"
+	m.refreshSuggestions()
+	if len(m.suggestions) != 0 {
+		t.Errorf("suggestions = %+v, want none for a non-matching prefix", m.suggestions)
+	}
+}
+
+// TestRenameLoadsGeoCandidatesOnce covers the split: [r] and ctrl+e are the
+// only keys that hit the resolver; plain typing must not. With a nil resolver
+// loadGeoCandidates is a no-op, so this asserts the wiring via the keystroke
+// path not panicking and suggestions still filtering from pre-loaded labels.
+func TestRenameLoadsGeoCandidatesOnce(t *testing.T) {
+	m := newReviewModel(sampleTree(), context.Background(), nil, uuid.Nil, nil, nil)
+	m.labels = []string{"Manali"}
+	m.cursor = 1 // the June leaf
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	rm := next.(reviewModel)
+	if !rm.editing {
+		t.Fatal("expected [r] to open the rename editor")
+	}
+	if rm.radiusDelta != defaultCandidateRadius {
+		t.Errorf("radiusDelta = %v, want it seeded to %v", rm.radiusDelta, defaultCandidateRadius)
+	}
+
+	// [r] pre-fills the input with the current name ("June") — clear it the way
+	// a reviewer would, then type. Every one of these keystrokes must resolve
+	// against pre-loaded data only; the nil db/resolver here proves it.
+	for range len(rm.input) {
+		next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		rm = next.(reviewModel)
+	}
+	for _, r := range []rune("Man") {
+		next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		rm = next.(reviewModel)
+	}
+	if len(rm.suggestions) != 1 || rm.suggestions[0].name != "Manali" {
+		t.Errorf("suggestions = %+v, want the pre-loaded label filtered in memory", rm.suggestions)
+	}
+}
+
+// tripTree is three days of one trip: same location every day, mostly the same
+// device — the shape a parent (Day) merge has to handle.
+func tripTree() []vfs.Node {
+	day := func(d, device string) vfs.Node {
+		base := "2024/06_June/" + d
+		return vfs.Node{ID: base, Name: d, FileCount: 1, Children: []vfs.Node{
+			{ID: base + "/Goa", Name: "Goa", FileCount: 1, Children: []vfs.Node{
+				{ID: base + "/Goa/" + device, Name: device, FileCount: 1},
+			}},
+		}}
+	}
+	return []vfs.Node{{ID: "2024", Name: "2024", FileCount: 3, Children: []vfs.Node{
+		{ID: "2024/06_June", Name: "06_June", FileCount: 3, Children: []vfs.Node{
+			day("03", "iPhone"), day("04", "iPhone"), day("05", "Canon"),
+		}},
+	}}}
+}
+
+// TestMergingParentsCollapsesSameNamedChildren covers the reported case:
+// merging three Day folders of one trip must leave a single Goa underneath,
+// not three the reviewer then has to merge by hand. Children that genuinely
+// differ (a second camera) stay separate.
+func TestMergingParentsCollapsesSameNamedChildren(t *testing.T) {
+	m := newReviewModel(tripTree(), nil, nil, uuid.Nil, nil, nil)
+	// rows: 0=2024 1=06_June 2=03 3=Goa 4=iPhone 5=04 6=Goa 7=iPhone 8=05 9=Goa 10=Canon
+	m.visualAnchor, m.cursor, m.visualMode = 2, 10, true
+
+	m.mergeSelection()
+
+	if m.statusIsErr {
+		t.Fatalf("expected success, got %q", m.statusMsg)
+	}
+	june := findNodeByID(m.tree, "2024/06_June")
+	if len(june.Children) != 1 {
+		t.Fatalf("June has %d children, want 1 merged day", len(june.Children))
+	}
+	day := june.Children[0]
+	if day.FileCount != 3 {
+		t.Errorf("merged day FileCount = %d, want 3", day.FileCount)
+	}
+	if len(day.Children) != 1 || day.Children[0].Name != "Goa" {
+		t.Fatalf("merged day children = %+v, want exactly one Goa", day.Children)
+	}
+	goa := day.Children[0]
+	if goa.FileCount != 3 || len(goa.MergedIDs) != 2 {
+		t.Errorf("Goa: files=%d mergedIDs=%v, want 3 files and the two folded-away Goa ids", goa.FileCount, goa.MergedIDs)
+	}
+	// the two iPhones collapse; the Canon is a genuinely different folder
+	names := map[string]int{}
+	for _, c := range goa.Children {
+		names[c.Name] = c.FileCount
+	}
+	if len(goa.Children) != 2 || names["iPhone"] != 2 || names["Canon"] != 1 {
+		t.Errorf("Goa children = %+v, want iPhone(2) and Canon(1)", goa.Children)
+	}
+}
+
+// TestMergeUsesAnchorDepth covers the selection rule: rows deeper than the row
+// [V] was pressed on are that folder's contents and ride along, they are not
+// merge candidates of their own.
+func TestMergeUsesAnchorDepth(t *testing.T) {
+	m := newReviewModel(tripTree(), nil, nil, uuid.Nil, nil, nil)
+	// anchor on 03's Goa (depth 3) through 05's Goa — merges the Goas, not the days
+	m.visualAnchor, m.cursor, m.visualMode = 3, 9, true
+
+	m.mergeSelection()
+
+	if m.statusIsErr {
+		t.Fatalf("expected success, got %q", m.statusMsg)
+	}
+	// all three Goas merged under their lowest common ancestor, the month
+	june := findNodeByID(m.tree, "2024/06_June")
+	if len(june.Children) != 1 || june.Children[0].Name != "Goa" {
+		t.Fatalf("June children = %+v, want one Goa (the days were emptied and pruned)", june.Children)
+	}
+}
+
+// TestMergeRespectsPendingRenames covers name matching: children collapse on
+// the name they will actually be written as, not the one they started with.
+func TestMergeRespectsPendingRenames(t *testing.T) {
+	m := newReviewModel(tripTree(), nil, nil, uuid.Nil, nil, nil)
+	m.rows[10].newName = "iPhone" // rename 05's Canon to match the others
+	m.visualAnchor, m.cursor, m.visualMode = 2, 10, true
+
+	m.mergeSelection()
+
+	goa := findNodeByID(m.tree, "2024/06_June/03/Goa")
+	if goa == nil || len(goa.Children) != 1 {
+		t.Fatalf("Goa children = %+v, want one — the renamed Canon collapses into iPhone", goa)
+	}
+}
+
+// TestApprovedCountGuardsRebuild covers the data-loss guard on --rebuild:
+// vfs.Run deletes every entry, so a plan the reviewer already confirmed goes
+// with it. approvedCount is what runReview checks before letting that happen.
+func TestApprovedCountGuardsRebuild(t *testing.T) {
+	ctx := context.Background()
+	d := dbtest.New(t)
+	sessionID := dbtest.NewSession(t, d, db.StatusScored)
+
+	insert := func(fileID int64, name, status string) {
+		dbtest.SeedFile(t, d, sessionID, fileID, "/src", name, 1024)
+		if _, err := d.ExecContext(ctx, `
+			INSERT INTO virtual_fs_entries (session_id, file_id, source_path, target_path, status)
+			VALUES (?, ?, ?, ?, ?)`,
+			sessionID.String(), fileID, "/src/"+name, "2024/June/"+name, status); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, err := approvedCount(ctx, d, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("approvedCount on a fresh session = %d, want 0 (rebuild is free)", n)
+	}
+
+	insert(1, "a.jpg", db.StatusProposed)
+	if n, err = approvedCount(ctx, d, sessionID); err != nil || n != 0 {
+		t.Errorf("approvedCount = %d, %v; PROPOSED rows are not a confirmed plan", n, err)
+	}
+
+	insert(2, "b.jpg", db.StatusApproved)
+	if n, err = approvedCount(ctx, d, sessionID); err != nil || n != 1 {
+		t.Errorf("approvedCount = %d, %v; want 1 so --rebuild refuses without --yes", n, err)
 	}
 }

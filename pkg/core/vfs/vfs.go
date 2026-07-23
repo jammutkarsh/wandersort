@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -224,9 +225,10 @@ func (v *VFS) applyNameCase(masters []masterFile) {
 // falls back to file mtime via deriveAll's takenAt, same as any other file —
 // in practice close enough to its paired photo's own time.
 func (v *VFS) buildTargets(masters []masterFile) {
+	skip := v.uninformativeLevels(masters)
 	taken := map[string]bool{}
 	for i := range masters {
-		dir := v.dirFor(&masters[i])
+		dir := v.dirFor(&masters[i], skip)
 		name := masters[i].FileName
 		stem := strings.TrimSuffix(name, filepath.Ext(name))
 		ext := filepath.Ext(name)
@@ -248,8 +250,9 @@ func (v *VFS) buildTargets(masters []masterFile) {
 	}
 }
 
-// dirFor derives the directory segments for one master, honouring GroupBy order
-func (v *VFS) dirFor(m *masterFile) string {
+// dirFor derives the directory segments for one master, honouring GroupBy
+// order. skip names the levels uninformativeLevels found nothing to say with.
+func (v *VFS) dirFor(m *masterFile, skip map[string]bool) string {
 	if m.takenAt.IsZero() {
 		// ponytail: no usable timestamp at all (should never happen — file
 		// mtime is always present); park flat under the fallback dir
@@ -258,45 +261,113 @@ func (v *VFS) dirFor(m *masterFile) string {
 
 	parts := []string{
 		strconv.Itoa(m.takenAt.Year()),
-		m.takenAt.Month().String(),
+		// number-first ("06_June") so months sort chronologically everywhere
+		// they're listed — the review tree, Finder, ls. Bare month names sort
+		// alphabetically, which put December above November.
+		m.takenAt.Format("01_January"),
 	}
 	for _, level := range v.cfg.GroupBy {
-		seg := ""
-		switch level {
-		case GroupByLocation:
-			// ladder: resolved city → dated event segment → device → fallback
-			switch {
-			case m.location != "":
-				seg = m.location
-			case m.eventSegment != "":
-				seg = m.eventSegment
-			case m.device != "":
-				seg = m.device
-			default:
-				seg = v.cfg.Fallback
-			}
-		case GroupByDevice:
-			seg = m.device // skipped when unknown
-		case GroupByOrientation:
-			if m.width > 0 && m.height > 0 { // skipped when dimensions unknown
-				if m.height > m.width {
-					seg = "Vertical"
-				} else {
-					seg = "Horizontal"
-				}
-			}
-		case GroupByMedia:
-			if m.MediaType == classifier.MediaTypeVideo {
-				seg = "Videos"
-			} else {
-				seg = "Photos"
-			}
+		if skip[level] {
+			continue
 		}
-		if seg != "" {
-			parts = append(parts, sanitizeSegment(seg))
+		seg := v.segmentFor(m, level)
+		if seg == "" {
+			continue // level not derivable for this file — skip the folder
+		}
+		parts = append(parts, sanitizeSegment(seg))
+		if level == GroupByLocation {
+			// the folder a reviewer renames, recorded by path rather than by
+			// depth so any GroupBy order works (and "no location level" means
+			// no suggestion node at all, instead of one landing on a Device)
+			m.suggestionDir = strings.Join(parts, "/")
 		}
 	}
 	return strings.Join(parts, "/")
+}
+
+// segmentFor is the folder name one grouping level gives this file, or "" when
+// the level isn't derivable for it (unknown device, no dimensions).
+func (v *VFS) segmentFor(m *masterFile, level string) string {
+	switch level {
+	case GroupByLocation:
+		// ladder: resolved city → dated event segment → device → fallback.
+		// A Day level already carries the date, so the dated placeholder rung
+		// is skipped there — it produced a second date beside it ("…/03/03-05/")
+		switch {
+		case m.location != "":
+			return m.location
+		case m.eventSegment != "" && !slices.Contains(v.cfg.GroupBy, GroupByDate):
+			return m.eventSegment
+		case m.device != "":
+			return m.device
+		default:
+			return v.cfg.Fallback
+		}
+	case GroupByDate:
+		return m.takenAt.Format("02")
+	case GroupByDevice:
+		return m.device
+	case GroupByOrientation:
+		if m.width == 0 || m.height == 0 {
+			return ""
+		}
+		if m.height > m.width {
+			return "Vertical"
+		}
+		return "Horizontal"
+	case GroupByMedia:
+		if m.MediaType == classifier.MediaTypeVideo {
+			return "Videos"
+		}
+		return "Photos"
+	}
+	return ""
+}
+
+// collapsibleLevels are the grouping levels worth dropping when they turn out
+// to carry no information. Date and location are never dropped even if the
+// whole library shares one value: they're how a person recognizes a folder,
+// and the review TUI's merge is the way to fold days together on purpose.
+var collapsibleLevels = map[string]bool{
+	GroupByDevice:      true,
+	GroupByOrientation: true,
+	GroupByMedia:       true,
+}
+
+// uninformativeLevels finds the collapsible grouping levels that resolve to at
+// most one distinct folder name across the whole library. Such a level adds a
+// folder every path has to pass through without ever telling the user
+// anything — "…/Goa/iPhone/Vertical/Photos/" when every file is a vertical
+// iPhone photo. Dropping it is what makes the useful folder reachable in one
+// click instead of four.
+//
+// Deliberately measured library-wide rather than per-branch: a level kept in
+// one Day and dropped in the next would make the hierarchy a different depth
+// depending on where you are, which is worse to navigate than one extra level.
+func (v *VFS) uninformativeLevels(masters []masterFile) map[string]bool {
+	if !v.cfg.CollapseLevels {
+		return nil
+	}
+	seen := map[string]map[string]bool{}
+	for _, level := range v.cfg.GroupBy {
+		if collapsibleLevels[level] {
+			seen[level] = map[string]bool{}
+		}
+	}
+	for i := range masters {
+		for level := range seen {
+			if seg := v.segmentFor(&masters[i], level); seg != "" {
+				seen[level][seg] = true
+			}
+		}
+	}
+	skip := map[string]bool{}
+	for level, values := range seen {
+		if len(values) <= 1 {
+			skip[level] = true
+		}
+	}
+	return skip
 }
 
 // persist replaces the whole previous proposal — one live proposal set for the
@@ -317,11 +388,11 @@ func (v *VFS) persist(sessionID uuid.UUID, masters []masterFile) (int, error) {
 		if !v.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO virtual_fs_entries
-					(session_id, file_id, source_path, target_path, cluster_id, status, suggestion, suggestion_source)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					(session_id, file_id, source_path, target_path, cluster_id, status, suggestion, suggestion_source, suggestion_dir)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				sessionID.String(), m.FileID, m.absPath, m.targetPath,
 				nullable(m.clusterID), db.StatusProposed,
-				nullable(m.suggestion), nullable(m.suggestionSource)); err != nil {
+				nullable(m.suggestion), nullable(m.suggestionSource), nullable(m.suggestionDir)); err != nil {
 				return fmt.Errorf("persist vfs entry for file %d: %w", m.FileID, err)
 			}
 			return nil

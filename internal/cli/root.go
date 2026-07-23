@@ -31,14 +31,19 @@ const (
 	flagYes        = "yes"
 	flagVertical   = "vertical"
 	flagGroupBy    = "group-by"
+	flagRebuild    = "rebuild"
+	flagPrint      = "print"
+	flagCollapse   = "collapse-levels"
 
-	// groupByNone is the --group-by sentinel for "no levels below Year/Month"
-	groupByNone = "none"
+	// groupByNone is the --group-by sentinel for "no levels below Year/Month".
+	// vfs owns its meaning (vfs.ConfigFor is the only thing that acts on it).
+	groupByNone = vfs.GroupByNone
 )
 
 // validGroupBy are the recognized --group-by tokens, beyond groupByNone
 var validGroupBy = map[string]bool{
 	vfs.GroupByLocation:    true,
+	vfs.GroupByDate:        true,
 	vfs.GroupByDevice:      true,
 	vfs.GroupByOrientation: true,
 	vfs.GroupByMedia:       true,
@@ -167,10 +172,12 @@ func init() {
 	v.SetDefault(flagWorkers, 0)
 	v.SetDefault(flagYes, false)
 	v.SetDefault(flagGroupBy, []string{})
+	v.SetDefault(flagCollapse, true)
 	// Bind the hyphenated flags explicitly; AutomaticEnv covers the rest,
 	// whose env names already match their uppercased flag (WORKERS, PORT, ...).
 	v.BindEnv(flagOutputPath, "OUTPUT_PATH")
 	v.BindEnv(flagGroupBy, "GROUP_BY")
+	v.BindEnv(flagCollapse, "COLLAPSE_LEVELS")
 	v.AutomaticEnv()
 }
 
@@ -181,17 +188,28 @@ func init() {
 // > config file > default). Every command creates it, not just `setup`/
 // `config`, so the file — and its explanatory comments — is always there for
 // a user to find and edit, not a thing they have to know to create first.
-func loadGlobalConfigFile() error {
+//
+// A config file that doesn't parse is a warning, not a failure: YAML is easy
+// to get subtly wrong (a stray tab, an unquoted colon) and refusing to run at
+// all would mean a typo in an optional settings file bricks every command,
+// including the `config` command that would let the user fix it. Every setting
+// in the file is optional and has a default, so the run continues on defaults
+// and says so. The returned string is the warning ("" when there is none) —
+// it's logged once the logger exists, so it reaches the log file too, not just
+// the terminal.
+func loadGlobalConfigFile() (warning string, err error) {
 	path, err := config.EnsureGlobalConfigFile()
 	if err != nil {
-		return fmt.Errorf("global config: %w", err)
+		return "", fmt.Errorf("global config: %w", err)
 	}
 	v.SetConfigFile(path)
 	v.SetConfigType("yaml")
 	if err := v.ReadInConfig(); err != nil {
-		return fmt.Errorf("read config file %s: %w", path, err)
+		// viper only commits parsed values on success, so nothing half-read
+		// leaks into the settings — flags, env, and defaults still apply.
+		return fmt.Sprintf("Ignoring %s — it isn't valid YAML (%v). Using defaults; fix the file or delete it to get a fresh one.", path, err), nil
 	}
-	return nil
+	return "", nil
 }
 
 func (a *App) Execute() error {
@@ -227,7 +245,8 @@ Flags take precedence over environment variables.`,
 			if err := v.BindPFlags(cmd.Flags()); err != nil {
 				return err
 			}
-			if err := loadGlobalConfigFile(); err != nil {
+			configWarning, err := loadGlobalConfigFile()
+			if err != nil {
 				return err
 			}
 			if err := a.applyOverrides(); err != nil {
@@ -235,6 +254,9 @@ Flags take precedence over environment variables.`,
 			}
 			// Build logger after overrides so --debug and --output-path take effect
 			a.Log = logger.New(a.Config.LogLevel, a.Config.LogConsole, a.Config.LogFile)
+			if configWarning != "" {
+				a.Log.Warn(configWarning, logger.UserKey, true)
+			}
 			return nil
 		},
 	}
@@ -296,10 +318,19 @@ func (a *App) applyOverrides() error {
 	if groupBy := v.GetStringSlice(flagGroupBy); len(groupBy) > 0 {
 		for _, s := range groupBy {
 			if s != groupByNone && !validGroupBy[s] {
-				return fmt.Errorf("invalid --group-by value %q (want location, orientation, device, media, or none)", s)
+				return fmt.Errorf("invalid --group-by value %q (want location, date, device, orientation, media, or none)", s)
+			}
+			// "none" means "no levels at all", so it can't sit alongside one.
+			// vfs.ConfigFor only honours it as the sole value; mixed in, it
+			// would silently drop out as an unrecognised level instead.
+			if s == groupByNone && len(groupBy) > 1 {
+				return fmt.Errorf("invalid --group-by %v: %q cannot be combined with other levels", groupBy, groupByNone)
 			}
 		}
 		a.Config.GroupBy = groupBy
 	}
+	// no CLI flag — config file and env only, so it has no per-command default
+	// to layer over; viper's own default (true) is the fallback
+	a.Config.CollapseLevels = v.GetBool(flagCollapse)
 	return nil
 }
