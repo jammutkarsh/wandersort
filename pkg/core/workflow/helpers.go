@@ -24,23 +24,32 @@ func (wf *Workflow) Close() {
 // ponytail: the sum counts every live file, an upper bound; narrow it to
 // master copies when the Execute phase lands
 func (wf *Workflow) warnIfLowSpace(sessionID uuid.UUID) {
+	CheckOutputSpace(wf.ctx, wf.db, wf.log, wf.outputDir, sessionID)
+}
+
+// CheckOutputSpace warns, once, when the output volume cannot hold the whole
+// library. Exported because `review` needs the same check: it is the last
+// place a user looks before approving a plan, and finding out mid-move that
+// the disk is too small is far worse than being told beforehand. Best-effort
+// throughout — an unreadable size or volume is a warning, never a failure.
+func CheckOutputSpace(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, sessionID uuid.UUID) {
 	var librarySize int64
-	if err := wf.db.SQL.GetContext(wf.ctx, &librarySize,
+	if err := database.SQL.GetContext(ctx, &librarySize,
 		`SELECT COALESCE(SUM(file_size), 0) FROM live_files`); err != nil {
-		wf.log.Error("Failed to size the library", "sessionId", sessionID, "error", err)
+		log.Error("Failed to size the library", "sessionId", sessionID, "error", err)
 		return
 	}
 
-	free, err := volume.FreeBytes(wf.outputDir)
+	free, err := volume.FreeBytes(outputDir)
 	if err != nil {
-		wf.log.Warn("Cannot check output volume free space", "sessionId", sessionID, "path", wf.outputDir, "error", err)
+		log.Warn("Cannot check output volume free space", "sessionId", sessionID, "path", outputDir, "error", err)
 		return
 	}
 
 	if uint64(librarySize) > free {
 		msg := fmt.Sprintf("Output volume may be too small: organizing the library needs up to %s, but only %s is free at %s",
-			humanBytes(uint64(librarySize)), humanBytes(free), wf.outputDir)
-		wf.log.Warn(msg, logger.UserKey, true, "sessionId", sessionID)
+			humanBytes(uint64(librarySize)), humanBytes(free), outputDir)
+		log.Warn(msg, logger.UserKey, true, "sessionId", sessionID)
 	}
 }
 

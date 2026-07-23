@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
@@ -160,6 +161,10 @@ func (a *App) runReview() error {
 			return err
 		}
 	}
+
+	// review is the last look before a plan is approved — finding out mid-move
+	// that the output volume is too small is far worse than being told here
+	workflow.CheckOutputSpace(ctx, a.AppDB, a.Log, filepath.Dir(a.Config.AppDBPath), sessionID)
 
 	fmt.Fprintln(os.Stderr, style.Success.Render("Folder structure approved.")+
 		style.Dim.Render(" Confirmed names will be suggested on future scans."))

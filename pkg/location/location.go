@@ -78,7 +78,12 @@ func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver
 	if sum != meta.Hash {
 		return nil, fmt.Errorf("location db checksum mismatch: got %s, want %s", sum, meta.Hash)
 	}
-	log.Info("location db checksum verified", logger.UserKey, true, "path", dbLocationPath, "hash", sum)
+	// Deliberately not UserKey-tagged: New runs on every command that opens the
+	// resolver (setup, scan, serve, review), so tagging it printed a checksum
+	// line on the console every single run. It's an integrity check, not a
+	// milestone — Setup already prints a user-facing line on the one run that
+	// actually downloads anything. Failures above are still surfaced as errors.
+	log.Info("location db checksum verified", "path", dbLocationPath, "hash", sum)
 
 	var count int
 	err = locationDB.QueryRowContext(

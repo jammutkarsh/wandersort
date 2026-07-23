@@ -251,10 +251,21 @@ round-trip would silently erase both.
   loop (scan→hash→score→vfs): `RunScan` (synchronous, CLI) and `SubmitScan`
   (background goroutine, `serve`; `Close()` waits). `claimRoots` rejects a new
   session whose roots overlap an in-flight session's (in-memory — the output
-  lock guarantees one process). `helpers.go` = session status/finalize writes.
-  `run`'s `"%s phase took %s"` log carries `logger.UserKey` — every phase's
-  timing is visible without `--debug` (it used to be developer-only, another
-  instance of the same missing-`UserKey` class of bug as the checksum logs).
+  lock guarantees one process). `helpers.go` = session status/finalize writes
+  plus `CheckOutputSpace` — exported because `review` runs the same check: the
+  last look before a plan is approved is exactly where "the output volume is
+  too small" is still actionable. It fires **at the end of the session**, next
+  to the "run wandersort review" hint, not after the scan phase where it used
+  to scroll past mid-pipeline. `NewWorkflow` logs the resolved
+  `workers`/`output`/`groupBy` as a `UserKey` line: all three come from
+  flag/env/config.yaml, so showing the resolved values up front is the only
+  way to see which source won.
+  Each phase reports **one** user-facing line: `workflowPhase.summary(count)`
+  with the elapsed time appended (`Scanned 15481 files in 1.996s`). It used to
+  be two — a count line from `onSuccess` plus a separate `"%s phase took %s"`
+  — which is twice the console noise for one fact. `onSuccess` survives for
+  side effects only (the post-scan space check); anything user-facing goes in
+  `summary`.
 - `scanner/` — phase 1. Bounded-worker directory walk. Files are identified by
   absolute `(file_dir, file_name)`; each root's volume UUID is stamped for
   future drive re-anchoring. After a clean walk, `sweep` **soft-deletes**
@@ -399,7 +410,10 @@ Only used by `serve`. Standard handler→service→repository split per domain:
   The **JSON file** handler keeps timestamp + source (`AddSource`) and every
   attr (incl. `sessionId`) — that's what `report-issue` ships. Never stdlib `log`.
 - `location/` — offline reverse-geocode resolver + its own sqlite DB. `Setup()`
-  downloads DB+meta if missing (idempotent); `exiftool.Setup()` is the same idea
+  downloads DB+meta if missing (idempotent) and is the only place that prints
+  a user-facing line about it; `New`'s checksum verification is **not**
+  `UserKey`-tagged, since it runs on every command that opens the resolver and
+  printed a checksum on every single run. A mismatch is still a hard error. `exiftool.Setup()` is the same idea
   for the binary. Both are called lazily by `EnsureDependencies`. `Lookup`
   (single best match, cached/singleflighted) and `Candidates` (ranked list for
   the review TUI's rename picker) share one query and one rule: a plain-spelled
