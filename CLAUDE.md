@@ -76,7 +76,11 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
       have one yet. Idempotent, silent, and a no-op with nothing globally set.
   - `review.go` — `review` cmd: bubbletea **full-tree view** TUI over the VFS
     proposal (issue #8). Renders the whole hierarchy indented, alt-screen
-    fullscreen, scrollable. Keys: `enter` accept suggestion, `r` rename (with
+    fullscreen, scrollable. Keys: `n`/`N` **hop to the next/previous row at
+    the cursor's own depth** (`jumpSameDepth`), crossing into other branches
+    by design — that's what makes `V` then `n``n` select one level across
+    several months without arrowing through every folder's contents; stops at
+    the ends, never wraps. `enter` accept suggestion, `r` rename (with
     ranked autocomplete — `Tab` fills the top match, `Ctrl-E` widens the search
     radius by another ~10km, typed text also prefix-matches previously
     confirmed `user_labels`), `p` peek (copies up to 250MB of the folder's
@@ -115,25 +119,40 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     (`pruneEmptied`, using a pre-merge leaf-ID set to tell a real leaf from an
     ancestor the merge hollowed out). Rows caught in the range that still have
     children (the Month/Day scaffolding between two branches) are skipped, not
-    merged. Single-level undo (`u`) snapshots the whole tree
-    (`deepCloneNodes`) before the splice, since a structural edit can't be
-    undone by restoring per-row name strings the way a plain rename-merge
-    could. `d`/`D` **remove nesting the reviewer doesn't want**, both anchored
-    on the cursor row — nothing acts tree-wide:
-    - `d` (`dropFolder`) drops **that one folder**, lifting its children onto
-      its parent. Refused on a top-level (Year) row: its files would land in
+    merged. **`u` undoes structural edits all the way back**, not just the
+    last one: every reshaping edit pushes a whole-tree clone
+    (`snapshot`/`deepCloneNodes`, capped at `maxUndo` = 100) onto a stack,
+    since a structural edit can't be undone by restoring per-row name strings
+    the way a plain rename-merge could. Trees are folders only, never files,
+    so a clone is cheap. `[L]` clears the stack — a relayout replaces every
+    node ID, so older snapshots describe nodes that no longer exist.
+    `d`/`D` **remove nesting the reviewer doesn't want**. Both act on
+    `selectedRows` — a `[V]` range (every row in it at the anchor row's depth,
+    the same rule `m` uses) or just the cursor row when there's no selection.
+    Nothing acts tree-wide:
+    - `d` (`dropFolders`) drops **each selected folder**, lifting its children
+      onto its parent. Refused on a top-level (Year) row: its files would land in
       the library root.
-    - `D` (`flattenFolder`) collapses **everything below** that folder into
-      it, so the whole subtree's files sit directly in it and the folder
+    - `D` (`flattenFolders`) collapses **everything below** each selected
+      folder into it, so the whole subtree's files sit directly in it and the folder
       itself stays. Works on a Year, since the Year survives to hold them.
       `2023/April/Indore/Apple iPhone 13` flattened at April is
       `2023/April` with all ten files. `FileCount` is unchanged — it already
-      counted the subtree.
+      counted the subtree. Over a range the folders stay **separate**: several
+      locations under one Day each keep their own folder and lose their
+      splits. Folding them together is `m`'s job, not `D`'s.
+
+    **Every structural edit re-sorts the tree by name (`sortTree`, called from
+    `reflow`) and the merge puts the cursor on the surviving folder
+    (`focusNode`).** Splices append — a merged node, or children lifted by a
+    drop — at the end of the parent's list, so a 575-file day jumped below its
+    siblings and got reported as "the merge deleted my folder". It hadn't; it
+    was just off-screen at the bottom.
 
     Both record the removed IDs (plus anything already folded into them) on
     the surviving node's `MergedIDs`, so files sitting directly in a removed
     folder remap onto it — same machinery as merge, with `remapUnderMerged`
-    covering anything deeper. Both undo via the same `[u]` snapshot. `L`
+    covering anything deeper. Both undo via `[u]`. `L`
     cycles a fixed set of
     group-by presets and **rebuilds the whole proposal in place**
     (`vfs.New(...).Run` + `BuildTree` — safe mid-review since VFS only reads

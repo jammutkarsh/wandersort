@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -30,7 +31,7 @@ func sampleTree() []vfs.Node {
 func TestRelayoutDoneRebuildsRowsAndResetsState(t *testing.T) {
 	m := newReviewModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
 	m.cursor, m.offset = 5, 2
-	m.visualMode, m.lastTree = true, []vfs.Node{{ID: "stale"}}
+	m.visualMode, m.undo = true, []undoStep{{tree: []vfs.Node{{ID: "stale"}}, edit: "merge"}}
 	m.relayouting = true
 	m.layoutIdx = 1
 
@@ -47,7 +48,7 @@ func TestRelayoutDoneRebuildsRowsAndResetsState(t *testing.T) {
 	if rm.cursor != 0 || rm.offset != 0 {
 		t.Errorf("cursor/offset = %d/%d, want reset to 0/0", rm.cursor, rm.offset)
 	}
-	if rm.visualMode || rm.lastTree != nil {
+	if rm.visualMode || len(rm.undo) != 0 {
 		t.Error("visual selection / pending undo should be cleared after a relayout")
 	}
 	if rm.statusMsg == "" {
@@ -312,8 +313,8 @@ func TestMergeSiblingsSucceeds(t *testing.T) {
 	if m.visualMode {
 		t.Error("visualMode should be cleared after a merge")
 	}
-	if m.lastTree == nil {
-		t.Error("expected lastTree to be set for undo")
+	if len(m.undo) != 1 {
+		t.Errorf("undo stack = %d deep, want 1 step recorded", len(m.undo))
 	}
 }
 
@@ -559,7 +560,7 @@ func TestUndoRestoresTreeAfterFlatten(t *testing.T) {
 
 // TestUndoRestoresTreeAfterCrossBranchMerge covers [u] on the new structural
 // merge: it must restore the whole pre-merge tree (the old per-row newName
-// undo can't undo a reparent), and only once (no redo).
+// undo can't undo a reparent), and stops cleanly once the stack is empty.
 func TestUndoRestoresTreeAfterCrossBranchMerge(t *testing.T) {
 	m := newReviewModel(crossBranchTree(), nil, nil, uuid.Nil, nil, nil)
 	m.visualAnchor = 3
@@ -583,14 +584,14 @@ func TestUndoRestoresTreeAfterCrossBranchMerge(t *testing.T) {
 			t.Error("2017 should not have a direct Canon EOS 700D child after undo")
 		}
 	}
-	if rm.lastTree != nil {
-		t.Error("lastTree should be cleared after undo (no redo)")
+	if len(rm.undo) != 0 {
+		t.Error("undo stack should be empty again after undoing the only edit")
 	}
 
 	// pressing u again with nothing pending must be a no-op, not a crash
 	next2, _ := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 	rm2 := next2.(reviewModel)
-	if rm2.lastTree != nil {
+	if len(rm2.undo) != 0 {
 		t.Error("second undo should still be a no-op")
 	}
 }
@@ -931,5 +932,269 @@ func TestMergeKeepsAnExplicitRename(t *testing.T) {
 	row := nodeByID(m.rows, "2024/June/03")
 	if row == nil || row.newName != "Goa Trip" {
 		t.Fatalf("want the typed rename carried onto the merged folder, got %+v", row)
+	}
+}
+
+// TestUndoWalksBackThroughEveryEdit covers multi-level undo: several
+// structural edits in a row must each be reversible, in order, all the way to
+// the tree the review started with.
+func TestUndoWalksBackThroughEveryEdit(t *testing.T) {
+	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+	before := len(m.rows)
+
+	// three edits: drop a folder, flatten a subtree, drop another folder
+	m.cursor = 2 // April's Indore
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	rm := next.(reviewModel)
+	rm.cursor = 1 // April
+	next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	rm = next.(reviewModel)
+	rm.cursor = 3 // August's Indore
+	next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	rm = next.(reviewModel)
+
+	if len(rm.undo) != 3 {
+		t.Fatalf("undo stack = %d deep, want 3", len(rm.undo))
+	}
+	for i := 3; i > 0; i-- {
+		next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+		rm = next.(reviewModel)
+		if len(rm.undo) != i-1 {
+			t.Fatalf("after undo %d: stack = %d deep, want %d", 4-i, len(rm.undo), i-1)
+		}
+		if rm.statusIsErr {
+			t.Fatalf("undo %d reported an error: %q", 4-i, rm.statusMsg)
+		}
+	}
+
+	if len(rm.rows) != before {
+		t.Errorf("%d rows after undoing everything, want the original %d", len(rm.rows), before)
+	}
+	if findNodeByID(rm.tree, "2023/April/Indore/Apple iPhone 13") == nil {
+		t.Error("the original tree should be fully restored")
+	}
+
+	// one more undo is a flagged no-op, not a crash
+	next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+	if rm2 := next.(reviewModel); !rm2.statusIsErr {
+		t.Errorf("undo on an empty stack should say so, got %q", rm2.statusMsg)
+	}
+}
+
+// dayWithLocationsTree is one Day holding several locations, each split
+// further by device/orientation — the shape [V] + [D] is for.
+func dayWithLocationsTree() []vfs.Node {
+	loc := func(name string, n int) vfs.Node {
+		base := "2024/06_June/03/" + name
+		return vfs.Node{ID: base, Name: name, FileCount: n, Children: []vfs.Node{
+			{ID: base + "/iPhone", Name: "iPhone", FileCount: n, Children: []vfs.Node{
+				{ID: base + "/iPhone/Vertical", Name: "Vertical", FileCount: n},
+			}},
+		}}
+	}
+	return []vfs.Node{{ID: "2024", Name: "2024", FileCount: 6, Children: []vfs.Node{
+		{ID: "2024/06_June", Name: "06_June", FileCount: 6, Children: []vfs.Node{
+			{ID: "2024/06_June/03", Name: "03", FileCount: 6, Children: []vfs.Node{
+				loc("Goa", 1), loc("Panaji", 2), loc("Margao", 3),
+			}},
+		}},
+	}}}
+}
+
+// TestVisualFlattenActsOnEverySelectedFolder covers [V] + [D]: several
+// locations under one Day each lose their splits and keep their own folder.
+// They are not merged — that is [m]'s job.
+func TestVisualFlattenActsOnEverySelectedFolder(t *testing.T) {
+	m := newReviewModel(dayWithLocationsTree(), nil, nil, uuid.Nil, nil, nil)
+	// rows: 0=2024 1=06_June 2=03 3=Goa 4=iPhone 5=Vertical 6=Panaji ... 9=Margao ...
+	m.visualAnchor, m.cursor, m.visualMode = 3, 11, true
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	rm := next.(reviewModel)
+	if rm.statusIsErr {
+		t.Fatalf("expected success, got %q", rm.statusMsg)
+	}
+
+	day := findNodeByID(rm.tree, "2024/06_June/03")
+	if len(day.Children) != 3 {
+		t.Fatalf("day has %d children, want the 3 locations still separate", len(day.Children))
+	}
+	for _, c := range day.Children {
+		if len(c.Children) != 0 {
+			t.Errorf("%s still has %d subfolders, want them flattened in", c.Name, len(c.Children))
+		}
+		if len(c.MergedIDs) != 2 {
+			t.Errorf("%s MergedIDs = %v, want its device and orientation folders", c.Name, c.MergedIDs)
+		}
+	}
+	if rm.visualMode {
+		t.Error("visual selection should be cleared after the flatten")
+	}
+	if len(rm.undo) != 1 {
+		t.Errorf("undo stack = %d, want one step for the whole multi-folder flatten", len(rm.undo))
+	}
+}
+
+// TestVisualDropActsOnEverySelectedFolder covers [V] + [d]: each selected
+// folder goes and its children are lifted onto the parent they shared.
+func TestVisualDropActsOnEverySelectedFolder(t *testing.T) {
+	m := newReviewModel(dayWithLocationsTree(), nil, nil, uuid.Nil, nil, nil)
+	m.visualAnchor, m.cursor, m.visualMode = 3, 11, true
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	rm := next.(reviewModel)
+	if rm.statusIsErr {
+		t.Fatalf("expected success, got %q", rm.statusMsg)
+	}
+
+	day := findNodeByID(rm.tree, "2024/06_June/03")
+	if len(day.Children) != 3 {
+		t.Fatalf("day children = %d, want the three lifted iPhone folders", len(day.Children))
+	}
+	for _, c := range day.Children {
+		if c.Name != "iPhone" {
+			t.Errorf("day child = %q, want the lifted iPhone folder", c.Name)
+		}
+	}
+	if len(day.MergedIDs) != 3 {
+		t.Errorf("day MergedIDs = %v, want the three dropped locations", day.MergedIDs)
+	}
+}
+
+// TestVisualFlattenIgnoresDeeperRowsInTheRange covers the anchor-depth rule
+// for [D]: the splits inside a selected location are its contents, not
+// separate flatten targets, so the Day above and the rows below are untouched.
+func TestVisualFlattenIgnoresDeeperRowsInTheRange(t *testing.T) {
+	m := newReviewModel(dayWithLocationsTree(), nil, nil, uuid.Nil, nil, nil)
+	// anchor on Goa (depth 3), extend only into its own subtree
+	m.visualAnchor, m.cursor, m.visualMode = 3, 5, true
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	rm := next.(reviewModel)
+
+	if goa := findNodeByID(rm.tree, "2024/06_June/03/Goa"); len(goa.Children) != 0 {
+		t.Error("Goa should be flattened")
+	}
+	if p := findNodeByID(rm.tree, "2024/06_June/03/Panaji"); p == nil || len(p.Children) != 1 {
+		t.Error("Panaji was outside the range and must be untouched")
+	}
+}
+
+// TestJumpSameDepthCrossesBranches covers [n]/[N]: the cursor hops to the next
+// row at its own indent depth wherever that is, so a deep tree is walkable
+// without scrolling through every folder's contents — and [V] plus [n] can
+// select one level across several branches.
+func TestJumpSameDepthCrossesBranches(t *testing.T) {
+	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+	// rows: 0=2023 1=April 2=Indore 3=iPhone 4=August 5=Indore 6=iPhone
+	m.cursor = 2 // April's Indore, depth 2
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	rm := next.(reviewModel)
+	if rm.cursor != 5 {
+		t.Fatalf("cursor = %d, want 5 (August's Indore — the next row at depth 2)", rm.cursor)
+	}
+	if rm.statusIsErr {
+		t.Errorf("unexpected error status: %q", rm.statusMsg)
+	}
+
+	// N goes back
+	back, _ := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
+	if got := back.(reviewModel).cursor; got != 2 {
+		t.Errorf("cursor = %d after N, want 2", got)
+	}
+}
+
+// TestJumpSameDepthStopsAtTheEnds covers the no-wrap guard: past the last row
+// at this level it says so instead of silently looping to the top.
+func TestJumpSameDepthStopsAtTheEnds(t *testing.T) {
+	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+	m.cursor = 5 // the last depth-2 row
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	rm := next.(reviewModel)
+
+	if rm.cursor != 5 {
+		t.Errorf("cursor moved to %d, want to stay at 5", rm.cursor)
+	}
+	if !rm.statusIsErr {
+		t.Errorf("expected a flagged 'no more folders at this level', got %q", rm.statusMsg)
+	}
+}
+
+// TestJumpSameDepthExtendsAVisualSelection covers the reason [n] earns its
+// key: V, then n, selects a whole level across branches without arrowing
+// through the folders in between.
+func TestJumpSameDepthExtendsAVisualSelection(t *testing.T) {
+	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+	m.cursor = 2
+	m.visualMode, m.visualAnchor = true, 2
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	rm := next.(reviewModel)
+
+	sel := rm.selectedRows()
+	if len(sel) != 2 {
+		t.Fatalf("selected %d rows, want both Indore folders", len(sel))
+	}
+	for _, r := range sel {
+		if r.node.Name != "Indore" {
+			t.Errorf("selected %q, want only the depth-2 Indore rows", r.node.Name)
+		}
+	}
+}
+
+// TestStructuralEditsKeepNameOrder covers the reported "the merge deleted my
+// folder": the merged node was appended to the end of its parent's children,
+// so a 575-file day jumped below its siblings and looked gone. Every level
+// stays in the same name order BuildTree emits.
+func TestStructuralEditsKeepNameOrder(t *testing.T) {
+	day := func(n string, files int, kids ...vfs.Node) vfs.Node {
+		return vfs.Node{ID: "2017/12_December/" + n, Name: n, FileCount: files, Children: kids}
+	}
+	tree := []vfs.Node{{ID: "2017", Name: "2017", FileCount: 40, Children: []vfs.Node{
+		{ID: "2017/12_December", Name: "12_December", FileCount: 40, Children: []vfs.Node{
+			day("16", 4), day("20", 12), day("21", 20), day("22", 3), day("25", 1),
+		}},
+	}}}
+	m := newReviewModel(tree, nil, nil, uuid.Nil, nil, nil)
+	// rows: 0=2017 1=12_December 2=16 3=20 4=21 5=22 6=25 — merge 21 and 22
+	m.visualAnchor, m.cursor, m.visualMode = 4, 5, true
+	m.mergeSelection()
+
+	dec := findNodeByID(m.tree, "2017/12_December")
+	var names []string
+	for _, c := range dec.Children {
+		names = append(names, c.Name)
+	}
+	if !slices.IsSorted(names) {
+		t.Errorf("December children = %v, want name order — an appended merge result reads as a deleted folder", names)
+	}
+	if len(names) != 4 || names[2] != "21" {
+		t.Errorf("children = %v, want the merged 21 back in its sorted position", names)
+	}
+	// and the cursor follows the merged folder rather than staying on an index
+	if m.rows[m.cursor].node.ID != "2017/12_December/21" {
+		t.Errorf("cursor is on %q, want the merged folder", m.rows[m.cursor].node.ID)
+	}
+}
+
+// TestDropKeepsNameOrder covers the same for lifted children.
+func TestDropKeepsNameOrder(t *testing.T) {
+	m := newReviewModel(dayWithLocationsTree(), nil, nil, uuid.Nil, nil, nil)
+	m.visualAnchor, m.cursor, m.visualMode = 3, 11, true
+	m.dropFolders(m.selectedRows())
+
+	day := findNodeByID(m.tree, "2024/06_June/03")
+	var ids []string
+	for _, c := range day.Children {
+		ids = append(ids, c.ID)
+	}
+	var names []string
+	for _, c := range day.Children {
+		names = append(names, c.Name)
+	}
+	if !slices.IsSorted(names) {
+		t.Errorf("lifted children = %v (%v), want name order", names, ids)
 	}
 }
