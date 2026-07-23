@@ -20,7 +20,6 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
-	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -70,7 +69,7 @@ func (v *VFS) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	}
 
 	deriveAll(masters)
-	v.resolveLocations(ctx, masters)
+	v.resolveLocations(ctx, masters, labels)
 	clusterAndSuggest(masters, labels, v.cfg.ClusterGap)
 	v.applyNameCase(masters)
 	v.buildTargets(masters)
@@ -99,7 +98,8 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 		SELECT fr.id, fr.file_dir, fr.file_name, fr.media_type, fr.file_extension, fr.file_modified_at,
 			fm.exif_image_width, fm.exif_image_height, fm.exif_orientation,
 			fm.exif_gps_latitude, fm.exif_gps_longitude,
-			fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date
+			fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date,
+			fm.exif_creation_date
 		FROM live_files fr
 		JOIN file_metadata fm ON fm.file_id = fr.id
 		WHERE fm.is_master = 1
@@ -115,7 +115,7 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 func (v *VFS) loadLabels(ctx context.Context) ([]userLabel, error) {
 	var labels []userLabel
 	if err := v.db.SQL.SelectContext(ctx, &labels,
-		`SELECT label, kind, time_start, time_end FROM user_labels`); err != nil {
+		`SELECT label, kind, time_start, time_end, gps_lat, gps_lon FROM user_labels`); err != nil {
 		return nil, fmt.Errorf("query user labels: %w", err)
 	}
 	return labels, nil
@@ -128,7 +128,15 @@ func deriveAll(masters []masterFile) {
 	for i := range masters {
 		m := &masters[i]
 
-		m.takenAt = firstTime(deref(m.DBDateTaken), deref(m.DBCreateDate), m.ModifiedAt)
+		// CreationDate (QuickTime's composite, iOS videos only) carries its own
+		// timezone offset; every other candidate here is a naive local
+		// wall-clock string. Parsing CreationDate's offset for real would shift
+		// a video hours away from photos taken at the same moment (the offset
+		// gets applied against an assumed-UTC zero point that the naive
+		// strings never had applied to them) — stripped, its wall-clock digits
+		// line back up with them, which is what actually fixes a video landing
+		// in the wrong day/cluster next to its photos.
+		m.takenAt = firstTime(deref(m.DBDateTaken), stripOffset(deref(m.DBCreationDate)), deref(m.DBCreateDate), m.ModifiedAt)
 		if m.DBWidth != nil {
 			m.width = *m.DBWidth
 		}
@@ -149,12 +157,23 @@ func deriveAll(masters []masterFile) {
 	}
 }
 
-// resolveLocations reverse-geocodes every GPS-tagged master.
+// resolveLocations reverse-geocodes every GPS-tagged master, then folds the
+// result into a confirmed home/work anchor when it's within
+// location.MaxDistSquared of one — the same reach Lookup itself accepts a
+// match at — otherwise a home city's own suburbs each get their own folder.
+// ponytail: not a separate per-user radius; revisit if a single reach doesn't
+// fit both dense and sprawling metros.
 // ponytail: serial loop — the resolver caches and singleflights internally;
 // parallelise only if geocoding ever shows up in profiles
-func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile) {
+func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile, labels []userLabel) {
 	if v.resolver == nil {
 		return
+	}
+	var anchors []userLabel
+	for _, l := range labels {
+		if (l.Kind == "ANCHOR_HOME" || l.Kind == "ANCHOR_WORK") && l.GPSLat != nil && l.GPSLon != nil {
+			anchors = append(anchors, l)
+		}
 	}
 	for i := range masters {
 		if ctx.Err() != nil {
@@ -170,6 +189,13 @@ func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile) {
 			continue
 		}
 		m.location = city
+		for _, a := range anchors {
+			dLat, dLon := m.lat-*a.GPSLat, m.lon-*a.GPSLon
+			if dLat*dLat+dLon*dLon <= location.MaxDistSquared {
+				m.location = a.Label
+				break
+			}
+		}
 	}
 }
 
@@ -186,70 +212,43 @@ func (v *VFS) applyNameCase(masters []masterFile) {
 	}
 }
 
-// buildTargets derives the destination path for every master. Capture-group
-// members (Live Photo pairs, RAW+JPG, sidecars) are grouped on the fly and
-// always land in the directory derived from the group's original member
+// buildTargets derives the destination path for every master independently —
+// each file's own derived time/location decides its directory (dirFor), full
+// stop. An earlier version force-grouped files sharing a filename stem (Live
+// Photo HEIC+MOV pairs, RAW+JPG, edited variants, .aae sidecars) into one
+// directory, on the assumption that same-stem meant same-capture. It
+// doesn't: phone/camera filename counters get reused across entirely
+// unrelated shoots (old iPhone photos in particular), so two files sharing a
+// stem aren't reliably the same event — that assumption was forcing
+// unrelated files together. A .aae sidecar with no timestamp of its own
+// falls back to file mtime via deriveAll's takenAt, same as any other file —
+// in practice close enough to its paired photo's own time.
 func (v *VFS) buildTargets(masters []masterFile) {
-	type group struct {
-		leader  int   // index of the ORIGINAL member (or first seen)
-		members []int // indices into masters
-	}
-
-	var groups []*group
-	index := map[string]*group{}
+	taken := map[string]bool{}
 	for i := range masters {
-		m := &masters[i]
-		info := scanner.DeriveCapture(m.FileName, strings.ToLower(m.Extension), m.MediaType)
-		// same source directory + same capture stem = same capture event
-		key := m.FileDir + "|" + info.Key
-		g, ok := index[key]
-		if !ok {
-			g = &group{leader: i}
-			index[key] = g
-			groups = append(groups, g)
-		}
-		if info.Role == scanner.CaptureRoleOriginal {
-			g.leader = i
-		}
-		g.members = append(g.members, i)
-	}
-
-	// collisions: the suffix is decided per capture group so members keep a
-	// common stem and move together. Every final path is reserved, so a
-	// suffixed name can't collide with a stem that already ends in _N
-	memberPath := func(i int, dir, suffix string) string {
+		dir := v.dirFor(&masters[i])
 		name := masters[i].FileName
 		stem := strings.TrimSuffix(name, filepath.Ext(name))
-		return dir + "/" + stem + suffix + filepath.Ext(name)
-	}
-	taken := map[string]bool{}
-	for _, g := range groups {
-		dir := v.dirFor(&masters[g.leader])
+		ext := filepath.Ext(name)
+
+		// suffix only kicks in on a genuine collision — two unrelated files
+		// that independently land on the exact same dir+stem+ext
 		suffix := ""
 		for n := 1; ; n++ {
 			if n > 1 {
 				suffix = fmt.Sprintf("_%d", n)
 			}
-			free := true
-			for _, i := range g.members {
-				if taken[strings.ToLower(memberPath(i, dir, suffix))] {
-					free = false
-					break
-				}
-			}
-			if free {
+			p := dir + "/" + stem + suffix + ext
+			if !taken[strings.ToLower(p)] {
+				masters[i].targetPath = p
+				taken[strings.ToLower(p)] = true
 				break
 			}
-		}
-		for _, i := range g.members {
-			p := memberPath(i, dir, suffix)
-			masters[i].targetPath = p
-			taken[strings.ToLower(p)] = true
 		}
 	}
 }
 
-// dirFor derives the directory segments for one master, honouring slot order
+// dirFor derives the directory segments for one master, honouring GroupBy order
 func (v *VFS) dirFor(m *masterFile) string {
 	if m.takenAt.IsZero() {
 		// ponytail: no usable timestamp at all (should never happen — file
@@ -261,10 +260,10 @@ func (v *VFS) dirFor(m *masterFile) string {
 		strconv.Itoa(m.takenAt.Year()),
 		m.takenAt.Month().String(),
 	}
-	for _, slot := range v.cfg.Slots {
+	for _, level := range v.cfg.GroupBy {
 		seg := ""
-		switch slot {
-		case SlotLocation:
+		switch level {
+		case GroupByLocation:
 			// ladder: resolved city → dated event segment → device → fallback
 			switch {
 			case m.location != "":
@@ -276,9 +275,9 @@ func (v *VFS) dirFor(m *masterFile) string {
 			default:
 				seg = v.cfg.Fallback
 			}
-		case SlotDevice:
+		case GroupByDevice:
 			seg = m.device // skipped when unknown
-		case SlotOrientation:
+		case GroupByOrientation:
 			if m.width > 0 && m.height > 0 { // skipped when dimensions unknown
 				if m.height > m.width {
 					seg = "Vertical"
@@ -286,7 +285,7 @@ func (v *VFS) dirFor(m *masterFile) string {
 					seg = "Horizontal"
 				}
 			}
-		case SlotMedia:
+		case GroupByMedia:
 			if m.MediaType == classifier.MediaTypeVideo {
 				seg = "Videos"
 			} else {
@@ -334,6 +333,19 @@ func (v *VFS) persist(sessionID uuid.UUID, masters []masterFile) (int, error) {
 }
 
 /* small parsing helpers — exiftool values arrive as strings */
+
+// stripOffset removes a trailing timezone offset ("+05:30", "-07:00", "Z")
+// from an exiftool timestamp, so it parses as the same naive wall-clock value
+// every other capture-time tag here is (see the takenAt comment in
+// deriveAll for why). Exiftool's date format uses colons, not hyphens, for
+// the date portion, so the offset is the only '+'/'-' the string ever has.
+func stripOffset(s string) string {
+	s = strings.TrimSuffix(s, "Z")
+	if i := strings.LastIndexAny(s, "+-"); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return s
+}
 
 var looseTimeLayouts = []string{
 	"2006:01:02 15:04:05.999999999-07:00",

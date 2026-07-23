@@ -56,6 +56,9 @@ type CommonMetadata struct {
 	CreateDate       string `json:"CreateDate"`
 	ModifyDate       string `json:"ModifyDate"`
 	DateTimeOriginal string `json:"DateTimeOriginal"`
+	// CreationDate is QuickTime's composite tag (iOS videos only) — unlike
+	// CreateDate, it carries its own timezone offset, e.g. "+05:30"
+	CreationDate string `json:"CreationDate"`
 
 	// --- Exposure (7/11) ---
 	ISO                  string `json:"ISO"`
@@ -143,6 +146,7 @@ func ParseMetadata(ext string, data []byte) (CommonMetadata, error) {
 		CreateDate:       get("CreateDate"),
 		ModifyDate:       get("ModifyDate"),
 		DateTimeOriginal: get("DateTimeOriginal"),
+		CreationDate:     get("CreationDate"),
 
 		ISO:                  get("ISO"),
 		Aperture:             get("Aperture"),

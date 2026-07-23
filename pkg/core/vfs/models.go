@@ -2,12 +2,12 @@ package vfs
 
 import "time"
 
-// Slot names for Config.Slots — the configurable levels below <YEAR>/<MONTH>
+// GroupBy names for Config.GroupBy — the configurable levels below <YEAR>/<MONTH>
 const (
-	SlotLocation    = "location"
-	SlotDevice      = "device"
-	SlotOrientation = "orientation"
-	SlotMedia       = "media"
+	GroupByLocation    = "location"
+	GroupByDevice      = "device"
+	GroupByOrientation = "orientation"
+	GroupByMedia       = "media"
 )
 
 // Suggestion provenance stored on virtual_fs_entries.suggestion_source
@@ -32,7 +32,7 @@ const defaultClusterGap = 12 * time.Hour
 
 // Config controls the shape of the proposed hierarchy
 type Config struct {
-	Slots      []string      // ordered slots below <YEAR>/<MONTH>; see Slot* constants
+	GroupBy    []string      // ordered levels below <YEAR>/<MONTH>; see GroupBy* constants
 	Fallback   string        // last-resort path segment when nothing can be derived
 	ClusterGap time.Duration // capture-time gap that starts a new event cluster
 	NameCase   string        // case style for derived names; see Case* constants
@@ -40,7 +40,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Slots:      []string{SlotLocation, SlotOrientation, SlotMedia},
+		GroupBy:    []string{GroupByLocation, GroupByOrientation, GroupByMedia},
 		Fallback:   "Unsorted",
 		ClusterGap: defaultClusterGap,
 		NameCase:   CaseTitle,
@@ -58,15 +58,16 @@ type masterFile struct {
 	ModifiedAt string `db:"file_modified_at"`
 
 	// metadata persisted during hashing
-	DBWidth       *int64   `db:"exif_image_width"`
-	DBHeight      *int64   `db:"exif_image_height"`
-	DBOrientation *int64   `db:"exif_orientation"`
-	DBLat         *float64 `db:"exif_gps_latitude"`
-	DBLon         *float64 `db:"exif_gps_longitude"`
-	DBMake        *string  `db:"exif_make"`
-	DBModel       *string  `db:"exif_model"`
-	DBDateTaken   *string  `db:"exif_date_time_original"`
-	DBCreateDate  *string  `db:"exif_create_date"`
+	DBWidth        *int64   `db:"exif_image_width"`
+	DBHeight       *int64   `db:"exif_image_height"`
+	DBOrientation  *int64   `db:"exif_orientation"`
+	DBLat          *float64 `db:"exif_gps_latitude"`
+	DBLon          *float64 `db:"exif_gps_longitude"`
+	DBMake         *string  `db:"exif_make"`
+	DBModel        *string  `db:"exif_model"`
+	DBDateTaken    *string  `db:"exif_date_time_original"`
+	DBCreateDate   *string  `db:"exif_create_date"`
+	DBCreationDate *string  `db:"exif_creation_date"`
 
 	absPath          string
 	takenAt          time.Time
@@ -83,9 +84,12 @@ type masterFile struct {
 }
 
 // userLabel is a confirmed name from a previous review, read for suggestions
+// (EVENT) or to fold nearby suburbs into one anchor city (ANCHOR_HOME/WORK)
 type userLabel struct {
-	Label     string  `db:"label"`
-	Kind      string  `db:"kind"`
-	TimeStart *string `db:"time_start"`
-	TimeEnd   *string `db:"time_end"`
+	Label     string   `db:"label"`
+	Kind      string   `db:"kind"`
+	TimeStart *string  `db:"time_start"`
+	TimeEnd   *string  `db:"time_end"`
+	GPSLat    *float64 `db:"gps_lat"`
+	GPSLon    *float64 `db:"gps_lon"`
 }

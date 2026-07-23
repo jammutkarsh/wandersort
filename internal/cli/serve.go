@@ -43,6 +43,8 @@ wandersort serve --port 8080`,
 	}
 
 	cmd.Flags().StringP(flagPort, "p", "", "HTTP listen port (env: PORT)")
+	cmd.Flags().StringSlice(flagGroupBy, nil,
+		`Folder levels below Year/Month new proposals will use, i.e. group by (repeatable or comma-separated): location, orientation, device, media, or "none" for flat Year/Month`)
 	return cmd
 }
 

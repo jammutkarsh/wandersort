@@ -103,7 +103,11 @@ func TestReviewConfirmRejectsUnknownID(t *testing.T) {
 	}
 }
 
-func TestReviewConfirmRejectsCollidingRenames(t *testing.T) {
+// TestReviewConfirmMergesCollidingRenames covers the real case a user hit:
+// two separate unresolved date clusters turn out to be the same place.
+// Renaming both to the same name is a deliberate merge, not an error — both
+// dirs collapse onto one final path and get one deduped EVENT label.
+func TestReviewConfirmMergesCollidingRenames(t *testing.T) {
 	h := newHarness(t)
 	// two unlocated clusters days apart → two sibling event dirs under June
 	h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
@@ -132,9 +136,96 @@ func TestReviewConfirmRejectsCollidingRenames(t *testing.T) {
 	suggested[0].Name = "Manali"
 	suggested[1].Name = "Manali"
 
-	err = Confirm(ctx, h.sessionID, h.d, tree)
-	if !errors.Is(err, ErrInvalidTree) {
-		t.Fatalf("err = %v, want ErrInvalidTree for colliding renames", err)
+	if err := Confirm(ctx, h.sessionID, h.d, tree); err != nil {
+		t.Fatalf("Confirm merge: %v", err)
+	}
+
+	var targets []string
+	if err := h.d.SQL.Select(&targets,
+		`SELECT DISTINCT target_path FROM virtual_fs_entries WHERE session_id = ?`, h.sessionID.String()); err != nil {
+		t.Fatal(err)
+	}
+	for _, tp := range targets {
+		if !strings.Contains(tp, "/Manali/") {
+			t.Errorf("target_path = %q, want merged under Manali", tp)
+		}
+	}
+
+	var labels []struct {
+		Label string `db:"label"`
+	}
+	if err := h.d.SQL.Select(&labels, `SELECT label FROM user_labels WHERE kind = 'EVENT'`); err != nil {
+		t.Fatal(err)
+	}
+	if len(labels) != 1 || labels[0].Label != "Manali" {
+		t.Fatalf("labels = %+v, want exactly one deduped Manali EVENT label", labels)
+	}
+}
+
+// dropNodeByID removes a node from the tree entirely, the way the review TUI's
+// merge does once it has folded that node into a sibling.
+func dropNodeByID(nodes []Node, id string) []Node {
+	out := nodes[:0]
+	for _, n := range nodes {
+		if n.ID == id {
+			continue
+		}
+		n.Children = dropNodeByID(n.Children, id)
+		out = append(out, n)
+	}
+	return out
+}
+
+// TestReviewConfirmRemapsMergedIDs covers the review TUI's merge: the folded-
+// away node is gone from the submitted tree, so MergedIDs on the survivor is
+// the only thing telling Confirm its files still need remapping — without it
+// they'd silently keep their old target_path.
+func TestReviewConfirmRemapsMergedIDs(t *testing.T) {
+	h := newHarness(t)
+	h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
+	h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
+	h.build(t, DefaultConfig(), &fakeGeo{cities: map[int]string{}})
+
+	ctx := context.Background()
+	tree, err := BuildTree(ctx, h.sessionID, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var suggested []*Node
+	var collect func(nodes []Node)
+	collect = func(nodes []Node) {
+		for i := range nodes {
+			if len(nodes[i].Suggestions) > 0 {
+				suggested = append(suggested, &nodes[i])
+			}
+			collect(nodes[i].Children)
+		}
+	}
+	collect(tree)
+	if len(suggested) < 2 {
+		t.Fatalf("want two sibling suggestion nodes, got %d", len(suggested))
+	}
+	foldedID := suggested[1].ID
+	suggested[0].Name = "Manali"
+	suggested[0].MergedIDs = []string{foldedID}
+	tree = dropNodeByID(tree, foldedID)
+
+	if err := Confirm(ctx, h.sessionID, h.d, tree); err != nil {
+		t.Fatalf("Confirm merge: %v", err)
+	}
+
+	var targets []string
+	if err := h.d.SQL.Select(&targets,
+		`SELECT target_path FROM virtual_fs_entries WHERE session_id = ?`, h.sessionID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("got %d entries, want 2", len(targets))
+	}
+	for _, tp := range targets {
+		if !strings.Contains(tp, "/Manali/") {
+			t.Errorf("target_path = %q, want merged under Manali", tp)
+		}
 	}
 }
 

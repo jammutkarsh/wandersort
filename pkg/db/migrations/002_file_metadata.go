@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS file_metadata (
     exif_model              TEXT,
     exif_date_time_original TEXT,
     exif_create_date        TEXT,
+    -- QuickTime's composite CreationDate (iOS videos) — the one capture-time
+    -- tag that carries its own UTC offset. exif_create_date for a video is
+    -- QuickTime's raw (UTC) CreateDate with no offset attached, which reads
+    -- hours off from sibling photos' local-time exif_date_time_original;
+    -- this is what actually lines a video's wall-clock time back up with them
+    exif_creation_date      TEXT,
 
     -- every file is a master by default; the scorer demotes the losers of
     -- each duplicate group, solo files are never touched

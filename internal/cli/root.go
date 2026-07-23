@@ -9,6 +9,7 @@ import (
 	"github.com/jammutkarsh/wandersort/internal/api/admin"
 	"github.com/jammutkarsh/wandersort/internal/api/pipeline"
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
@@ -29,7 +30,19 @@ const (
 	flagPort       = "port"
 	flagYes        = "yes"
 	flagVertical   = "vertical"
+	flagGroupBy    = "group-by"
+
+	// groupByNone is the --group-by sentinel for "no levels below Year/Month"
+	groupByNone = "none"
 )
+
+// validGroupBy are the recognized --group-by tokens, beyond groupByNone
+var validGroupBy = map[string]bool{
+	vfs.GroupByLocation:    true,
+	vfs.GroupByDevice:      true,
+	vfs.GroupByOrientation: true,
+	vfs.GroupByMedia:       true,
+}
 
 type App struct {
 	Config           *config.Configuration
@@ -153,10 +166,32 @@ func init() {
 	v.SetDefault(flagPaths, []string{})
 	v.SetDefault(flagWorkers, 0)
 	v.SetDefault(flagYes, false)
-	// Bind the only hyphenated flag explicitly; AutomaticEnv covers the rest,
+	v.SetDefault(flagGroupBy, []string{})
+	// Bind the hyphenated flags explicitly; AutomaticEnv covers the rest,
 	// whose env names already match their uppercased flag (WORKERS, PORT, ...).
 	v.BindEnv(flagOutputPath, "OUTPUT_PATH")
+	v.BindEnv(flagGroupBy, "GROUP_BY")
 	v.AutomaticEnv()
+}
+
+// loadGlobalConfigFile ensures ~/.wandersort/config.yaml exists (writing the
+// commented template the first time any command runs) and points viper at
+// it, so its keys (output-path, workers, debug, group-by, anchors, ...) layer
+// between env and default (viper's normal config-file precedence: flag > env
+// > config file > default). Every command creates it, not just `setup`/
+// `config`, so the file — and its explanatory comments — is always there for
+// a user to find and edit, not a thing they have to know to create first.
+func loadGlobalConfigFile() error {
+	path, err := config.EnsureGlobalConfigFile()
+	if err != nil {
+		return fmt.Errorf("global config: %w", err)
+	}
+	v.SetConfigFile(path)
+	v.SetConfigType("yaml")
+	if err := v.ReadInConfig(); err != nil {
+		return fmt.Errorf("read config file %s: %w", path, err)
+	}
+	return nil
 }
 
 func (a *App) Execute() error {
@@ -192,7 +227,12 @@ Flags take precedence over environment variables.`,
 			if err := v.BindPFlags(cmd.Flags()); err != nil {
 				return err
 			}
-			a.applyOverrides()
+			if err := loadGlobalConfigFile(); err != nil {
+				return err
+			}
+			if err := a.applyOverrides(); err != nil {
+				return err
+			}
 			// Build logger after overrides so --debug and --output-path take effect
 			a.Log = logger.New(a.Config.LogLevel, a.Config.LogConsole, a.Config.LogFile)
 			return nil
@@ -203,6 +243,7 @@ Flags take precedence over environment variables.`,
 	rootCmd.PersistentFlags().Bool(flagDebug, false, "Enable debug logging")
 
 	rootCmd.AddCommand(a.newSetupCmd())
+	rootCmd.AddCommand(a.newConfigCmd())
 	rootCmd.AddCommand(a.newScanCmd())
 	rootCmd.AddCommand(a.newServeCmd())
 	rootCmd.AddCommand(a.newReviewCmd())
@@ -230,9 +271,14 @@ Where to ideally store the generated scripts:
 	return rootCmd
 }
 
-// applyOverrides layers ENV and CLI flag values over the config defaults.
-// Precedence: flag > env > default (viper resolves flag/env; defaults come from config.Defaults).
-func (a *App) applyOverrides() {
+// applyOverrides layers ENV, config-file, and CLI flag values over the config
+// defaults. Precedence: flag > env > config file (~/.wandersort/config.yaml,
+// edit with `wandersort config`) > default — viper resolves flag/env/file;
+// defaults come from config.Defaults(). output-path, workers, debug, and
+// group-by can all be set in the config file (see pkg/config/global.go's
+// configTemplate); anchors are the one setting viper doesn't manage —
+// they're read/written directly via pkg/config's Global struct.
+func (a *App) applyOverrides() error {
 	if outputPath := v.GetString(flagOutputPath); outputPath != "" {
 		outputPath = path.New().ExpandPath(outputPath)
 		a.Config.AppDBPath = filepath.Join(outputPath, config.DefaultDBFileName)
@@ -247,4 +293,13 @@ func (a *App) applyOverrides() {
 	if port := v.GetString(flagPort); port != "" {
 		a.Config.ServerPort = port
 	}
+	if groupBy := v.GetStringSlice(flagGroupBy); len(groupBy) > 0 {
+		for _, s := range groupBy {
+			if s != groupByNone && !validGroupBy[s] {
+				return fmt.Errorf("invalid --group-by value %q (want location, orientation, device, media, or none)", s)
+			}
+		}
+		a.Config.GroupBy = groupBy
+	}
+	return nil
 }

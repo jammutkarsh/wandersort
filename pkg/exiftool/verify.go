@@ -150,7 +150,7 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 	// means either corruption or tampering, so re-download either way
 	if _, err := os.Stat(archiveName); err == nil {
 		if sum, err := utils.SHA256File(archiveName); err == nil && sum == fileMeta.SHA256 {
-			log.Info("exiftool checksum verified", "path", archiveName, "hash", sum)
+			log.Info("exiftool checksum verified", logger.UserKey, true, "path", archiveName, "hash", sum)
 			log.Info("using cached archive", "path", archiveName)
 		} else {
 			log.Warn("cached archive checksum mismatch; re-downloading", "path", archiveName)
@@ -172,7 +172,7 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 		os.Remove(archiveName)
 		return fmt.Errorf("checksum mismatch for %s: got %s, want %s", fileMeta.Name, sum, fileMeta.SHA256)
 	}
-	log.Info("exiftool checksum verified", "path", archiveName, "hash", sum)
+	log.Info("exiftool checksum verified", logger.UserKey, true, "path", archiveName, "hash", sum)
 
 	if err := extractTarGz(archiveName, binDir); err != nil {
 		return fmt.Errorf("extract: %w", err)

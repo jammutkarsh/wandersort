@@ -25,6 +25,10 @@ type Configuration struct {
 	LogFile        string
 	Workers        int
 	ExecutablePath string
+	// GroupBy overrides vfs.DefaultConfig's GroupBy when non-empty; "none"
+	// means no levels at all (flat Year/Month). Validated against
+	// vfs.GroupBy* in cli.
+	GroupBy []string
 }
 
 // Defaults returns a Configuration populated with hardcoded defaults only.

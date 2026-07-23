@@ -19,4 +19,8 @@ var (
 	Header  = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	Dim     = lipgloss.NewStyle().Foreground(colorDim)
 	Desc    = lipgloss.NewStyle().Foreground(colorMuted)
+	// Selected marks a whole line as part of an active multi-row selection
+	// (e.g. the review TUI's visual-select) — a background highlight reads
+	// far clearer across a whole row than a marker character in one column.
+	Selected = lipgloss.NewStyle().Background(colorAccent).Foreground(lipgloss.Color("0"))
 )

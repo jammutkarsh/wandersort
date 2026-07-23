@@ -123,6 +123,13 @@ func (kind workflowPhaseKind) status() phaseStatus {
 // NewWorkflow creates a new workflow instance
 func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration, exiftoolPath string, opts ...Option) *Workflow {
 	log.Info("Pipeline configured", "workers", cfg.Workers)
+	vfsCfg := vfs.DefaultConfig()
+	switch {
+	case len(cfg.GroupBy) == 1 && cfg.GroupBy[0] == "none":
+		vfsCfg.GroupBy = nil
+	case len(cfg.GroupBy) > 0:
+		vfsCfg.GroupBy = cfg.GroupBy
+	}
 	wf := &Workflow{
 		ctx:              ctx,
 		db:               db,
@@ -130,7 +137,7 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 		scanner:          scanner.New(db, log, cfg.Workers),
 		hasher:           hasher.New(ctx, db, log, exiftoolPath, cfg.Workers),
 		scorer:           scorer.New(db, log),
-		vfs:              vfs.New(db, locationResolver, log, vfs.DefaultConfig()),
+		vfs:              vfs.New(db, locationResolver, log, vfsCfg),
 		log:              log,
 		path:             path.New(),
 		outputDir:        filepath.Dir(cfg.AppDBPath),
@@ -366,7 +373,7 @@ func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhaseKind, phaseFunc 
 
 	wf.db.Writer.Flush()
 
-	wf.log.Info(fmt.Sprintf("%s phase took %s", phase, elapsed.Round(time.Millisecond)), "sessionId", sessionID)
+	wf.log.Info(fmt.Sprintf("%s phase took %s", phase, elapsed.Round(time.Millisecond)), logger.UserKey, true, "sessionId", sessionID)
 
 	if err := wf.setSessionStatus(wf.ctx, sessionID, status.completed); err != nil {
 		msg := fmt.Errorf("failed to set %s status: %w", status.completed, err).Error()

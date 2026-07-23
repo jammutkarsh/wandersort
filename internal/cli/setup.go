@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
-	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/spf13/cobra"
@@ -44,8 +43,12 @@ func (a *App) runSetup() error {
 	if _, err := exiftool.Setup(ctx, a.Log, a.Config.ExecutablePath); err != nil {
 		return fmt.Errorf("exiftool: %w", err)
 	}
-	if err := location.Setup(ctx, a.Log, a.Config.LocationDBPath); err != nil {
+	if err := a.InitLocationResolver(ctx); err != nil {
 		return fmt.Errorf("location db: %w", err)
+	}
+
+	if err := a.promptAndSaveAnchors(ctx); err != nil {
+		return fmt.Errorf("anchors: %w", err)
 	}
 
 	a.Log.Info("Setup complete. You're ready to scan.", logger.UserKey, true)

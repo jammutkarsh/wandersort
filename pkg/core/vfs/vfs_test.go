@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -67,13 +68,13 @@ func (h *harness) addFile(t *testing.T, relPath, mediaType string, meta classifi
 		INSERT INTO file_metadata (file_hash, file_id,
 			exif_image_width, exif_image_height, exif_orientation,
 			exif_gps_latitude, exif_gps_longitude, exif_make, exif_model,
-			exif_date_time_original, exif_create_date)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			exif_date_time_original, exif_create_date, exif_creation_date)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		fmt.Sprintf("hash-%d", id), id,
 		db.IntOrNil(meta.ImageWidth), db.IntOrNil(meta.ImageHeight), db.IntOrNil(meta.Orientation),
 		db.FloatOrNil(meta.GPSLatitude), db.FloatOrNil(meta.GPSLongitude),
 		db.StrOrNil(meta.Make), db.StrOrNil(meta.Model),
-		db.StrOrNil(meta.DateTimeOriginal), db.StrOrNil(meta.CreateDate)); err != nil {
+		db.StrOrNil(meta.DateTimeOriginal), db.StrOrNil(meta.CreateDate), db.StrOrNil(meta.CreationDate)); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -210,21 +211,50 @@ func TestUserLabelSuggestion(t *testing.T) {
 	}
 }
 
+// TestAnchorSuggestion covers a fully unresolved cluster (no GPS at all)
+// falling back to a *confirmed* home/work anchor for its suggestion.
+// anchorCities deliberately no longer falls back to "the library's most
+// frequent city" with no confirmed anchor — see the anchorCities doc comment
+// for why (a real reported bug: an unrelated DSLR photo with no GPS anywhere
+// nearby was "suggested" whatever city happened to dominate the library).
 func TestAnchorSuggestion(t *testing.T) {
 	h := newHarness(t)
-	// hometown files with GPS establish the anchor…
-	h.addFile(t, "home/IMG_0001.HEIC", "IMAGE", metaWith("2024:05:01 10:00:00", 22.7, 75.8, 3024, 4032))
-	h.addFile(t, "home/IMG_0002.HEIC", "IMAGE", metaWith("2024:05:02 10:00:00", 22.7, 75.8, 3024, 4032))
-	// …and a far-later unlocated cluster gets it suggested
+	if _, err := h.d.ExecContext(context.Background(),
+		`INSERT INTO user_labels (label, kind) VALUES ('Indore', 'ANCHOR_HOME')`); err != nil {
+		t.Fatal(err)
+	}
 	u := h.addFile(t, "dump/DSC_0009.JPG", "IMAGE", metaWith("2024:06:20 10:00:00", 0, 0, 4000, 3000))
-	geo := &fakeGeo{cities: map[int]string{22: "Indore"}}
 
-	rows := h.build(t, DefaultConfig(), geo)
+	rows := h.build(t, DefaultConfig(), nil)
 	if rows[u].Suggestion == nil || *rows[u].Suggestion != "Indore" {
 		t.Errorf("suggestion = %v, want 'Indore'", rows[u].Suggestion)
 	}
 	if rows[u].SuggestionSource == nil || *rows[u].SuggestionSource != SuggestionAnchor {
 		t.Errorf("suggestion_source = %v, want ANCHOR", rows[u].SuggestionSource)
+	}
+}
+
+// TestNoAnchorFallsThroughToSourceFolder covers the fixed bug directly: with
+// no confirmed anchor and no matching EVENT label, a fully unresolved cluster
+// must NOT invent a location from library-wide frequency — it should fall
+// through to the next rung (source folder name) instead.
+func TestNoAnchorFallsThroughToSourceFolder(t *testing.T) {
+	h := newHarness(t)
+	// plenty of directly-resolved "Banjar" photos elsewhere in the library —
+	// none of this should leak into the unrelated DSLR cluster below
+	for i := range 5 {
+		h.addFile(t, fmt.Sprintf("phone/IMG_%d.HEIC", i), "IMAGE", metaWith("2024:05:01 10:00:00", 31.6, 77.3, 3024, 4032))
+	}
+	geo := &fakeGeo{cities: map[int]string{31: "Banjar"}}
+
+	u := h.addFile(t, "Diwali 2024/IMG_9001.JPG", "IMAGE", metaWith("2024:08:15 10:00:00", 0, 0, 6000, 4000))
+
+	rows := h.build(t, DefaultConfig(), geo)
+	if rows[u].Suggestion == nil || *rows[u].Suggestion != "Diwali 2024" {
+		t.Errorf("suggestion = %v, want the source folder 'Diwali 2024', not the library's frequent city", rows[u].Suggestion)
+	}
+	if rows[u].SuggestionSource == nil || *rows[u].SuggestionSource != SuggestionSourceFolder {
+		t.Errorf("suggestion_source = %v, want SOURCE_FOLDER", rows[u].SuggestionSource)
 	}
 }
 
@@ -271,33 +301,114 @@ func TestCollisionSuffix(t *testing.T) {
 	}
 }
 
-func TestCaptureGroupMovesTogether(t *testing.T) {
+// TestSameStemDifferentEventsLandSeparately covers a real reported bug: an
+// earlier version force-grouped files sharing a filename stem (assuming
+// same stem = same Live Photo/RAW+JPG capture), but phone/camera filename
+// counters get reused across entirely unrelated shoots — especially old
+// iPhone photos. Two files with the same stem, same source dir, but
+// unrelated capture times must NOT be forced into one directory anymore;
+// each file's own derived time decides its directory independently.
+func TestSameStemDifferentEventsLandSeparately(t *testing.T) {
 	h := newHarness(t)
-	// Live Photo pair: HEIC original + MOV live video share the capture stem
+	a := h.addFile(t, "d/IMG_0042.HEIC", "IMAGE", metaWith("2019:03:01 10:00:00", 0, 0, 3024, 4032))
+	b := h.addFile(t, "d/IMG_0042.MOV", "VIDEO", metaWith("2021:11:15 18:00:00", 0, 0, 1920, 1080))
+
+	rows := h.build(t, DefaultConfig(), nil)
+	dirA := filepath.Dir(rows[a].TargetPath)
+	dirB := filepath.Dir(rows[b].TargetPath)
+	if dirA == dirB {
+		t.Errorf("same-stem files from unrelated shoots landed in the same dir %q — capture-group forcing should be gone", dirA)
+	}
+}
+
+// TestSameStemSameCaptureStillCoLocatesByOwnAttributes covers the case that
+// used to need forced grouping (a real Live Photo pair, same moment, same
+// GPS): with GroupBy excluding media type, both members still land in the
+// same directory purely because their own derived location/date agree —
+// no stem-based special-casing required to get the intuitive result.
+func TestSameStemSameCaptureStillCoLocatesByOwnAttributes(t *testing.T) {
+	h := newHarness(t)
 	a := h.addFile(t, "d/IMG_0042.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5, 73.8, 3024, 4032))
 	b := h.addFile(t, "d/IMG_0042.MOV", "VIDEO", metaWith("2024:06:03 10:00:00", 15.5, 73.8, 1920, 1080))
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 
-	rows := h.build(t, DefaultConfig(), geo)
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation} // no media split, so a real Live Photo pair still co-locates
+	rows := h.build(t, cfg, geo)
+
 	dirA := filepath.Dir(rows[a].TargetPath)
 	dirB := filepath.Dir(rows[b].TargetPath)
 	if dirA != dirB {
-		t.Errorf("capture group split across %q and %q", dirA, dirB)
+		t.Errorf("same-moment, same-GPS pair split across %q and %q", dirA, dirB)
 	}
 }
 
-func TestCustomSlotOrder(t *testing.T) {
+// TestSidecarWithNoOwnTimestampFallsBackToModTime covers .aae-style sidecars:
+// with no independent EXIF timestamp, deriveAll's takenAt falls back to file
+// mtime like any other file — no stem-matching to a "paired" photo needed.
+func TestSidecarWithNoOwnTimestampFallsBackToModTime(t *testing.T) {
+	h := newHarness(t)
+	id := h.addFile(t, "d/IMG_0042.AAE", "SIDECAR", classifier.CommonMetadata{})
+
+	rows := h.build(t, DefaultConfig(), nil)
+	if rows[id].TargetPath == "" {
+		t.Fatal("expected a target path derived from file mtime, got none")
+	}
+}
+
+func TestCustomGroupByOrder(t *testing.T) {
 	h := newHarness(t)
 	id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5, 73.8, 3024, 4032))
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 
 	cfg := DefaultConfig()
-	cfg.Slots = []string{SlotMedia, SlotLocation}
+	cfg.GroupBy = []string{GroupByMedia, GroupByLocation}
 	rows := h.build(t, cfg, geo)
 
 	want := "2024/June/Photos/Goa/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
 		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
+	}
+}
+
+// TestEmptyGroupByIsFlatYearMonth covers the --group-by none CLI option
+// (workflow translates that sentinel to an empty GroupBy slice before
+// reaching here).
+func TestEmptyGroupByIsFlatYearMonth(t *testing.T) {
+	h := newHarness(t)
+	id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5, 73.8, 3024, 4032))
+	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
+
+	cfg := DefaultConfig()
+	cfg.GroupBy = nil
+	rows := h.build(t, cfg, geo)
+
+	want := "2024/June/IMG_0001.HEIC"
+	if rows[id].TargetPath != want {
+		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
+	}
+}
+
+// TestAnchorFoldsNearbySuburb covers the home/work anchor override: a
+// directly-resolved GPS location within location.MaxDistSquared of a
+// confirmed ANCHOR_HOME/WORK label is replaced by the anchor's name, so a
+// metro's suburbs land in one folder instead of fragmenting by neighbourhood.
+func TestAnchorFoldsNearbySuburb(t *testing.T) {
+	h := newHarness(t)
+	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 28.60, 77.20, 3024, 4032))
+	geo := &fakeGeo{cities: map[int]string{28: "Some Suburb"}}
+
+	if _, err := h.d.ExecContext(context.Background(),
+		`INSERT INTO user_labels (label, kind, gps_lat, gps_lon) VALUES (?, 'ANCHOR_HOME', ?, ?)`,
+		"Delhi", 28.61, 77.21); err != nil {
+		t.Fatal(err)
+	}
+
+	rows := h.build(t, DefaultConfig(), geo)
+
+	want := "2024/June/Delhi/Vertical/Photos/IMG_0001.HEIC"
+	if rows[id].TargetPath != want {
+		t.Errorf("target = %q, want %q (anchor should fold the nearby suburb)", rows[id].TargetPath, want)
 	}
 }
 
@@ -349,6 +460,42 @@ func TestNameCase(t *testing.T) {
 				t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 			}
 		})
+	}
+}
+
+func TestStripOffset(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"2024:06:03 14:00:00+05:30", "2024:06:03 14:00:00"},
+		{"2024:06:03 14:00:00-07:00", "2024:06:03 14:00:00"},
+		{"2024:06:03 14:00:00Z", "2024:06:03 14:00:00"},
+		{"2024:06:03 14:00:00", "2024:06:03 14:00:00"},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		if got := stripOffset(tc.in); got != tc.want {
+			t.Errorf("stripOffset(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestTakenAtPrefersCreationDateOverCreateDateForVideo covers a real reported
+// bug: a video's CreateDate is QuickTime's raw (UTC, no offset) timestamp,
+// which reads hours off from a photo taken at the exact same moment. iOS
+// videos also carry CreationDate, which does have an offset — stripped (not
+// applied, since every sibling timestamp here is naive local wall-clock) it
+// lines the video's derived time back up with photos from the same moment,
+// instead of shifting it into a different day/cluster.
+func TestTakenAtPrefersCreationDateOverCreateDateForVideo(t *testing.T) {
+	createDate := "2024:06:03 08:30:00"         // QuickTime's raw UTC CreateDate
+	creationDate := "2024:06:03 14:00:00+05:30" // same real instant, offset-aware
+	masters := []masterFile{{DBCreateDate: &createDate, DBCreationDate: &creationDate}}
+
+	deriveAll(masters)
+
+	want := time.Date(2024, time.June, 3, 14, 0, 0, 0, time.UTC)
+	if !masters[0].takenAt.Equal(want) {
+		t.Errorf("takenAt = %v, want %v (CreationDate's wall-clock time, offset stripped, not CreateDate's UTC-shifted one)",
+			masters[0].takenAt, want)
 	}
 }
 

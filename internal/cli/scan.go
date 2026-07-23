@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
@@ -38,11 +39,14 @@ wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
 
 	cmd.Flags().StringSliceP(flagPaths, "p", nil, "Directories to scan (repeatable, or comma-separated)")
 	cmd.Flags().IntP(flagWorkers, "w", 0, "Concurrent worker count")
+	cmd.Flags().StringSlice(flagGroupBy, nil,
+		`Folder levels below Year/Month the proposal will use, i.e. group by (repeatable or comma-separated): location, orientation, device, media, or "none" for flat Year/Month. Can also be changed later, per-session, from 'wandersort review' ([L] key)`)
 	cmd.MarkFlagRequired(flagPaths)
 	return cmd
 }
 
 func (a *App) runScan(paths []string) error {
+	start := time.Now()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -53,6 +57,10 @@ func (a *App) runScan(paths []string) error {
 		return err
 	}
 	defer a.Close()
+
+	if err := a.syncAnchorsFromConfig(ctx); err != nil {
+		return fmt.Errorf("anchors: %w", err)
+	}
 
 	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
 	if err != nil {
@@ -72,6 +80,7 @@ func (a *App) runScan(paths []string) error {
 	if outputPath := v.GetString(flagOutputPath); outputPath != "" {
 		hint = fmt.Sprintf("wandersort review -o %s", outputPath)
 	}
-	a.Log.Info(fmt.Sprintf("Scan complete. Run '%s' to review the proposed folders.", hint), logger.UserKey, true, "sessionId", sessionID, "scanPaths", scanPaths)
+	a.Log.Info(fmt.Sprintf("Scan complete in %s. Run '%s' to review the proposed folders.", time.Since(start).Round(time.Millisecond), hint),
+		logger.UserKey, true, "sessionId", sessionID, "scanPaths", scanPaths)
 	return nil
 }
