@@ -87,7 +87,10 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     depth into one node under their lowest common ancestor**
     (`mergeSelection`, `commonPathPrefix` + `findNodeByID`/`removeChildByID` —
     a real tree-splice, not just a rename), named after the first one's
-    resolved name, with the summed `FileCount`. **Anchor depth is the
+    **own** name — or the rename the reviewer typed on it, never its
+    suggestion (an offer nobody accepted; broadcasting one put a name on the
+    merged folder that came from no visible choice) — with the summed
+    `FileCount`. **Anchor depth is the
     selection rule** — rows deeper than the row `V` was pressed on are that
     folder's own contents and ride along; shallower ones are scaffolding
     spanned to reach the next branch. One rule covers both shapes: leaves from
@@ -115,16 +118,23 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     merged. Single-level undo (`u`) snapshots the whole tree
     (`deepCloneNodes`) before the splice, since a structural edit can't be
     undone by restoring per-row name strings the way a plain rename-merge
-    could. `d`/`D` **drop a grouping level the reviewer doesn't want**
-    (`deleteFolders`): `d` drops the folder under the cursor, `D` drops every
-    folder at that depth across the whole tree (the reported case — the same
-    `Indore`/`Apple iPhone 13` pair repeated under every month, worthless as a
-    level). Deleted folders' children are lifted onto the parent and the
-    deleted ID (plus anything already folded into it) goes onto the parent's
-    `MergedIDs`, so files sitting *directly* in the dropped folder remap up
-    too — same machinery as merge. Top-level (Year) rows are refused: their
-    files would land in the library root. Deletion is undoable via the same
-    `[u]` snapshot. `L` cycles a fixed set of
+    could. `d`/`D` **remove nesting the reviewer doesn't want**, both anchored
+    on the cursor row — nothing acts tree-wide:
+    - `d` (`dropFolder`) drops **that one folder**, lifting its children onto
+      its parent. Refused on a top-level (Year) row: its files would land in
+      the library root.
+    - `D` (`flattenFolder`) collapses **everything below** that folder into
+      it, so the whole subtree's files sit directly in it and the folder
+      itself stays. Works on a Year, since the Year survives to hold them.
+      `2023/April/Indore/Apple iPhone 13` flattened at April is
+      `2023/April` with all ten files. `FileCount` is unchanged — it already
+      counted the subtree.
+
+    Both record the removed IDs (plus anything already folded into them) on
+    the surviving node's `MergedIDs`, so files sitting directly in a removed
+    folder remap onto it — same machinery as merge, with `remapUnderMerged`
+    covering anything deeper. Both undo via the same `[u]` snapshot. `L`
+    cycles a fixed set of
     group-by presets and **rebuilds the whole proposal in place**
     (`vfs.New(...).Run` + `BuildTree` — safe mid-review since VFS only reads
     already-hashed masters and replaces the proposal wholesale; resets any
@@ -289,7 +299,17 @@ round-trip would silently erase both.
   is turned into a nil `GroupBy` — `workflow` and `review --rebuild` both go
   through it. The month segment is **number-first (`06_June`)**: a bare month
   name sorts alphabetically, which put `December` above `November` in the
-  review tree and in every file browser. `resolveLocations` folds a directly-resolved GPS city
+  review tree and in every file browser. **The location ladder has no device
+  or `Unsorted` rung**: resolved city → dated event segment (skipped when a
+  `date` level already carries the date) → *nothing*. It used to fall back to
+  the device name, which put a location folder named after the camera right
+  next to the real device folder (`…/Canon EOS 700D/Canon EOS 700D/`) — wrong
+  information, and duplicated. Unknown location now means the level is simply
+  absent for that file, and `suggestion_dir` stays NULL so nothing hangs a
+  suggestion off it. `BuildTree` also **drops a suggestion equal to the
+  folder's own name** (a source folder named after the camera made
+  SOURCE_FOLDER suggest the name already on screen).
+  `resolveLocations` folds a directly-resolved GPS city
   into a *confirmed* `ANCHOR_HOME`/`ANCHOR_WORK` label when within
   `location.MaxDistSquared` (~50km) of it, so a metro's suburbs land in one
   folder instead of fragmenting by neighbourhood — `anchorCities`

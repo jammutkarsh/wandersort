@@ -626,9 +626,9 @@ func (m reviewModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "m":
 		m.mergeSelection()
 	case "d":
-		m.deleteFolders([]*reviewRow{m.rows[m.cursor]}, false)
+		m.dropFolder(m.rows[m.cursor])
 	case "D":
-		m.deleteFolders(m.rowsAtDepth(m.rows[m.cursor].depth), true)
+		m.flattenFolder(m.rows[m.cursor])
 	case "u":
 		if m.lastTree != nil {
 			m.tree = m.lastTree
@@ -713,10 +713,16 @@ func (m *reviewModel) mergeSelection() {
 	leafIDs := map[string]bool{}
 	collectLeafIDs(m.tree, leafIDs)
 
-	target := resolvedName(picks[0].row)
+	// the merged folder takes the first pick's *own* name, or the rename the
+	// reviewer typed on it — never its suggestion. A suggestion is an offer
+	// the reviewer hasn't accepted; broadcasting one across a merge puts a
+	// name on the folder that nobody chose, and it isn't obvious which of the
+	// selected rows it even came from.
+	pending := m.pendingNames()
+	target := finalName(picks[0].value, pending)
 	merged := picks[0].value
 	for _, p := range picks[1:] {
-		mergeInto(&merged, p.value, m.pendingNames())
+		mergeInto(&merged, p.value, pending)
 	}
 	for _, p := range picks {
 		if p.parent != nil {
@@ -727,7 +733,7 @@ func (m *reviewModel) mergeSelection() {
 	m.tree, _ = pruneEmptied(m.tree, leafIDs)
 
 	m.reflow()
-	if row := nodeRowByID(m.rows, merged.ID); row != nil {
+	if row := nodeRowByID(m.rows, merged.ID); row != nil && target != row.node.Name {
 		row.newName = target
 	}
 
@@ -784,66 +790,79 @@ func childByName(parent *vfs.Node, name string, pending map[string]string) *vfs.
 	return nil
 }
 
-// rowsAtDepth returns every row at the given indent depth, in tree order —
-// the whole grouping level [D] deletes at once.
-func (m *reviewModel) rowsAtDepth(depth int) []*reviewRow {
-	var out []*reviewRow
-	for _, r := range m.rows {
-		if r.depth == depth {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
-// deleteFolders removes grouping levels the reviewer doesn't want: each
-// deleted folder's children are lifted onto its parent, and its own ID (plus
-// anything already folded into it) is recorded on the parent's MergedIDs so
-// Confirm remaps the files that sat directly in it up to the parent's path
-// too. Deleting "Apple iPhone 13" then "Indore" under 2023/April leaves
-// April holding the files directly — the group-by level is gone, nothing is
-// lost. Top-level rows are refused: their files have nowhere to go but the
-// library root.
+// dropFolder removes one folder the reviewer doesn't want: its children are
+// lifted onto its parent, and its own ID (plus anything already folded into
+// it) goes onto the parent's MergedIDs so Confirm remaps the files that sat
+// directly in it up to the parent's path too. Dropping "Apple iPhone 13" then
+// "Indore" under 2023/April leaves April holding the files — the group-by
+// level is gone from that branch, nothing is lost.
 //
-// Rows are addressed by parent ID and re-found per deletion, since removing
-// one child reslices the parent's Children and invalidates the row pointers
-// into it. Callers pass rows at a single depth, so no row here is ever an
-// ancestor of another.
-func (m *reviewModel) deleteFolders(targets []*reviewRow, wholeLevel bool) {
-	type deletion struct {
-		parentID string
-		node     vfs.Node
-	}
-	var dels []deletion
-	for _, r := range targets {
-		if r.parent == nil {
-			m.statusMsg, m.statusIsErr = "can't delete a top-level folder — its files would land in the library root", true
-			return
-		}
-		dels = append(dels, deletion{parentID: r.parent.ID, node: *r.node})
-	}
-	if len(dels) == 0 {
+// Top-level rows are refused: their files have nowhere to go but the library
+// root. Use [D] to flatten a Year instead, which keeps the Year itself.
+func (m *reviewModel) dropFolder(r *reviewRow) {
+	if r.parent == nil {
+		m.statusMsg, m.statusIsErr = "can't drop a top-level folder — its files would land in the library root ([D] flattens it instead)", true
 		return
 	}
+	parentID, node := r.parent.ID, *r.node
 
-	m.lastTree, m.lastEdit = deepCloneNodes(m.tree), "delete"
-	for _, d := range dels {
-		parent := findNodeByID(m.tree, d.parentID)
-		if parent == nil {
-			continue
-		}
-		removeChildByID(parent, d.node.ID)
-		parent.Children = append(parent.Children, d.node.Children...)
-		parent.MergedIDs = append(parent.MergedIDs, append([]string{d.node.ID}, d.node.MergedIDs...)...)
+	m.lastTree, m.lastEdit = deepCloneNodes(m.tree), "drop"
+	parent := findNodeByID(m.tree, parentID)
+	if parent == nil {
+		m.statusMsg, m.statusIsErr = "internal error locating the parent folder", true
+		return
 	}
+	removeChildByID(parent, node.ID)
+	parent.Children = append(parent.Children, node.Children...)
+	parent.MergedIDs = append(parent.MergedIDs, append([]string{node.ID}, node.MergedIDs...)...)
 
 	m.reflow()
 	m.visualMode = false
-	what := fmt.Sprintf("deleted folder %q", dels[0].node.Name)
-	if wholeLevel {
-		what = fmt.Sprintf("deleted %d folders at that level", len(dels))
+	m.statusMsg, m.statusIsErr = fmt.Sprintf("dropped %q — its files moved up one level ([u] to undo)", node.Name), false
+}
+
+// flattenFolder collapses everything *below* the cursor's folder into it: the
+// whole subtree's files end up sitting directly in that one folder, and the
+// folder itself stays put. `2023/April/Indore/Apple iPhone 13` flattened at
+// April becomes `2023/April` holding all ten files.
+//
+// Every descendant's ID (and anything already folded into it) is recorded on
+// the surviving node so Confirm remaps their files onto its path —
+// remapUnderMerged also covers anything below them. FileCount already counts
+// the whole subtree, so it doesn't change.
+//
+// Unlike [d] this works on a top-level row: flattening 2023 leaves the files
+// in 2023, not in the library root.
+func (m *reviewModel) flattenFolder(r *reviewRow) {
+	if len(r.node.Children) == 0 {
+		m.statusMsg, m.statusIsErr = "nothing below this folder to flatten", true
+		return
 	}
-	m.statusMsg, m.statusIsErr = what+" — files moved up one level ([u] to undo)", false
+	nodeID := r.node.ID
+
+	m.lastTree, m.lastEdit = deepCloneNodes(m.tree), "flatten"
+	node := findNodeByID(m.tree, nodeID)
+	if node == nil {
+		m.statusMsg, m.statusIsErr = "internal error locating the folder", true
+		return
+	}
+	var absorbed int
+	var absorb func(children []vfs.Node)
+	absorb = func(children []vfs.Node) {
+		for _, c := range children {
+			absorbed++
+			node.MergedIDs = append(node.MergedIDs, c.ID)
+			node.MergedIDs = append(node.MergedIDs, c.MergedIDs...)
+			absorb(c.Children)
+		}
+	}
+	absorb(node.Children)
+	node.Children = nil
+
+	m.reflow()
+	m.visualMode = false
+	m.statusMsg, m.statusIsErr = fmt.Sprintf("flattened %d folders into %q — %d files now sit directly in it ([u] to undo)",
+		absorbed, node.Name, node.FileCount), false
 }
 
 // collectLeafIDs records every childless node's ID, used to tell a real leaf
@@ -1065,7 +1084,7 @@ func (m reviewModel) footer() string {
 }
 
 const keyHelp = "[↑/↓] move  [enter] accept suggestion  [r] rename  [p] peek  [a] accept all  " +
-	"[V] select  [m] merge  [d] drop folder  [D] drop level  [u] undo  [L] layout  [c] save & exit  [q] discard"
+	"[V] select  [m] merge  [d] drop folder  [D] flatten below  [u] undo  [L] layout  [c] save & exit  [q] discard"
 
 /* --- preview: copy up to maxPreviewBytes of a folder's files to a temp dir and open it --- */
 

@@ -295,8 +295,10 @@ func TestMergeSiblingsSucceeds(t *testing.T) {
 		t.Fatalf("expected success, got error status: %q", m.statusMsg)
 	}
 	r03 := nodeByID(m.rows, "2024/June/03")
-	if r03 == nil || r03.newName != "03" {
-		t.Fatalf("want surviving node renamed to %q, got %+v", "03", r03)
+	// the merged folder keeps the first pick's own name, so there is nothing
+	// to rename it to — newName stays empty rather than restating "03"
+	if r03 == nil || r03.node.Name != "03" || r03.newName != "" {
+		t.Fatalf("want the surviving node still named %q with no pending rename, got %+v", "03", r03)
 	}
 	if r09 := nodeByID(m.rows, "2024/June/09"); r09 != nil {
 		t.Error("09 should be folded into 03, not still its own row")
@@ -420,34 +422,28 @@ func groupedTree() []vfs.Node {
 	}}}
 }
 
-// TestDeleteLevelRemovesGroupingEverywhere covers [D]: the reviewer doesn't
-// want the device (then location) breakdown, so the whole level goes at once —
-// every folder at that depth, across all months, not one per keypress.
-func TestDeleteLevelRemovesGroupingEverywhere(t *testing.T) {
+// TestFlattenCollapsesEverythingBelowTheCursor covers [D]: the folder under
+// the cursor absorbs its whole subtree, so all its files sit directly in it.
+// The folder itself stays — only what's below it goes.
+func TestFlattenCollapsesEverythingBelowTheCursor(t *testing.T) {
 	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
 	// rows: 0=2023, 1=April, 2=Indore, 3=iPhone, 4=August, 5=Indore, 6=iPhone
-	m.cursor = 3
+	m.cursor = 1 // April
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
 	rm := next.(reviewModel)
 	if rm.statusIsErr {
-		t.Fatalf("delete device level: %q", rm.statusMsg)
-	}
-	rm.cursor = 2 // April's Indore
-	next2, _ := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
-	rm = next2.(reviewModel)
-	if rm.statusIsErr {
-		t.Fatalf("delete location level: %q", rm.statusMsg)
+		t.Fatalf("flatten April: %q", rm.statusMsg)
 	}
 
-	if len(rm.rows) != 3 {
-		t.Fatalf("got %d rows, want 3 (2023 + two months, nothing below)", len(rm.rows))
-	}
 	april := findNodeByID(rm.tree, "2023/April")
-	if april == nil || len(april.Children) != 0 || april.FileCount != 10 {
-		t.Fatalf("April = %+v, want a childless node still holding 10 files", april)
+	if april == nil || len(april.Children) != 0 {
+		t.Fatalf("April = %+v, want a childless node", april)
 	}
-	// both dropped levels must be remapped, or the files sitting in the
-	// deepest one keep their old target_path when Confirm runs
+	if april.FileCount != 10 {
+		t.Errorf("April FileCount = %d, want 10 (unchanged — it already counted the subtree)", april.FileCount)
+	}
+	// both dropped levels must remap, or the files in the deepest one keep
+	// their old target_path when Confirm runs
 	want := map[string]bool{"2023/April/Indore": false, "2023/April/Indore/Apple iPhone 13": false}
 	for _, id := range april.MergedIDs {
 		if _, ok := want[id]; !ok {
@@ -460,11 +456,51 @@ func TestDeleteLevelRemovesGroupingEverywhere(t *testing.T) {
 			t.Errorf("MergedIDs = %v, missing %q", april.MergedIDs, id)
 		}
 	}
+	// August is untouched — [D] acts on the cursor's subtree, nothing else
+	if aug := findNodeByID(rm.tree, "2023/August/Indore/Apple iPhone 13"); aug == nil {
+		t.Error("August's subtree should be untouched by a flatten on April")
+	}
 }
 
-// TestDeleteSingleFolderLiftsItsChildren covers [d]: one folder, its children
+// TestFlattenWorksOnATopLevelRow covers the difference from [d]: flattening a
+// Year keeps the Year itself, so the files have somewhere to go.
+func TestFlattenWorksOnATopLevelRow(t *testing.T) {
+	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+	m.cursor = 0 // 2023
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	rm := next.(reviewModel)
+
+	if rm.statusIsErr {
+		t.Fatalf("expected success, got %q", rm.statusMsg)
+	}
+	if len(rm.rows) != 1 || rm.rows[0].node.ID != "2023" || rm.rows[0].node.FileCount != 13 {
+		t.Fatalf("rows = %+v, want just 2023 holding all 13 files", rm.rows)
+	}
+	if len(rm.tree[0].MergedIDs) != 6 {
+		t.Errorf("MergedIDs = %v, want all six descendants", rm.tree[0].MergedIDs)
+	}
+}
+
+// TestFlattenLeafIsRejected covers the no-op guard.
+func TestFlattenLeafIsRejected(t *testing.T) {
+	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+	m.cursor = 3 // the deepest row, nothing below it
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	rm := next.(reviewModel)
+
+	if !rm.statusIsErr {
+		t.Errorf("expected a rejection flattening a leaf, got %q", rm.statusMsg)
+	}
+	if len(rm.rows) != 7 {
+		t.Errorf("tree changed on a rejected flatten: %d rows, want 7", len(rm.rows))
+	}
+}
+
+// TestDropSingleFolderLiftsItsChildren covers [d]: one folder, its children
 // reattached to its parent rather than deleted along with it.
-func TestDeleteSingleFolderLiftsItsChildren(t *testing.T) {
+func TestDropSingleFolderLiftsItsChildren(t *testing.T) {
 	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
 	m.cursor = 2 // April's Indore, which still has the device child
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
@@ -478,16 +514,16 @@ func TestDeleteSingleFolderLiftsItsChildren(t *testing.T) {
 		t.Fatalf("April children = %+v, want the lifted device node", april.Children)
 	}
 	if findNodeByID(rm.tree, "2023/August/Indore") == nil {
-		t.Error("[d] deleted more than the cursor's folder — August's Indore should be untouched")
+		t.Error("[d] dropped more than the cursor's folder — August's Indore should be untouched")
 	}
 	if got := april.MergedIDs; len(got) != 1 || got[0] != "2023/April/Indore" {
-		t.Errorf("MergedIDs = %v, want just the deleted folder", got)
+		t.Errorf("MergedIDs = %v, want just the dropped folder", got)
 	}
 }
 
-// TestDeleteTopLevelIsRejected covers the guard: a Year has no parent to lift
+// TestDropTopLevelIsRejected covers the guard: a Year has no parent to lift
 // files into, so dropping it would dump them in the library root.
-func TestDeleteTopLevelIsRejected(t *testing.T) {
+func TestDropTopLevelIsRejected(t *testing.T) {
 	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
 	m.cursor = 0
 
@@ -495,18 +531,18 @@ func TestDeleteTopLevelIsRejected(t *testing.T) {
 	rm := next.(reviewModel)
 
 	if !rm.statusIsErr {
-		t.Errorf("expected rejection deleting a top-level folder, got %q", rm.statusMsg)
+		t.Errorf("expected rejection dropping a top-level folder, got %q", rm.statusMsg)
 	}
 	if len(rm.rows) != 7 {
-		t.Errorf("tree changed on a rejected delete: %d rows, want 7", len(rm.rows))
+		t.Errorf("tree changed on a rejected drop: %d rows, want 7", len(rm.rows))
 	}
 }
 
-// TestUndoRestoresTreeAfterDelete covers [u] on a level delete — same
-// whole-tree snapshot the merge undo uses.
-func TestUndoRestoresTreeAfterDelete(t *testing.T) {
+// TestUndoRestoresTreeAfterFlatten covers [u] on a flatten — same whole-tree
+// snapshot the merge undo uses.
+func TestUndoRestoresTreeAfterFlatten(t *testing.T) {
 	m := newReviewModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
-	m.cursor = 3
+	m.cursor = 1
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
 	rm := next.(reviewModel)
 
@@ -514,10 +550,10 @@ func TestUndoRestoresTreeAfterDelete(t *testing.T) {
 	rm2 := next2.(reviewModel)
 
 	if findNodeByID(rm2.tree, "2023/April/Indore/Apple iPhone 13") == nil {
-		t.Error("device level should be back after undo")
+		t.Error("April's subtree should be back after undo")
 	}
-	if indore := findNodeByID(rm2.tree, "2023/April/Indore"); len(indore.MergedIDs) != 0 {
-		t.Errorf("undo left MergedIDs behind: %v", indore.MergedIDs)
+	if april := findNodeByID(rm2.tree, "2023/April"); len(april.MergedIDs) != 0 {
+		t.Errorf("undo left MergedIDs behind: %v", april.MergedIDs)
 	}
 }
 
@@ -850,5 +886,50 @@ func TestApprovedCountGuardsRebuild(t *testing.T) {
 	insert(2, "b.jpg", db.StatusApproved)
 	if n, err = approvedCount(ctx, d, sessionID); err != nil || n != 1 {
 		t.Errorf("approvedCount = %d, %v; want 1 so --rebuild refuses without --yes", n, err)
+	}
+}
+
+// TestMergeNeverBroadcastsASuggestion covers the reported surprise: merging
+// folders produced a name nobody chose ("Canon EOS 700D → 19"), because the
+// merged name fell back to a suggestion. A suggestion is an offer the reviewer
+// hasn't accepted — the merge must use the first pick's own name, or the
+// rename they actually typed on it.
+func TestMergeNeverBroadcastsASuggestion(t *testing.T) {
+	tree := []vfs.Node{{ID: "2017", Name: "2017", FileCount: 2, Children: []vfs.Node{
+		{ID: "2017/20", Name: "20", FileCount: 1, Suggestions: []vfs.Suggestion{{Name: "Canon EOS 700D"}}},
+		{ID: "2017/19", Name: "19", FileCount: 1, Suggestions: []vfs.Suggestion{{Name: "Canon EOS 700D"}}},
+	}}}
+	m := newReviewModel(tree, nil, nil, uuid.Nil, nil, nil)
+	m.visualAnchor, m.cursor, m.visualMode = 1, 2, true
+
+	m.mergeSelection()
+
+	if m.statusIsErr {
+		t.Fatalf("expected success, got %q", m.statusMsg)
+	}
+	row := nodeByID(m.rows, "2017/20")
+	if row == nil {
+		t.Fatal("expected the first pick to survive the merge")
+	}
+	if row.newName != "" {
+		t.Errorf("merged folder was renamed to %q — merge must not apply a suggestion", row.newName)
+	}
+	if row.node.Name != "20" {
+		t.Errorf("merged folder name = %q, want the first pick's own name %q", row.node.Name, "20")
+	}
+}
+
+// TestMergeKeepsAnExplicitRename is the other half: a rename the reviewer
+// typed on the first pick *is* what the merged folder should be called.
+func TestMergeKeepsAnExplicitRename(t *testing.T) {
+	m := newReviewModel(siblingTree(), nil, nil, uuid.Nil, nil, nil)
+	m.rows[2].newName = "Goa Trip"
+	m.visualAnchor, m.cursor, m.visualMode = 2, 3, true
+
+	m.mergeSelection()
+
+	row := nodeByID(m.rows, "2024/June/03")
+	if row == nil || row.newName != "Goa Trip" {
+		t.Fatalf("want the typed rename carried onto the merged folder, got %+v", row)
 	}
 }

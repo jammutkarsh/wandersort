@@ -366,3 +366,31 @@ func TestConfigForNoneSentinel(t *testing.T) {
 		t.Errorf("ConfigFor(nil).GroupBy = %v, want DefaultConfig's levels", got)
 	}
 }
+
+// TestSuggestionEqualToFolderNameIsDropped covers the noise case: a source
+// folder named after the camera makes SOURCE_FOLDER suggest the name the
+// folder already has ("Canon EOS 700D (suggested: Canon EOS 700D)"). Offering
+// the reviewer a rename to the current name is not a suggestion.
+func TestSuggestionEqualToFolderNameIsDropped(t *testing.T) {
+	h := newHarness(t)
+	h.addFile(t, "Canon EOS 700D/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
+	h.build(t, DefaultConfig(), &fakeGeo{cities: map[int]string{}})
+
+	ctx := context.Background()
+	tree, err := BuildTree(ctx, h.sessionID, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var walk func(nodes []Node)
+	walk = func(nodes []Node) {
+		for _, n := range nodes {
+			for _, s := range n.Suggestions {
+				if s.Name == n.Name {
+					t.Errorf("node %q offers a suggestion of its own name (%s)", n.ID, s.Source)
+				}
+			}
+			walk(n.Children)
+		}
+	}
+	walk(tree)
+}

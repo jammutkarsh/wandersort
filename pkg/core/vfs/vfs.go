@@ -290,18 +290,24 @@ func (v *VFS) dirFor(m *masterFile, skip map[string]bool) string {
 func (v *VFS) segmentFor(m *masterFile, level string) string {
 	switch level {
 	case GroupByLocation:
-		// ladder: resolved city → dated event segment → device → fallback.
+		// ladder: resolved city → dated event segment → nothing.
+		//
 		// A Day level already carries the date, so the dated placeholder rung
-		// is skipped there — it produced a second date beside it ("…/03/03-05/")
+		// is skipped there — it produced a second date beside it ("…/03/03-05/").
+		//
+		// There is deliberately no device or "Unsorted" rung below that: a
+		// location folder named after the camera is wrong information, and it
+		// duplicated the device level standing right next to it
+		// ("…/Canon EOS 700D/Canon EOS 700D/"). When we don't know where a
+		// photo was taken we say nothing rather than something false — the
+		// level is simply absent for that file.
 		switch {
 		case m.location != "":
 			return m.location
 		case m.eventSegment != "" && !slices.Contains(v.cfg.GroupBy, GroupByDate):
 			return m.eventSegment
-		case m.device != "":
-			return m.device
 		default:
-			return v.cfg.Fallback
+			return ""
 		}
 	case GroupByDate:
 		return m.takenAt.Format("02")

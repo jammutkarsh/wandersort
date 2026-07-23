@@ -156,7 +156,11 @@ func BuildTree(ctx context.Context, sessionID uuid.UUID, database *db.DB) ([]Nod
 		if loc.Lat == nil && r.GPSLat != nil && r.GPSLon != nil {
 			loc.Lat, loc.Lon = r.GPSLat, r.GPSLon
 		}
-		if r.Suggestion != nil && *r.Suggestion != "" {
+		// a suggestion identical to the folder's current name is noise — it
+		// offers the reviewer the name they're already looking at (a source
+		// folder named after the camera, say, next to a folder of the same
+		// name)
+		if r.Suggestion != nil && *r.Suggestion != "" && *r.Suggestion != loc.Name {
 			src := ""
 			if r.SuggestionSource != nil {
 				src = *r.SuggestionSource

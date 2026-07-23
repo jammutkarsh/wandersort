@@ -652,20 +652,33 @@ func TestDateLevelAddsDayFolder(t *testing.T) {
 	}
 }
 
-// TestDateLevelSuppressesDatedLocationPlaceholder covers the reported
-// duplication: with no resolvable GPS the location slot falls back to a dated
-// event segment, which next to a real Day level reads as "…/03/03-05/". The
-// slot must fall through to the next rung instead.
-func TestDateLevelSuppressesDatedLocationPlaceholder(t *testing.T) {
+// TestUnknownLocationEmitsNoLocationFolder covers both halves of the reported
+// bug: with a Day level the dated placeholder rung is skipped (it produced a
+// second date, "…/03/03-05/"), and there is no device rung below it either —
+// a location folder named after the camera is wrong information, and it
+// duplicated the device level right next to it.
+func TestUnknownLocationEmitsNoLocationFolder(t *testing.T) {
 	h := newHarness(t)
 	a := h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
 	cfg := DefaultConfig()
-	cfg.GroupBy = []string{GroupByDate, GroupByLocation}
+	cfg.GroupBy = []string{GroupByDate, GroupByLocation, GroupByDevice}
 	rows := h.build(t, cfg, &fakeGeo{cities: map[int]string{}})
 
-	want := "2024/06_June/03/Apple iPhone 15 Pro/DSC_0001.JPG"
+	// device level collapses too (one value library-wide), so the day is all
+	// that is left — the point is that no folder claims to be a location
+	want := "2024/06_June/03/DSC_0001.JPG"
 	if got := rows[a].TargetPath; got != want {
-		t.Errorf("target = %q, want %q (ladder skips the dated placeholder and falls to the device)", got, want)
+		t.Errorf("target = %q, want %q (no location known, so no location folder)", got, want)
+	}
+
+	var withDir int
+	if err := h.d.SQL.Get(&withDir,
+		`SELECT COUNT(*) FROM virtual_fs_entries WHERE session_id = ? AND suggestion_dir IS NOT NULL`,
+		h.sessionID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if withDir != 0 {
+		t.Errorf("%d rows carry a suggestion_dir, want 0 — there is no location folder to hang a suggestion on", withDir)
 	}
 }
 
@@ -674,17 +687,17 @@ func TestDateLevelSuppressesDatedLocationPlaceholder(t *testing.T) {
 // to whatever sits at the old hardcoded depth 2 (here, the Day).
 func TestSuggestionDirTracksTheLocationLevel(t *testing.T) {
 	h := newHarness(t)
-	h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
+	h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5, 73.8, 3024, 4032))
 	cfg := DefaultConfig()
 	cfg.GroupBy = []string{GroupByDate, GroupByLocation}
-	h.build(t, cfg, &fakeGeo{cities: map[int]string{}})
+	h.build(t, cfg, &fakeGeo{cities: map[int]string{15: "Goa"}})
 
 	var dirs []string
 	if err := h.d.SQL.Select(&dirs,
 		`SELECT suggestion_dir FROM virtual_fs_entries WHERE session_id = ?`, h.sessionID.String()); err != nil {
 		t.Fatal(err)
 	}
-	want := "2024/06_June/03/Apple iPhone 15 Pro"
+	want := "2024/06_June/03/Goa"
 	if len(dirs) != 1 || dirs[0] != want {
 		t.Errorf("suggestion_dir = %v, want [%q] — the location folder, not the Day", dirs, want)
 	}

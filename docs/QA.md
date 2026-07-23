@@ -69,105 +69,109 @@ Execute/move stage isn't written yet, so it isn't here.
 41. `[H]` same, on a library where every file is a vertical iPhone shot but there are both photos and videos → the `Device` and `Vertical` folders are gone; `Photos`/`Videos` remains. Day and location folders are always kept even when there's only one of each.
 42. `[H]` a photo-only library, then scan again after adding one video → the `Photos` folder reappears and the existing photos are re-proposed inside it (the proposal is rebuilt library-wide every run).
 43. `[A]` set `collapse-levels: false` in `config.yaml`, then `wandersort review --rebuild` → the full nesting is proposed again, one folder per level.
-44. `[A]` same, with files whose GPS doesn't resolve → the location folder falls through to the device (or `Unsorted`), **never** a second dated folder next to the Day (`.../03/03-05/`).
-45. `[H]` with location second in `--group-by` (e.g. `date,location`) → `wandersort review` shows the `suggested:` hint on the **location** folder, not on the Day or Device folder above it.
-46. `[A]` `wandersort scan -p <dir> --group-by bogus` → clear "invalid --group-by value" error, non-zero exit, nothing scanned.
-47. `[A]` a real Live Photo pair (`IMG_1234.HEIC`+`.MOV`, same stem, matching GPS/timestamp) with `--group-by location` (no media split) → both land in the same target directory — because their own derived data agrees, not because of stem-matching.
-48. `[A]` two files sharing a filename stem but from unrelated shoots (e.g. an old iPhone reusing `IMG_0042` across different years) → land in *different* target directories, each by its own derived date (no forced stem-based grouping — this used to force them together, a real reported bug).
-49. `[A]` a photo (`DateTimeOriginal`) and a same-moment iOS video (`CreateDate` raw-UTC, `CreationDate` offset-aware) → both land in the same day/cluster, not shifted apart by the video's UTC-vs-local skew.
-50. `[A]` an `.aae` sidecar with no EXIF timestamp of its own → falls back to file mtime like any other file, gets a target path, no crash.
+44. `[A]` same, with files whose GPS doesn't resolve → **no location folder at all** for those files (never one named after the camera, and never a second dated folder next to the Day). The device folder, if that level is in group-by, appears exactly once.
+45. `[H]` a library whose source folders are named after the camera (`.../Canon EOS 700D/*.JPG`) → no folder offers `suggested:` with the name it already has.
+46. `[H]` merge two folders that both carry a `suggested:` name → the merged folder keeps the **first** selected folder's own name; no suggestion is applied by the merge. Typing a rename on the first folder first → that rename is what the merged folder gets.
+47. `[H]` with location second in `--group-by` (e.g. `date,location`) → `wandersort review` shows the `suggested:` hint on the **location** folder, not on the Day or Device folder above it.
+48. `[A]` `wandersort scan -p <dir> --group-by bogus` → clear "invalid --group-by value" error, non-zero exit, nothing scanned.
+49. `[A]` a real Live Photo pair (`IMG_1234.HEIC`+`.MOV`, same stem, matching GPS/timestamp) with `--group-by location` (no media split) → both land in the same target directory — because their own derived data agrees, not because of stem-matching.
+50. `[A]` two files sharing a filename stem but from unrelated shoots (e.g. an old iPhone reusing `IMG_0042` across different years) → land in *different* target directories, each by its own derived date (no forced stem-based grouping — this used to force them together, a real reported bug).
+51. `[A]` a photo (`DateTimeOriginal`) and a same-moment iOS video (`CreateDate` raw-UTC, `CreationDate` offset-aware) → both land in the same day/cluster, not shifted apart by the video's UTC-vs-local skew.
+52. `[A]` an `.aae` sidecar with no EXIF timestamp of its own → falls back to file mtime like any other file, gets a target path, no crash.
 
 ## 7. Location resolution & anchors (depends on hash — GPS-tagged files)
 
-51. `[A]` two GPS points ~15-40km apart, no anchor set → both resolve to *some* named place (previously: silently unlocated past ~11km even though the search box reached 50km).
-52. `[A]` a coordinate near a gazetteer entry with a diacritic in its name (e.g. "Banjār") and a plain-spelled entry at ~the same distance → the plain-spelled name ("Banjar") is proposed, not the diacritic one.
-53. `[H]` set a home anchor (via `setup`), then scan two GPS points both within ~50km of it but resolving to different suburb names → both fold into the anchor's folder name, not two separate suburb folders.
-54. `[A]` scan with no anchors configured → resolved suburbs still get their own individual folders (no unwanted folding).
-55. `[A]` scan a library where most GPS photos resolve to the same city, plus a separate fully-unresolved cluster (e.g. a GPS-less DSLR photo, no EVENT label overlap) with **no confirmed anchor set** → the unresolved cluster's suggestion is the source folder name, *not* the library's dominant city (`anchorCities` no longer guesses from frequency).
+53. `[A]` two GPS points ~15-40km apart, no anchor set → both resolve to *some* named place (previously: silently unlocated past ~11km even though the search box reached 50km).
+54. `[A]` a coordinate near a gazetteer entry with a diacritic in its name (e.g. "Banjār") and a plain-spelled entry at ~the same distance → the plain-spelled name ("Banjar") is proposed, not the diacritic one.
+55. `[H]` set a home anchor (via `setup`), then scan two GPS points both within ~50km of it but resolving to different suburb names → both fold into the anchor's folder name, not two separate suburb folders.
+56. `[A]` scan with no anchors configured → resolved suburbs still get their own individual folders (no unwanted folding).
+57. `[A]` scan a library where most GPS photos resolve to the same city, plus a separate fully-unresolved cluster (e.g. a GPS-less DSLR photo, no EVENT label overlap) with **no confirmed anchor set** → the unresolved cluster's suggestion is the source folder name, *not* the library's dominant city (`anchorCities` no longer guesses from frequency).
 
 ## 8. Review (interactive correction, depends on VFS)
 
-56. `[H]` `wandersort review` *(no proposal yet)* → clean "run scan first" error, non-zero exit.
-57. `[H]` `wandersort review` → full indented tree renders, alt-screen, scrollable with `↑/↓`/`j`/`k`.
-58. `[A]` `wandersort review --yes` → every suggested name accepted non-interactively, `Confirm` runs, exit 0.
-59. `[H]` press `enter` on a suggested node → suggestion accepted inline, cursor advances.
-60. `[H]` manually rename a node with `r`, then move off and back and press `enter` on it again → the manual rename is kept, **not** overwritten by the suggestion (precedence: default name < location suggestion < user's rename).
-61. `[H]` press `r` on any node → rename prompt opens pre-filled; for a node with a GPS coordinate, ranked place candidates appear below the input.
-62. `[H]` while renaming, press `Tab` → input fills with the top-ranked candidate.
-63. `[H]` while renaming, press `Ctrl-E` → candidate list widens (~10km more) and may show more/farther options.
-64. `[H]` while renaming, type a name matching an earlier confirmed folder → it appears in the candidate list (`user_labels` prefix match).
-65. `[H]` press `p` on a folder → spinner shows "Copying preview…", then the OS file browser opens a **temp folder** containing up to 250MB of that folder's files; the originals are untouched.
-66. `[H]` press `p` on a folder with 0 files (shouldn't normally happen) → clean inline error, no crash.
-67. `[H]` press `p` on a folder whose entire content is one child chain (e.g. `2017/April/08` with only child `Horizontal/Photos`), then press `p` on that leaf child too → **the same temp folder** opens both times (content-based cache — see `filesSignature`), not two separate copies.
-68. `[H]` press `V` (capital — lowercase `v` does nothing) over a selection whose whole line is highlighted (not just a marker character), move down to select 2+ sibling folders, press `m` → they collapse into **one** folder named after the first one's resolved name, carrying the combined file count.
-69. `[H]` select 2+ leaf folders from **different** Month/Day branches under the same Year (e.g. the same camera's photos spread across three months — `V` from one branch's leaf down through another's), press `m` → exactly **one** folder remains under the shared Year with all the files; the emptied Month/Day chains are pruned, not left behind as hollow rows.
-70. `[H]` press `m` with no prior `V`, with only 1 leaf in the selection, with a selection covering only structural (non-leaf) rows, or with leaves that share no common ancestor at all (different Years) → rejected with a **visibly flagged** (warning-colored, not dim) status message, no merge happens.
-71. `[H]` after a successful merge (either same-parent or cross-branch), press `u` → the whole pre-merge tree is restored (structure, not just names); pressing `u` again does nothing (single-level undo, no redo).
-72. `[H]` a trip spanning several days with `--group-by date,location,device` → `V` on the first Day row, extend through the last, `m` → **one** Day folder remains, holding **one** location folder, holding one folder per genuinely distinct device — no duplicate same-named children left to merge by hand.
-73. `[H]` rename one child so it matches a sibling-branch child's name, then merge the parents → the two collapse into one (matching is on the name that will be written, not the proposed one).
-74. `[H]` `V` on a leaf then extend across branches vs. `V` on a parent then extend → the merge acts at the depth of the row `V` was pressed on, both times.
-75. `[H]` put the cursor on a repeated grouping folder (e.g. `Apple iPhone 13`, present under every month) and press `D` → every folder at that depth disappears across the whole tree in one keypress; each parent keeps its file count, and any children of the dropped folders are lifted onto it.
-76. `[H]` press `d` on a folder that still has children → only that one folder goes, its children reattach to its parent, and same-named folders elsewhere in the tree are untouched.
-77. `[H]` press `d`/`D` on a top-level (Year) row → rejected with a visibly flagged status message, tree unchanged (its files would otherwise land in the library root).
-78. `[H]` drop a level with `d`/`D`, then `c` confirm, then `wandersort report`/re-open review → the dropped segment is gone from every affected path and **no files were lost**, including files that sat directly in the dropped folder.
-79. `[H]` after a `d`/`D`, press `u` → the whole pre-delete tree is restored, same single-level undo as merge.
-80. `[H]` press `L` → status line reports the new layout name, tree rebuilds to match (e.g. flat `Year/Month` with `group-by: none`); any renames typed before pressing `L` are gone (expected — different depth means different nodes).
-81. `[A]` press `L` before a location resolver is available (e.g. location DB unreachable) → no-op, no crash.
-82. `[H]` rename two different unresolved date-clusters to the exact same real place name, then `c` confirm → both collapse into one folder (not rejected as a naming collision).
-83. `[H]` press `c` → "Folder structure approved" message; `q` without `c` → "review cancelled — nothing changed", DB untouched.
-84. `[H]` peek (`p`) two or more different folders during one review session, then quit (`q`) or confirm (`c`) → every temp preview folder created during the session is gone afterward (check `$TMPDIR`).
-85. `[H]` resize the terminal narrow (~50 cols) during a review → the key help wraps instead of running off the edge, and the tree shrinks to match: no rows are pushed off the bottom, the last row and the help are both visible.
-86. `[H]` a library spanning several months (e.g. November and December) → months are listed chronologically in the review tree **and** on disk (`11_November` before `12_December`), not alphabetically.
-87. `[H]` make a rename or a merge/drop, then press `q` → warning that changes are unsaved; press any other key, then `q` again → warns again; press `q` twice in a row → exits, DB untouched.
-88. `[H]` press `q` with nothing edited → exits immediately, no warning.
-89. `[A]` `wandersort review --rebuild --group-by device` *(after a scan)* → proposal re-proposed as `Year/Month/Device` without re-scanning or re-hashing; review opens on the new tree.
-90. `[A]` set `group-by: [location]` in `config.yaml`, then `wandersort review --rebuild` with no flag → the config's levels are used.
-91. `[A]` `wandersort review --group-by device` *(no `--rebuild`)* → the existing proposal is reviewed unchanged; the flag alone does not re-propose.
+58. `[H]` `wandersort review` *(no proposal yet)* → clean "run scan first" error, non-zero exit.
+59. `[H]` `wandersort review` → full indented tree renders, alt-screen, scrollable with `↑/↓`/`j`/`k`.
+60. `[A]` `wandersort review --yes` → every suggested name accepted non-interactively, `Confirm` runs, exit 0.
+61. `[H]` press `enter` on a suggested node → suggestion accepted inline, cursor advances.
+62. `[H]` manually rename a node with `r`, then move off and back and press `enter` on it again → the manual rename is kept, **not** overwritten by the suggestion (precedence: default name < location suggestion < user's rename).
+63. `[H]` press `r` on any node → rename prompt opens pre-filled; for a node with a GPS coordinate, ranked place candidates appear below the input.
+64. `[H]` while renaming, press `Tab` → input fills with the top-ranked candidate.
+65. `[H]` while renaming, press `Ctrl-E` → candidate list widens (~10km more) and may show more/farther options.
+66. `[H]` while renaming, type a name matching an earlier confirmed folder → it appears in the candidate list (`user_labels` prefix match).
+67. `[H]` press `p` on a folder → spinner shows "Copying preview…", then the OS file browser opens a **temp folder** containing up to 250MB of that folder's files; the originals are untouched.
+68. `[H]` press `p` on a folder with 0 files (shouldn't normally happen) → clean inline error, no crash.
+69. `[H]` press `p` on a folder whose entire content is one child chain (e.g. `2017/April/08` with only child `Horizontal/Photos`), then press `p` on that leaf child too → **the same temp folder** opens both times (content-based cache — see `filesSignature`), not two separate copies.
+70. `[H]` press `V` (capital — lowercase `v` does nothing) over a selection whose whole line is highlighted (not just a marker character), move down to select 2+ sibling folders, press `m` → they collapse into **one** folder named after the first one's resolved name, carrying the combined file count.
+71. `[H]` select 2+ leaf folders from **different** Month/Day branches under the same Year (e.g. the same camera's photos spread across three months — `V` from one branch's leaf down through another's), press `m` → exactly **one** folder remains under the shared Year with all the files; the emptied Month/Day chains are pruned, not left behind as hollow rows.
+72. `[H]` press `m` with no prior `V`, with only 1 leaf in the selection, with a selection covering only structural (non-leaf) rows, or with leaves that share no common ancestor at all (different Years) → rejected with a **visibly flagged** (warning-colored, not dim) status message, no merge happens.
+73. `[H]` after a successful merge (either same-parent or cross-branch), press `u` → the whole pre-merge tree is restored (structure, not just names); pressing `u` again does nothing (single-level undo, no redo).
+74. `[H]` a trip spanning several days with `--group-by date,location,device` → `V` on the first Day row, extend through the last, `m` → **one** Day folder remains, holding **one** location folder, holding one folder per genuinely distinct device — no duplicate same-named children left to merge by hand.
+75. `[H]` rename one child so it matches a sibling-branch child's name, then merge the parents → the two collapse into one (matching is on the name that will be written, not the proposed one).
+76. `[H]` `V` on a leaf then extend across branches vs. `V` on a parent then extend → the merge acts at the depth of the row `V` was pressed on, both times.
+77. `[H]` put the cursor on a folder with several levels under it (e.g. `April` over `Indore/Apple iPhone 13`) and press `D` → everything below it collapses into it, its file count is unchanged, and **only that branch** changes — a sibling month keeps its subtree.
+78. `[H]` press `D` on a top-level (Year) row → allowed; the whole year flattens into the Year folder itself.
+79. `[H]` press `D` on a row with nothing below it → flagged rejection, tree unchanged.
+80. `[H]` press `d` on a folder that still has children → only that one folder goes, its children reattach to its parent, same-named folders elsewhere untouched.
+81. `[H]` press `d` on a top-level (Year) row → flagged rejection (its files would land in the library root; the message points at `[D]`).
+82. `[H]` remove nesting with `d`/`D`, then `c` confirm, then re-open review → the removed segments are gone from every affected path and **no files were lost**, including files that sat directly in a removed folder.
+83. `[H]` after a `d`/`D`, press `u` → the whole pre-edit tree is restored, same single-level undo as merge.
+84. `[H]` press `L` → status line reports the new layout name, tree rebuilds to match (e.g. flat `Year/Month` with `group-by: none`); any renames typed before pressing `L` are gone (expected — different depth means different nodes).
+85. `[A]` press `L` before a location resolver is available (e.g. location DB unreachable) → no-op, no crash.
+86. `[H]` rename two different unresolved date-clusters to the exact same real place name, then `c` confirm → both collapse into one folder (not rejected as a naming collision).
+87. `[H]` press `c` → "Folder structure approved" message; `q` without `c` → "review cancelled — nothing changed", DB untouched.
+88. `[H]` peek (`p`) two or more different folders during one review session, then quit (`q`) or confirm (`c`) → every temp preview folder created during the session is gone afterward (check `$TMPDIR`).
+89. `[H]` resize the terminal narrow (~50 cols) during a review → the key help wraps instead of running off the edge, and the tree shrinks to match: no rows are pushed off the bottom, the last row and the help are both visible.
+90. `[H]` a library spanning several months (e.g. November and December) → months are listed chronologically in the review tree **and** on disk (`11_November` before `12_December`), not alphabetically.
+91. `[H]` make a rename or a merge/drop, then press `q` → warning that changes are unsaved; press any other key, then `q` again → warns again; press `q` twice in a row → exits, DB untouched.
+92. `[H]` press `q` with nothing edited → exits immediately, no warning.
+93. `[A]` `wandersort review --rebuild --group-by device` *(after a scan)* → proposal re-proposed as `Year/Month/Device` without re-scanning or re-hashing; review opens on the new tree.
+94. `[A]` set `group-by: [location]` in `config.yaml`, then `wandersort review --rebuild` with no flag → the config's levels are used.
+95. `[A]` `wandersort review --group-by device` *(no `--rebuild`)* → the existing proposal is reviewed unchanged; the flag alone does not re-propose.
 
 ## 9. Report (read-only, depends on a prior scan)
 
-92. `[H]` `wandersort report` after a scan → table with scanned/hashed/duplicate counts for that session.
-93. `[A]` `wandersort report -x` → same data as expanded label:value pairs.
-94. `[A]` two scans over different roots, then `report` → two rows, duplicate counts don't bleed across sessions.
-95. `[A]` `report` while a scan is mid-run → newest session flagged partial (non-terminal status).
+96. `[H]` `wandersort report` after a scan → table with scanned/hashed/duplicate counts for that session.
+97. `[A]` `wandersort report -x` → same data as expanded label:value pairs.
+98. `[A]` two scans over different roots, then `report` → two rows, duplicate counts don't bleed across sessions.
+99. `[A]` `report` while a scan is mid-run → newest session flagged partial (non-terminal status).
 
 ## 10. Re-scan / incremental (depends on prior scan — determinism)
 
-96. `[A]` scan a dir, then scan the exact same dir again → counts stable, pipeline deterministic.
-97. `[A]` scan, delete some files on disk, re-scan → missing rows soft-deleted, not counted live.
-98. `[A]` scan, add new files, re-scan → only new files processed, existing groups intact.
+100. `[A]` scan a dir, then scan the exact same dir again → counts stable, pipeline deterministic.
+101. `[A]` scan, delete some files on disk, re-scan → missing rows soft-deleted, not counted live.
+102. `[A]` scan, add new files, re-scan → only new files processed, existing groups intact.
 
 ## 11. Reset & report-issue (destructive / packaging)
 
-99. `[H]` `wandersort reset` → confirmation prompt; answering no leaves data intact.
-100. `[A]` `wandersort reset --yes` → all scan data wiped, `report` then errors "no sessions".
-101. `[A]` `wandersort report-issue` → produces a zip with `wandersort.log` + `about.txt`, no DB by default.
-102. `[A]` `wandersort report-issue --include-db` → zip additionally contains the DB.
+103. `[H]` `wandersort reset` → confirmation prompt; answering no leaves data intact.
+104. `[A]` `wandersort reset --yes` → all scan data wiped, `report` then errors "no sessions".
+105. `[A]` `wandersort report-issue` → produces a zip with `wandersort.log` + `about.txt`, no DB by default.
+106. `[A]` `wandersort report-issue --include-db` → zip additionally contains the DB.
 
 ## 12. Serve / HTTP API (depends on everything — hardest)
 
-103. `[H]` `wandersort serve` → starts on default port 7658, `GET /ping` returns 200.
-104. `[A]` `GET /internal/v1/swagger/index.html` → Swagger UI loads.
-105. `[A]` `POST /internal/v1/pipeline/start` with valid roots → starts a background session, returns session id.
-106. `[A]` `GET /internal/v1/pipeline/count` → returns file counts matching a `report`.
-107. `[A]` `POST /internal/v1/pipeline/start` with a nested/duplicate root → roots canonicalized + pruned.
-108. `[A]` `POST /internal/v1/admin/reset` → wipes data like the CLI reset.
-109. `[A]` start `serve`, then run `scan` against the same output dir → second process blocked by output lock, clear message.
-110. `[A]` `wandersort serve --group-by location` → sessions started against this server propose `Year/Month/Location` only.
+107. `[H]` `wandersort serve` → starts on default port 7658, `GET /ping` returns 200.
+108. `[A]` `GET /internal/v1/swagger/index.html` → Swagger UI loads.
+109. `[A]` `POST /internal/v1/pipeline/start` with valid roots → starts a background session, returns session id.
+110. `[A]` `GET /internal/v1/pipeline/count` → returns file counts matching a `report`.
+111. `[A]` `POST /internal/v1/pipeline/start` with a nested/duplicate root → roots canonicalized + pruned.
+112. `[A]` `POST /internal/v1/admin/reset` → wipes data like the CLI reset.
+113. `[A]` start `serve`, then run `scan` against the same output dir → second process blocked by output lock, clear message.
+114. `[A]` `wandersort serve --group-by location` → sessions started against this server propose `Year/Month/Location` only.
 
 ## 13. Config precedence & global config file (cross-cutting)
 
-111. `[A]` `WORKERS=2 wandersort scan -p <dir> -w 8` → flag wins (8 workers), env ignored.
-112. `[A]` `OUTPUT_PATH=/tmp/ws wandersort scan -p <dir>` → DB + logs written under `/tmp/ws`.
-113. `[A]` `wandersort --debug scan -p <dir>` → console shows full developer log lines, not just user milestones.
-114. `[A]` any command on a machine with no `~/.wandersort/config.yaml` → the file is created with the commented template before the command does anything else.
-115. `[H]` `wandersort config` *(`$EDITOR` set)* → opens the file in `$EDITOR`.
-116. `[A]` `wandersort config` *(`$EDITOR` unset)* → prints the file's contents to stdout instead, exit 0.
-117. `[A]` `wandersort config --print` / `-p` *(`$EDITOR` set)* → prints the file to stdout, no editor launched, exit 0.
-118. `[A]` `wandersort config | cat` *(`$EDITOR` set)* → prints the file instead of launching the editor into the pipe; `wandersort config > out.yaml` writes the file's contents.
-119. `[A]` add `output-path: /tmp/ws-cfg` to `config.yaml`, then `wandersort scan -p <dir>` *(no `-o` flag)* → DB + logs written under `/tmp/ws-cfg`; `-o` on the command line still overrides it.
-120. `[A]` add `group-by: [none]` to `config.yaml`, then scan with no `--group-by` flag → flat `Year/Month` proposal; `--group-by location` on the command line still overrides it.
-121. `[H]` hand-edit `config.yaml` to add a comment and an extra key, then run `wandersort setup` to change an anchor → the hand-added comment and key both survive; only `anchors.home`/`anchors.work` changed.
-122. `[A]` put invalid YAML in `config.yaml` (e.g. a leading tab), then run any command → a **warning** naming the file and the parse error, the command continues on defaults, exit code unchanged by the bad file.
-123. `[A]` same broken file, then `wandersort config --print` → still works (the command that fixes the file must not be locked out by it).
-124. `[H]` set `debug: true` in `config.yaml` (not `--debug`) → same effect as the flag; note the template's commented default is `false`, so just uncommenting the line without changing the value has no effect.
+115. `[A]` `WORKERS=2 wandersort scan -p <dir> -w 8` → flag wins (8 workers), env ignored.
+116. `[A]` `OUTPUT_PATH=/tmp/ws wandersort scan -p <dir>` → DB + logs written under `/tmp/ws`.
+117. `[A]` `wandersort --debug scan -p <dir>` → console shows full developer log lines, not just user milestones.
+118. `[A]` any command on a machine with no `~/.wandersort/config.yaml` → the file is created with the commented template before the command does anything else.
+119. `[H]` `wandersort config` *(`$EDITOR` set)* → opens the file in `$EDITOR`.
+120. `[A]` `wandersort config` *(`$EDITOR` unset)* → prints the file's contents to stdout instead, exit 0.
+121. `[A]` `wandersort config --print` / `-p` *(`$EDITOR` set)* → prints the file to stdout, no editor launched, exit 0.
+122. `[A]` `wandersort config | cat` *(`$EDITOR` set)* → prints the file instead of launching the editor into the pipe; `wandersort config > out.yaml` writes the file's contents.
+123. `[A]` add `output-path: /tmp/ws-cfg` to `config.yaml`, then `wandersort scan -p <dir>` *(no `-o` flag)* → DB + logs written under `/tmp/ws-cfg`; `-o` on the command line still overrides it.
+124. `[A]` add `group-by: [none]` to `config.yaml`, then scan with no `--group-by` flag → flat `Year/Month` proposal; `--group-by location` on the command line still overrides it.
+125. `[H]` hand-edit `config.yaml` to add a comment and an extra key, then run `wandersort setup` to change an anchor → the hand-added comment and key both survive; only `anchors.home`/`anchors.work` changed.
+126. `[A]` put invalid YAML in `config.yaml` (e.g. a leading tab), then run any command → a **warning** naming the file and the parse error, the command continues on defaults, exit code unchanged by the bad file.
+127. `[A]` same broken file, then `wandersort config --print` → still works (the command that fixes the file must not be locked out by it).
+128. `[H]` set `debug: true` in `config.yaml` (not `--debug`) → same effect as the flag; note the template's commented default is `false`, so just uncommenting the line without changing the value has no effect.
