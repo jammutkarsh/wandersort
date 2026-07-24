@@ -50,7 +50,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		GroupBy:        []string{GroupByLocation, GroupByOrientation, GroupByMedia},
+		GroupBy:        []string{GroupByDate, GroupByLocation},
 		Fallback:       "Unsorted",
 		ClusterGap:     defaultClusterGap,
 		NameCase:       CaseTitle,

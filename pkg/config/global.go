@@ -58,7 +58,7 @@ const configTemplate = `# WanderSort global config.
 # Same as scan/serve's --group-by, or change it per-session from the review
 # TUI's [L] key. A full Year/Month/Day/Location/Device/Orientation/Media
 # hierarchy is: [date, location, device, orientation, media]
-# group-by: [location, orientation, media]
+# group-by: [date, location]
 
 # Drop a device/orientation/media folder level that turns out to have only one
 # value in your whole library — no point clicking through "iPhone/Vertical" when

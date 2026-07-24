@@ -127,7 +127,9 @@ func TestBuildFullExif(t *testing.T) {
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5, 73.8, 3024, 4032))
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 
-	rows := h.build(t, DefaultConfig(), geo)
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation, GroupByOrientation, GroupByMedia}
+	rows := h.build(t, cfg, geo)
 
 	// device/orientation/media all have a single value across this one-file
 	// library, so every one of those levels collapses away
@@ -151,7 +153,9 @@ func TestClusterSpillover(t *testing.T) {
 	c := h.addFile(t, "dump/IMG_0003.HEIC", "IMAGE", metaWith("2024:06:03 11:00:00", 32.2, 77.1, 3024, 4032))
 	geo := &fakeGeo{cities: map[int]string{32: "Manali"}}
 
-	rows := h.build(t, DefaultConfig(), geo)
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation, GroupByOrientation, GroupByMedia}
+	rows := h.build(t, cfg, geo)
 
 	for _, id := range []int64{a, b} {
 		if got := rows[id].TargetPath; got != "2024/06_June/Manali/Horizontal/Photos/"+filepath.Base(rows[id].TargetPath) {
@@ -281,7 +285,9 @@ func TestCoalescingSameCity(t *testing.T) {
 	b := h.addFile(t, "d/IMG_0002.HEIC", "IMAGE", metaWith("2024:06:20 10:00:00", 22.7, 75.8, 3024, 4032))
 	geo := &fakeGeo{cities: map[int]string{22: "Indore"}}
 
-	rows := h.build(t, DefaultConfig(), geo)
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation, GroupByOrientation, GroupByMedia}
+	rows := h.build(t, cfg, geo)
 	dirA := filepath.Dir(rows[a].TargetPath)
 	dirB := filepath.Dir(rows[b].TargetPath)
 	if dirA != dirB {
@@ -407,7 +413,9 @@ func TestAnchorFoldsNearbySuburb(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows := h.build(t, DefaultConfig(), geo)
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation, GroupByOrientation, GroupByMedia}
+	rows := h.build(t, cfg, geo)
 
 	want := "2024/06_June/Delhi/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
@@ -455,6 +463,7 @@ func TestNameCase(t *testing.T) {
 			geo := &fakeGeo{cities: map[int]string{15: "goa BEACH"}}
 
 			cfg := DefaultConfig()
+			cfg.GroupBy = []string{GroupByLocation, GroupByOrientation, GroupByMedia}
 			cfg.NameCase = tc.style
 			rows := h.build(t, cfg, geo)
 
@@ -514,7 +523,9 @@ func TestOrientationTagSwapsDimensions(t *testing.T) {
 	h.addFile(t, "d/IMG_0002.HEIC", "IMAGE", metaWith("2024:06:03 15:00:00", 15.5, 73.8, 4032, 3024))
 	geo := &fakeGeo{cities: map[int]string{15: "Goa"}}
 
-	rows := h.build(t, DefaultConfig(), geo)
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation, GroupByOrientation, GroupByMedia}
+	rows := h.build(t, cfg, geo)
 	// media still collapses (both files are photos); orientation survives
 	want := "2024/06_June/Goa/Vertical/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
@@ -771,6 +782,7 @@ func TestCollapseDisabled(t *testing.T) {
 	h := newHarness(t)
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5, 73.8, 3024, 4032))
 	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation, GroupByOrientation, GroupByMedia}
 	cfg.CollapseLevels = false
 	rows := h.build(t, cfg, &fakeGeo{cities: map[int]string{15: "Goa"}})
 

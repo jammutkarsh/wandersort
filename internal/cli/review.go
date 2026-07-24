@@ -262,9 +262,9 @@ type layoutPreset struct {
 // not derived from the session's actual starting Config — good enough for a
 // quick in-review toggle; revisit if users want custom presets.
 var layoutPresets = []layoutPreset{
-	{"Location + Orientation + Media", []string{vfs.GroupByLocation, vfs.GroupByOrientation, vfs.GroupByMedia}},
+	{"Date + Location", []string{vfs.GroupByDate, vfs.GroupByLocation}},
 	{"Location only", []string{vfs.GroupByLocation}},
-	{"Orientation + Media (no location)", []string{vfs.GroupByOrientation, vfs.GroupByMedia}},
+	{"Date only", []string{vfs.GroupByDate}},
 	{"Flat Year/Month (no group-by)", nil},
 }
 

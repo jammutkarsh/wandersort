@@ -34,7 +34,9 @@ func TestReviewBuildAndConfirm(t *testing.T) {
 	// that carries a suggestion (the node a reviewer renames)
 	h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 	h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:03 16:00:00", 0, 0, 3024, 4032))
-	h.build(t, DefaultConfig(), &fakeGeo{cities: map[int]string{}})
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation} // eventSegment suggestion rung needs no date level ahead of it
+	h.build(t, cfg, &fakeGeo{cities: map[int]string{}})
 
 	ctx := context.Background()
 	tree, err := BuildTree(ctx, h.sessionID, h.d)
@@ -114,7 +116,9 @@ func TestReviewConfirmMergesCollidingRenames(t *testing.T) {
 	// two unlocated clusters days apart → two sibling event dirs under June
 	h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 	h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
-	h.build(t, DefaultConfig(), &fakeGeo{cities: map[int]string{}})
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation} // eventSegment suggestion rung needs no date level ahead of it
+	h.build(t, cfg, &fakeGeo{cities: map[int]string{}})
 
 	ctx := context.Background()
 	tree, err := BuildTree(ctx, h.sessionID, h.d)
@@ -186,7 +190,9 @@ func TestReviewConfirmRemapsMergedIDs(t *testing.T) {
 	h := newHarness(t)
 	h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 	h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
-	h.build(t, DefaultConfig(), &fakeGeo{cities: map[int]string{}})
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation} // eventSegment suggestion rung needs no date level ahead of it
+	h.build(t, cfg, &fakeGeo{cities: map[int]string{}})
 
 	ctx := context.Background()
 	tree, err := BuildTree(ctx, h.sessionID, h.d)
@@ -249,7 +255,9 @@ func TestConfirmSuffixesCollidingBasenames(t *testing.T) {
 	// two unlocated clusters days apart → two sibling event dirs, same filename
 	h.addFile(t, "dumpA/IMG_0042.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 	h.addFile(t, "dumpB/IMG_0042.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
-	h.build(t, DefaultConfig(), nil)
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation} // eventSegment suggestion rung needs no date level ahead of it
+	h.build(t, cfg, nil)
 
 	ctx := context.Background()
 	tree, err := BuildTree(ctx, h.sessionID, h.d)
@@ -304,7 +312,9 @@ func TestConfirmSuffixesCollidingBasenames(t *testing.T) {
 func TestFilesUnderHandlesGlobMetacharacters(t *testing.T) {
 	h := newHarness(t)
 	h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
-	h.build(t, DefaultConfig(), nil)
+	cfg := DefaultConfig()
+	cfg.GroupBy = []string{GroupByLocation} // eventSegment suggestion rung needs no date level ahead of it
+	h.build(t, cfg, nil)
 
 	ctx := context.Background()
 	tree, err := BuildTree(ctx, h.sessionID, h.d)
