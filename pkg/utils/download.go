@@ -18,6 +18,14 @@ import (
 // DownloadFile fetches url and writes the body to dest atomically (via a temp
 // file) so a partial download never leaves a corrupt file at dest
 func DownloadFile(ctx context.Context, dest, url string) error {
+	return DownloadFileProgress(ctx, dest, url, nil)
+}
+
+// DownloadFileProgress is DownloadFile with an optional progress callback,
+// invoked as bytes arrive with (bytesSoFar, totalBytes). total is -1 when the
+// server sends no Content-Length. The callback runs on the download goroutine
+// and must not block; callers throttle their own reporting.
+func DownloadFileProgress(ctx context.Context, dest, url string, onProgress func(done, total int64)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("create request %s: %w", url, err)
@@ -43,7 +51,11 @@ func DownloadFile(ctx context.Context, dest, url string) error {
 		os.Remove(tmpName) // no-op if Rename succeeded
 	}()
 
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
+	var src io.Reader = resp.Body
+	if onProgress != nil {
+		src = &progressReader{r: resp.Body, total: resp.ContentLength, onProgress: onProgress}
+	}
+	if _, err := io.Copy(tmp, src); err != nil {
 		return fmt.Errorf("write %s: %w", dest, err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -55,4 +67,21 @@ func DownloadFile(ctx context.Context, dest, url string) error {
 	}
 
 	return nil
+}
+
+// progressReader reports cumulative bytes read to onProgress as they flow.
+type progressReader struct {
+	r          io.Reader
+	total      int64
+	done       int64
+	onProgress func(done, total int64)
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.done += int64(n)
+		p.onProgress(p.done, p.total)
+	}
+	return n, err
 }

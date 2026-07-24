@@ -50,24 +50,47 @@ func New(logLevel string, console bool, logFile string) Logger {
 	}
 
 	// Enable FileLogger if provided
-	if logFile != "" {
-		if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "WARN: failed to create log directory %s: %v\n", filepath.Dir(logFile), err)
-		}
-
-		file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "WARN: failed to open log file %s: %v (file logging disabled)\n", logFile, err)
-		} else {
-			jsonH := slog.NewJSONHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true})
-			handlers = append(handlers, jsonH)
-		}
+	if h := fileHandler(logFile); h != nil {
+		handlers = append(handlers, h)
 	}
 
 	return &SlogAdapter{
 		logger: slog.New(slogmulti.Fanout(handlers...)),
 		level:  level,
 	}
+}
+
+// NewTUI builds a Logger for full-screen TUI mode. The coloured console handler
+// is OFF (its writes would corrupt the alt-screen); records instead flow to
+// sink so the TUI renders them itself (see StreamKey/UserKey). The JSON file log
+// still captures everything for report-issue.
+func NewTUI(logLevel, logFile string, sink Sink) Logger {
+	level := getSlogLevel(logLevel)
+	handlers := []slog.Handler{&teaHandler{sink: sink, minLevel: level}}
+	if h := fileHandler(logFile); h != nil {
+		handlers = append(handlers, h)
+	}
+	return &SlogAdapter{
+		logger: slog.New(slogmulti.Fanout(handlers...)),
+		level:  level,
+	}
+}
+
+// fileHandler opens the JSON file log (debug level, with source) or returns nil
+// if logFile is empty or cannot be opened. Shared by New and NewTUI.
+func fileHandler(logFile string) slog.Handler {
+	if logFile == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "WARN: failed to create log directory %s: %v\n", filepath.Dir(logFile), err)
+	}
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARN: failed to open log file %s: %v (file logging disabled)\n", logFile, err)
+		return nil
+	}
+	return slog.NewJSONHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true})
 }
 
 // getSlogLevel maps a human-readable string to slog.Level

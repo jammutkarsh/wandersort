@@ -20,7 +20,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jammutkarsh/wandersort/pkg/style"
+	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
 const (
@@ -81,10 +81,10 @@ func AcquireInstall(ctx context.Context, dir string, block bool) (*Lock, error) 
 
 // alreadyRunningError renders the user-facing message for a held output-dir lock.
 func alreadyRunningError(lockPath string, pid int) error {
-	msg := style.Err.Render(fmt.Sprintf("Another wandersort process is already running (PID %d).", pid)) + "\n\n" +
-		style.Dim.Render("Only one scan or server can use the same output directory at a time.") + "\n" +
-		style.Dim.Render("Stop the other process first, or if it already exited, remove the lock file:") + "\n" +
-		style.Dim.Render("  rm "+lockPath)
+	msg := tui.Bad.Render(fmt.Sprintf("Another wandersort process is already running (PID %d).", pid)) + "\n\n" +
+		tui.FaintTxt.Render("Only one scan or server can use the same output directory at a time.") + "\n" +
+		tui.FaintTxt.Render("Stop the other process first, or if it already exited, remove the lock file:") + "\n" +
+		tui.FaintTxt.Render("  rm "+lockPath)
 
 	return fmt.Errorf("%s", msg)
 }

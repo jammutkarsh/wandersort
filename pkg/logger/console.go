@@ -202,6 +202,10 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	userFacing, _ := attrs[UserKey].(bool)
 	delete(attrs, UserKey)
+	// StreamKey lines are TUI-feed only; on the plain console they are neither
+	// promoted nor rendered as a stray stream=true attr. They stay non-user-facing
+	// so the level filter below still drops them unless in debug mode.
+	delete(attrs, StreamKey)
 
 	// In debug mode show everything; otherwise only user-facing lines and
 	// warnings/errors reach the console — the rest is developer detail that
@@ -215,6 +219,9 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 	// other console line (it stays in the file log).
 	if !verbose {
 		delete(attrs, sessionKey)
+		delete(attrs, PhaseKey)
+		delete(attrs, EventKey)
+		delete(attrs, ElapsedKey)
 	}
 
 	// Fixed-width level tag keeps message columns aligned.

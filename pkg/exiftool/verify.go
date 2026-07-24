@@ -89,11 +89,23 @@ func exiftoolBin() string {
 // Setup checks exiftool is available, either on $PATH or in WanderSort's
 // own install directory. If the found version is below the requirement, it
 // downloads and installs a bundled copy into ~/.wandersort/bin
-func Setup(ctx context.Context, log logger.Logger, binDir string) (string, error) {
+// onProgress (may be nil) is called with (bytesDownloaded, totalBytes) while
+// fetching the bundled archive, so a TUI can show a real progress bar without
+// the per-byte counts polluting the file log (which only sees the download's
+// start/done milestones).
+func Setup(ctx context.Context, log logger.Logger, binDir string, onProgress func(done, total int64)) (string, error) {
 	if path, err := findExiftool(log, binDir); err == nil {
 		return path, nil
 	}
-	return installExiftool(ctx, log, binDir)
+	return installExiftool(ctx, log, binDir, onProgress)
+}
+
+// Installed reports whether a usable exiftool is already present (PATH or
+// binDir, correct version), so the caller can skip a download-progress screen
+// when Setup would be a no-op.
+func Installed(log logger.Logger, binDir string) bool {
+	_, err := findExiftool(log, binDir)
+	return err == nil
 }
 
 func findExiftool(log logger.Logger, binDir string) (string, error) {
@@ -120,8 +132,8 @@ func findExiftool(log logger.Logger, binDir string) (string, error) {
 	return "", fmt.Errorf("exiftool not found at %s", binaryPath)
 }
 
-func installExiftool(ctx context.Context, log logger.Logger, binDir string) (string, error) {
-	if err := install(ctx, binDir, log); err != nil {
+func installExiftool(ctx context.Context, log logger.Logger, binDir string, onProgress func(done, total int64)) (string, error) {
+	if err := install(ctx, binDir, log, onProgress); err != nil {
 		return "", fmt.Errorf("install exiftool: %w", err)
 	}
 
@@ -133,7 +145,7 @@ func installExiftool(ctx context.Context, log logger.Logger, binDir string) (str
 	return "", fmt.Errorf("exiftool not found after install at %s", binaryPath)
 }
 
-func install(ctx context.Context, binDir string, log logger.Logger) error {
+func install(ctx context.Context, binDir string, log logger.Logger, onProgress func(done, total int64)) error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return fmt.Errorf("create dir %q: %w", binDir, err)
 	}
@@ -156,7 +168,7 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 	// means either corruption or tampering, so re-download either way
 	if _, err := os.Stat(archiveName); err == nil {
 		if sum, err := utils.SHA256File(archiveName); err == nil && sum == fileMeta.SHA256 {
-			log.Info("exiftool checksum verified", "path", archiveName, "hash", sum)
+			log.Info("exiftool checksum verified", logger.UserKey, true, "path", archiveName, "hash", sum)
 			log.Info("using cached archive", "path", archiveName)
 		} else {
 			log.Warn("cached archive checksum mismatch; re-downloading", "path", archiveName)
@@ -165,9 +177,11 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 	}
 
 	if _, err := os.Stat(archiveName); err != nil {
-		if err := utils.DownloadFile(ctx, archiveName, url); err != nil {
+		log.Info("Downloading exiftool", logger.UserKey, true, logger.PhaseKey, "exiftool", logger.EventKey, "start")
+		if err := utils.DownloadFileProgress(ctx, archiveName, url, onProgress); err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
+		log.Info("exiftool downloaded", logger.UserKey, true, logger.PhaseKey, "exiftool", logger.EventKey, "done")
 	}
 
 	sum, err := utils.SHA256File(archiveName)
@@ -178,7 +192,7 @@ func install(ctx context.Context, binDir string, log logger.Logger) error {
 		os.Remove(archiveName)
 		return fmt.Errorf("checksum mismatch for %s: got %s, want %s", fileMeta.Name, sum, fileMeta.SHA256)
 	}
-	log.Info("exiftool checksum verified", "path", archiveName, "hash", sum)
+	log.Info("exiftool checksum verified", logger.UserKey, true, "path", archiveName, "hash", sum)
 
 	if err := extractTarGz(archiveName, binDir); err != nil {
 		return fmt.Errorf("extract: %w", err)
