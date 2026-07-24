@@ -29,8 +29,18 @@ const (
 	LocationMetaFileName = "location.json"
 )
 
+// Installed reports whether the location database file already exists, so the
+// caller can skip a download-progress screen when Setup would be a no-op.
+func Installed(dbPath string) bool {
+	_, err := os.Stat(dbPath)
+	return err == nil
+}
+
 // Setup downloads the location database and its metadata if they do not exist
-func Setup(ctx context.Context, log logger.Logger, dbPath string) error {
+// onProgress (may be nil) reports (bytesDownloaded, totalBytes) while fetching
+// the location database, for a TUI progress bar — the per-byte counts stay out
+// of the file log, which only records the start/done milestones.
+func Setup(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) error {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return fmt.Errorf("create dir %q: %w", dbPath, err)
 	}
@@ -40,9 +50,12 @@ func Setup(ctx context.Context, log logger.Logger, dbPath string) error {
 		return nil
 	}
 
-	log.Info("Downloading location database…", logger.UserKey, true, "dir", path.New().RelativeToHome(dbPath), "url", LocationDownloadBaseURL+"/"+LocationDBFileName)
+	log.Info("Downloading location database", logger.UserKey, true,
+		logger.PhaseKey, "location", logger.EventKey, "start",
+		"dir", path.New().RelativeToHome(dbPath))
 
-	if err := utils.DownloadFile(ctx, dbPath, LocationDownloadBaseURL+"/"+LocationDBFileName); err != nil {
+	if err := utils.DownloadFileProgress(ctx, dbPath, LocationDownloadBaseURL+"/"+LocationDBFileName,
+		onProgress); err != nil {
 		return fmt.Errorf("download %s: %w", LocationDBFileName, err)
 	}
 
@@ -51,5 +64,7 @@ func Setup(ctx context.Context, log logger.Logger, dbPath string) error {
 		log.Warn("location db: could not download metadata (non-fatal)", "file", LocationMetaFileName, "error", err)
 	}
 
+	log.Info("location database downloaded", logger.UserKey, true,
+		logger.PhaseKey, "location", logger.EventKey, "done")
 	return nil
 }
