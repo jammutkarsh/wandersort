@@ -94,9 +94,3 @@ type ScanSession struct {
 	ErrorsEncountered int     `db:"errors_encountered"`
 	LastError         *string `db:"last_error"`
 }
-
-// CaptureInfo holds the derived capture-group fields for a single file
-type CaptureInfo struct {
-	Key  string // capture stem, e.g. "IMG_3162", "_MG_1721"
-	Role string // one of the CaptureRole* constants
-}

@@ -295,8 +295,8 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 					exif_image_width, exif_image_height, exif_orientation,
 					exif_gps_latitude, exif_gps_longitude,
 					exif_make, exif_model,
-					exif_date_time_original, exif_create_date
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					exif_date_time_original, exif_create_date, exif_creation_date
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`, file.hash, file.id,
 				db.IntOrNil(file.exif.ImageWidth),
 				db.IntOrNil(file.exif.ImageHeight),
@@ -307,6 +307,7 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 				db.StrOrNil(file.exif.Model),
 				db.StrOrNil(file.exif.DateTimeOriginal),
 				db.StrOrNil(file.exif.CreateDate),
+				db.StrOrNil(file.exif.CreationDate),
 			)
 			return err
 		})
