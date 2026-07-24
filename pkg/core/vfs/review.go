@@ -58,17 +58,20 @@ type Node struct {
 	Samples     []string     `json:"samples,omitempty"`
 	Suggestions []Suggestion `json:"suggestions,omitempty"`
 	Children    []Node       `json:"children"`
+	// Lat/Lon are one exemplar GPS coordinate for this node (only ever set on
+	// the location-depth node, from the first GPS-tagged file that landed
+	// there) — lets a review surface re-query the location resolver for ranked
+	// alternatives when the reviewer wants to correct a wrong name.
+	Lat *float64 `json:"lat,omitempty"`
+	Lon *float64 `json:"lon,omitempty"`
+	// MergedIDs are the IDs of nodes a review-time merge folded into this one.
+	// They no longer appear anywhere in the tree (the reviewer sees one folder,
+	// which is the whole point of merging), but their files still live under
+	// those old paths in the DB, so Confirm must remap them here too.
+	MergedIDs []string `json:"mergedIds,omitempty"`
 }
 
 const maxSamples = 3
-
-// suggestionDepth is the dir-path segment (0-indexed, below Year=0/Month=1)
-// that carries a file's location/event suggestion — the node a reviewer renames
-// ("Unlocated" → "Manali"). Matches DefaultConfig's first configurable slot.
-// ponytail: assumes location is the first slot; reorder Slots and the hint
-// lands on the wrong node — the rename still reconciles, only the offered
-// suggestion/label is misplaced. Thread Config in here if slot order goes live.
-const suggestionDepth = 2
 
 // ProposalSession returns the session that wrote the current proposal set
 // (each VFS run replaces the set wholesale, so all rows share one session).
@@ -95,14 +98,20 @@ func ProposalSession(ctx context.Context, database *db.DB) (uuid.UUID, error) {
 // session has no proposal — the caller decides whether that is a 404.
 func BuildTree(ctx context.Context, sessionID uuid.UUID, database *db.DB) ([]Node, error) {
 	var rows []struct {
-		TargetPath       string  `db:"target_path"`
-		SourcePath       string  `db:"source_path"`
-		Suggestion       *string `db:"suggestion"`
-		SuggestionSource *string `db:"suggestion_source"`
+		TargetPath       string   `db:"target_path"`
+		SourcePath       string   `db:"source_path"`
+		Suggestion       *string  `db:"suggestion"`
+		SuggestionSource *string  `db:"suggestion_source"`
+		SuggestionDir    *string  `db:"suggestion_dir"`
+		GPSLat           *float64 `db:"exif_gps_latitude"`
+		GPSLon           *float64 `db:"exif_gps_longitude"`
 	}
 	if err := database.SQL.SelectContext(ctx, &rows,
-		`SELECT target_path, source_path, suggestion, suggestion_source
-		 FROM virtual_fs_entries WHERE session_id = ? AND status IN (?, ?)`,
+		`SELECT vfe.target_path, vfe.source_path, vfe.suggestion, vfe.suggestion_source,
+		        vfe.suggestion_dir, fm.exif_gps_latitude, fm.exif_gps_longitude
+		 FROM virtual_fs_entries vfe
+		 LEFT JOIN file_metadata fm ON fm.file_id = vfe.file_id
+		 WHERE vfe.session_id = ? AND vfe.status IN (?, ?)`,
 		sessionID.String(), db.StatusProposed, db.StatusApproved); err != nil {
 		return nil, fmt.Errorf("query vfs entries: %w", err)
 	}
@@ -136,14 +145,28 @@ func BuildTree(ctx context.Context, sessionID uuid.UUID, database *db.DB) ([]Nod
 				cur.Samples = append(cur.Samples, r.SourcePath)
 			}
 		}
-		// the location/event suggestion attaches to the node a reviewer
-		// renames; paths too shallow to have one (fallback dir, custom slot
-		// configs) get no suggestion rather than a misplaced one on Year/Month
-		if len(nodes) <= suggestionDepth {
+		// the location/event suggestion attaches to the exact folder the VFS
+		// build recorded it against — not a guessed depth, which moved with the
+		// Rules order and smeared every file's suggestion onto one shared
+		// Device/Day node. No suggestion_dir (no location level in this
+		// proposal, or rows written before the column existed) means no
+		// suggestion node, rather than a misplaced one.
+		if r.SuggestionDir == nil || *r.SuggestionDir == "" {
 			continue
 		}
-		loc := nodes[suggestionDepth]
-		if r.Suggestion != nil && *r.Suggestion != "" {
+		depth := strings.Count(*r.SuggestionDir, "/")
+		if depth >= len(nodes) || nodes[depth].ID != *r.SuggestionDir {
+			continue
+		}
+		loc := nodes[depth]
+		if loc.Lat == nil && r.GPSLat != nil && r.GPSLon != nil {
+			loc.Lat, loc.Lon = r.GPSLat, r.GPSLon
+		}
+		// a suggestion identical to the folder's current name is noise — it
+		// offers the reviewer the name they're already looking at (a source
+		// folder named after the camera, say, next to a folder of the same
+		// name)
+		if r.Suggestion != nil && *r.Suggestion != "" && *r.Suggestion != loc.Name {
 			src := ""
 			if r.SuggestionSource != nil {
 				src = *r.SuggestionSource
@@ -177,6 +200,24 @@ func BuildTree(ctx context.Context, sessionID uuid.UUID, database *db.DB) ([]Nod
 	return finalize(root), nil
 }
 
+// FilesUnder returns the source paths of every file proposed under nodeID
+// (that directory or any descendant), in a stable order — used by the review
+// TUI's preview to stage more than the handful of Samples a Node carries.
+func FilesUnder(ctx context.Context, sessionID uuid.UUID, nodeID string, database *db.DB) ([]string, error) {
+	var paths []string
+	// prefix compare, not GLOB/LIKE: a folder name can legitimately contain
+	// *, ?, [ or ], and a pattern match would read those as wildcards
+	prefix := nodeID + "/"
+	if err := database.SQL.SelectContext(ctx, &paths,
+		`SELECT source_path FROM virtual_fs_entries
+		 WHERE session_id = ? AND status IN (?, ?) AND substr(target_path, 1, length(?)) = ?
+		 ORDER BY source_path`,
+		sessionID.String(), db.StatusProposed, db.StatusApproved, prefix, prefix); err != nil {
+		return nil, fmt.Errorf("query files under %q: %w", nodeID, err)
+	}
+	return paths, nil
+}
+
 // Confirm applies the (possibly edited) tree back onto the session's entries:
 // it rewrites target_path for every renamed directory, flips PROPOSED rows to
 // APPROVED, and records renamed location nodes in user_labels so later scans
@@ -201,17 +242,25 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 		}
 	}
 
-	// walk the submitted tree: old-path (node ID) → new-path (edited ancestors)
-	type labelWrite struct{ oldDir, name string }
+	// walk the submitted tree: old-path (node ID) → new-path (edited ancestors).
+	// Two nodes renamed to the same path is a deliberate merge (e.g. two
+	// unresolved date clusters turning out to be the same place), not an
+	// error — remap tolerates many old IDs collapsing onto one new path, and
+	// the per-file UPDATE loop below doesn't care how many did.
+	type labelWrite struct {
+		oldDirs []string // every merged node contributing to this label, so spanFor covers all of them
+		name    string
+	}
 	remap := map[string]string{}
-	byNew := map[string]string{} // new-path → node ID, to reject colliding renames
+	// merged nodes are gone from the submitted tree along with everything under
+	// them, so their descendants' dirs have no remap entry of their own — they
+	// get rewritten by prefix instead (old subtree root -> new path)
+	merged := map[string]string{}
+	labelIdx := map[string]int{} // name+kind -> index into labels, so a merge accumulates oldDirs instead of double-inserting
 	var labels []labelWrite
 	var walk func(nodes []Node, parentNew string) error
 	walk = func(nodes []Node, parentNew string) error {
 		for _, n := range nodes {
-			if !valid[n.ID] {
-				return fmt.Errorf("%w: unknown node id %q", ErrInvalidTree, n.ID)
-			}
 			name := strings.TrimSpace(n.Name)
 			if name == "" || name == "." || name == ".." {
 				return fmt.Errorf("%w: invalid node name %q", ErrInvalidTree, n.Name)
@@ -221,16 +270,24 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 			if parentNew != "" {
 				newPath = parentNew + "/" + name
 			}
-			// ponytail: collision check covers submitted nodes only; an API
-			// client omitting part of the tree could still rename onto an
-			// omitted sibling — full-tree submits (the CLI always) are covered
-			if prev, dup := byNew[newPath]; dup {
-				return fmt.Errorf("%w: %q and %q would both become %q", ErrInvalidTree, prev, n.ID, newPath)
+			oldDirs := append([]string{n.ID}, n.MergedIDs...)
+			for _, id := range oldDirs {
+				if !valid[id] {
+					return fmt.Errorf("%w: unknown node id %q", ErrInvalidTree, id)
+				}
+				remap[id] = newPath
 			}
-			byNew[newPath] = n.ID
-			remap[n.ID] = newPath
+			for _, id := range n.MergedIDs {
+				merged[id] = newPath
+			}
 			if newPath != n.ID && len(n.Suggestions) > 0 && !hasUserLabel(n.Suggestions) {
-				labels = append(labels, labelWrite{oldDir: n.ID, name: name})
+				key := name + "\x00EVENT"
+				if i, ok := labelIdx[key]; ok {
+					labels[i].oldDirs = append(labels[i].oldDirs, oldDirs...)
+				} else {
+					labelIdx[key] = len(labels)
+					labels = append(labels, labelWrite{oldDirs: oldDirs, name: name})
+				}
 			}
 			if err := walk(n.Children, newPath); err != nil {
 				return err
@@ -272,14 +329,50 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 		if len(entries) == 0 {
 			return fmt.Errorf("%w: proposal was replaced by a newer scan", ErrNoProposal)
 		}
+		// Collapsing several dirs onto one can land two different files on the
+		// same basename (distinct masters, reused camera counter). buildTargets'
+		// own uniqueness guarantee only held for the layout it generated, so
+		// re-establish it here: rows that aren't moving claim their path first,
+		// then moved rows take the next free _N suffix.
+		taken := map[string]bool{}
+		type move struct {
+			id      int64
+			dir     string
+			base    string
+			oldPath string
+		}
+		var moves []move
 		for _, e := range entries {
 			dir := path.Dir(e.TargetPath)
-			if newDir, ok := remap[dir]; ok && newDir != dir {
-				if _, err := tx.ExecContext(ctx,
-					`UPDATE virtual_fs_entries SET target_path = ? WHERE id = ?`,
-					newDir+"/"+path.Base(e.TargetPath), e.ID); err != nil {
-					return err
+			newDir, ok := remap[dir]
+			if !ok {
+				newDir, ok = remapUnderMerged(merged, dir)
+			}
+			if !ok || newDir == dir {
+				taken[strings.ToLower(e.TargetPath)] = true
+				continue
+			}
+			moves = append(moves, move{e.ID, newDir, path.Base(e.TargetPath), e.TargetPath})
+		}
+		for _, mv := range moves {
+			ext := path.Ext(mv.base)
+			stem := strings.TrimSuffix(mv.base, ext)
+			var newPath string
+			for n := 1; ; n++ {
+				suffix := ""
+				if n > 1 {
+					suffix = fmt.Sprintf("_%d", n)
 				}
+				newPath = mv.dir + "/" + stem + suffix + ext
+				if !taken[strings.ToLower(newPath)] {
+					taken[strings.ToLower(newPath)] = true
+					break
+				}
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE virtual_fs_entries SET target_path = ? WHERE id = ?`,
+				newPath, mv.id); err != nil {
+				return err
 			}
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -289,7 +382,7 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 		}
 		for _, l := range labels {
 			var ts, te any
-			if start, end, ok := spanFor(capRows, l.oldDir); ok {
+			if start, end, ok := spanFor(capRows, l.oldDirs); ok {
 				ts, te = db.FormatTime(start), db.FormatTime(end)
 			}
 			if _, err := tx.ExecContext(ctx, `
@@ -305,6 +398,20 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 	return nil
 }
 
+// remapUnderMerged rewrites a dir that sits *below* a node folded away by a
+// merge: the subtree root moves to the survivor's path and everything under it
+// keeps its relative shape. Merges from the review TUI only ever fold leaf
+// dirs (nothing below them), but the HTTP surface can submit MergedIDs on any
+// node, and files under it must not be left pointing at the old path.
+func remapUnderMerged(merged map[string]string, dir string) (string, bool) {
+	for oldRoot, newRoot := range merged {
+		if strings.HasPrefix(dir, oldRoot+"/") {
+			return newRoot + dir[len(oldRoot):], true
+		}
+	}
+	return "", false
+}
+
 type capRow struct {
 	TargetPath string  `db:"target_path"`
 	DateOrig   *string `db:"exif_date_time_original"`
@@ -312,12 +419,21 @@ type capRow struct {
 	ModifiedAt string  `db:"file_modified_at"`
 }
 
-// spanFor returns the min/max capture time of every file under oldDir (that
-// dir or any descendant), used to date a freshly written EVENT label.
-func spanFor(rows []capRow, oldDir string) (start, end time.Time, ok bool) {
+// spanFor returns the min/max capture time of every file under any of oldDirs
+// (each dir or its descendants), used to date a freshly written EVENT label —
+// a merge contributes more than one oldDir, so the label spans all of them.
+func spanFor(rows []capRow, oldDirs []string) (start, end time.Time, ok bool) {
+	under := func(d string) bool {
+		for _, oldDir := range oldDirs {
+			if d == oldDir || strings.HasPrefix(d, oldDir+"/") {
+				return true
+			}
+		}
+		return false
+	}
 	for _, r := range rows {
 		d := path.Dir(r.TargetPath)
-		if d != oldDir && !strings.HasPrefix(d, oldDir+"/") {
+		if !under(d) {
 			continue
 		}
 		t := firstTime(deref(r.DateOrig), deref(r.CreateDate), r.ModifiedAt)

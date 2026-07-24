@@ -72,6 +72,24 @@ definitions:
         type: integer
       id:
         type: string
+      lat:
+        description: |-
+          Lat/Lon are one exemplar GPS coordinate for this node (only ever set on
+          the location-depth node, from the first GPS-tagged file that landed
+          there) — lets a review surface re-query the location resolver for ranked
+          alternatives when the reviewer wants to correct a wrong name.
+        type: number
+      lon:
+        type: number
+      mergedIds:
+        description: |-
+          MergedIDs are the IDs of nodes a review-time merge folded into this one.
+          They no longer appear anywhere in the tree (the reviewer sees one folder,
+          which is the whole point of merging), but their files still live under
+          those old paths in the DB, so Confirm must remap them here too.
+        items:
+          type: string
+        type: array
       name:
         type: string
       samples:

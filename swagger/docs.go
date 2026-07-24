@@ -269,6 +269,20 @@ const docTemplate = `{
                 "id": {
                     "type": "string"
                 },
+                "lat": {
+                    "description": "Lat/Lon are one exemplar GPS coordinate for this node (only ever set on\nthe location-depth node, from the first GPS-tagged file that landed\nthere) — lets a review surface re-query the location resolver for ranked\nalternatives when the reviewer wants to correct a wrong name.",
+                    "type": "number"
+                },
+                "lon": {
+                    "type": "number"
+                },
+                "mergedIds": {
+                    "description": "MergedIDs are the IDs of nodes a review-time merge folded into this one.\nThey no longer appear anywhere in the tree (the reviewer sees one folder,\nwhich is the whole point of merging), but their files still live under\nthose old paths in the DB, so Confirm must remap them here too.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "name": {
                     "type": "string"
                 },

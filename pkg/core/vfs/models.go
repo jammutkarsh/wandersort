@@ -6,14 +6,19 @@
 
 package vfs
 
-import "time"
+import (
+	"time"
 
-// Slot names for Config.Slots — the configurable levels below <YEAR>/<MONTH>
+	"github.com/jammutkarsh/wandersort/pkg/config"
+)
+
+// Rules names for Config.Rules — the configurable levels below <YEAR>/<MONTH>
 const (
-	SlotLocation    = "location"
-	SlotDevice      = "device"
-	SlotOrientation = "orientation"
-	SlotMedia       = "media"
+	RuleLocation    = "location"
+	RuleDate        = "date"
+	RuleDevice      = "device"
+	RuleOrientation = "orientation"
+	RuleMedia       = "media"
 )
 
 // Suggestion provenance stored on virtual_fs_entries.suggestion_source
@@ -38,19 +43,68 @@ const defaultClusterGap = 12 * time.Hour
 
 // Config controls the shape of the proposed hierarchy
 type Config struct {
-	Slots      []string      // ordered slots below <YEAR>/<MONTH>; see Slot* constants
+	Rules      []string      // ordered levels below <YEAR>/<MONTH>; see Rules* constants
 	Fallback   string        // last-resort path segment when nothing can be derived
 	ClusterGap time.Duration // capture-time gap that starts a new event cluster
 	NameCase   string        // case style for derived names; see Case* constants
+	// CollapseLevels drops a device/orientation/media level that resolves to
+	// the same folder name for the whole library — it would be a folder every
+	// path passes through without ever distinguishing anything. Date and
+	// location are never dropped. See uninformativeLevels.
+	CollapseLevels bool
+	// HomeWorkDateOnly suppresses the location level for photos taken at a
+	// confirmed home/work place: those everyday photos are grouped by date
+	// only, not by location (see resolveLocations). When false, a home/work
+	// place instead folds nearby suburbs into that town's own folder.
+	HomeWorkDateOnly bool
+	// MergeSameLocationDays collapses consecutive day folders that share the
+	// same location into one dated range folder (Aug/02/Goa + 03/Goa + 04/Goa
+	// → Aug/02_04/Goa). Only applies when a date level sits above location.
+	// See mergeSameLocationDays.
+	MergeSameLocationDays bool
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Slots:      []string{SlotLocation, SlotOrientation, SlotMedia},
-		Fallback:   "Unsorted",
-		ClusterGap: defaultClusterGap,
-		NameCase:   CaseTitle,
+		Rules:                 []string{RuleDate, RuleLocation},
+		Fallback:              "Unsorted",
+		ClusterGap:            defaultClusterGap,
+		NameCase:              CaseTitle,
+		CollapseLevels:        true,
+		HomeWorkDateOnly:      true,
+		MergeSameLocationDays: true,
 	}
+}
+
+// RuleNone is the --rules sentinel for "no levels below Year/Month".
+// It's not a Rules level (dirFor knows nothing about it) — ConfigFor is the
+// only thing that interprets it, and the CLI rejects it mixed with real levels.
+const RuleNone = "none"
+
+// ConfigFor is DefaultConfig with the user's config.yaml/flag settings applied:
+// an empty Rules keeps the default levels, and the RuleNone sentinel means
+// a flat Year/Month with no levels below it. Every caller that turns app config
+// into a vfs.Config goes through here, so the sentinel is interpreted one way
+// only. It takes the whole *config.Configuration rather than loose fields so
+// another vfs-relevant setting doesn't churn the signature — this is the one
+// place vfs is allowed to know about the app's config package, which also means
+// config can never import vfs (the CLI validates Rules* tokens for that
+// reason).
+func ConfigFor(appCfg *config.Configuration) Config {
+	cfg := DefaultConfig()
+	if appCfg == nil {
+		return cfg
+	}
+	cfg.CollapseLevels = appCfg.CollapseLevels
+	cfg.HomeWorkDateOnly = appCfg.HomeWorkDateOnly
+	cfg.MergeSameLocationDays = appCfg.MergeSameLocationDays
+	switch {
+	case len(appCfg.Rules) == 1 && appCfg.Rules[0] == RuleNone:
+		cfg.Rules = nil
+	case len(appCfg.Rules) > 0:
+		cfg.Rules = appCfg.Rules
+	}
+	return cfg
 }
 
 // masterFile carries one master file through the build:
@@ -64,15 +118,16 @@ type masterFile struct {
 	ModifiedAt string `db:"file_modified_at"`
 
 	// metadata persisted during hashing
-	DBWidth       *int64   `db:"exif_image_width"`
-	DBHeight      *int64   `db:"exif_image_height"`
-	DBOrientation *int64   `db:"exif_orientation"`
-	DBLat         *float64 `db:"exif_gps_latitude"`
-	DBLon         *float64 `db:"exif_gps_longitude"`
-	DBMake        *string  `db:"exif_make"`
-	DBModel       *string  `db:"exif_model"`
-	DBDateTaken   *string  `db:"exif_date_time_original"`
-	DBCreateDate  *string  `db:"exif_create_date"`
+	DBWidth        *int64   `db:"exif_image_width"`
+	DBHeight       *int64   `db:"exif_image_height"`
+	DBOrientation  *int64   `db:"exif_orientation"`
+	DBLat          *float64 `db:"exif_gps_latitude"`
+	DBLon          *float64 `db:"exif_gps_longitude"`
+	DBMake         *string  `db:"exif_make"`
+	DBModel        *string  `db:"exif_model"`
+	DBDateTaken    *string  `db:"exif_date_time_original"`
+	DBCreateDate   *string  `db:"exif_create_date"`
+	DBCreationDate *string  `db:"exif_creation_date"`
 
 	absPath          string
 	takenAt          time.Time
@@ -81,17 +136,27 @@ type masterFile struct {
 	lat, lon         float64
 	device           string
 	location         string // resolved city; "" when unknown
+	atHomeWork       bool   // GPS at a confirmed home/work place; suppresses the location level (HomeWorkDateOnly)
 	clusterID        string // set when the location decision came from cluster logic
 	eventSegment     string // dated segment for unresolved clusters, e.g. "03-05"
+	dayOverride      string // date-level range label from mergeSameLocationDays, e.g. "02_04"
 	suggestion       string
 	suggestionSource string
 	targetPath       string
+	// suggestionDir is the directory the suggestion belongs to — the node a
+	// reviewer renames. Recorded by dirFor when it emits the location level, so
+	// the review tree never has to guess which depth that is (it moves with the
+	// Rules order, and there may be no location level at all).
+	suggestionDir string
 }
 
 // userLabel is a confirmed name from a previous review, read for suggestions
+// (EVENT) or to fold nearby suburbs into one anchor city (ANCHOR_HOME/WORK)
 type userLabel struct {
-	Label     string  `db:"label"`
-	Kind      string  `db:"kind"`
-	TimeStart *string `db:"time_start"`
-	TimeEnd   *string `db:"time_end"`
+	Label     string   `db:"label"`
+	Kind      string   `db:"kind"`
+	TimeStart *string  `db:"time_start"`
+	TimeEnd   *string  `db:"time_end"`
+	GPSLat    *float64 `db:"gps_lat"`
+	GPSLon    *float64 `db:"gps_lon"`
 }

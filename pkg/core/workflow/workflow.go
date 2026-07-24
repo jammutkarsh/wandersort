@@ -88,9 +88,13 @@ func WithScorer(s Scorer) Option { return func(wf *Workflow) { wf.scorer = s } }
 func WithVFS(v VFS) Option { return func(wf *Workflow) { wf.vfs = v } }
 
 type workflowPhase struct {
-	kind      workflowPhaseKind
-	run       func() (int, error)
-	onSuccess func(count int)
+	kind workflowPhaseKind
+	run  func() (int, error)
+	// summary is the one user-facing line this phase reports on success. The
+	// phase's elapsed time is appended to it rather than logged separately —
+	// two console lines per phase ("Scanned 15481 files", "scan phase took
+	// 1.996s") is twice the noise for one fact.
+	summary func(count int) string
 }
 
 type workflowPhaseKind string
@@ -128,7 +132,18 @@ func (kind workflowPhaseKind) status() phaseStatus {
 
 // NewWorkflow creates a new workflow instance
 func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration, exiftoolPath string, opts ...Option) *Workflow {
-	log.Info("Pipeline configured", "workers", cfg.Workers)
+	vfsCfg := vfs.ConfigFor(cfg)
+	// user-facing: these three decide where everything lands and how long it
+	// takes, and all three come from flags/env/config.yaml — showing the
+	// resolved values up front is the only way to tell which one won
+	rules := "none (flat Year/Month)"
+	if len(vfsCfg.Rules) > 0 {
+		rules = strings.Join(vfsCfg.Rules, ", ")
+	}
+	log.Info("Pipeline configured", logger.UserKey, true,
+		"workers", cfg.Workers,
+		"output", filepath.Dir(cfg.AppDBPath),
+		"rules", "Year/Month/"+rules)
 	wf := &Workflow{
 		ctx:              ctx,
 		db:               db,
@@ -136,7 +151,7 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 		scanner:          scanner.New(db, log, cfg.Workers),
 		hasher:           hasher.New(ctx, db, log, exiftoolPath, cfg.Workers),
 		scorer:           scorer.New(db, log),
-		vfs:              vfs.New(db, locationResolver, log, vfs.DefaultConfig()),
+		vfs:              vfs.New(db, locationResolver, log, vfsCfg),
 		log:              log,
 		path:             path.New(),
 		outputDir:        filepath.Dir(cfg.AppDBPath),
@@ -275,15 +290,16 @@ func (wf *Workflow) runSession(sessionID uuid.UUID, paths []string) (finalStatus
 	phases := wf.workflowPhases(sessionID, paths)
 
 	for _, phase := range phases {
-		count, status, errStr, ok := wf.run(sessionID, phase.kind, phase.run)
+		_, status, errStr, ok := wf.run(sessionID, phase)
 		finalStatus, finalErr = status, errStr
 		if !ok {
 			return
 		}
-		if phase.onSuccess != nil {
-			phase.onSuccess(count)
-		}
 	}
+
+	// last thing before the session is marked done, so it sits next to the
+	// "run wandersort review" hint rather than scrolling past mid-pipeline
+	wf.warnIfLowSpace(sessionID)
 
 	if err := wf.setSessionStatus(wf.ctx, sessionID, db.StatusCompleted); err != nil {
 		msg := fmt.Errorf("failed to set %s status: %w", db.StatusCompleted, err).Error()
@@ -303,41 +319,28 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 			run: func() (int, error) {
 				return wf.scanner.Run(wf.ctx, sessionID, paths)
 			},
-			onSuccess: func(count int) {
-				msg := fmt.Sprintf("Scanned %d files", count)
-				wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
-				wf.warnIfLowSpace(sessionID)
-			},
+			summary: func(count int) string { return fmt.Sprintf("Scanned %d files", count) },
 		},
 		{
 			kind: workflowPhaseHash,
 			run: func() (int, error) {
 				return wf.hasher.Run(wf.ctx, sessionID)
 			},
-			onSuccess: func(count int) {
-				msg := fmt.Sprintf("Checked %d files for duplicates", count)
-				wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
-			},
+			summary: func(count int) string { return fmt.Sprintf("Checked %d files for duplicates", count) },
 		},
 		{
 			kind: workflowPhaseScore,
 			run: func() (int, error) {
 				return wf.scorer.Run(wf.ctx, sessionID)
 			},
-			onSuccess: func(count int) {
-				msg := fmt.Sprintf("Reviewed %d duplicate groups", count)
-				wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
-			},
+			summary: func(count int) string { return fmt.Sprintf("Reviewed %d duplicate groups", count) },
 		},
 		{
 			kind: workflowPhaseVFS,
 			run: func() (int, error) {
 				return wf.vfs.Run(wf.ctx, sessionID)
 			},
-			onSuccess: func(count int) {
-				msg := fmt.Sprintf("Proposed destinations for %d files", count)
-				wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID)
-			},
+			summary: func(count int) string { return fmt.Sprintf("Proposed destinations for %d files", count) },
 		},
 	}
 }
@@ -345,17 +348,18 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 // run runs a single workflow phase, handles logging,
 // status updates, and consistent error reporting. Returns the result count,
 // final status, error message (if any), and a boolean indicating success
-func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhaseKind, phaseFunc func() (int, error)) (int, string, *string, bool) {
+func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhase) (int, string, *string, bool) {
 	success := true
-	status := phase.status()
+	status := phase.kind.status()
 	if err := wf.setSessionStatus(wf.ctx, sessionID, status.inProgress); err != nil {
 		msg := fmt.Errorf("failed to set %s status: %w", status.inProgress, err).Error()
 		return 0, db.StatusFailed, &msg, !success
 	}
 
-	wf.log.Info(status.message, logger.UserKey, true, "sessionId", sessionID)
+	wf.log.Info(status.message, logger.UserKey, true,
+		logger.PhaseKey, string(phase.kind), logger.EventKey, "start", "sessionId", sessionID)
 	start := time.Now()
-	count, err := phaseFunc()
+	count, err := phase.run()
 	elapsed := time.Since(start)
 	if err != nil {
 		var finalStatus string
@@ -372,7 +376,14 @@ func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhaseKind, phaseFunc 
 
 	wf.db.Writer.Flush()
 
-	wf.log.Info(fmt.Sprintf("%s phase took %s", phase, elapsed.Round(time.Millisecond)), "sessionId", sessionID)
+	// one line per phase: what it did and how long it took
+	msg := fmt.Sprintf("%s phase took %s", phase.kind, elapsed.Round(time.Millisecond))
+	if phase.summary != nil {
+		msg = fmt.Sprintf("%s in %s", phase.summary(count), elapsed.Round(time.Millisecond))
+	}
+	wf.log.Info(msg, logger.UserKey, true,
+		logger.PhaseKey, string(phase.kind), logger.EventKey, "done",
+		logger.ElapsedKey, elapsed.Round(time.Millisecond).String(), "sessionId", sessionID)
 
 	if err := wf.setSessionStatus(wf.ctx, sessionID, status.completed); err != nil {
 		msg := fmt.Errorf("failed to set %s status: %w", status.completed, err).Error()

@@ -17,6 +17,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,7 +28,6 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
-	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -76,9 +77,10 @@ func (v *VFS) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	}
 
 	deriveAll(masters)
-	v.resolveLocations(ctx, masters)
+	v.resolveLocations(ctx, masters, labels)
 	clusterAndSuggest(masters, labels, v.cfg.ClusterGap)
 	v.applyNameCase(masters)
+	v.mergeSameLocationDays(masters)
 	v.buildTargets(masters)
 	if ctx.Err() != nil { // don't persist a half-built proposal on cancel
 		return 0, ctx.Err()
@@ -105,7 +107,8 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 		SELECT fr.id, fr.file_dir, fr.file_name, fr.media_type, fr.file_extension, fr.file_modified_at,
 			fm.exif_image_width, fm.exif_image_height, fm.exif_orientation,
 			fm.exif_gps_latitude, fm.exif_gps_longitude,
-			fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date
+			fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date,
+			fm.exif_creation_date
 		FROM live_files fr
 		JOIN file_metadata fm ON fm.file_id = fr.id
 		WHERE fm.is_master = 1
@@ -121,7 +124,7 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 func (v *VFS) loadLabels(ctx context.Context) ([]userLabel, error) {
 	var labels []userLabel
 	if err := v.db.SQL.SelectContext(ctx, &labels,
-		`SELECT label, kind, time_start, time_end FROM user_labels`); err != nil {
+		`SELECT label, kind, time_start, time_end, gps_lat, gps_lon FROM user_labels`); err != nil {
 		return nil, fmt.Errorf("query user labels: %w", err)
 	}
 	return labels, nil
@@ -134,7 +137,15 @@ func deriveAll(masters []masterFile) {
 	for i := range masters {
 		m := &masters[i]
 
-		m.takenAt = firstTime(deref(m.DBDateTaken), deref(m.DBCreateDate), m.ModifiedAt)
+		// CreationDate (QuickTime's composite, iOS videos only) carries its own
+		// timezone offset; every other candidate here is a naive local
+		// wall-clock string. Parsing CreationDate's offset for real would shift
+		// a video hours away from photos taken at the same moment (the offset
+		// gets applied against an assumed-UTC zero point that the naive
+		// strings never had applied to them) — stripped, its wall-clock digits
+		// line back up with them, which is what actually fixes a video landing
+		// in the wrong day/cluster next to its photos.
+		m.takenAt = firstTime(deref(m.DBDateTaken), stripOffset(deref(m.DBCreationDate)), deref(m.DBCreateDate), m.ModifiedAt)
 		if m.DBWidth != nil {
 			m.width = *m.DBWidth
 		}
@@ -155,12 +166,23 @@ func deriveAll(masters []masterFile) {
 	}
 }
 
-// resolveLocations reverse-geocodes every GPS-tagged master.
+// resolveLocations reverse-geocodes every GPS-tagged master, then folds the
+// result into a confirmed home/work anchor when it's within
+// location.MaxDistSquared of one — the same reach Lookup itself accepts a
+// match at — otherwise a home city's own suburbs each get their own folder.
+// ponytail: not a separate per-user radius; revisit if a single reach doesn't
+// fit both dense and sprawling metros.
 // ponytail: serial loop — the resolver caches and singleflights internally;
 // parallelise only if geocoding ever shows up in profiles
-func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile) {
+func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile, labels []userLabel) {
 	if v.resolver == nil {
 		return
+	}
+	var anchors []userLabel
+	for _, l := range labels {
+		if (l.Kind == "ANCHOR_HOME" || l.Kind == "ANCHOR_WORK") && l.GPSLat != nil && l.GPSLon != nil {
+			anchors = append(anchors, l)
+		}
 	}
 	for i := range masters {
 		if ctx.Err() != nil {
@@ -176,6 +198,23 @@ func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile) {
 			continue
 		}
 		m.location = city
+		for _, a := range anchors {
+			dLat, dLon := m.lat-*a.GPSLat, m.lon-*a.GPSLon
+			if dLat*dLat+dLon*dLon <= location.MaxDistSquared {
+				if v.cfg.HomeWorkDateOnly {
+					// Everyday place: no location level at all — group by date
+					// only. atHomeWork also keeps clusterAndSuggest from folding
+					// this file back into a located cluster or hanging a
+					// suggestion off it.
+					m.location = ""
+					m.atHomeWork = true
+				} else {
+					// Legacy behaviour: fold the suburb into the town's folder.
+					m.location = a.Label
+				}
+				break
+			}
+		}
 	}
 }
 
@@ -192,71 +231,122 @@ func (v *VFS) applyNameCase(masters []masterFile) {
 	}
 }
 
-// buildTargets derives the destination path for every master. Capture-group
-// members (Live Photo pairs, RAW+JPG, sidecars) are grouped on the fly and
-// always land in the directory derived from the group's original member
-func (v *VFS) buildTargets(masters []masterFile) {
-	type group struct {
-		leader  int   // index of the ORIGINAL member (or first seen)
-		members []int // indices into masters
+// mergeSameLocationDays collapses runs of consecutive days that share the same
+// location into one dated range folder — e.g. three Goa days
+// (2024/08/02/Goa, /03/Goa, /04/Goa) become 2024/08/02_04/Goa. It only fires
+// when a date level sits ABOVE a location level in the grouping (date before
+// location), since that is the only shape where a per-day folder holds a
+// location beneath it. Files whose location differs on an interleaving day are
+// untouched, so Goa on 02-04 can merge while a Pune day at 03 keeps its own
+// folder. atHomeWork (date-only) files have no location and never merge.
+// The reviewer can still split a merged range in the review TUI.
+func (v *VFS) mergeSameLocationDays(masters []masterFile) {
+	if !v.cfg.MergeSameLocationDays {
+		return
+	}
+	di, li := slices.Index(v.cfg.Rules, RuleDate), slices.Index(v.cfg.Rules, RuleLocation)
+	if di < 0 || li < 0 || di > li {
+		return // needs a date level sitting above a location level
 	}
 
-	var groups []*group
-	index := map[string]*group{}
+	type key struct {
+		year int
+		mon  time.Month
+		loc  string
+	}
+	// (year, month, location) → set of day-of-month present
+	days := map[key]map[int]bool{}
 	for i := range masters {
 		m := &masters[i]
-		info := scanner.DeriveCapture(m.FileName, strings.ToLower(m.Extension), m.MediaType)
-		// same source directory + same capture stem = same capture event
-		key := m.FileDir + "|" + info.Key
-		g, ok := index[key]
-		if !ok {
-			g = &group{leader: i}
-			index[key] = g
-			groups = append(groups, g)
+		if m.takenAt.IsZero() || m.location == "" {
+			continue
 		}
-		if info.Role == scanner.CaptureRoleOriginal {
-			g.leader = i
+		k := key{m.takenAt.Year(), m.takenAt.Month(), m.location}
+		if days[k] == nil {
+			days[k] = map[int]bool{}
 		}
-		g.members = append(g.members, i)
+		days[k][m.takenAt.Day()] = true
 	}
 
-	// collisions: the suffix is decided per capture group so members keep a
-	// common stem and move together. Every final path is reserved, so a
-	// suffixed name can't collide with a stem that already ends in _N
-	memberPath := func(i int, dir, suffix string) string {
+	// For each key, label every day that falls inside a run of length ≥ 2.
+	label := map[key]map[int]string{}
+	for k, set := range days {
+		ds := make([]int, 0, len(set))
+		for d := range set {
+			ds = append(ds, d)
+		}
+		sort.Ints(ds)
+		for start := 0; start < len(ds); {
+			end := start
+			for end+1 < len(ds) && ds[end+1] == ds[end]+1 {
+				end++
+			}
+			if end > start {
+				lo, hi := ds[start], ds[end]
+				rng := fmt.Sprintf("%02d_%02d", lo, hi)
+				if label[k] == nil {
+					label[k] = map[int]string{}
+				}
+				for d := lo; d <= hi; d++ {
+					label[k][d] = rng
+				}
+			}
+			start = end + 1
+		}
+	}
+
+	for i := range masters {
+		m := &masters[i]
+		if m.takenAt.IsZero() || m.location == "" {
+			continue
+		}
+		k := key{m.takenAt.Year(), m.takenAt.Month(), m.location}
+		if rng, ok := label[k][m.takenAt.Day()]; ok {
+			m.dayOverride = rng
+		}
+	}
+}
+
+// buildTargets derives the destination path for every master independently —
+// each file's own derived time/location decides its directory (dirFor), full
+// stop. An earlier version force-grouped files sharing a filename stem (Live
+// Photo HEIC+MOV pairs, RAW+JPG, edited variants, .aae sidecars) into one
+// directory, on the assumption that same-stem meant same-capture. It
+// doesn't: phone/camera filename counters get reused across entirely
+// unrelated shoots (old iPhone photos in particular), so two files sharing a
+// stem aren't reliably the same event — that assumption was forcing
+// unrelated files together. A .aae sidecar with no timestamp of its own
+// falls back to file mtime via deriveAll's takenAt, same as any other file —
+// in practice close enough to its paired photo's own time.
+func (v *VFS) buildTargets(masters []masterFile) {
+	skip := v.uninformativeLevels(masters)
+	taken := map[string]bool{}
+	for i := range masters {
+		dir := v.dirFor(&masters[i], skip)
 		name := masters[i].FileName
 		stem := strings.TrimSuffix(name, filepath.Ext(name))
-		return dir + "/" + stem + suffix + filepath.Ext(name)
-	}
-	taken := map[string]bool{}
-	for _, g := range groups {
-		dir := v.dirFor(&masters[g.leader])
+		ext := filepath.Ext(name)
+
+		// suffix only kicks in on a genuine collision — two unrelated files
+		// that independently land on the exact same dir+stem+ext
 		suffix := ""
 		for n := 1; ; n++ {
 			if n > 1 {
 				suffix = fmt.Sprintf("_%d", n)
 			}
-			free := true
-			for _, i := range g.members {
-				if taken[strings.ToLower(memberPath(i, dir, suffix))] {
-					free = false
-					break
-				}
-			}
-			if free {
+			p := dir + "/" + stem + suffix + ext
+			if !taken[strings.ToLower(p)] {
+				masters[i].targetPath = p
+				taken[strings.ToLower(p)] = true
 				break
 			}
-		}
-		for _, i := range g.members {
-			p := memberPath(i, dir, suffix)
-			masters[i].targetPath = p
-			taken[strings.ToLower(p)] = true
 		}
 	}
 }
 
-// dirFor derives the directory segments for one master, honouring slot order
-func (v *VFS) dirFor(m *masterFile) string {
+// dirFor derives the directory segments for one master, honouring Rules
+// order. skip names the levels uninformativeLevels found nothing to say with.
+func (v *VFS) dirFor(m *masterFile, skip map[string]bool) string {
 	if m.takenAt.IsZero() {
 		// ponytail: no usable timestamp at all (should never happen — file
 		// mtime is always present); park flat under the fallback dir
@@ -265,45 +355,122 @@ func (v *VFS) dirFor(m *masterFile) string {
 
 	parts := []string{
 		strconv.Itoa(m.takenAt.Year()),
-		m.takenAt.Month().String(),
+		// number-first ("06_June") so months sort chronologically everywhere
+		// they're listed — the review tree, Finder, ls. Bare month names sort
+		// alphabetically, which put December above November.
+		m.takenAt.Format("01_January"),
 	}
-	for _, slot := range v.cfg.Slots {
-		seg := ""
-		switch slot {
-		case SlotLocation:
-			// ladder: resolved city → dated event segment → device → fallback
-			switch {
-			case m.location != "":
-				seg = m.location
-			case m.eventSegment != "":
-				seg = m.eventSegment
-			case m.device != "":
-				seg = m.device
-			default:
-				seg = v.cfg.Fallback
-			}
-		case SlotDevice:
-			seg = m.device // skipped when unknown
-		case SlotOrientation:
-			if m.width > 0 && m.height > 0 { // skipped when dimensions unknown
-				if m.height > m.width {
-					seg = "Vertical"
-				} else {
-					seg = "Horizontal"
-				}
-			}
-		case SlotMedia:
-			if m.MediaType == classifier.MediaTypeVideo {
-				seg = "Videos"
-			} else {
-				seg = "Photos"
-			}
+	for _, level := range v.cfg.Rules {
+		if skip[level] {
+			continue
 		}
-		if seg != "" {
-			parts = append(parts, sanitizeSegment(seg))
+		seg := v.segmentFor(m, level)
+		if seg == "" {
+			continue // level not derivable for this file — skip the folder
+		}
+		parts = append(parts, sanitizeSegment(seg))
+		if level == RuleLocation {
+			// the folder a reviewer renames, recorded by path rather than by
+			// depth so any Rules order works (and "no location level" means
+			// no suggestion node at all, instead of one landing on a Device)
+			m.suggestionDir = strings.Join(parts, "/")
 		}
 	}
 	return strings.Join(parts, "/")
+}
+
+// segmentFor is the folder name one grouping level gives this file, or "" when
+// the level isn't derivable for it (unknown device, no dimensions).
+func (v *VFS) segmentFor(m *masterFile, level string) string {
+	switch level {
+	case RuleLocation:
+		// ladder: resolved city → dated event segment → nothing.
+		//
+		// A Day level already carries the date, so the dated placeholder rung
+		// is skipped there — it produced a second date beside it ("…/03/03-05/").
+		//
+		// There is deliberately no device or "Unsorted" rung below that: a
+		// location folder named after the camera is wrong information, and it
+		// duplicated the device level standing right next to it
+		// ("…/Canon EOS 700D/Canon EOS 700D/"). When we don't know where a
+		// photo was taken we say nothing rather than something false — the
+		// level is simply absent for that file.
+		switch {
+		case m.location != "":
+			return m.location
+		case m.eventSegment != "" && !slices.Contains(v.cfg.Rules, RuleDate):
+			return m.eventSegment
+		default:
+			return ""
+		}
+	case RuleDate:
+		if m.dayOverride != "" {
+			return m.dayOverride // merged consecutive same-location day range
+		}
+		return m.takenAt.Format("02")
+	case RuleDevice:
+		return m.device
+	case RuleOrientation:
+		if m.width == 0 || m.height == 0 {
+			return ""
+		}
+		if m.height > m.width {
+			return "Vertical"
+		}
+		return "Horizontal"
+	case RuleMedia:
+		if m.MediaType == classifier.MediaTypeVideo {
+			return "Videos"
+		}
+		return "Photos"
+	}
+	return ""
+}
+
+// collapsibleLevels are the grouping levels worth dropping when they turn out
+// to carry no information. Date and location are never dropped even if the
+// whole library shares one value: they're how a person recognizes a folder,
+// and the review TUI's merge is the way to fold days together on purpose.
+var collapsibleLevels = map[string]bool{
+	RuleDevice:      true,
+	RuleOrientation: true,
+	RuleMedia:       true,
+}
+
+// uninformativeLevels finds the collapsible grouping levels that resolve to at
+// most one distinct folder name across the whole library. Such a level adds a
+// folder every path has to pass through without ever telling the user
+// anything — "…/Goa/iPhone/Vertical/Photos/" when every file is a vertical
+// iPhone photo. Dropping it is what makes the useful folder reachable in one
+// click instead of four.
+//
+// Deliberately measured library-wide rather than per-branch: a level kept in
+// one Day and dropped in the next would make the hierarchy a different depth
+// depending on where you are, which is worse to navigate than one extra level.
+func (v *VFS) uninformativeLevels(masters []masterFile) map[string]bool {
+	if !v.cfg.CollapseLevels {
+		return nil
+	}
+	seen := map[string]map[string]bool{}
+	for _, level := range v.cfg.Rules {
+		if collapsibleLevels[level] {
+			seen[level] = map[string]bool{}
+		}
+	}
+	for i := range masters {
+		for level := range seen {
+			if seg := v.segmentFor(&masters[i], level); seg != "" {
+				seen[level][seg] = true
+			}
+		}
+	}
+	skip := map[string]bool{}
+	for level, values := range seen {
+		if len(values) <= 1 {
+			skip[level] = true
+		}
+	}
+	return skip
 }
 
 // persist replaces the whole previous proposal — one live proposal set for the
@@ -324,11 +491,11 @@ func (v *VFS) persist(sessionID uuid.UUID, masters []masterFile) (int, error) {
 		if !v.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO virtual_fs_entries
-					(session_id, file_id, source_path, target_path, cluster_id, status, suggestion, suggestion_source)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					(session_id, file_id, source_path, target_path, cluster_id, status, suggestion, suggestion_source, suggestion_dir)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				sessionID.String(), m.FileID, m.absPath, m.targetPath,
 				nullable(m.clusterID), db.StatusProposed,
-				nullable(m.suggestion), nullable(m.suggestionSource)); err != nil {
+				nullable(m.suggestion), nullable(m.suggestionSource), nullable(m.suggestionDir)); err != nil {
 				return fmt.Errorf("persist vfs entry for file %d: %w", m.FileID, err)
 			}
 			return nil
@@ -340,6 +507,19 @@ func (v *VFS) persist(sessionID uuid.UUID, masters []masterFile) (int, error) {
 }
 
 /* small parsing helpers — exiftool values arrive as strings */
+
+// stripOffset removes a trailing timezone offset ("+05:30", "-07:00", "Z")
+// from an exiftool timestamp, so it parses as the same naive wall-clock value
+// every other capture-time tag here is (see the takenAt comment in
+// deriveAll for why). Exiftool's date format uses colons, not hyphens, for
+// the date portion, so the offset is the only '+'/'-' the string ever has.
+func stripOffset(s string) string {
+	s = strings.TrimSuffix(s, "Z")
+	if i := strings.LastIndexAny(s, "+-"); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return s
+}
 
 var looseTimeLayouts = []string{
 	"2006:01:02 15:04:05.999999999-07:00",

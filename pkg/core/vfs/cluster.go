@@ -50,9 +50,7 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Durati
 		c.end = t
 	}
 
-	// anchors are computed from directly-located files only, before any
-	// spillover mutates locations
-	anchors := anchorCities(masters, labels)
+	anchors := anchorCities(labels)
 
 	clusterNum := 0
 	for ci := range clusters {
@@ -61,12 +59,14 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Durati
 
 		var unlocated []int
 		for _, i := range c.members {
-			if masters[i].location == "" {
+			// atHomeWork files are deliberately location-less (date-only); never
+			// give them a spillover city, event segment, or suggestion.
+			if masters[i].location == "" && !masters[i].atHomeWork {
 				unlocated = append(unlocated, i)
 			}
 		}
 		if len(unlocated) == 0 {
-			continue // every member located directly; nothing to decide
+			continue // every member located directly (or date-only); nothing to decide
 		}
 
 		clusterNum++
@@ -87,6 +87,9 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Durati
 		seg := eventSegment(c.start, c.end)
 		sug, src := suggestFor(masters, c, labels, anchors)
 		for _, i := range c.members {
+			if masters[i].atHomeWork {
+				continue // date-only; stays out of the event segment
+			}
 			masters[i].clusterID = id
 			masters[i].eventSegment = seg
 			masters[i].suggestion = sug
@@ -113,39 +116,22 @@ func majorityCity(masters []masterFile, members []int) string {
 	return best
 }
 
-// anchorCities returns the ranked default locations: confirmed anchor labels
-// (home/work — possibly the same city) first, then the top-2 most frequent
-// directly-resolved cities of this build
-func anchorCities(masters []masterFile, labels []userLabel) []string {
+// anchorCities returns confirmed anchor labels (home/work — possibly the same
+// city), in confirmation order. Deliberately does NOT fall back to "the
+// library's most frequent city" — that guessed a place with no temporal or
+// spatial relationship to the cluster being named, which showed up as a
+// single confusing suggestion smeared across the whole tree (e.g. a DSLR
+// photo with no GPS anywhere nearby "suggested" whatever city happens to
+// dominate the user's phone-photo library). A confirmed anchor is a real
+// user assertion ("I live/work here"); an unconfirmed frequency count isn't.
+func anchorCities(labels []userLabel) []string {
 	var anchors []string
 	seen := map[string]bool{}
-	add := func(city string) {
-		if city != "" && !seen[city] {
-			seen[city] = true
-			anchors = append(anchors, city)
-		}
-	}
-
 	for _, l := range labels {
-		if l.Kind == "ANCHOR_HOME" || l.Kind == "ANCHOR_WORK" {
-			add(l.Label)
+		if (l.Kind == "ANCHOR_HOME" || l.Kind == "ANCHOR_WORK") && l.Label != "" && !seen[l.Label] {
+			seen[l.Label] = true
+			anchors = append(anchors, l.Label)
 		}
-	}
-
-	counts := map[string]int{}
-	for i := range masters {
-		if masters[i].location != "" {
-			counts[masters[i].location]++
-		}
-	}
-	for range 2 {
-		best, bestN := "", 0
-		for city, n := range counts {
-			if !seen[city] && (n > bestN || (n == bestN && city < best)) {
-				best, bestN = city, n
-			}
-		}
-		add(best)
 	}
 	return anchors
 }
