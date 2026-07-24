@@ -14,8 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
-	"github.com/jammutkarsh/wandersort/pkg/style"
+	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -46,7 +47,7 @@ func (a *App) runReset() error {
 	}
 
 	if !v.GetBool(flagYes) {
-		if !confirmReset() {
+		if !a.confirmReset() {
 			return fmt.Errorf("reset cancelled")
 		}
 	}
@@ -72,14 +73,29 @@ func (a *App) runReset() error {
 		a.Log.Warn("database optimization after reset failed", "error", err)
 	}
 
-	fmt.Fprintln(os.Stderr, style.Success.Render("All wandersort data deleted."))
+	fmt.Fprintln(os.Stderr, tui.OK.Render("All wandersort data deleted."))
 	return nil
 }
 
-func confirmReset() bool {
-	fmt.Fprint(os.Stderr, style.Warn.Render("Delete all wandersort data?")+" (y/N): ")
-	reader := bufio.NewReader(os.Stdin)
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(strings.ToLower(input))
-	return input == "y" || input == "yes"
+// confirmReset asks before the irreversible wipe: a themed dialog in the
+// full-screen TUI, or a plain y/N prompt when --plain / non-interactive.
+func (a *App) confirmReset() bool {
+	if !a.tuiEnabled() {
+		fmt.Fprint(os.Stderr, tui.Attn.Render("Delete all wandersort data?")+" (y/N): ")
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(strings.ToLower(input))
+		return input == "y" || input == "yes"
+	}
+	ok := false
+	m := tui.NewConfirmModel(
+		"Delete all wandersort data?",
+		"Scan history, file index, and duplicate results — this cannot be undone.",
+		&ok,
+	)
+	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
+	if _, err := prog.Run(); err != nil {
+		return false
+	}
+	return ok
 }

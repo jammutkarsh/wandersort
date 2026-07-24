@@ -12,7 +12,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/internal/cli"
 	"github.com/jammutkarsh/wandersort/pkg/config"
-	"github.com/jammutkarsh/wandersort/pkg/style"
+	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
 func main() {
@@ -25,7 +25,7 @@ func main() {
 	app := &cli.App{Config: cfg}
 
 	if err := app.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, style.Err.Render("Error:"), err)
+		fmt.Fprintln(os.Stderr, tui.Bad.Render("Error:"), err)
 		os.Exit(1)
 	}
 }

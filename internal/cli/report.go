@@ -17,7 +17,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/style"
+	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/spf13/cobra"
 	_ "modernc.org/sqlite"
 )
@@ -46,10 +46,10 @@ type SessionReport struct {
 }
 
 var (
-	labelStyle       = style.Dim
-	valueStyle       = lipgloss.NewStyle().Bold(true)
-	titleStyle       = style.Header.MarginBottom(1)
-	tableBorderStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
+	labelStyle       = tui.DimText
+	valueStyle       = tui.Text.Bold(true)
+	titleStyle       = tui.Title.MarginBottom(1)
+	tableBorderStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(tui.Subtle).Padding(0, 1)
 )
 
 func (a *App) newReportCmd() *cobra.Command {
@@ -160,7 +160,7 @@ func (a *App) printReport(sessions []SessionReport) {
 	fmt.Println(titleStyle.Render("WanderSort Report"))
 
 	if !terminalStatus(sessions[0].Status) {
-		fmt.Println(style.Warn.Render(fmt.Sprintf(
+		fmt.Println(tui.Attn.Render(fmt.Sprintf(
 			"Session %s is still %s — its counts below are partial.", sessions[0].SessionID, sessions[0].Status,
 		)))
 		fmt.Println()
@@ -189,7 +189,7 @@ func (a *App) printReportVertical(sessions []SessionReport) {
 	fmt.Println(titleStyle.Render("WanderSort Report"))
 
 	if !terminalStatus(sessions[0].Status) {
-		fmt.Println(style.Warn.Render(fmt.Sprintf(
+		fmt.Println(tui.Attn.Render(fmt.Sprintf(
 			"Session %s is still %s — its counts below are partial.", sessions[0].SessionID, sessions[0].Status,
 		)))
 		fmt.Println()
