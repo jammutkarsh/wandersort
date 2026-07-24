@@ -54,20 +54,6 @@ func New(ctx context.Context, db *db.DB, log logger.Logger, exiftoolPath string,
 	}
 }
 
-// logEvery returns how many processed files should pass between progress
-// log lines, scaled so small and large libraries both get a reasonable
-// number of updates
-func logEvery(total int) int {
-	switch {
-	case total <= 100:
-		return 10
-	case total <= 1000:
-		return 100
-	default:
-		return 500
-	}
-}
-
 // Run fetches hashable files for the given session in pages and executes
 // hashing in bounded worker pools
 func (h *Hasher) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
@@ -173,8 +159,7 @@ func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, 
 
 // hasher runs the bounded worker pool that computes BLAKE3 hashes and extracts EXIF
 func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, toHash <-chan fileRecord, toPersist chan<- hashedRecord, errorCount *atomic.Int64, total int) {
-	interval := int64(logEvery(total))
-	var hashedN, exifN atomic.Int64
+	var hashedN atomic.Int64
 	var hashWG sync.WaitGroup
 
 	for range h.workers {
@@ -202,9 +187,13 @@ func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context
 					errorCount.Add(1)
 					continue
 				}
-				if n := hashedN.Add(1); n%interval == 0 {
-					h.log.Info("Hashing progress", logger.UserKey, true, "sessionId", sessionID, "hashed", n, "total", total)
-				}
+				// Per-file feed line for the TUI (StreamKey: feed + file log, never
+				// the plain console). Logged at Info — the TUI handler filters by
+				// level, so a Debug line would vanish outside --debug and the bar
+				// would never move. It carries the running count so the bar
+				// advances one file at a time.
+				h.log.Info("Hashing", logger.StreamKey, true, "sessionId", sessionID,
+					"file", filepath.Base(file.absPath), "hashed", hashedN.Add(1), "total", total)
 
 				if ctx.Err() != nil {
 					return // pipeline cancelled; stop cleanly
@@ -226,10 +215,6 @@ func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context
 						h.log.Warn("Failed to extract exif data", "sessionId", sessionID, "fileId", file.id, "path", file.absPath, "error", err)
 					}
 				}
-				if n := exifN.Add(1); n%interval == 0 {
-					h.log.Info("Exif extraction progress", logger.UserKey, true, "sessionId", sessionID, "extracted", n, "total", total)
-				}
-
 				select {
 				case toPersist <- hashedRecord{id: file.id, hash: hash, exif: exifData}:
 				case <-ctx.Done():

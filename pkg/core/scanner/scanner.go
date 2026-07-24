@@ -258,6 +258,12 @@ func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, absRoot, vo
 			MediaType:  mediaType,
 		}
 
+		// Per-file feed line: streamed into the TUI to show progress, kept in the
+		// file log for debugging, never printed on the plain console (StreamKey).
+		// Info, not Debug — the TUI handler filters by level, so a Debug line
+		// only reaches the feed under --debug.
+		s.log.Info("Scanning", logger.StreamKey, true, "sessionId", sessionID, "file", s.path.RelativeToHome(p))
+
 		// Send to processing channel
 		select {
 		case output <- file:
