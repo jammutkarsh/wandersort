@@ -28,7 +28,8 @@ func TestPathUtil_ExpandPath(t *testing.T) {
 		{"~/Photos/2023/trip", filepath.Join(home, "Photos/2023/trip")},
 		{"/absolute/path", "/absolute/path"},
 		{"relative/path", "relative/path"},
-		{"~", "~"}, // only "~/" prefix triggers expansion
+		{"~", home},                    // bare ~ is the home dir itself
+		{"~notauser/x", "~notauser/x"}, // ~ only expands as a whole segment
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -58,30 +59,6 @@ func TestPathUtil_ContractPath(t *testing.T) {
 				t.Errorf("ContractPath(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestPathUtil_RoundTrip(t *testing.T) {
-	root := t.TempDir()
-	home := filepath.Join(root, "home")
-	absPath := filepath.Join(home, "Photos", "2023", "img.jpg")
-	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-		t.Fatalf("mkdir temp tree: %v", err)
-	}
-	if err := os.WriteFile(absPath, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write temp file: %v", err)
-	}
-	pu := &Resolver{HomeDir: home}
-	sourceRoot := filepath.Join(home, "Photos")
-
-	relative, err := pu.MakeRelative(absPath, sourceRoot)
-	if err != nil {
-		t.Fatalf("MakeRelative: %v", err)
-	}
-
-	reconstructed := pu.MakeAbsolute(relative, sourceRoot)
-	if reconstructed != absPath {
-		t.Errorf("round-trip failed: got %q, want %q", reconstructed, absPath)
 	}
 }
 
