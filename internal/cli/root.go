@@ -15,7 +15,6 @@ import (
 	"github.com/jammutkarsh/wandersort/internal/api/admin"
 	"github.com/jammutkarsh/wandersort/internal/api/pipeline"
 	"github.com/jammutkarsh/wandersort/pkg/config"
-	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
@@ -35,27 +34,13 @@ const (
 	flagPort       = "port"
 	flagYes        = "yes"
 	flagVertical   = "vertical"
-	flagRules      = "rules"
 	flagRebuild    = "rebuild"
 	flagPrint      = "print"
 	flagCollapse   = "collapse-levels"
 	flagPlain      = "plain"
 	flagHWDateOnly = "home-work-date-only"
 	flagMergeDays  = "merge-same-location-days"
-
-	// groupByNone is the --rules sentinel for "no levels below Year/Month".
-	// vfs owns its meaning (vfs.ConfigFor is the only thing that acts on it).
-	groupByNone = vfs.RuleNone
 )
-
-// validRules are the recognized --rules tokens, beyond groupByNone
-var validRules = map[string]bool{
-	vfs.RuleLocation:    true,
-	vfs.RuleDate:        true,
-	vfs.RuleDevice:      true,
-	vfs.RuleOrientation: true,
-	vfs.RuleMedia:       true,
-}
 
 type App struct {
 	Config           *config.Configuration
@@ -113,10 +98,22 @@ func (a *App) installDir() string {
 	return filepath.Dir(a.Config.LocationDBPath)
 }
 
-// EnsureDependencies installs the location database and exiftool if missing,
+// EnsureDependencies installs exiftool and the location database if missing,
 // then opens the resolver. Holds the install lock throughout, so a concurrent
 // scan/serve waits rather than installing at the same time.
+//
+// Exiftool installs first on purpose: it's the small download and the earlier
+// pipeline phase (exif) is what waits on it — the location database is only
+// needed by the last phase (vfs), so it downloads behind the rest of the
+// pipeline (see workflow.Deps).
 func (a *App) EnsureDependencies(ctx context.Context) error {
+	return a.ensureDependencies(ctx, nil)
+}
+
+// ensureDependencies is EnsureDependencies with a checkpoint: onExiftool runs
+// as soon as exiftool is usable (before the location download), so a pipeline
+// gating only its exif phase can proceed while the big download continues.
+func (a *App) ensureDependencies(ctx context.Context, onExiftool func(error)) error {
 	// try non-blocking first, so waiting can be announced rather than looking hung
 	l, err := lock.AcquireInstall(ctx, a.installDir(), false)
 	if errors.Is(err, lock.ErrHeld) {
@@ -124,14 +121,21 @@ func (a *App) EnsureDependencies(ctx context.Context) error {
 		l, err = lock.AcquireInstall(ctx, a.installDir(), true)
 	}
 	if err != nil {
+		if onExiftool != nil {
+			onExiftool(err)
+		}
 		return fmt.Errorf("wait for dependency install: %w", err)
 	}
 	defer l.Unlock()
 
-	if err := a.InitLocationResolver(ctx); err != nil {
-		return err
+	exifErr := a.InitExiftool(ctx)
+	if onExiftool != nil {
+		onExiftool(exifErr)
 	}
-	return a.InitExiftool(ctx)
+	if exifErr != nil {
+		return exifErr
+	}
+	return a.InitLocationResolver(ctx)
 }
 
 func (a *App) InitExiftool(ctx context.Context) error {
@@ -169,7 +173,7 @@ func (a *App) AdminService() *admin.Service {
 }
 
 func (a *App) PipelineService(wf *workflow.Workflow) *pipeline.Service {
-	return pipeline.NewService(a.Log, wf, pipeline.NewRepository(a.AppDB))
+	return pipeline.NewService(a.Log, wf)
 }
 
 // Global viper instance — standard cobra pattern. Flags, env vars, and the
@@ -184,7 +188,6 @@ func init() {
 	v.SetDefault(flagPaths, []string{})
 	v.SetDefault(flagWorkers, 0)
 	v.SetDefault(flagYes, false)
-	v.SetDefault(flagRules, []string{})
 	v.SetDefault(flagCollapse, true)
 	v.SetDefault(flagPlain, false)
 	v.SetDefault(flagHWDateOnly, true)
@@ -192,7 +195,6 @@ func init() {
 	// Bind the hyphenated flags explicitly; AutomaticEnv covers the rest,
 	// whose env names already match their uppercased flag (WORKERS, PORT, ...).
 	v.BindEnv(flagOutputPath, "OUTPUT_PATH")
-	v.BindEnv(flagRules, "RULES")
 	v.BindEnv(flagCollapse, "COLLAPSE_LEVELS")
 	v.BindEnv(flagHWDateOnly, "HOME_WORK_DATE_ONLY")
 	v.BindEnv(flagMergeDays, "MERGE_SAME_LOCATION_DAYS")
@@ -222,6 +224,29 @@ func loadGlobalConfigFile() (warning string, err error) {
 	return "", nil
 }
 
+// requireConfigured refuses to run the pipeline until `wandersort config` has
+// been through once, or the caller has explicitly said where to work via
+// --output-path/OUTPUT_PATH — flag > env > config file precedence applies
+// here same as everywhere else (see applyOverrides), so an explicit
+// --output-path is as good as having run the wizard for this invocation. An
+// untouched ~/.wandersort/config.yaml is empty (every command creates it,
+// only the wizard fills it), which means no output path, no rules, and no
+// home/work anchors — a proposal built from those defaults is one the user
+// has to throw away and redo. output-path is the marker: the wizard always
+// writes it and nothing else does (besides the flag/env checked here).
+//
+// An unreadable or unparseable file lands here too, and the message is the same
+// on purpose — `wandersort config` is the fix for both.
+func requireConfigured() error {
+	if v.GetString(flagOutputPath) != "" {
+		return nil
+	}
+	if g, err := config.LoadGlobal(); err == nil && g.OutputPath != "" {
+		return nil
+	}
+	return fmt.Errorf("not configured yet — run 'wandersort config' first (or pass --output-path)")
+}
+
 func (a *App) Execute() error {
 	return a.newRootCmd().Execute()
 }
@@ -234,8 +259,9 @@ func (a *App) newRootCmd() *cobra.Command {
 video directories and it scans them, fingerprints every file to find
 duplicates, and scores copies to pick the best one to keep.
 
-Run 'wandersort scan' to process your libraries — it installs anything it
-needs on first use. 'wandersort config' opens the settings wizard.`,
+Start with 'wandersort config' — the settings wizard, and a prerequisite for
+scanning. Then 'wandersort scan' processes your libraries, installing anything
+it needs on first use.`,
 		Example: `# Change the global settings
 wandersort config
 
@@ -279,7 +305,7 @@ Flags take precedence over environment variables.`,
 	rootCmd.AddCommand(a.newServeCmd())
 	rootCmd.AddCommand(a.newReviewCmd())
 	rootCmd.AddCommand(a.newReportCmd())
-	rootCmd.AddCommand(a.newReportIssueCmd())
+	rootCmd.AddCommand(a.newIssueCmd())
 	rootCmd.AddCommand(a.newResetCmd())
 
 	rootCmd.InitDefaultCompletionCmd()
@@ -303,7 +329,9 @@ Where to ideally store the generated scripts:
 
 // applyOverrides layers env, config-file and flag values over the defaults.
 // Precedence: flag > env > config file > default. Every key in the file is
-// read here through viper, except home-work, which anchor.go loads directly.
+// read here through viper, except home-work and Rules, which are loaded
+// directly from the file (see config.LoadGlobal) — no flag or env can set
+// them, only `wandersort config`.
 func (a *App) applyOverrides() error {
 	if outputPath := v.GetString(flagOutputPath); outputPath != "" {
 		outputPath = path.New().ExpandPath(outputPath)
@@ -316,18 +344,10 @@ func (a *App) applyOverrides() error {
 	if port := v.GetString(flagPort); port != "" {
 		a.Config.ServerPort = port
 	}
-	if groupBy := v.GetStringSlice(flagRules); len(groupBy) > 0 {
-		for _, s := range groupBy {
-			if s != groupByNone && !validRules[s] {
-				return fmt.Errorf("invalid --rules value %q (want location, date, device, orientation, media, or none)", s)
-			}
-			// ConfigFor honours "none" only as the sole value; mixed in it
-			// would silently drop out as an unrecognised level
-			if s == groupByNone && len(groupBy) > 1 {
-				return fmt.Errorf("invalid --rules %v: %q cannot be combined with other levels", groupBy, groupByNone)
-			}
-		}
-		a.Config.Rules = groupBy
+	// Global config file failing to parse is already surfaced as a warning by
+	// loadGlobalConfigFile; silently keep Rules at its default here too.
+	if g, err := config.LoadGlobal(); err == nil && len(g.Rules) > 0 {
+		a.Config.Rules = g.Rules
 	}
 	// no CLI flag — config file and env only, so it has no per-command default
 	// to layer over; viper's own default (true) is the fallback

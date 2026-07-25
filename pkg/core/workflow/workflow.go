@@ -28,13 +28,32 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
+// Deps supplies the two downloadable dependencies, blocking until each exists.
+// This is what lets a first-ever scan start walking files while the downloads
+// are still running: scan/hash need nothing, only the exif phase calls
+// Exiftool() and only the vfs phase calls Location(), so each phase stalls
+// exactly as long as its own dependency — usually not at all.
+type Deps struct {
+	Exiftool func() (string, error)             // path to the exiftool binary
+	Location func() (*location.Resolver, error) // open gazetteer resolver
+}
+
+// ReadyDeps wraps dependencies that already exist (the plain-console and serve
+// paths, which install everything up front before building the workflow).
+func ReadyDeps(exiftoolPath string, r *location.Resolver) Deps {
+	return Deps{
+		Exiftool: func() (string, error) { return exiftoolPath, nil },
+		Location: func() (*location.Resolver, error) { return r, nil },
+	}
+}
+
 // Workflow orchestrates the phases of one scan session. Scanning and hashing
 // run in bounded batches to keep memory stable on very large roots.
 type Workflow struct {
-	ctx              context.Context
-	db               *db.DB
-	locationResolver *location.Resolver
-	log              logger.Logger
+	ctx  context.Context
+	db   *db.DB
+	log  logger.Logger
+	deps Deps
 
 	/* Utilities */
 	path *path.Resolver
@@ -42,12 +61,14 @@ type Workflow struct {
 	// the free-space preflight after each scan
 	outputDir string
 
-	/* Pipeline components, run in this order */
+	/* Pipeline components, run in this order. exif and vfs are built lazily in
+	their phase closures — their dependencies may still be downloading when the
+	workflow is constructed (see Deps). */
 	scanner *scanner.Scanner
 	hasher  *hasher.Hasher
-	exif    *exif.Extractor
 	scorer  *scorer.Scorer
-	vfs     *vfs.VFS
+	workers int
+	vfsCfg  vfs.Config
 
 	// activeRoots holds the roots of in-flight sessions, so overlapping scans
 	// are rejected before they re-stamp each other's rows. In-memory suffices:
@@ -104,7 +125,7 @@ func (kind workflowPhaseKind) status() phaseStatus {
 }
 
 // NewWorkflow creates a new workflow instance
-func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration, exiftoolPath string) *Workflow {
+func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.Configuration, deps Deps) *Workflow {
 	vfsCfg := vfs.ConfigFor(cfg)
 	// all three come from flag/env/config.yaml, so showing the resolved values
 	// is the only way to see which source won
@@ -117,18 +138,18 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 		"output", filepath.Dir(cfg.AppDBPath),
 		"rules", "Year/Month/"+rules)
 	wf := &Workflow{
-		ctx:              ctx,
-		db:               db,
-		locationResolver: locationResolver,
-		scanner:          scanner.New(db, log, cfg.Workers),
-		hasher:           hasher.New(db, log, cfg.Workers),
-		exif:             exif.New(db, log, exiftoolPath, cfg.Workers),
-		scorer:           scorer.New(db, log),
-		vfs:              vfs.New(db, locationResolver, log, vfsCfg),
-		log:              log,
-		path:             path.New(),
-		outputDir:        filepath.Dir(cfg.AppDBPath),
-		activeRoots:      map[uuid.UUID][]string{},
+		ctx:         ctx,
+		db:          db,
+		deps:        deps,
+		scanner:     scanner.New(db, log, cfg.Workers),
+		hasher:      hasher.New(db, log, cfg.Workers),
+		scorer:      scorer.New(db, log),
+		workers:     cfg.Workers,
+		vfsCfg:      vfsCfg,
+		log:         log,
+		path:        path.New(),
+		outputDir:   filepath.Dir(cfg.AppDBPath),
+		activeRoots: map[uuid.UUID][]string{},
 	}
 	return wf
 }
@@ -297,7 +318,13 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 		{
 			kind: workflowPhaseExif,
 			run: func() (int, error) {
-				return wf.exif.Run(wf.ctx, sessionID)
+				// blocks here (not at construction) if exiftool is still
+				// downloading — scan and hash have already run meanwhile
+				exiftoolPath, err := wf.deps.Exiftool()
+				if err != nil {
+					return 0, fmt.Errorf("exiftool: %w", err)
+				}
+				return exif.New(wf.db, wf.log, exiftoolPath, wf.workers).Run(wf.ctx, sessionID)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Read details from %d files", count) },
 		},
@@ -311,7 +338,13 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 		{
 			kind: workflowPhaseVFS,
 			run: func() (int, error) {
-				return wf.vfs.Run(wf.ctx, sessionID)
+				// the location DB is the big download; being the last phase gives
+				// it the whole pipeline to finish behind
+				resolver, err := wf.deps.Location()
+				if err != nil {
+					return 0, fmt.Errorf("location resolver: %w", err)
+				}
+				return vfs.New(wf.db, resolver, wf.log, wf.vfsCfg).Run(wf.ctx, sessionID)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Proposed destinations for %d files", count) },
 		},
