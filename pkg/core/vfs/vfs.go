@@ -95,12 +95,10 @@ func (v *VFS) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	return count, nil
 }
 
-// loadMasters reads every live master file in the library joined with its
-// hashed metadata. Deliberately not session-scoped: the proposal must cover
-// files indexed by earlier sessions too, or the output would depend on session
-// history. The (file_dir, file_name) order makes clustering and collision
-// suffixes deterministic (clusterAndSuggest sorts stably), unlike
-// AUTOINCREMENT ids which vary with concurrent-worker insertion order
+// loadMasters reads every live master in the library with its hashed metadata.
+// Not session-scoped: the proposal must cover earlier sessions' files too, or
+// the output would depend on scan history. Ordered by (file_dir, file_name),
+// not id, so clustering and collision suffixes don't vary with worker order.
 func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 	var masters []masterFile
 	if err := v.db.SQL.SelectContext(ctx, &masters, `
@@ -137,14 +135,10 @@ func deriveAll(masters []masterFile) {
 	for i := range masters {
 		m := &masters[i]
 
-		// CreationDate (QuickTime's composite, iOS videos only) carries its own
-		// timezone offset; every other candidate here is a naive local
-		// wall-clock string. Parsing CreationDate's offset for real would shift
-		// a video hours away from photos taken at the same moment (the offset
-		// gets applied against an assumed-UTC zero point that the naive
-		// strings never had applied to them) — stripped, its wall-clock digits
-		// line back up with them, which is what actually fixes a video landing
-		// in the wrong day/cluster next to its photos.
+		// CreationDate (iOS videos) is the only candidate carrying a timezone
+		// offset; the rest are naive local wall-clock. Applying the real offset
+		// would shift a video hours away from photos of the same moment, so
+		// stripOffset lines its digits back up with theirs.
 		m.takenAt = firstTime(deref(m.DBDateTaken), stripOffset(deref(m.DBCreationDate)), deref(m.DBCreateDate), m.ModifiedAt)
 		if m.DBWidth != nil {
 			m.width = *m.DBWidth
@@ -152,8 +146,8 @@ func deriveAll(masters []masterFile) {
 		if m.DBHeight != nil {
 			m.height = *m.DBHeight
 		}
-		// EXIF orientations 5-8 mean the stored pixels are rotated 90°/270°;
-		// swap so the orientation slot reflects how the shot is viewed
+		// orientations 5-8 store the pixels rotated 90°/270°; swap so the
+		// orientation level reflects how the shot is viewed
 		if o := m.DBOrientation; o != nil && *o >= 5 && *o <= 8 {
 			m.width, m.height = m.height, m.width
 		}
@@ -167,24 +161,19 @@ func deriveAll(masters []masterFile) {
 }
 
 // resolveLocations reverse-geocodes every GPS-tagged master, then folds the
-// result into a confirmed home/work anchor when it's within
-// location.MaxDistSquared of one — the same reach Lookup itself accepts a
-// match at — otherwise a home city's own suburbs each get their own folder.
-// ponytail: not a separate per-user radius; revisit if a single reach doesn't
-// fit both dense and sprawling metros.
-// ponytail: serial loop — the resolver caches and singleflights internally;
-// parallelise only if geocoding ever shows up in profiles
+// result into a confirmed home/work anchor within location.MaxDistSquared —
+// otherwise a home city's own suburbs each get their own folder.
+// ponytail: one shared radius, not per-user; revisit if it fits neither dense
+// nor sprawling metros
+// ponytail: serial loop — the resolver caches internally; parallelise only if
+// geocoding shows up in profiles
 func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile, labels []userLabel) {
 	if v.resolver == nil {
 		return
 	}
 	var anchors []userLabel
-	// anchorNames maps each anchor's saved Label — the fully-qualified form
-	// ResolveByName round-trips on, e.g. "Indore, Madhya Pradesh, India" — to
-	// the bare city a fold should use as the folder name. The qualifiers only
-	// exist to pick the right row out of the gazetteer; a folder can't hold a
-	// comma, and it's the user's own home/work town, so a second disambiguation
-	// pass isn't needed the way it is for an arbitrary photo's resolved city.
+	// anchors are saved fully qualified ("Indore, Madhya Pradesh, India") so
+	// ResolveByName can round-trip them; a folder gets the bare city
 	anchorNames := make(map[string]string)
 	for _, l := range labels {
 		if (l.Kind == "ANCHOR_HOME" || l.Kind == "ANCHOR_WORK") && l.GPSLat != nil && l.GPSLon != nil {
@@ -213,15 +202,13 @@ func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile, labels
 			dLat, dLon := m.lat-*a.GPSLat, m.lon-*a.GPSLon
 			if dLat*dLat+dLon*dLon <= location.MaxDistSquared {
 				if v.cfg.HomeWorkDateOnly {
-					// Everyday place: no location level at all — group by date
-					// only. atHomeWork also keeps clusterAndSuggest from folding
-					// this file back into a located cluster or hanging a
-					// suggestion off it.
+					// everyday place: no location level at all. atHomeWork also
+					// keeps clusterAndSuggest from folding this file back into a
+					// located cluster or hanging a suggestion off it.
 					m.location = ""
 					m.atHomeWork = true
 				} else {
-					// Legacy behaviour: fold the suburb into the town's folder.
-					m.location = anchorNames[a.Label]
+					m.location = anchorNames[a.Label] // fold suburb into the town
 				}
 				break
 			}
@@ -229,10 +216,9 @@ func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile, labels
 	}
 }
 
-// applyNameCase normalises derived names (locations, suggestions) to the
-// configured case style, in one place after all naming decisions are made.
-// Device names, filenames, and user-confirmed labels are left alone —
-// re-casing "iPhone" or a name the user typed would do more harm than good
+// applyNameCase normalises derived names once, after every naming decision.
+// Device names, filenames and user-confirmed labels are left alone — re-casing
+// "iPhone" or a name the user typed would do more harm than good.
 func (v *VFS) applyNameCase(masters []masterFile) {
 	for i := range masters {
 		masters[i].location = caseName(masters[i].location, v.cfg.NameCase)
@@ -242,22 +228,18 @@ func (v *VFS) applyNameCase(masters []masterFile) {
 	}
 }
 
-// mergeSameLocationDays collapses runs of consecutive days that share the same
-// location into one dated range folder — e.g. three Goa days
-// (2024/08/02/Goa, /03/Goa, /04/Goa) become 2024/08/02_04/Goa. It only fires
-// when a date level sits ABOVE a location level in the grouping (date before
-// location), since that is the only shape where a per-day folder holds a
-// location beneath it. Files whose location differs on an interleaving day are
-// untouched, so Goa on 02-04 can merge while a Pune day at 03 keeps its own
-// folder. atHomeWork (date-only) files have no location and never merge.
-// The reviewer can still split a merged range in the review TUI.
+// mergeSameLocationDays collapses runs of consecutive same-location days into
+// one dated range: 2024/08/{02,03,04}/Goa becomes 2024/08/02_04/Goa. A Pune day
+// interleaved at 03 keeps its own folder, and the reviewer can still split a
+// range in the review TUI.
 func (v *VFS) mergeSameLocationDays(masters []masterFile) {
 	if !v.cfg.MergeSameLocationDays {
 		return
 	}
+	// only shape where a per-day folder holds a location beneath it
 	di, li := slices.Index(v.cfg.Rules, RuleDate), slices.Index(v.cfg.Rules, RuleLocation)
 	if di < 0 || li < 0 || di > li {
-		return // needs a date level sitting above a location level
+		return
 	}
 
 	type key struct {
@@ -279,7 +261,7 @@ func (v *VFS) mergeSameLocationDays(masters []masterFile) {
 		days[k][m.takenAt.Day()] = true
 	}
 
-	// For each key, label every day that falls inside a run of length ≥ 2.
+	// label every day inside a run of 2 or more consecutive days
 	label := map[key]map[int]string{}
 	for k, set := range days {
 		ds := make([]int, 0, len(set))
@@ -318,17 +300,11 @@ func (v *VFS) mergeSameLocationDays(masters []masterFile) {
 	}
 }
 
-// buildTargets derives the destination path for every master independently —
-// each file's own derived time/location decides its directory (dirFor), full
-// stop. An earlier version force-grouped files sharing a filename stem (Live
-// Photo HEIC+MOV pairs, RAW+JPG, edited variants, .aae sidecars) into one
-// directory, on the assumption that same-stem meant same-capture. It
-// doesn't: phone/camera filename counters get reused across entirely
-// unrelated shoots (old iPhone photos in particular), so two files sharing a
-// stem aren't reliably the same event — that assumption was forcing
-// unrelated files together. A .aae sidecar with no timestamp of its own
-// falls back to file mtime via deriveAll's takenAt, same as any other file —
-// in practice close enough to its paired photo's own time.
+// buildTargets derives every master's destination independently: a file's own
+// time and location decide its directory, never a shared filename stem. Camera
+// filename counters get reused across unrelated shoots, so same-stem does not
+// mean same-capture. A real Live Photo pair still lands together because its
+// members genuinely share GPS and timestamp.
 func (v *VFS) buildTargets(masters []masterFile) {
 	skip := v.uninformativeLevels(masters)
 	taken := map[string]bool{}
@@ -338,8 +314,8 @@ func (v *VFS) buildTargets(masters []masterFile) {
 		stem := strings.TrimSuffix(name, filepath.Ext(name))
 		ext := filepath.Ext(name)
 
-		// suffix only kicks in on a genuine collision — two unrelated files
-		// that independently land on the exact same dir+stem+ext
+		// only on a genuine collision: two files landing on the same
+		// dir+stem+ext
 		suffix := ""
 		for n := 1; ; n++ {
 			if n > 1 {
@@ -359,16 +335,14 @@ func (v *VFS) buildTargets(masters []masterFile) {
 // order. skip names the levels uninformativeLevels found nothing to say with.
 func (v *VFS) dirFor(m *masterFile, skip map[string]bool) string {
 	if m.takenAt.IsZero() {
-		// ponytail: no usable timestamp at all (should never happen — file
-		// mtime is always present); park flat under the fallback dir
+		// ponytail: shouldn't happen, file mtime is always present
 		return sanitizeSegment(v.cfg.Fallback)
 	}
 
 	parts := []string{
 		strconv.Itoa(m.takenAt.Year()),
-		// number-first ("06_June") so months sort chronologically everywhere
-		// they're listed — the review tree, Finder, ls. Bare month names sort
-		// alphabetically, which put December above November.
+		// number-first so months sort chronologically in the review tree,
+		// Finder and ls; bare names put December above November
 		m.takenAt.Format("01_January"),
 	}
 	for _, level := range v.cfg.Rules {
@@ -381,9 +355,9 @@ func (v *VFS) dirFor(m *masterFile, skip map[string]bool) string {
 		}
 		parts = append(parts, sanitizeSegment(seg))
 		if level == RuleLocation {
-			// the folder a reviewer renames, recorded by path rather than by
-			// depth so any Rules order works (and "no location level" means
-			// no suggestion node at all, instead of one landing on a Device)
+			// the folder a reviewer renames, recorded by path not depth so any
+			// Rules order works — no location level means no suggestion node,
+			// rather than one landing on a Device folder
 			m.suggestionDir = strings.Join(parts, "/")
 		}
 	}
@@ -395,20 +369,14 @@ func (v *VFS) dirFor(m *masterFile, skip map[string]bool) string {
 func (v *VFS) segmentFor(m *masterFile, level string) string {
 	switch level {
 	case RuleLocation:
-		// ladder: resolved city → dated event segment → nothing.
-		//
-		// A Day level already carries the date, so the dated placeholder rung
-		// is skipped there — it produced a second date beside it ("…/03/03-05/").
-		//
-		// There is deliberately no device or "Unsorted" rung below that: a
-		// location folder named after the camera is wrong information, and it
-		// duplicated the device level standing right next to it
-		// ("…/Canon EOS 700D/Canon EOS 700D/"). When we don't know where a
-		// photo was taken we say nothing rather than something false — the
-		// level is simply absent for that file.
+		// ladder: resolved city → dated event segment → nothing. No device or
+		// "Unsorted" rung: an unknown location says nothing rather than
+		// something false ("…/Canon EOS 700D/Canon EOS 700D/").
 		switch {
 		case m.location != "":
 			return m.location
+		// a Day level already carries the date; a second one beside it reads
+		// as "…/03/03-05/"
 		case m.eventSegment != "" && !slices.Contains(v.cfg.Rules, RuleDate):
 			return m.eventSegment
 		default:
@@ -438,26 +406,22 @@ func (v *VFS) segmentFor(m *masterFile, level string) string {
 	return ""
 }
 
-// collapsibleLevels are the grouping levels worth dropping when they turn out
-// to carry no information. Date and location are never dropped even if the
-// whole library shares one value: they're how a person recognizes a folder,
-// and the review TUI's merge is the way to fold days together on purpose.
+// collapsibleLevels are the levels worth dropping when they carry no
+// information. Date and location never collapse even on one library-wide
+// value: they are how a person recognizes a folder, and [m] in the review TUI
+// is the deliberate way to fold days together.
 var collapsibleLevels = map[string]bool{
 	RuleDevice:      true,
 	RuleOrientation: true,
 	RuleMedia:       true,
 }
 
-// uninformativeLevels finds the collapsible grouping levels that resolve to at
-// most one distinct folder name across the whole library. Such a level adds a
-// folder every path has to pass through without ever telling the user
-// anything — "…/Goa/iPhone/Vertical/Photos/" when every file is a vertical
-// iPhone photo. Dropping it is what makes the useful folder reachable in one
-// click instead of four.
+// uninformativeLevels finds collapsible levels resolving to at most one folder
+// name library-wide — "…/Goa/iPhone/Vertical/Photos/" is four folders deep to
+// reach one when every file is a vertical iPhone photo.
 //
-// Deliberately measured library-wide rather than per-branch: a level kept in
-// one Day and dropped in the next would make the hierarchy a different depth
-// depending on where you are, which is worse to navigate than one extra level.
+// Measured library-wide, not per-branch: a level kept under one Day and dropped
+// under the next gives the tree a different depth depending on where you stand.
 func (v *VFS) uninformativeLevels(masters []masterFile) map[string]bool {
 	if !v.cfg.CollapseLevels {
 		return nil
@@ -484,12 +448,11 @@ func (v *VFS) uninformativeLevels(masters []masterFile) map[string]bool {
 	return skip
 }
 
-// persist replaces the whole previous proposal — one live proposal set for the
-// library, whichever sessions wrote it. The delete runs through the same FIFO
-// writer as the inserts, so a rebuild leaves no stale rows for files that are
-// no longer masters.
-// ponytail: revisit preserving APPROVED rows when the review/execute flow
-// (issue #8) lands — today every run regenerates from scratch
+// persist replaces the whole previous proposal — one live set for the library,
+// whichever session wrote it. The delete goes through the same FIFO writer as
+// the inserts, so a rebuild leaves no stale rows behind.
+// ponytail: regenerates from scratch every run; revisit preserving APPROVED
+// rows when the execute flow lands
 func (v *VFS) persist(sessionID uuid.UUID, masters []masterFile) (int, error) {
 	if !v.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 		_, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries`)
@@ -519,11 +482,9 @@ func (v *VFS) persist(sessionID uuid.UUID, masters []masterFile) (int, error) {
 
 /* small parsing helpers — exiftool values arrive as strings */
 
-// stripOffset removes a trailing timezone offset ("+05:30", "-07:00", "Z")
-// from an exiftool timestamp, so it parses as the same naive wall-clock value
-// every other capture-time tag here is (see the takenAt comment in
-// deriveAll for why). Exiftool's date format uses colons, not hyphens, for
-// the date portion, so the offset is the only '+'/'-' the string ever has.
+// stripOffset removes a trailing timezone offset ("+05:30", "Z") so the value
+// parses as the naive wall-clock every other capture-time tag is (see deriveAll).
+// Exiftool dates use colons, so the offset is the only '+'/'-' in the string.
 func stripOffset(s string) string {
 	s = strings.TrimSuffix(s, "Z")
 	if i := strings.LastIndexAny(s, "+-"); i >= 0 {
@@ -580,9 +541,8 @@ func nullable(s string) any {
 	return s
 }
 
-// caseName applies the configured case style to a derived name.
-// Title case uppercases the first letter of every word (after a space,
-// underscore, or hyphen) and lowercases the rest
+// caseName applies the configured case style to a derived name. Title case
+// uppercases the first letter of every word and lowercases the rest.
 func caseName(name, style string) string {
 	switch style {
 	case CaseLower:

@@ -76,20 +76,17 @@ func DefaultConfig() Config {
 	}
 }
 
-// RuleNone is the --rules sentinel for "no levels below Year/Month".
-// It's not a Rules level (dirFor knows nothing about it) — ConfigFor is the
-// only thing that interprets it, and the CLI rejects it mixed with real levels.
+// RuleNone is the --rules sentinel for "no levels below Year/Month". Not a
+// level itself: ConfigFor is the only thing that interprets it.
 const RuleNone = "none"
 
-// ConfigFor is DefaultConfig with the user's config.yaml/flag settings applied:
-// an empty Rules keeps the default levels, and the RuleNone sentinel means
-// a flat Year/Month with no levels below it. Every caller that turns app config
-// into a vfs.Config goes through here, so the sentinel is interpreted one way
-// only. It takes the whole *config.Configuration rather than loose fields so
-// another vfs-relevant setting doesn't churn the signature — this is the one
-// place vfs is allowed to know about the app's config package, which also means
-// config can never import vfs (the CLI validates Rules* tokens for that
-// reason).
+// ConfigFor is DefaultConfig with the user's settings applied: empty Rules
+// keeps the defaults, RuleNone means a flat Year/Month. Every caller goes
+// through here, so the sentinel is interpreted one way only.
+//
+// Takes the whole *config.Configuration so a new vfs-relevant setting doesn't
+// churn the signature. This is the one place vfs imports pkg/config, which is
+// why config can never import vfs — the CLI validates Rules* tokens instead.
 func ConfigFor(appCfg *config.Configuration) Config {
 	cfg := DefaultConfig()
 	if appCfg == nil {

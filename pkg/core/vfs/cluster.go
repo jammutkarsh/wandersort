@@ -22,10 +22,9 @@ type cluster struct {
 	start, end time.Time
 }
 
-// clusterAndSuggest is the unlocated-file design: time-gap clustering, GPS
-// spillover inside a cluster, and ranked name suggestions for whatever stays
-// unresolved. Located files keep their own city; clusters that resolve to the
-// same city coalesce naturally because the city becomes the path segment
+// clusterAndSuggest handles files with no location of their own: time-gap
+// clustering, GPS spillover within a cluster, then a ranked name suggestion for
+// whatever is still unresolved.
 func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Duration) {
 	if gap <= 0 {
 		gap = defaultClusterGap
@@ -59,8 +58,8 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Durati
 
 		var unlocated []int
 		for _, i := range c.members {
-			// atHomeWork files are deliberately location-less (date-only); never
-			// give them a spillover city, event segment, or suggestion.
+			// atHomeWork files are deliberately location-less: no spillover
+			// city, event segment, or suggestion
 			if masters[i].location == "" && !masters[i].atHomeWork {
 				unlocated = append(unlocated, i)
 			}
@@ -72,8 +71,8 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Durati
 		clusterNum++
 		id := fmt.Sprintf("c%d", clusterNum)
 
+		// spillover: one located member names the whole event
 		if city != "" {
-			// GPS spillover: one located member names the whole event
 			for _, i := range unlocated {
 				masters[i].location = city
 				masters[i].clusterID = id
@@ -83,7 +82,7 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Durati
 			continue
 		}
 
-		// fully unresolved: propose a dated event segment plus the best suggestion
+		// nothing located: fall back to a dated segment plus a name suggestion
 		seg := eventSegment(c.start, c.end)
 		sug, src := suggestFor(masters, c, labels, anchors)
 		for _, i := range c.members {
@@ -116,14 +115,10 @@ func majorityCity(masters []masterFile, members []int) string {
 	return best
 }
 
-// anchorCities returns confirmed anchor labels (home/work — possibly the same
-// city), in confirmation order. Deliberately does NOT fall back to "the
-// library's most frequent city" — that guessed a place with no temporal or
-// spatial relationship to the cluster being named, which showed up as a
-// single confusing suggestion smeared across the whole tree (e.g. a DSLR
-// photo with no GPS anywhere nearby "suggested" whatever city happens to
-// dominate the user's phone-photo library). A confirmed anchor is a real
-// user assertion ("I live/work here"); an unconfirmed frequency count isn't.
+// anchorCities returns confirmed home/work labels in confirmation order.
+// Deliberately no "most frequent city in the library" fallback: that named a
+// place with no relationship to the cluster. A confirmed anchor is a user
+// assertion; a frequency count is a guess.
 func anchorCities(labels []userLabel) []string {
 	var anchors []string
 	seen := map[string]bool{}
@@ -157,10 +152,9 @@ func suggestFor(masters []masterFile, c *cluster, labels []userLabel, anchors []
 		return anchors[0], SuggestionAnchor
 	}
 
-	// most common meaningful source folder among the cluster's members.
-	// Only the immediate parent folder's name is judged — file_dir is
-	// absolute now, and generic segments higher up (Users, Downloads) must
-	// not disqualify a meaningful leaf folder
+	// most common meaningful source folder among the members. Only the
+	// immediate parent is judged: generic segments higher up (Users, Downloads)
+	// must not disqualify a meaningful leaf folder.
 	counts := map[string]int{}
 	best, bestN := "", 0
 	for _, i := range c.members {
@@ -180,9 +174,9 @@ func suggestFor(masters []masterFile, c *cluster, labels []userLabel, anchors []
 	return "", ""
 }
 
-// eventSegment renders the dated placeholder segment for an unresolved
-// cluster. It sits under the month folder, so days alone suffice — e.g. "03",
-// "03-05" — and only a cross-month span keeps month names: "Jun_30-Jul_01".
+// eventSegment renders the dated placeholder for an unresolved cluster. It
+// sits under the month folder, so days alone suffice ("03", "03-05"); only a
+// cross-month span keeps month names ("Jun_30-Jul_01").
 func eventSegment(start, end time.Time) string {
 	switch {
 	case start.Year() == end.Year() && start.YearDay() == end.YearDay():
