@@ -22,6 +22,16 @@ import (
 // events from the TUI logger's sink into the program via program.Send.
 type LogEventMsg struct{ Event logger.Event }
 
+// InstallProgressMsg carries dependency-download byte progress into the scan
+// screen. It comes straight from a callback (not the logger), so the per-byte
+// ticks never touch the file log. The downloads run in the background while
+// the pipeline works (workflow.Deps) — this is their only visibility.
+type InstallProgressMsg struct {
+	Phase string
+	Done  int64
+	Total int64
+}
+
 // scanDoneMsg reports the pipeline goroutine returned.
 type scanDoneMsg struct{ err error }
 
@@ -47,6 +57,12 @@ type ScanModel struct {
 	notes    []string
 	warnings []string
 	w, h     int
+
+	// downloads are the background dependency fetches, one row each under the
+	// notes: a byte count while running, a dim ✓ once complete (a row that
+	// vanishes the moment it fills reads as a failure). Dependencies already on
+	// disk never report, so nothing renders for them.
+	downloads []InstallProgressMsg
 
 	// cur is the stage key of the running phase, so a stream line's counts
 	// drive that phase's own bar — the stream carries no PhaseKey of its own
@@ -95,6 +111,15 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	case LogEventMsg:
 		return m.handleEvent(msg.Event)
+	case InstallProgressMsg:
+		for i, d := range m.downloads {
+			if d.Phase == msg.Phase {
+				m.downloads[i] = msg
+				return m, nil
+			}
+		}
+		m.downloads = append(m.downloads, msg)
+		return m, nil
 	case scanDoneMsg:
 		m.done = true
 		if msg.err != nil {
@@ -220,7 +245,7 @@ func warningLine(e logger.Event) string {
 }
 
 func (m ScanModel) View() string {
-	top := Banner("scan") + "\n" + m.viewNotes() + "\n"
+	top := Banner("scan") + "\n" + m.viewDownloads() + m.viewNotes() + "\n"
 	footer := m.footer()
 
 	// The running stage's file tail gets every terminal row the chrome doesn't
@@ -228,6 +253,52 @@ func (m ScanModel) View() string {
 	used := lipgloss.Height(top) + m.sl.HeaderLines() + lipgloss.Height(footer) + 2
 	body := top + m.sl.View(m.w, max(m.h-used, 3))
 	return Screen(body, footer, m.h)
+}
+
+// downloadLabel names a dependency phase for humans; the phase keys come from
+// App.progressFor.
+var downloadLabel = map[string]string{
+	"exiftool": "exiftool",
+	"location": "Location database",
+}
+
+// viewDownloads renders one row per background dependency download, above the
+// notes: label + bytes while running, ✓ done after — the same treatment the
+// config wizard gives its download.
+func (m ScanModel) viewDownloads() string {
+	var b strings.Builder
+	for _, d := range m.downloads {
+		label := downloadLabel[d.Phase]
+		if label == "" {
+			label = d.Phase
+		}
+		var left string
+		if d.Total > 0 && d.Done >= d.Total {
+			left = " " + OK.Render("✓ ") + DimText.Render(label+" · done")
+		} else {
+			pct := 0.0
+			if d.Total > 0 {
+				pct = float64(d.Done) / float64(d.Total)
+			}
+			left = FaintTxt.Render(" ⬇ ") + DimText.Render(label) + "  " +
+				DimText.Render(fmt.Sprintf("%s / %s  %3.0f%%", humanBytes(d.Done), humanBytes(d.Total), pct*100))
+		}
+		b.WriteString(row(left, "", m.w))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// humanBytes renders a byte count as a compact human string (KB/MB).
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
 
 // viewNotes renders the last few milestone lines (session start, resolved

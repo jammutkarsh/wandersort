@@ -71,9 +71,17 @@ func Footer(help string, width int) string {
 	return s.Render(help)
 }
 
-// KeyHint styles a "[key] action" hint pair for footers.
+// Row lays out one full-width line: left content truncated to fit, right
+// suffix aligned to the terminal edge — the same shape every screen's rows
+// use (elapsed time on scan, file counts on review).
+func Row(left, right string, width int) string { return row(left, right, width) }
+
+// KeyHint styles a "[key] action" hint pair for footers. All spaces inside the
+// pair are non-breaking, so a width-wrapped footer breaks between hints, never
+// through one — "c save & exit" wrapping after the "c" reads as a stray key.
 func KeyHint(key, action string) string {
-	return lipgloss.NewStyle().Foreground(Primary).Render(key) + " " + FaintTxt.Render(action)
+	return lipgloss.NewStyle().Foreground(Primary).Render(key) + " " +
+		FaintTxt.Render(strings.ReplaceAll(action, " ", " "))
 }
 
 // Screen frames a full-height view: body at the top, footer pinned to the

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -18,6 +19,26 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
+
+// suggestDebounce is how long a keystroke waits before Suggest actually runs
+// — Suggest hits the gazetteer DB, so firing it on every keystroke serializes
+// a query per character. Debouncing to one query per pause is the standard
+// autocomplete pattern.
+const suggestDebounce = 50 * time.Millisecond
+
+// suggestDebounceMsg fires after a pause in typing; stale if a later
+// keystroke has since bumped suggGen.
+type suggestDebounceMsg struct {
+	gen   int
+	typed string
+}
+
+// suggestResultMsg carries a completed Suggest() call back from its tea.Cmd
+// goroutine, so the query itself never blocks the render loop.
+type suggestResultMsg struct {
+	gen     int
+	results []string
+}
 
 // FieldKind defines the type of form field.
 type FieldKind int
@@ -45,6 +66,11 @@ type Field struct {
 	// Subs are a FieldGroup's fields, answered in order on one screen. Any kind
 	// is allowed — a group is a screen, not an input list.
 	Subs []*Field
+	// Describe overrides Description when the explanation depends on the answer
+	// under the cursor ("those three folders said nothing — dropped"). Prose
+	// belongs here rather than inside Example: the example column is narrow and
+	// truncates, the description block wraps to the body width.
+	Describe func() string
 	// Example renders what the option under the cursor would produce, in its own
 	// block above the footer. The description explains the question; the example
 	// demonstrates the one answer being considered.
@@ -62,8 +88,10 @@ type Field struct {
 
 // DownloadMsg reports the progress of a download running behind the form (the
 // location database, fetched while the user answers everything above the town
-// fields). The form draws it as one row under the banner and drops that row
-// once Finished arrives — a dependency already on disk is never mentioned.
+// fields). The form draws it as one row above the footer — the same block the
+// examples pin to — and keeps a dim "done" line once Finished arrives, so the
+// download doesn't silently vanish mid-glance. A dependency already on disk
+// never reports, so nothing renders at all.
 type DownloadMsg struct {
 	Label       string
 	Done, Total int64
@@ -83,6 +111,7 @@ type FormModel struct {
 	subIdx      int      // focused sub-field inside a FieldGroup
 	sugg        []string // live completions for the current input field
 	suggCursor  int      // ↑/↓-picked suggestion; -1 = none picked
+	suggGen     int      // bumped per keystroke; invalidates in-flight debounce/query
 
 	dl     progress.Model // background-download bar, drawn under the banner
 	dlMsg  DownloadMsg
@@ -130,6 +159,7 @@ func (m *FormModel) seedInput() {
 	m.ti.Reset()
 	m.sugg = nil
 	m.suggCursor = -1
+	m.suggGen++ // invalidate any debounce/query still in flight for the field just left
 	f := m.active()
 	if f == nil || f.Kind != FieldInput {
 		return
@@ -149,6 +179,7 @@ func (m *FormModel) fillSuggestion(i int) {
 	if f := m.active(); f != nil && f.Value != nil {
 		*f.Value = m.ti.Value()
 	}
+	m.suggGen++ // invalidate any debounce/query still chasing the pre-fill text
 	m.refreshSuggestions()
 }
 
@@ -177,6 +208,13 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.fillSuggestion(m.suggCursor)
 				return m, nil
 			}
+			// exactly one completion left: enter means that one, no arrowing
+			// needed. The != guard lets the next enter advance instead of
+			// re-filling the same value forever.
+			if m.inputFocused() && len(m.sugg) == 1 && m.sugg[0] != m.ti.Value() {
+				m.fillSuggestion(0)
+				return m, nil
+			}
 			return m.moveNext()
 		case "shift+tab":
 			return m.movePrev()
@@ -190,7 +228,9 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// under an input, ↑/↓ walk the suggestion list; otherwise they fall
 			// through to the multiselect handling below
 			if m.inputFocused() && len(m.sugg) > 0 {
-				if msg.String() == "down" && m.suggCursor < len(m.sugg)-1 && m.suggCursor < maxFormSuggestions-1 {
+				// Cursor walks the whole list, not just the maxFormSuggestions-tall
+				// rendered window — inputView scrolls that window to keep it visible.
+				if msg.String() == "down" && m.suggCursor < len(m.sugg)-1 {
 					m.suggCursor++
 				} else if msg.String() == "up" && m.suggCursor > -1 {
 					m.suggCursor--
@@ -258,7 +298,38 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case DownloadMsg:
+		// Finished carries no Label and is also the only message when the
+		// dependency was already on disk: keep the label from the byte reports,
+		// and stay hidden entirely if there never were any.
+		if msg.Finished {
+			if m.dlSeen {
+				m.dlMsg.Finished = true
+			}
+			return m, nil
+		}
 		m.dlMsg, m.dlSeen = msg, true
+		return m, nil
+
+	case suggestDebounceMsg:
+		// Stale if a keystroke landed during the pause; that keystroke's own
+		// debounce is the one that gets to query.
+		if msg.gen != m.suggGen {
+			return m, nil
+		}
+		f := m.active()
+		if f == nil || f.Kind != FieldInput || f.Suggest == nil {
+			return m, nil
+		}
+		gen, typed := msg.gen, msg.typed
+		return m, func() tea.Msg {
+			return suggestResultMsg{gen, f.Suggest(typed)}
+		}
+
+	case suggestResultMsg:
+		if msg.gen == m.suggGen {
+			m.sugg = msg.results
+			m.suggCursor = -1
+		}
 		return m, nil
 
 	case tea.WindowSizeMsg:
@@ -274,8 +345,12 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if f.Value != nil {
 			*f.Value = m.ti.Value()
 		}
-		if _, isKey := msg.(tea.KeyMsg); isKey {
-			m.refreshSuggestions()
+		if _, isKey := msg.(tea.KeyMsg); isKey && f.Suggest != nil {
+			m.suggGen++
+			gen, typed := m.suggGen, m.ti.Value()
+			cmd = tea.Batch(cmd, tea.Tick(suggestDebounce, func(time.Time) tea.Msg {
+				return suggestDebounceMsg{gen, typed}
+			}))
 		}
 		return m, cmd
 	}
@@ -307,8 +382,18 @@ func (m FormModel) View() string {
 			rows = append(rows, m.collapsedRow(f, i, i < m.Current))
 		}
 	}
-	body := Banner("config") + "\n" + m.downloadRow() + "\n" + strings.Join(rows, "\n")
-	footer := m.exampleBlock() + m.renderFooter()
+	fields := strings.Join(rows, "\n")
+
+	footer := m.downloadRow() + m.renderFooter()
+	if m.sidePanel() {
+		// wide terminal: the example sits in the otherwise-empty right column,
+		// next to the question it belongs to, instead of above the footer
+		left := lipgloss.NewStyle().Width(m.bodyW() + 2).Render(fields)
+		fields = lipgloss.JoinHorizontal(lipgloss.Top, left, m.examplePanel())
+	} else {
+		footer = m.exampleBlock() + footer
+	}
+	body := Banner("config") + "\n" + fields
 
 	if m.h > 0 {
 		if lines := strings.Split(body, "\n"); len(lines) > m.h-lipgloss.Height(footer)-1 {
@@ -318,13 +403,85 @@ func (m FormModel) View() string {
 	return Screen(body, footer, m.h)
 }
 
-// downloadRow renders the background download under the banner: a labelled bar
-// while it runs, nothing at all before the first report or after it finishes.
-// It's the whole reason the form doesn't need an install screen — the download
-// is visible without owning the screen.
-func (m FormModel) downloadRow() string {
-	if !m.dlSeen || m.dlMsg.Finished {
+// formBodyMaxW caps the field stack's width when the side panel is showing —
+// wide enough that no description line folds, and everything past it belongs
+// to the example box. examplePanelMinW is the box's floor on a barely-wide
+// terminal; examplePanelMinTermW is the narrowest terminal that gets the side
+// panel at all — below it the example renders above the footer (exampleBlock).
+const (
+	formBodyMaxW         = 76
+	examplePanelMinW     = 46
+	examplePanelMinTermW = 100
+)
+
+// sidePanel reports whether the example renders as a right-hand column. The
+// answer depends only on the terminal width and whether any field has an
+// example — not on the active field — so the layout never jumps between steps.
+func (m FormModel) sidePanel() bool {
+	if m.w < examplePanelMinTermW {
+		return false
+	}
+	for _, f := range m.Fields {
+		if f.Example != nil {
+			return true
+		}
+		for _, sub := range f.Subs {
+			if sub.Example != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// bodyW is the width the field stack renders at: capped at formBodyMaxW when
+// the side panel is showing — every column past the cap belongs to the
+// example, which is the thing that was getting truncated.
+func (m FormModel) bodyW() int {
+	if m.sidePanel() {
+		return min(formBodyMaxW, m.w-examplePanelMinW-2)
+	}
+	return m.w
+}
+
+// panelW is the example column's width: whatever the capped body doesn't use.
+func (m FormModel) panelW() int {
+	return m.w - m.bodyW() - 2
+}
+
+// examplePanel renders the active field's example in a bordered box for the
+// right column — an empty box-less column when the field has no example, so
+// the fields don't re-wrap between steps.
+func (m FormModel) examplePanel() string {
+	var ex string
+	if f := m.active(); f != nil && f.Example != nil {
+		ex = strings.TrimSpace(f.Example())
+	}
+	if ex == "" {
 		return ""
+	}
+	inner := m.panelW() - 6 // border (2) + padding (4)
+	var b strings.Builder
+	b.WriteString(FaintTxt.Render("example"))
+	for line := range strings.SplitSeq(ex, "\n") {
+		b.WriteString("\n")
+		b.WriteString(DimText.Render(ansi.Truncate(line, inner, "…")))
+	}
+	return Box.Width(m.panelW() - 2).Render(b.String())
+}
+
+// downloadRow renders the background download above the footer: a labelled bar
+// while it runs, a dim done line after — a bar that vanishes the moment it
+// fills reads as something going wrong. Nothing renders before the first
+// report, so an already-installed dependency is never mentioned. It's the
+// whole reason the form doesn't need an install screen — the download is
+// visible without owning the screen.
+func (m FormModel) downloadRow() string {
+	if !m.dlSeen {
+		return ""
+	}
+	if m.dlMsg.Finished {
+		return row(" "+OK.Render("✓ ")+DimText.Render(m.dlMsg.Label+" · done"), "", m.w) + "\n"
 	}
 	pct := 0.0
 	if m.dlMsg.Total > 0 {
@@ -396,13 +553,13 @@ func optionNumber(key string, count int) (int, bool) {
 func (m FormModel) collapsedRow(f *Field, i int, done bool) string {
 	num := fmt.Sprintf("%d) ", i+1)
 	if !done {
-		return row(FaintTxt.Render(num+f.Title), "", m.w)
+		return row(FaintTxt.Render(num+f.Title), "", m.bodyW())
 	}
 	left := OK.Render(num) + Text.Render(f.Title)
 	if v := m.summaryValue(f); v != "" {
 		left += "  " + DimText.Render(v)
 	}
-	return row(left, "", m.w)
+	return row(left, "", m.bodyW())
 }
 
 // summaryValue is the collapsed one-line answer for a completed field.
@@ -444,30 +601,41 @@ func (m FormModel) summaryValue(f *Field) string {
 	return "" // FieldNote
 }
 
+// descriptionBlock renders a field's explanation under its title, indented and
+// **word-wrapped to the body width** — never truncated. Hard line breaks in the
+// text are re-flowed: the body narrows when the example column is showing, so a
+// description wrapped for a full-width terminal would otherwise lose its tail.
+func (m FormModel) descriptionBlock(f *Field, indent int) string {
+	d := f.Description
+	if f.Describe != nil {
+		d = f.Describe()
+	}
+	d = strings.TrimSpace(strings.ReplaceAll(d, "\n", " "))
+	if d == "" {
+		return ""
+	}
+	return "\n" + DimText.Width(m.bodyW()).PaddingLeft(indent).Render(d)
+}
+
 // expandedField renders the current step in place: numbered + bold title,
 // indented description, then its control (input / yes-no / options).
 func (m FormModel) expandedField(f *Field, i int) string {
 	var b strings.Builder
 	num := fmt.Sprintf("%d) ", i+1)
-	b.WriteString(row(Title.Render(num)+Text.Bold(true).Render(f.Title), "", m.w))
-	for line := range strings.SplitSeq(f.Description, "\n") {
-		if line != "" {
-			b.WriteString("\n")
-			b.WriteString(row("    "+DimText.Render(line), "", m.w))
-		}
-	}
+	b.WriteString(row(Title.Render(num)+Text.Bold(true).Render(f.Title), "", m.bodyW()))
+	b.WriteString(m.descriptionBlock(f, 4))
 
 	// A field waiting on something (the location DB download) says so and shows
 	// no control: there is nothing useful to answer yet.
 	if reason := m.awaitReason(); reason != "" {
 		b.WriteString("\n")
-		b.WriteString(row("    "+Attn.Render("⏳ "+reason), "", m.w))
+		b.WriteString(row("    "+Attn.Render("⏳ "+reason), "", m.bodyW()))
 		return b.String()
 	}
 
 	if f.Kind == FieldGroup {
 		for i, sub := range f.Subs {
-			b.WriteString(m.subView(sub, i == m.subIdx))
+			b.WriteString(m.subView(sub, i, i == m.subIdx))
 		}
 		return b.String()
 	}
@@ -477,23 +645,23 @@ func (m FormModel) expandedField(f *Field, i int) string {
 
 // subView renders one member of a FieldGroup: the focused one gets its full
 // control (and description, since a group's members ask their own questions),
-// the rest collapse to a `Title: answer` line.
-func (m FormModel) subView(sub *Field, focused bool) string {
+// the rest collapse to a `Title: answer` line. Each sub is numbered within its
+// group (1), 2), ...) — a step's own list of questions deserves the same
+// scannable numbering the top-level step list gets.
+func (m FormModel) subView(sub *Field, idx int, focused bool) string {
+	num := fmt.Sprintf("%d) ", idx+1)
 	if !focused {
-		return "\n    " + Text.Render(sub.Title+": ") + DimText.Render(m.summaryValue(sub))
+		return "\n    " + FaintTxt.Render(num) + Text.Render(sub.Title+": ") + DimText.Render(m.summaryValue(sub))
 	}
 	var b strings.Builder
+	label := Title.Render(num) + Text.Render(sub.Title+": ")
 	if sub.Kind != FieldInput {
 		b.WriteString("\n")
-		b.WriteString(row("    "+Text.Bold(true).Render(sub.Title), "", m.w))
-		for line := range strings.SplitSeq(sub.Description, "\n") {
-			if line != "" {
-				b.WriteString("\n")
-				b.WriteString(row("      "+DimText.Render(line), "", m.w))
-			}
-		}
+		b.WriteString(row("    "+Title.Render(num)+Text.Bold(true).Render(sub.Title), "", m.bodyW()))
+		b.WriteString(m.descriptionBlock(sub, 6))
+		label = ""
 	}
-	b.WriteString(m.controlView(sub, Text.Render(sub.Title+": ")))
+	b.WriteString(m.controlView(sub, label))
 	return b.String()
 }
 
@@ -549,10 +717,13 @@ func (m FormModel) inputView(f *Field, label string) string {
 		b.WriteString("\n    ")
 		b.WriteString(Bad.Render("✗ " + f.Error))
 	}
-	for i, s := range m.sugg {
-		if i >= maxFormSuggestions {
-			break
-		}
+	start, end := m.suggWindow()
+	if start > 0 {
+		b.WriteString("\n")
+		b.WriteString(row("      "+FaintTxt.Render(fmt.Sprintf("↑ %d more", start)), "", m.bodyW()))
+	}
+	for i := start; i < end; i++ {
+		s := m.sugg[i]
 		var line string
 		switch {
 		case i == m.suggCursor:
@@ -563,9 +734,27 @@ func (m FormModel) inputView(f *Field, label string) string {
 			line = "      " + FaintTxt.Render("· ") + DimText.Render(s)
 		}
 		b.WriteString("\n")
-		b.WriteString(row(line, "", m.w))
+		b.WriteString(row(line, "", m.bodyW()))
+	}
+	if rest := len(m.sugg) - end; rest > 0 {
+		b.WriteString("\n")
+		b.WriteString(row("      "+FaintTxt.Render(fmt.Sprintf("↓ %d more", rest)), "", m.bodyW()))
 	}
 	return b.String()
+}
+
+// suggWindow returns the [start, end) slice of m.sugg to render — a
+// maxFormSuggestions-tall window scrolled to keep suggCursor visible, so a
+// list longer than the window is reachable by ↑/↓ instead of being silently
+// truncated.
+func (m FormModel) suggWindow() (start, end int) {
+	n := len(m.sugg)
+	if n <= maxFormSuggestions {
+		return 0, n
+	}
+	start = max(m.suggCursor-maxFormSuggestions+1, 0)
+	start = min(start, n-maxFormSuggestions)
+	return start, start + maxFormSuggestions
 }
 
 func (m FormModel) renderFooter() string {

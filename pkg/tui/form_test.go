@@ -14,6 +14,51 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// flattenCmd executes cmd (and recursively any tea.Batch it produces),
+// returning every resulting message in order.
+func flattenCmd(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if msg == nil {
+		return nil
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var out []tea.Msg
+		for _, c := range batch {
+			out = append(out, flattenCmd(c)...)
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
+// sendKey feeds a keystroke through Update and, since Suggest now runs behind
+// a debounce (see suggestDebounce), also drives the resulting
+// suggestDebounceMsg/suggestResultMsg round-trip to completion so tests see
+// the same end state the old synchronous Suggest call used to produce
+// immediately.
+func sendKey(m FormModel, k tea.KeyMsg) FormModel {
+	next, cmd := m.Update(k)
+	m = next.(FormModel)
+	for _, msg := range flattenCmd(cmd) {
+		if _, ok := msg.(suggestDebounceMsg); !ok {
+			continue
+		}
+		next, cmd := m.Update(msg)
+		m = next.(FormModel)
+		for _, msg := range flattenCmd(cmd) {
+			if _, ok := msg.(suggestResultMsg); !ok {
+				continue
+			}
+			next, _ := m.Update(msg)
+			m = next.(FormModel)
+		}
+	}
+	return m
+}
+
 func TestForm(t *testing.T) {
 	tests := []struct {
 		name string
@@ -80,8 +125,8 @@ func TestForm(t *testing.T) {
 			}}}
 			m := NewFormModel(fields, nil)
 
+			m = sendKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 			for _, k := range []tea.KeyMsg{
-				{Type: tea.KeyRunes, Runes: []rune{'d'}},
 				{Type: tea.KeyDown},
 				{Type: tea.KeyDown},
 				{Type: tea.KeyEnter},
@@ -106,12 +151,11 @@ func TestForm(t *testing.T) {
 			}}}
 			m := NewFormModel(fields, nil)
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-			m = next.(FormModel)
+			m = sendKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 			if len(m.sugg) != 2 {
 				t.Fatalf("typing should refresh suggestions, got %v", m.sugg)
 			}
-			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 			m = next.(FormModel)
 			if v != "Delhi" {
 				t.Errorf("tab should fill top suggestion, got %q", v)
@@ -235,14 +279,83 @@ func TestForm(t *testing.T) {
 			if view := ansi.Strip(m.View()); !strings.Contains(view, "Location database") || !strings.Contains(view, "50%") {
 				t.Errorf("download row missing progress:\n%s", view)
 			}
+			// Finished carries no label of its own; the done line must keep the
+			// one from the byte reports rather than vanishing mid-glance.
 			next, _ = m.Update(DownloadMsg{Finished: true})
-			if view := ansi.Strip(next.(FormModel).View()); strings.Contains(view, "Location database") {
-				t.Errorf("finished download must leave no trace:\n%s", view)
+			if view := ansi.Strip(next.(FormModel).View()); !strings.Contains(view, "Location database · done") {
+				t.Errorf("finished download should persist as a done line:\n%s", view)
+			}
+		}},
+		// FormExampleSidePanel: on a wide terminal the example renders as a
+		// right-hand column (bordered box); on a narrow one it falls back to the
+		// block above the footer. Same content either way.
+		{"FormExampleSidePanel", func(t *testing.T) {
+			yes := true
+			m := NewFormModel([]*Field{{
+				Kind: FieldConfirm, Title: "Merge?", BoolValue: &yes,
+				Example: func() string { return "2024\n└─ 08_August" },
+			}}, nil)
+
+			m.w, m.h = 140, 30
+			if !m.sidePanel() {
+				t.Fatal("wide terminal with an example should use the side panel")
+			}
+			wide := ansi.Strip(m.View())
+			if !strings.Contains(wide, "└─ 08_August") || !strings.Contains(wide, "╭") {
+				t.Errorf("side panel missing example box:\n%s", wide)
+			}
+
+			m.w = 80
+			if m.sidePanel() {
+				t.Fatal("narrow terminal must fall back to the footer block")
+			}
+			if narrow := ansi.Strip(m.View()); !strings.Contains(narrow, "└─ 08_August") {
+				t.Errorf("footer example block missing:\n%s", narrow)
+			}
+		}},
+		// FormDownloadAlreadyInstalled: a dependency already on disk sends only
+		// the Finished message — the form must never mention it at all.
+		{"FormDownloadAlreadyInstalled", func(t *testing.T) {
+			v := ""
+			m := NewFormModel([]*Field{{Kind: FieldInput, Title: "Output path", Value: &v}}, nil)
+			m.w, m.h = 80, 24
+			next, _ := m.Update(DownloadMsg{Finished: true})
+			if view := ansi.Strip(next.(FormModel).View()); strings.Contains(view, "done") {
+				t.Errorf("an install that never reported bytes must stay invisible:\n%s", view)
 			}
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
+	}
+}
+
+// A description wraps to the body width instead of losing its tail to
+// truncation, and Describe wins over Description when both are set.
+func TestFormDescriptionBlock(t *testing.T) {
+	m := FormModel{w: 100} // side panel showing: body is well under 100 cols
+	long := "one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+	f := &Field{Description: "static", Describe: func() string { return long }}
+
+	got := m.descriptionBlock(f, 4)
+	if strings.Contains(got, "…") {
+		t.Errorf("description truncated:\n%s", got)
+	}
+	if strings.Contains(got, "static") {
+		t.Error("Describe should override Description")
+	}
+	for _, word := range strings.Fields(long) {
+		if !strings.Contains(got, word) {
+			t.Errorf("word %q dropped from:\n%s", word, got)
+		}
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if w := ansi.StringWidth(line); w > m.bodyW() {
+			t.Errorf("line width %d > body %d: %q", w, m.bodyW(), line)
+		}
+	}
+	if m.descriptionBlock(&Field{}, 4) != "" {
+		t.Error("empty description should render nothing")
 	}
 }
 
