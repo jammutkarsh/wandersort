@@ -169,6 +169,14 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			m.aborted = true
 			return m, tea.Quit
+		case "c":
+			// Save whatever's answered and exit — a second-time user often wants
+			// to change one setting, not click through every step again. Same
+			// key as the review TUI's save & exit. Not while a text field is
+			// focused, where "c" is ordinary typed input.
+			if m.activeKind() != FieldInput {
+				return m.saveAndExit()
+			}
 		case "enter":
 			// An arrowed-onto suggestion: enter picks it instead of advancing.
 			if m.suggCursor >= 0 && m.suggCursor < len(m.sugg) && m.activeKind() == FieldInput {
@@ -197,20 +205,21 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Number keys jump straight to a step (question), the numbers rendered
+		// next to the step list — not while a text field is focused, where a
+		// digit is ordinary typed input (e.g. worker count, a path).
+		if m.activeKind() != FieldInput {
+			if n, ok := optionNumber(msg.String(), len(m.Fields)); ok {
+				return m.jumpTo(n)
+			}
+		}
+
 		// Handle field-specific keys. active() (not Fields[Current]) so a
 		// confirm or multiselect nested in a FieldGroup answers the same way as
 		// a top-level one.
 		if field := m.active(); field != nil {
 			switch field.Kind {
 			case FieldMultiSelect:
-				// Options are numbered on screen: the number is the primary way
-				// to pick one, ↑↓ + space the secondary.
-				if n, ok := optionNumber(msg.String(), len(field.Options)); ok {
-					m.multiCursor = n
-					opt := field.Options[n]
-					field.Selected[opt] = !field.Selected[opt]
-					return m, nil
-				}
 				switch msg.String() {
 				case "up", "k":
 					if m.multiCursor > 0 {
@@ -230,14 +239,6 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case FieldConfirm:
-				// 1 = yes, 2 = no — the numbers rendered next to them. They
-				// only select, so the example block can be read before enter.
-				if n, ok := optionNumber(msg.String(), 2); ok {
-					if field.BoolValue != nil {
-						*field.BoolValue = n == 0
-					}
-					return m, nil
-				}
 				switch msg.String() {
 				case "y":
 					if field.BoolValue != nil {
@@ -309,9 +310,9 @@ func (m FormModel) View() string {
 	for i, f := range m.Fields {
 		switch {
 		case i == m.Current:
-			rows = append(rows, m.expandedField(f))
+			rows = append(rows, m.expandedField(f, i))
 		default:
-			rows = append(rows, m.collapsedRow(f, i < m.Current))
+			rows = append(rows, m.collapsedRow(f, i, i < m.Current))
 		}
 	}
 	body := Banner("config") + "\n" + m.downloadRow() + "\n" + strings.Join(rows, "\n")
@@ -398,13 +399,15 @@ func optionNumber(key string, count int) (int, bool) {
 	return n - 1, true
 }
 
-// collapsedRow renders a one-line summary of a field: done fields show their
-// answer, pending fields are dim placeholders.
-func (m FormModel) collapsedRow(f *Field, done bool) string {
+// collapsedRow renders a one-line summary of a step: done steps show their
+// answer, pending steps are dim placeholders. The leading number is the
+// step's jump target — press it from anywhere to land here.
+func (m FormModel) collapsedRow(f *Field, i int, done bool) string {
+	num := fmt.Sprintf("%d) ", i+1)
 	if !done {
-		return row(FaintTxt.Render(" => "+f.Title), "", m.w)
+		return row(FaintTxt.Render(num+f.Title), "", m.w)
 	}
-	left := OK.Render(" => ") + Text.Render(f.Title)
+	left := OK.Render(num) + Text.Render(f.Title)
 	if v := m.summaryValue(f); v != "" {
 		left += "  " + DimText.Render(v)
 	}
@@ -450,11 +453,12 @@ func (m FormModel) summaryValue(f *Field) string {
 	return "" // FieldNote
 }
 
-// expandedField renders the current field in place: highlighted marker + bold
-// title, indented description, then its control (input / yes-no / options).
-func (m FormModel) expandedField(f *Field) string {
+// expandedField renders the current step in place: numbered + bold title,
+// indented description, then its control (input / yes-no / options).
+func (m FormModel) expandedField(f *Field, i int) string {
 	var b strings.Builder
-	b.WriteString(row(Title.Render(" => ")+Text.Bold(true).Render(f.Title), "", m.w))
+	num := fmt.Sprintf("%d) ", i+1)
+	b.WriteString(row(Title.Render(num)+Text.Bold(true).Render(f.Title), "", m.w))
 	for line := range strings.SplitSeq(describe(f), "\n") {
 		if line != "" {
 			b.WriteString("\n" + row("    "+DimText.Render(line), "", m.w))
@@ -507,25 +511,26 @@ func (m FormModel) controlView(f *Field, label string) string {
 		b.WriteString(m.inputView(f, label))
 	case FieldConfirm:
 		on := f.BoolValue != nil && *f.BoolValue
-		b.WriteString("\n" + numberedOption(1, "yes", on, on))
-		b.WriteString("\n" + numberedOption(2, "no", !on, !on))
+		b.WriteString("\n" + optionRow("yes", on, on))
+		b.WriteString("\n" + optionRow("no", !on, !on))
 	case FieldMultiSelect:
 		for i, opt := range f.Options {
-			b.WriteString("\n" + numberedOption(i+1, opt, f.Selected[opt], i == m.multiCursor))
+			b.WriteString("\n" + optionRow(opt, f.Selected[opt], i == m.multiCursor))
 		}
 	}
 	return b.String()
 }
 
-// numberedOption renders one pickable option as `n) marker label`. The number
-// is the key that picks it — an arrow-only list gives the user nothing to aim
-// at when the list is long.
-func numberedOption(n int, label string, on, cursor bool) string {
+// optionRow renders one pickable option as `marker label`. Options are
+// navigated with ↑/↓ (and space/y/n to pick), never numbered — the numbers on
+// screen belong to the step list, so jumping between questions and picking an
+// option never compete for the same keys.
+func optionRow(label string, on, cursor bool) string {
 	marker := FaintTxt.Render("○ ")
 	if on {
 		marker = OK.Render("● ")
 	}
-	line := FaintTxt.Render(fmt.Sprintf("%d) ", n)) + marker + Text.Render(label)
+	line := marker + Text.Render(label)
 	if cursor {
 		line = Selected.Render(ansi.Strip(line))
 	}
@@ -574,7 +579,7 @@ func (m FormModel) renderFooter() string {
 		return ""
 	}
 	if m.awaitReason() != "" {
-		return Footer(KeyHint("ctrl+c", "quit"), m.w)
+		return Footer(KeyHint("ctrl+c", "quit")+"   "+KeyHint("c", "save & exit"), m.w)
 	}
 	field := m.active()
 	if field == nil {
@@ -584,15 +589,14 @@ func (m FormModel) renderFooter() string {
 	switch field.Kind {
 	case FieldMultiSelect:
 		hints = []string{
-			KeyHint(fmt.Sprintf("1-%d", len(field.Options)), "toggle"),
 			KeyHint("↑↓", "navigate"),
+			KeyHint("space", "toggle"),
 			KeyHint("enter", "next"),
 			KeyHint("shift+tab", "back"),
 		}
 	case FieldConfirm:
 		hints = []string{
-			KeyHint("1", "yes"),
-			KeyHint("2", "no"),
+			KeyHint("y/n", "answer"),
 			KeyHint("enter", "next"),
 			KeyHint("shift+tab", "back"),
 		}
@@ -605,6 +609,10 @@ func (m FormModel) renderFooter() string {
 			hints = append([]string{KeyHint("↑↓", "pick"), KeyHint("tab", "complete")}, hints...)
 		}
 	}
+	if field.Kind != FieldInput {
+		hints = append(hints, KeyHint(fmt.Sprintf("1-%d", len(m.Fields)), "jump"))
+	}
+	hints = append(hints, KeyHint("c", "save & exit"))
 	return Footer(strings.Join(hints, "   "), m.w)
 }
 
@@ -651,6 +659,50 @@ func (m FormModel) moveNext() (tea.Model, tea.Cmd) {
 	}
 	m.seedInput()
 	return m, textinput.Blink
+}
+
+// jumpTo moves straight to step n (0-based) — the numbered step list is what
+// makes this navigable, not the options inside a step. A no-op onto the
+// current step or an out-of-range number.
+func (m FormModel) jumpTo(n int) (tea.Model, tea.Cmd) {
+	if n < 0 || n >= len(m.Fields) || n == m.Current {
+		return m, nil
+	}
+	m.Current = n
+	m.subIdx = 0
+	m.multiCursor = 0
+	m.seedInput()
+	return m, textinput.Blink
+}
+
+// saveAndExit commits the active input (if any) and submits the form right
+// away, without requiring every step to be visited — the escape hatch for a
+// user who opened the wizard just to change one setting. A held step (the
+// background download) or a failing validator on the field being typed into
+// still blocks, same as moveNext.
+func (m FormModel) saveAndExit() (tea.Model, tea.Cmd) {
+	if m.awaitReason() != "" {
+		return m, nil
+	}
+	if f := m.active(); f != nil && f.Kind == FieldInput {
+		if f.Validator != nil {
+			if err := f.Validator(m.ti.Value()); err != nil {
+				f.Error = err.Error()
+				return m, nil
+			}
+		}
+		f.Error = ""
+		if f.Value != nil {
+			*f.Value = m.ti.Value()
+		}
+	}
+	if m.onSubmit != nil {
+		if err := m.onSubmit(); err != nil {
+			m.err = err
+			return m, tea.Quit
+		}
+	}
+	return m, tea.Quit
 }
 
 func (m FormModel) movePrev() (tea.Model, tea.Cmd) {
