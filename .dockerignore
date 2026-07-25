@@ -1,0 +1,12 @@
+.git
+.github
+.agents
+.claude
+.tickets
+.DS_Store
+.gitignore
+*.md
+assets
+docs
+bin
+Makefile
