@@ -179,9 +179,20 @@ func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile, labels
 		return
 	}
 	var anchors []userLabel
+	// anchorNames maps each anchor's saved Label — the fully-qualified form
+	// ResolveByName round-trips on, e.g. "Indore, Madhya Pradesh, India" — to
+	// the bare city a fold should use as the folder name. The qualifiers only
+	// exist to pick the right row out of the gazetteer; a folder can't hold a
+	// comma, and it's the user's own home/work town, so a second disambiguation
+	// pass isn't needed the way it is for an arbitrary photo's resolved city.
+	anchorNames := make(map[string]string)
 	for _, l := range labels {
 		if (l.Kind == "ANCHOR_HOME" || l.Kind == "ANCHOR_WORK") && l.GPSLat != nil && l.GPSLon != nil {
 			anchors = append(anchors, l)
+			if _, ok := anchorNames[l.Label]; !ok {
+				city, _, _ := strings.Cut(l.Label, ",")
+				anchorNames[l.Label] = city
+			}
 		}
 	}
 	for i := range masters {
@@ -210,7 +221,7 @@ func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile, labels
 					m.atHomeWork = true
 				} else {
 					// Legacy behaviour: fold the suburb into the town's folder.
-					m.location = a.Label
+					m.location = anchorNames[a.Label]
 				}
 				break
 			}
