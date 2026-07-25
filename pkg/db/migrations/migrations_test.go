@@ -38,37 +38,46 @@ func testMigration(version uint) Migration {
 	}
 }
 
-func TestRunAppliesOutOfOrderVersionsOnce(t *testing.T) {
-	db := openTestDB(t)
+func TestMigrations(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func(t *testing.T)
+	}{
+		{"RunAppliesOutOfOrderVersionsOnce", func(t *testing.T) {
+			db := openTestDB(t)
 
-	// A high version already applied must not block a lower one added later.
-	swapSchemas(t, []Migration{testMigration(1000)})
-	if n, err := Run(db); err != nil || n != 1 {
-		t.Fatalf("first run: got (%d, %v), want (1, nil)", n, err)
-	}
+			// A high version already applied must not block a lower one added later.
+			swapSchemas(t, []Migration{testMigration(1000)})
+			if n, err := Run(db); err != nil || n != 1 {
+				t.Fatalf("first run: got (%d, %v), want (1, nil)", n, err)
+			}
 
-	swapSchemas(t, []Migration{testMigration(1000), testMigration(1)})
-	if n, err := Run(db); err != nil || n != 1 {
-		t.Fatalf("run with late lower version: got (%d, %v), want (1, nil)", n, err)
-	}
+			swapSchemas(t, []Migration{testMigration(1000), testMigration(1)})
+			if n, err := Run(db); err != nil || n != 1 {
+				t.Fatalf("run with late lower version: got (%d, %v), want (1, nil)", n, err)
+			}
 
-	if n, err := Run(db); err != nil || n != 0 {
-		t.Fatalf("rerun: got (%d, %v), want (0, nil)", n, err)
-	}
+			if n, err := Run(db); err != nil || n != 0 {
+				t.Fatalf("rerun: got (%d, %v), want (0, nil)", n, err)
+			}
 
-	var versions []uint
-	if err := db.Select(&versions, `SELECT version FROM schema_migrations ORDER BY version`); err != nil {
-		t.Fatalf("select versions: %v", err)
+			var versions []uint
+			if err := db.Select(&versions, `SELECT version FROM schema_migrations ORDER BY version`); err != nil {
+				t.Fatalf("select versions: %v", err)
+			}
+			if len(versions) != 2 || versions[0] != 1 || versions[1] != 1000 {
+				t.Fatalf("applied versions = %v, want [1 1000]", versions)
+			}
+		}},
+		{"RunRejectsDuplicateVersions", func(t *testing.T) {
+			db := openTestDB(t)
+			swapSchemas(t, []Migration{testMigration(3), testMigration(3)})
+			if _, err := Run(db); err == nil {
+				t.Fatal("want duplicate version error, got nil")
+			}
+		}},
 	}
-	if len(versions) != 2 || versions[0] != 1 || versions[1] != 1000 {
-		t.Fatalf("applied versions = %v, want [1 1000]", versions)
-	}
-}
-
-func TestRunRejectsDuplicateVersions(t *testing.T) {
-	db := openTestDB(t)
-	swapSchemas(t, []Migration{testMigration(3), testMigration(3)})
-	if _, err := Run(db); err == nil {
-		t.Fatal("want duplicate version error, got nil")
+	for _, tt := range tests {
+		t.Run(tt.name, tt.fn)
 	}
 }

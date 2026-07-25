@@ -12,35 +12,39 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/location"
 )
 
-func TestExactMatch(t *testing.T) {
-	matches := []location.PlaceMatch{
-		{Name: "Delhi", DisplayName: "Delhi"},
-		{Name: "Dehradun", DisplayName: "Dehradun"},
-	}
-
-	if name, ok := exactMatch(matches, "delhi"); !ok || name != "Delhi" {
-		t.Errorf("case-insensitive match should return canonical spelling, got %q ok=%v", name, ok)
-	}
-	if _, ok := exactMatch(matches, "Del"); ok {
-		t.Errorf("prefix should not be an exact match")
-	}
-}
-
 // A name shared by several cities is offered — and must be saved — with its
 // qualifier: the bare city resolves to whichever row the DB returns first,
 // which is how a home town in India became one in Pakistan.
-func TestExactMatchKeepsQualifier(t *testing.T) {
-	matches := []location.PlaceMatch{
+func TestExactMatch(t *testing.T) {
+	simple := []location.PlaceMatch{
+		{Name: "Delhi", DisplayName: "Delhi"},
+		{Name: "Dehradun", DisplayName: "Dehradun"},
+	}
+	qualified := []location.PlaceMatch{
 		{Name: "Hyderabad", DisplayName: "Hyderabad, Pakistan"},
 		{Name: "Hyderabad", DisplayName: "Hyderabad, India"},
 	}
 
-	if name, ok := exactMatch(matches, "Hyderabad, India"); !ok || name != "Hyderabad, India" {
-		t.Errorf("picked qualified name = %q ok=%v, want \"Hyderabad, India\"", name, ok)
+	tests := []struct {
+		name    string
+		matches []location.PlaceMatch
+		typed   string
+		want    string
+		wantOK  bool
+	}{
+		{"case-insensitive returns canonical spelling", simple, "delhi", "Delhi", true},
+		{"prefix is not an exact match", simple, "Del", "", false},
+		{"qualified typed name keeps its qualifier", qualified, "Hyderabad, India", "Hyderabad, India", true},
+		// Typing the bare name still matches, and still saves a qualified
+		// form — an unqualified anchor can't be resolved back to one row.
+		{"bare name resolves to first match's qualified name", qualified, "hyderabad", "Hyderabad, Pakistan", true},
 	}
-	// Typing the bare name still matches, and still saves a qualified form —
-	// an unqualified anchor can't be resolved back to one row.
-	if name, ok := exactMatch(matches, "hyderabad"); !ok || name != "Hyderabad, Pakistan" {
-		t.Errorf("bare name = %q ok=%v, want the first match's qualified name", name, ok)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := exactMatch(tt.matches, tt.typed)
+			if ok != tt.wantOK || got != tt.want {
+				t.Errorf("exactMatch(%q) = (%q, %v), want (%q, %v)", tt.typed, got, ok, tt.want, tt.wantOK)
+			}
+		})
 	}
 }
