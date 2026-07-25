@@ -24,11 +24,11 @@ type Service struct {
 	pipeline *workflow.Workflow
 	repo     *Repository
 	logger   logger.Logger
-	path     *path.Resolver
+	resolver *path.Resolver
 }
 
 func NewService(log logger.Logger, workflow *workflow.Workflow, repo *Repository) *Service {
-	return &Service{pipeline: workflow, repo: repo, logger: log, path: path.New()}
+	return &Service{pipeline: workflow, repo: repo, logger: log, resolver: path.New()}
 }
 
 // StartScan validates roots and submits an async scan (HTTP server path).
@@ -70,13 +70,13 @@ func (s *Service) prepareScanRoots(paths []string) ([]string, error) {
 
 	for _, p := range paths {
 		cleaned := filepath.Clean(p)
-		resolved, err := s.path.RealPath(cleaned)
+		resolved, err := s.resolver.RealPath(cleaned)
 		if err != nil {
 			s.logger.Warn("Invalid root path", "path", p, "error", err)
 			return nil, err
 		}
 
-		isDir, err := s.path.IsDirectory(resolved)
+		isDir, err := s.resolver.IsDirectory(resolved)
 		if err != nil {
 			s.logger.Warn("Cannot stat root path", "path", resolved, "error", err)
 			return nil, err

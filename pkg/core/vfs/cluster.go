@@ -134,8 +134,6 @@ func anchorCities(labels []userLabel) []string {
 // suggestFor ranks a name suggestion for a fully unresolved cluster:
 // confirmed label overlapping in time → anchor city → the user's own
 // (non-generic) source folder name.
-// ponytail: GEO_CANDIDATE (ranked nearby cities) is deferred until
-// location.Lookup exposes candidates — see the TODO in pkg/location
 func suggestFor(masters []masterFile, c *cluster, labels []userLabel, anchors []string) (string, string) {
 	for _, l := range labels {
 		if l.Kind != "EVENT" {

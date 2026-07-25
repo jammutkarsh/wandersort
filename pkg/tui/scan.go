@@ -231,7 +231,8 @@ func (m ScanModel) viewNotes() string {
 	}
 	var b strings.Builder
 	for _, n := range notes {
-		b.WriteString(row(FaintTxt.Render(" # ")+DimText.Render(n), "", m.w) + "\n")
+		b.WriteString(row(FaintTxt.Render(" # ")+DimText.Render(n), "", m.w))
+		b.WriteString("\n")
 	}
 	return b.String()
 }
@@ -245,21 +246,30 @@ func (m ScanModel) footer() string {
 	var b strings.Builder
 	warns := m.warnings
 	if len(warns) > maxFooterWarnings {
-		b.WriteString(FaintTxt.Render(fmt.Sprintf("… %d earlier warnings (see log file)", len(warns)-maxFooterWarnings)) + "\n")
+		b.WriteString(FaintTxt.Render(fmt.Sprintf("… %d earlier warnings (see log file)", len(warns)-maxFooterWarnings)))
+		b.WriteString("\n")
 		warns = warns[len(warns)-maxFooterWarnings:]
 	}
 	for _, w := range warns {
-		b.WriteString(row(Attn.Render("⚠ "+w), "", m.w) + "\n")
+		b.WriteString(row(Attn.Render("⚠ "+w), "", m.w))
+		b.WriteString("\n")
 	}
 	switch {
 	case m.failErr != nil:
-		b.WriteString(Bad.Render("Scan failed: ") + Text.Render(m.failErr.Error()) + "\n")
+		b.WriteString(Bad.Render("Scan failed: "))
+		b.WriteString(Text.Render(m.failErr.Error()))
+		b.WriteString("\n")
 		b.WriteString(Footer(KeyHint("q", "quit"), m.w))
 	case m.reviewErr != nil:
-		b.WriteString(Bad.Render("Could not open review: ") + Text.Render(m.reviewErr.Error()) + "\n")
+		b.WriteString(Bad.Render("Could not open review: "))
+		b.WriteString(Text.Render(m.reviewErr.Error()))
+		b.WriteString("\n")
 		b.WriteString(Footer(KeyHint("q", "quit"), m.w))
 	case m.finished:
-		b.WriteString(OK.Render("✓ Scan complete.") + "  " + DimText.Render("Continue to review?") + "\n")
+		b.WriteString(OK.Render("✓ Scan complete."))
+		b.WriteString("  ")
+		b.WriteString(DimText.Render("Continue to review?"))
+		b.WriteString("\n")
 		b.WriteString(Footer(KeyHint("y", "review")+"   "+KeyHint("n", "quit"), m.w))
 	case m.cancelling:
 		b.WriteString(Attn.Render("Cancelling…"))

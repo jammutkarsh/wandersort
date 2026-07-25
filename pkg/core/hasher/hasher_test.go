@@ -182,7 +182,7 @@ func TestHasher(t *testing.T) {
 			}
 
 			// A nonexistent exiftool path is fine: extraction failures are tolerated
-			h := New(ctx, d, logger.NewNoopLogger(), filepath.Join(t.TempDir(), "missing-exiftool"), 1)
+			h := New(d, logger.NewNoopLogger(), filepath.Join(t.TempDir(), "missing-exiftool"), 1)
 			count, err := h.Run(ctx, sessionID)
 			if err != nil {
 				t.Fatalf("Run: %v", err)
@@ -240,7 +240,7 @@ func TestHasher(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			h := New(ctx, d, logger.NewNoopLogger(), filepath.Join(t.TempDir(), "missing-exiftool"), 1)
+			h := New(d, logger.NewNoopLogger(), filepath.Join(t.TempDir(), "missing-exiftool"), 1)
 			if _, err := h.Run(ctx, sessionID); err != nil {
 				t.Fatalf("Run: %v", err)
 			}

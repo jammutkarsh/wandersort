@@ -16,8 +16,6 @@ import (
 )
 
 // diskutil's plist output for a volume carries its UUID as a key/string pair.
-// ponytail: regexp over the plist instead of a plist library — the pair shape
-// is stable; adopt howett.net/plist if more fields are ever needed
 var volumeUUIDPattern = regexp.MustCompile(`<key>VolumeUUID</key>\s*<string>([0-9A-Fa-f-]+)</string>`)
 
 // uuidForPath finds the mount point via statfs, then asks diskutil for the

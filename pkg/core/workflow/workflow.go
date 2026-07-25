@@ -117,7 +117,7 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 		db:               db,
 		locationResolver: locationResolver,
 		scanner:          scanner.New(db, log, cfg.Workers),
-		hasher:           hasher.New(ctx, db, log, exiftoolPath, cfg.Workers),
+		hasher:           hasher.New(db, log, exiftoolPath, cfg.Workers),
 		scorer:           scorer.New(db, log),
 		vfs:              vfs.New(db, locationResolver, log, vfsCfg),
 		log:              log,

@@ -187,7 +187,8 @@ func (sl StageList) View(width, tailBudget int) string {
 				sl.sb.spin.View() + " " + DimText.Render(s.label)
 			b.WriteString(row(left, FaintTxt.Render(liveElapsed(s.start)), width))
 			if s.HasBar && s.total > 0 {
-				b.WriteString("\n" + row(Title.Render(" => => ")+sl.sb.bar.View()+" "+
+				b.WriteString("\n")
+				b.WriteString(row(Title.Render(" => => ")+sl.sb.bar.View()+" "+
 					FaintTxt.Render(sl.fmtCounts(s.cur, s.total)), "", width))
 			}
 			b.WriteString(sl.viewTail(s, width, tailBudget))
@@ -216,7 +217,8 @@ func (sl StageList) viewTail(s *Stage, width, budget int) string {
 	var b strings.Builder
 	mark := FaintTxt.Render(" => => ")
 	for _, l := range tail {
-		b.WriteString("\n" + row(mark+DimText.Render(l), "", width))
+		b.WriteString("\n")
+		b.WriteString(row(mark+DimText.Render(l), "", width))
 	}
 	return b.String()
 }

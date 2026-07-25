@@ -35,7 +35,6 @@ const (
 
 // Hasher handles file hashing and content group management
 type Hasher struct {
-	ctx        context.Context
 	db         *db.DB
 	log        logger.Logger
 	exiftool   *exiftool.Extractor
@@ -43,9 +42,8 @@ type Hasher struct {
 	workers    int
 }
 
-func New(ctx context.Context, db *db.DB, log logger.Logger, exiftoolPath string, workers int) *Hasher {
+func New(db *db.DB, log logger.Logger, exiftoolPath string, workers int) *Hasher {
 	return &Hasher{
-		ctx:        ctx,
 		db:         db,
 		log:        log,
 		exiftool:   exiftool.New(exiftoolPath),

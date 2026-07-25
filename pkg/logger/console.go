@@ -14,6 +14,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -143,7 +144,10 @@ func (h *PrettyHandler) Handle(_ context.Context, r slog.Record) error {
 	}
 
 	// fixed-width level tag keeps message columns aligned
-	line := colorize(levelColor, fmt.Sprintf("%-5s", r.Level.String())) + " " + r.Message
+	var line strings.Builder
+	line.WriteString(colorize(levelColor, fmt.Sprintf("%-5s", r.Level.String())))
+	line.WriteString(" ")
+	line.WriteString(r.Message)
 
 	keys := make([]string, 0, len(attrs))
 	for k := range attrs {
@@ -162,9 +166,10 @@ func (h *PrettyHandler) Handle(_ context.Context, r slog.Record) error {
 		default:
 			valStr = fmt.Sprintf("%v", val)
 		}
-		line += " " + colorize(ansiDarkGray, k+"="+valStr)
+		line.WriteString(" ")
+		line.WriteString(colorize(ansiDarkGray, k+"="+valStr))
 	}
 
-	fmt.Fprintln(os.Stderr, line)
+	fmt.Fprintln(os.Stderr, line.String())
 	return nil
 }

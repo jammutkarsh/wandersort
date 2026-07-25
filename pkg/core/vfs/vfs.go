@@ -45,9 +45,9 @@ type VFS struct {
 	cfg      Config
 }
 
-func New(database *db.DB, resolver *location.Resolver, log logger.Logger, cfg Config) *VFS {
+func New(db *db.DB, resolver *location.Resolver, log logger.Logger, cfg Config) *VFS {
 	v := &VFS{
-		db:  database,
+		db:  db,
 		log: log,
 		cfg: cfg,
 	}
@@ -163,10 +163,6 @@ func deriveAll(masters []masterFile) {
 // resolveLocations reverse-geocodes every GPS-tagged master, then folds the
 // result into a confirmed home/work anchor within location.MaxDistSquared —
 // otherwise a home city's own suburbs each get their own folder.
-// ponytail: one shared radius, not per-user; revisit if it fits neither dense
-// nor sprawling metros
-// ponytail: serial loop — the resolver caches internally; parallelise only if
-// geocoding shows up in profiles
 func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile, labels []userLabel) {
 	if v.resolver == nil {
 		return
@@ -335,7 +331,6 @@ func (v *VFS) buildTargets(masters []masterFile) {
 // order. skip names the levels uninformativeLevels found nothing to say with.
 func (v *VFS) dirFor(m *masterFile, skip map[string]bool) string {
 	if m.takenAt.IsZero() {
-		// ponytail: shouldn't happen, file mtime is always present
 		return sanitizeSegment(v.cfg.Fallback)
 	}
 
@@ -451,8 +446,6 @@ func (v *VFS) uninformativeLevels(masters []masterFile) map[string]bool {
 // persist replaces the whole previous proposal — one live set for the library,
 // whichever session wrote it. The delete goes through the same FIFO writer as
 // the inserts, so a rebuild leaves no stale rows behind.
-// ponytail: regenerates from scratch every run; revisit preserving APPROVED
-// rows when the execute flow lands
 func (v *VFS) persist(sessionID uuid.UUID, masters []masterFile) (int, error) {
 	if !v.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 		_, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries`)

@@ -260,7 +260,6 @@ type layoutPreset struct {
 // layoutPresets are the shapes [L] cycles through. Index 0 is
 // vfs.DefaultConfig()'s Rules, not this session's — so the first press may
 // change the layout rather than no-op.
-// ponytail: fixed list; derive from the session's Config if users want presets
 var layoutPresets = []layoutPreset{
 	{"Date + Location", []string{vfs.RuleDate, vfs.RuleLocation}},
 	{"Location only", []string{vfs.RuleLocation}},

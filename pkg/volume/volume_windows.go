@@ -20,7 +20,6 @@ import (
 // between sessions), and GetVolumeNameForVolumeMountPoint returns the stable
 // volume GUID path `\\?\Volume{...}\`. The GUID inside the braces is returned
 // so the value matches the UUID shape of the other platforms.
-// ponytail: verified by cross-compilation only — no Windows hardware in CI yet
 func uuidForPath(path string) (string, error) {
 	pathW, err := windows.UTF16PtrFromString(path)
 	if err != nil {

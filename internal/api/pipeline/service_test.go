@@ -25,13 +25,13 @@ func TestComputeScanPaths_FilterDuplicatePaths(t *testing.T) {
 
 	otherRoot := t.TempDir()
 
-	svc := &Service{logger: logger.NewNoopLogger(), path: path.New()}
+	svc := &Service{logger: logger.NewNoopLogger(), resolver: path.New()}
 
-	resolvedRoot, err := svc.path.RealPath(root)
+	resolvedRoot, err := svc.resolver.RealPath(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvedOtherRoot, err := svc.path.RealPath(otherRoot)
+	resolvedOtherRoot, err := svc.resolver.RealPath(otherRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestPrepareScanRoots_ErrorCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := &Service{logger: logger.NewNoopLogger(), path: path.New()}
+			svc := &Service{logger: logger.NewNoopLogger(), resolver: path.New()}
 			_, err := svc.prepareScanRoots(tt.setup(t))
 			if err == nil {
 				t.Fatal("expected error, got nil")

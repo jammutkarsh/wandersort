@@ -28,8 +28,6 @@ func (wf *Workflow) Close() {
 // library. Best-effort: an unreadable size or volume is a warning, never a
 // failure. Exported because `review` runs it too — the last look before a plan
 // is approved is where "the disk is too small" is still actionable.
-// ponytail: the sum counts every live file, an upper bound; narrow it to
-// master copies when the Execute phase lands
 func CheckOutputSpace(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, sessionID uuid.UUID) {
 	var librarySize int64
 	if err := database.SQL.GetContext(ctx, &librarySize,

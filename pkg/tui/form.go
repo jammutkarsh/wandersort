@@ -310,8 +310,6 @@ func (m FormModel) View() string {
 	body := Banner("config") + "\n" + m.downloadRow() + "\n" + strings.Join(rows, "\n")
 	footer := m.exampleBlock() + m.renderFooter()
 
-	// ponytail: tiny terminals just lose the top of the stack (banner first);
-	// add a scroll window around the current field if that ever matters.
 	if m.h > 0 {
 		if lines := strings.Split(body, "\n"); len(lines) > m.h-lipgloss.Height(footer)-1 {
 			body = strings.Join(lines[len(lines)-(m.h-lipgloss.Height(footer)-1):], "\n")
@@ -352,7 +350,8 @@ func (m FormModel) exampleBlock() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(FaintTxt.Render(" example") + "\n")
+	b.WriteString(FaintTxt.Render(" example"))
+	b.WriteString("\n")
 	for line := range strings.SplitSeq(ex, "\n") {
 		b.WriteString(row("   "+DimText.Render(line), "", m.w))
 		b.WriteString("\n")
@@ -453,14 +452,16 @@ func (m FormModel) expandedField(f *Field, i int) string {
 	b.WriteString(row(Title.Render(num)+Text.Bold(true).Render(f.Title), "", m.w))
 	for line := range strings.SplitSeq(f.Description, "\n") {
 		if line != "" {
-			b.WriteString("\n" + row("    "+DimText.Render(line), "", m.w))
+			b.WriteString("\n")
+			b.WriteString(row("    "+DimText.Render(line), "", m.w))
 		}
 	}
 
 	// A field waiting on something (the location DB download) says so and shows
 	// no control: there is nothing useful to answer yet.
 	if reason := m.awaitReason(); reason != "" {
-		b.WriteString("\n" + row("    "+Attn.Render("⏳ "+reason), "", m.w))
+		b.WriteString("\n")
+		b.WriteString(row("    "+Attn.Render("⏳ "+reason), "", m.w))
 		return b.String()
 	}
 
@@ -483,10 +484,12 @@ func (m FormModel) subView(sub *Field, focused bool) string {
 	}
 	var b strings.Builder
 	if sub.Kind != FieldInput {
-		b.WriteString("\n" + row("    "+Text.Bold(true).Render(sub.Title), "", m.w))
+		b.WriteString("\n")
+		b.WriteString(row("    "+Text.Bold(true).Render(sub.Title), "", m.w))
 		for line := range strings.SplitSeq(sub.Description, "\n") {
 			if line != "" {
-				b.WriteString("\n" + row("      "+DimText.Render(line), "", m.w))
+				b.WriteString("\n")
+				b.WriteString(row("      "+DimText.Render(line), "", m.w))
 			}
 		}
 	}
@@ -503,11 +506,14 @@ func (m FormModel) controlView(f *Field, label string) string {
 		b.WriteString(m.inputView(f, label))
 	case FieldConfirm:
 		on := f.BoolValue != nil && *f.BoolValue
-		b.WriteString("\n" + optionRow("yes", on, on))
-		b.WriteString("\n" + optionRow("no", !on, !on))
+		b.WriteString("\n")
+		b.WriteString(optionRow("yes", on, on))
+		b.WriteString("\n")
+		b.WriteString(optionRow("no", !on, !on))
 	case FieldMultiSelect:
 		for i, opt := range f.Options {
-			b.WriteString("\n" + optionRow(opt, f.Selected[opt], i == m.multiCursor))
+			b.WriteString("\n")
+			b.WriteString(optionRow(opt, f.Selected[opt], i == m.multiCursor))
 		}
 	}
 	return b.String()
@@ -535,10 +541,13 @@ func (m FormModel) inputView(f *Field, label string) string {
 	var b strings.Builder
 	prompt := m.ti.Prompt
 	m.ti.Prompt = lipgloss.NewStyle().Foreground(Primary).Render("» ")
-	b.WriteString("\n    " + label + m.ti.View())
+	b.WriteString("\n    ")
+	b.WriteString(label)
+	b.WriteString(m.ti.View())
 	m.ti.Prompt = prompt
 	if f.Error != "" {
-		b.WriteString("\n    " + Bad.Render("✗ "+f.Error))
+		b.WriteString("\n    ")
+		b.WriteString(Bad.Render("✗ " + f.Error))
 	}
 	for i, s := range m.sugg {
 		if i >= maxFormSuggestions {
@@ -553,7 +562,8 @@ func (m FormModel) inputView(f *Field, label string) string {
 		default:
 			line = "      " + FaintTxt.Render("· ") + DimText.Render(s)
 		}
-		b.WriteString("\n" + row(line, "", m.w))
+		b.WriteString("\n")
+		b.WriteString(row(line, "", m.w))
 	}
 	return b.String()
 }

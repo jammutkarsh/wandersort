@@ -172,6 +172,10 @@ func (a *App) PipelineService(wf *workflow.Workflow) *pipeline.Service {
 	return pipeline.NewService(a.Log, wf, pipeline.NewRepository(a.AppDB))
 }
 
+// Global viper instance — standard cobra pattern. Flags, env vars, and the
+// config file all layer through this single registry so precedence (flag >
+// env > config file > default) applies consistently without threading a
+// *viper.Viper through every cobra command.
 var v = viper.New()
 
 func init() {

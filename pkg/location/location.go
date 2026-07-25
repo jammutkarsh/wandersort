@@ -273,8 +273,6 @@ func (r *Resolver) ResolveByName(ctx context.Context, name string) (lat, lon flo
 
 // resolveStripped is ResolveByName's fallback for diacritic entries. NOCASE is
 // ASCII-only and there is no stripped column to index, so this scans.
-// ponytail: full scan, but runs at most twice per scan (home + work) and only
-// after an exact miss. Add a normalized column + index if it gets hot.
 func (r *Resolver) resolveStripped(ctx context.Context, name string, qualifiers []string) (lat, lon float64, err error) {
 	want := strings.ToLower(stripDiacritics(name))
 	rows, err := r.db.QueryContext(ctx,
