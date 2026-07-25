@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/exif"
 	"github.com/jammutkarsh/wandersort/pkg/core/hasher"
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/core/scorer"
@@ -44,6 +45,7 @@ type Workflow struct {
 	/* Pipeline components, run in this order */
 	scanner *scanner.Scanner
 	hasher  *hasher.Hasher
+	exif    *exif.Extractor
 	scorer  *scorer.Scorer
 	vfs     *vfs.VFS
 
@@ -71,6 +73,7 @@ type workflowPhaseKind string
 const (
 	workflowPhaseScan  workflowPhaseKind = "scan"
 	workflowPhaseHash  workflowPhaseKind = "hash"
+	workflowPhaseExif  workflowPhaseKind = "exif"
 	workflowPhaseScore workflowPhaseKind = "score"
 	workflowPhaseVFS   workflowPhaseKind = "vfs"
 	// defaultFinalizeTimeout is the deadline for writing the final session
@@ -88,6 +91,7 @@ type phaseStatus struct {
 var phaseStatusByKind = map[workflowPhaseKind]phaseStatus{
 	workflowPhaseScan:  {db.StatusScanning, db.StatusScanned, "Scanning your files…"},
 	workflowPhaseHash:  {db.StatusHashing, db.StatusHashed, "Looking for duplicate files…"},
+	workflowPhaseExif:  {db.StatusAnalyzing, db.StatusAnalyzed, "Reading photo details…"},
 	workflowPhaseScore: {db.StatusScoring, db.StatusScored, "Selecting the best copy of each duplicate…"},
 	workflowPhaseVFS:   {db.StatusOrganizing, db.StatusOrganized, "Proposing an organized folder structure…"},
 }
@@ -117,7 +121,8 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 		db:               db,
 		locationResolver: locationResolver,
 		scanner:          scanner.New(db, log, cfg.Workers),
-		hasher:           hasher.New(db, log, exiftoolPath, cfg.Workers),
+		hasher:           hasher.New(db, log, cfg.Workers),
+		exif:             exif.New(db, log, exiftoolPath, cfg.Workers),
 		scorer:           scorer.New(db, log),
 		vfs:              vfs.New(db, locationResolver, log, vfsCfg),
 		log:              log,
@@ -246,7 +251,7 @@ func (wf *Workflow) runSession(sessionID uuid.UUID, paths []string) (finalStatus
 		wf.finalizeSession(sessionID, finalStatus, finalErr)
 	}()
 
-	wf.log.Info("Workflow session started", "sessionId", sessionID, "phases", "scanning → hashing → scoring → organizing")
+	wf.log.Info("Workflow session started", "sessionId", sessionID, "phases", "scanning → hashing → extracting → scoring → organizing")
 
 	phases := wf.workflowPhases(sessionID, paths)
 
@@ -288,6 +293,13 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 				return wf.hasher.Run(wf.ctx, sessionID)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Checked %d files for duplicates", count) },
+		},
+		{
+			kind: workflowPhaseExif,
+			run: func() (int, error) {
+				return wf.exif.Run(wf.ctx, sessionID)
+			},
+			summary: func(count int) string { return fmt.Sprintf("Read details from %d files", count) },
 		},
 		{
 			kind: workflowPhaseScore,

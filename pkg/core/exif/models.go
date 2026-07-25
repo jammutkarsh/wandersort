@@ -4,16 +4,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package hasher
+package exif
 
-// fileRecord is the minimal info the pipeline passes from the scan phase
-// to drive the hash phase
+// fileRecord is the minimal info the exif phase needs about a file the hash
+// phase already registered
 type fileRecord struct {
 	id      int64
 	absPath string
-}
-
-type hashedRecord struct {
-	id   int64
-	hash string
 }

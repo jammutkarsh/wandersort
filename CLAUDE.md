@@ -14,10 +14,11 @@ A black-box media organizer. Feed it unorganized photos/videos; it produces an
 ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
 
 1. **Scan** — walk roots, build a file index.
-2. **Hash + EXIF** — content-hash for duplicate detection, extract EXIF for later.
-3. **Score** — within a duplicate group, elect one master copy (same bytes,
+2. **Hash** — content-hash for duplicate detection.
+3. **EXIF** — extract metadata for later.
+4. **Score** — within a duplicate group, elect one master copy (same bytes,
    different storage context — e.g. folder named `Goa Trip 2024`).
-4. **VFS** — propose a destination hierarchy for every live master in the
+5. **VFS** — propose a destination hierarchy for every live master in the
    library (not just the session's), using the user's prior folder-naming as
    context when EXIF is absent. Nothing on disk is touched.
 
@@ -285,7 +286,7 @@ manage — `anchor.go` reads them via `config.LoadGlobal`.
 ## Core pipeline (`pkg/core/`)
 
 - `workflow/` — orchestrator. Two entry points over the same `runSession` phase
-  loop (scan→hash→score→vfs): `RunScan` (synchronous, CLI) and `SubmitScan`
+  loop (scan→hash→exif→score→vfs): `RunScan` (synchronous, CLI) and `SubmitScan`
   (background goroutine, `serve`; `Close()` waits). `claimRoots` rejects a new
   session whose roots overlap an in-flight session's (in-memory — the output
   lock guarantees one process). `helpers.go` = session status/finalize writes
@@ -319,11 +320,31 @@ manage — `anchor.go` reads them via `config.LoadGlobal`.
   (`vfs.go`'s `dirFor`, per file) — a real Live Photo pair still lands
   together because its members genuinely share GPS/timestamp, not because of
   stem-matching.
-- `hasher/` — phase 2. BLAKE3 over full bytes + exiftool EXIF (the full tag
-  set the VFS needs — exiftool runs exactly once per file, at hash time).
-  A failed hash clears the file's stale metadata row. **Known gap:** full-byte
-  hash means pixel-identical files with differing metadata land in separate
-  groups. Persists `exif_creation_date` alongside `exif_create_date` — a real
+- `hasher/` — phase 2. BLAKE3 over full bytes, nothing else. Inserts the
+  `file_metadata` row with the hash and **NULL exif columns** — the row exists
+  so the exif phase has something to fill in, and the `trg_file_metadata_hashed`
+  trigger flips the file to `HASHED` on that insert. A failed hash clears the
+  file's stale metadata row. **Known gap:** full-byte hash means
+  pixel-identical files with differing metadata land in separate groups.
+- `exif/` — phase 3. Runs exiftool once per file (the full tag set the VFS
+  needs) and `UPDATE`s the row the hash phase inserted. **Split from `hasher`
+  deliberately**: one worker pool doing BLAKE3-then-exiftool made the two costs
+  one number, and anything that wants to sit between them (or replace one) had
+  to be threaded through the hash loop. Now each claims its own rows, times
+  itself, and owns a TUI stage.
+  The per-file state machine is what makes it a real phase, not a sub-step:
+  `HASHED → ANALYZING → ANALYZED`, using the `ANALYZING`/`ANALYZED` values
+  `file_registry`'s CHECK constraint already declared (no migration).
+  `scanner`'s upsert resets a stuck `ANALYZING` back to `HASHED`, not to
+  `DISCOVERED` — an interrupted extraction shouldn't cost a re-hash; changed
+  bytes are checked first and still win. Sidecars (`.AAE`) are filtered out in
+  the claim SQL by `media_type` and stay at `HASHED` — they carry no EXIF, so
+  spawning exiftool on them is pure waste. **An extraction failure is not a
+  file failure**: it warns, persists empty metadata, and marks the file
+  `ANALYZED` (the hash and folder context are still enough for the VFS to place
+  it). Workers write straight through `db.Writer` — it already serializes every
+  operation, so the hasher's separate store goroutine would only add a channel.
+  Persists `exif_creation_date` alongside `exif_create_date` — a real
   reported bug: a QuickTime video's `CreateDate` is the raw UTC timestamp with
   no offset, while a photo's `DateTimeOriginal` is local wall-clock; for the
   same real moment these can differ by hours, enough to shift a video into
@@ -332,9 +353,9 @@ manage — `anchor.go` reads them via `config.LoadGlobal`.
   parsing (see `deriveAll`'s `takenAt` comment), because every *other*
   timestamp here is naive local wall-clock and applying the real offset would
   shift the video away from siblings that never had one applied.
-- `scorer/` — phase 3. Elects master via folder-naming heuristics over live
+- `scorer/` — phase 4. Elects master via folder-naming heuristics over live
   (`deleted_at IS NULL`) rows; re-promotes solo survivors of shrunken groups.
-- `vfs/` — phase 4. Proposes destinations for every live master in the library
+- `vfs/` — phase 5. Proposes destinations for every live master in the library
   from the persisted metadata (never re-reads files); each run replaces the
   proposal set wholesale (safe to call again mid-review with a different
   `Config` — see `review.go`'s `[L]` key). `Config.Rules` (below Year/Month)

@@ -392,10 +392,16 @@ func (s *Scanner) storeScan(ctx context.Context, sessionID uuid.UUID, dbWritesWG
 			file_modified_at = excluded.file_modified_at,
 			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid),
 			deleted_at = NULL,
-			scan_status = CASE WHEN file_registry.file_size != excluded.file_size
+			scan_status = CASE
+				WHEN file_registry.file_size != excluded.file_size
 					OR file_registry.file_modified_at != excluded.file_modified_at
 					OR file_registry.scan_status IN ('HASHING','ERROR')
-				THEN 'DISCOVERED' ELSE file_registry.scan_status END
+					THEN 'DISCOVERED'
+				-- an interrupted exif phase left this row claimed; its hash is
+				-- still good, so resume from there instead of re-hashing.
+				-- Changed bytes are checked first and win
+				WHEN file_registry.scan_status = 'ANALYZING' THEN 'HASHED'
+				ELSE file_registry.scan_status END
 		RETURNING id, (discovered_at = last_seen_at) AS is_new`
 
 	queryFileState := func(dbCtx context.Context, tx *sqlx.Tx) (int64, int, error) {

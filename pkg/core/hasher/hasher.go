@@ -21,9 +21,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/google/uuid"
-	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"lukechampine.com/blake3"
 )
@@ -33,22 +31,20 @@ const (
 	hashOutputSize = 32
 )
 
-// Hasher handles file hashing and content group management
+// Hasher handles file hashing and content group management. It only computes
+// the content hash — the metadata row it inserts is filled in afterwards by
+// the exif phase (pkg/core/exif)
 type Hasher struct {
-	db         *db.DB
-	log        logger.Logger
-	exiftool   *exiftool.Extractor
-	classifier *classifier.FileClassifier
-	workers    int
+	db      *db.DB
+	log     logger.Logger
+	workers int
 }
 
-func New(db *db.DB, log logger.Logger, exiftoolPath string, workers int) *Hasher {
+func New(db *db.DB, log logger.Logger, workers int) *Hasher {
 	return &Hasher{
-		db:         db,
-		log:        log,
-		exiftool:   exiftool.New(exiftoolPath),
-		classifier: classifier.NewFileClassifier(),
-		workers:    workers,
+		db:      db,
+		log:     log,
+		workers: workers,
 	}
 }
 
@@ -155,7 +151,7 @@ func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, 
 	return fileRecord{id: id, absPath: filepath.Join(fileDir, fileName)}, true, nil
 }
 
-// hasher runs the bounded worker pool that computes BLAKE3 hashes and extracts EXIF
+// hasher runs the bounded worker pool that computes BLAKE3 hashes
 func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, toHash <-chan fileRecord, toPersist chan<- hashedRecord, errorCount *atomic.Int64, total int) {
 	var hashedN atomic.Int64
 	var hashWG sync.WaitGroup
@@ -193,28 +189,8 @@ func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context
 				h.log.Info("Hashing", logger.StreamKey, true, "sessionId", sessionID,
 					"file", filepath.Base(file.absPath), "hashed", hashedN.Add(1), "total", total)
 
-				if ctx.Err() != nil {
-					return // pipeline cancelled; stop cleanly
-				}
-				var exifData classifier.CommonMetadata
-				// Sidecar files (e.g. iPhone .AAE edit sidecars) carry no
-				// EXIF of their own — running exiftool on them is wasted work
-				mediaType, _, _ := h.classifier.ClassifyName(filepath.Base(file.absPath))
-				if mediaType != classifier.MediaTypeSidecar {
-					var err error
-					exifData, err = h.exiftool.Extract(ctx, file.absPath)
-					if err != nil {
-						// A cancelled pipeline SIGKILLs the exiftool child ("signal: killed")
-						// and fails the next call with "context canceled" — that is shutdown,
-						// not a bad file, so don't report it as an extraction failure.
-						if ctx.Err() != nil {
-							return
-						}
-						h.log.Warn("Failed to extract exif data", "sessionId", sessionID, "fileId", file.id, "path", file.absPath, "error", err)
-					}
-				}
 				select {
-				case toPersist <- hashedRecord{id: file.id, hash: hash, exif: exifData}:
+				case toPersist <- hashedRecord{id: file.id, hash: hash}:
 				case <-ctx.Done():
 					return
 				}
@@ -271,27 +247,11 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 				`DELETE FROM file_metadata WHERE file_id = ?`, file.id); err != nil {
 				return err
 			}
-			_, err := tx.ExecContext(
-				ctx, `
-				INSERT INTO file_metadata (
-					file_hash, file_id,
-					exif_image_width, exif_image_height, exif_orientation,
-					exif_gps_latitude, exif_gps_longitude,
-					exif_make, exif_model,
-					exif_date_time_original, exif_create_date, exif_creation_date
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, file.hash, file.id,
-				db.IntOrNil(file.exif.ImageWidth),
-				db.IntOrNil(file.exif.ImageHeight),
-				db.IntOrNil(file.exif.Orientation),
-				db.FloatOrNil(file.exif.GPSLatitude),
-				db.FloatOrNil(file.exif.GPSLongitude),
-				db.StrOrNil(file.exif.Make),
-				db.StrOrNil(file.exif.Model),
-				db.StrOrNil(file.exif.DateTimeOriginal),
-				db.StrOrNil(file.exif.CreateDate),
-				db.StrOrNil(file.exif.CreationDate),
-			)
+			// The exif_* columns stay NULL here — the exif phase fills them in
+			// on this row once every file has a hash
+			_, err := tx.ExecContext(ctx,
+				`INSERT INTO file_metadata (file_hash, file_id) VALUES (?, ?)`,
+				file.hash, file.id)
 			return err
 		})
 		if !ok {

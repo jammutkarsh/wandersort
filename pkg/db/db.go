@@ -32,11 +32,16 @@ const (
 
 // Pattern: -ING = active phase, -ED = completed/terminal
 const (
-	StatusStarted    = "STARTED"
-	StatusScanning   = "SCANNING"
-	StatusScanned    = "SCANNED"
-	StatusHashing    = "HASHING"
-	StatusHashed     = "HASHED"
+	StatusStarted  = "STARTED"
+	StatusScanning = "SCANNING"
+	StatusScanned  = "SCANNED"
+	StatusHashing  = "HASHING"
+	StatusHashed   = "HASHED"
+	// A file is ANALYZING while the exif phase holds it and ANALYZED once its
+	// metadata row is filled in. The scan session reuses the same two values
+	// for that phase — one pair, two scopes, same meaning
+	StatusAnalyzing  = "ANALYZING"
+	StatusAnalyzed   = "ANALYZED"
 	StatusScoring    = "SCORING"
 	StatusScored     = "SCORED"
 	StatusOrganizing = "ORGANIZING"

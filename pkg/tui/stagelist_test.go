@@ -17,7 +17,7 @@ func newTestList() StageList {
 	return NewStageList(
 		nil,
 		&Stage{Key: "scan", Name: "Scan"},
-		&Stage{Key: "hash", Name: "Hash + EXIF", HasBar: true},
+		&Stage{Key: "hash", Name: "Hash", HasBar: true},
 	)
 }
 

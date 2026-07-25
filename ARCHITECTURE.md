@@ -22,9 +22,10 @@ and *writes* to its own database.
 | # | Phase | What it does |
 | --- | --- | --- |
 | 1 | **Scan** | Walk the given roots, classify every media file, record it in the file index. |
-| 2 | **Hash + EXIF** | BLAKE3-hash each file's full bytes (for duplicate detection) and extract its EXIF once via ExifTool. |
-| 3 | **Score** | Within a duplicate group, elect one *master* copy using folder-naming heuristics. |
-| 4 | **VFS** | Propose a destination folder tree for every live master in the library. Purely a proposal — nothing touches disk. |
+| 2 | **Hash** | BLAKE3-hash each file's full bytes, for duplicate detection. |
+| 3 | **EXIF** | Read each hashed file's metadata once via ExifTool. Its own phase, with its own timing and progress — a file that ExifTool can't read is still a usable file, so a failure here never fails the session. |
+| 4 | **Score** | Within a duplicate group, elect one *master* copy using folder-naming heuristics. |
+| 5 | **VFS** | Propose a destination folder tree for every live master in the library. Purely a proposal — nothing touches disk. |
 
 The **move/apply** stage — where the user approves a proposal and files are
 actually relocated — is not built yet. Everything up to and including the VFS
@@ -36,7 +37,7 @@ proposal is.
 main.go            entry point — build config, hand off to the CLI
 internal/cli/      cobra commands (one file per subcommand)
 internal/api/      HTTP handlers for `serve` (only used by serve)
-pkg/core/          the pipeline: scanner, hasher, scorer, vfs, workflow
+pkg/core/          the pipeline: scanner, hasher, exif, scorer, vfs, workflow
 pkg/               supporting packages (db, config, logger, …)
 ```
 
@@ -80,12 +81,16 @@ time. Styled terminal output (colours, help) lives in `pkg/style` and `help.go`.
   by absolute `(dir, name)`. Rows not re-seen in a clean walk are *soft-deleted*
   and hard-deleted after 30 days, so unplugged drives and transient errors
   self-heal instead of vanishing permanently.
-- **`hasher/`** — phase 2. BLAKE3 over full file bytes plus a single ExifTool
-  run per file. *Known gap:* full-byte hashing means two pixel-identical files
-  with different metadata land in separate groups.
-- **`scorer/`** — phase 3. Elects a master within each duplicate group over the
+- **`hasher/`** — phase 2. BLAKE3 over full file bytes. Inserts each file's
+  metadata row holding only the hash. *Known gap:* full-byte hashing means two
+  pixel-identical files with different metadata land in separate groups.
+- **`exif/`** — phase 3. One ExifTool run per file, filling in the row phase 2
+  inserted. It claims its own rows (`HASHED → ANALYZING → ANALYZED`), so an
+  interrupted run resumes without re-hashing anything. Sidecars (`.AAE`) are
+  skipped — they carry no EXIF.
+- **`scorer/`** — phase 4. Elects a master within each duplicate group over the
   live (non-deleted) rows; re-promotes the lone survivor when a group shrinks.
-- **`vfs/`** — phase 4. Proposes destinations for every live master from the
+- **`vfs/`** — phase 5. Proposes destinations for every live master from the
   persisted metadata (never re-reads the files). Each run replaces the whole
   proposal set.
 

@@ -48,6 +48,10 @@ type ScanModel struct {
 	warnings []string
 	w, h     int
 
+	// cur is the stage key of the running phase, so a stream line's counts
+	// drive that phase's own bar — the stream carries no PhaseKey of its own
+	cur string
+
 	done       bool  // pipeline returned (success or fail)
 	failErr    error // non-nil = pipeline failed
 	cancelling bool  // ctrl+c pressed, waiting for the pipeline to unwind
@@ -61,13 +65,14 @@ type ScanModel struct {
 // launches review itself after the program exits.
 func (m ScanModel) WantsReview() bool { return m.gotoReview }
 
-// NewScanModel builds the scan screen. The four stages mirror the workflow
-// phases (keys match logger.PhaseKey: scan/hash/score/vfs).
+// NewScanModel builds the scan screen. The five stages mirror the workflow
+// phases (keys match logger.PhaseKey: scan/hash/exif/score/vfs).
 func NewScanModel(cfg ScanConfig) ScanModel {
 	sl := NewStageList(
 		nil,
 		&Stage{Key: "scan", Name: "Scan"},
-		&Stage{Key: "hash", Name: "Hash + EXIF", HasBar: true},
+		&Stage{Key: "hash", Name: "Hash", HasBar: true},
+		&Stage{Key: "exif", Name: "Metadata", HasBar: true},
 		&Stage{Key: "score", Name: "Score"},
 		&Stage{Key: "vfs", Name: "Organize"},
 	)
@@ -150,6 +155,7 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 	if p, ok := e.Attrs[logger.PhaseKey].(string); ok {
 		switch e.Attrs[logger.EventKey] {
 		case "start":
+			m.cur = p
 			m.sl.Start(p, e.Message)
 		case "done":
 			elapsed, _ := e.Attrs[logger.ElapsedKey].(string)
@@ -158,8 +164,9 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Stream — per-file feed line; the hasher's also carries the running count,
-	// so the bar advances one file at a time instead of in throttled jumps.
+	// Stream — per-file feed line; the hash and exif phases also carry the
+	// running count, so the bar advances one file at a time instead of in
+	// throttled jumps.
 	if e.Stream {
 		if f, ok := e.Attrs["file"].(string); ok {
 			m.sl.AddTail(f)
@@ -183,8 +190,9 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// progressCmd drives the hash bar from any event carrying hashed|extracted +
-// total counts; events without them are a no-op.
+// progressCmd drives the running phase's bar from any event carrying
+// hashed|extracted + total counts; events without them are a no-op, as is a
+// phase with no bar (SetProgress ignores an unknown key).
 func (m *ScanModel) progressCmd(e logger.Event) tea.Cmd {
 	total, ok := toInt(e.Attrs["total"])
 	if !ok || total <= 0 {
@@ -197,7 +205,7 @@ func (m *ScanModel) progressCmd(e logger.Event) tea.Cmd {
 	if !has {
 		return nil
 	}
-	return m.sl.SetProgress("hash", cur, total)
+	return m.sl.SetProgress(m.cur, cur, total)
 }
 
 // warningLine renders a warning with the path it's about — "Unsupported file
