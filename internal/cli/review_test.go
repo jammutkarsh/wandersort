@@ -8,21 +8,19 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
-	"github.com/jammutkarsh/wandersort/pkg/location/locationtest"
 )
 
 func sampleTree() []vfs.Node {
@@ -36,93 +34,6 @@ func TestReview(t *testing.T) {
 		name string
 		fn   func(t *testing.T)
 	}{
-		// TestRelayoutDoneRebuildsRowsAndResetsState covers the [L] key's async
-		// result: a successful relayout replaces the tree/rows, resets navigation
-		// and any in-progress merge selection (their old row pointers are gone), and
-		// reports which preset just applied.
-		{"RelayoutDoneRebuildsRowsAndResetsState", func(t *testing.T) {
-			m := newReviewModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
-			m.cursor, m.offset = 5, 2
-			m.visualMode, m.undo = true, []undoStep{{tree: []vfs.Node{{ID: "stale"}}, edit: "merge"}}
-			m.relayouting = true
-			m.layoutIdx = 1
-
-			newTree := []vfs.Node{{ID: "2025", Name: "2025", FileCount: 3}}
-			next, _ := m.Update(relayoutDoneMsg{tree: newTree})
-			rm := next.(reviewModel)
-
-			if rm.relayouting {
-				t.Error("relayouting still true after relayoutDoneMsg")
-			}
-			if len(rm.rows) != 1 || rm.rows[0].node.ID != "2025" {
-				t.Fatalf("rows = %+v, want rebuilt from newTree", rm.rows)
-			}
-			if rm.cursor != 0 || rm.offset != 0 {
-				t.Errorf("cursor/offset = %d/%d, want reset to 0/0", rm.cursor, rm.offset)
-			}
-			if rm.visualMode || len(rm.undo) != 0 {
-				t.Error("visual selection / pending undo should be cleared after a relayout")
-			}
-			if rm.statusMsg == "" {
-				t.Error("expected a status message naming the new layout")
-			}
-		}},
-		// TestRelayoutDoneErrorKeepsOldTree covers the failure path: an error must
-		// not clobber whatever the reviewer was already looking at.
-		{"RelayoutDoneErrorKeepsOldTree", func(t *testing.T) {
-			m := newReviewModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
-			m.relayouting = true
-			origRows := m.rows
-
-			next, _ := m.Update(relayoutDoneMsg{err: errors.New("boom")})
-			rm := next.(reviewModel)
-
-			if rm.relayouting {
-				t.Error("relayouting still true after an errored relayoutDoneMsg")
-			}
-			if rm.relayoutErr == nil {
-				t.Error("expected relayoutErr to be set")
-			}
-			if len(rm.rows) != len(origRows) {
-				t.Errorf("rows changed on error: got %d, want %d (unchanged)", len(rm.rows), len(origRows))
-			}
-		}},
-		// TestLayoutKeyCyclesPresetsAndKicksOffRelayout covers [L]: it advances to
-		// the next preset and starts an async rebuild, as long as a resolver is
-		// available (a real resolver here, for consistency — but still never
-		// actually invoked, since Update only returns the Cmd, it doesn't run it).
-		{"LayoutKeyCyclesPresetsAndKicksOffRelayout", func(t *testing.T) {
-			m := newReviewModel(sampleTree(), nil, nil, uuid.Nil, locationtest.Resolver(t), nil)
-
-			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("L")})
-			rm := next.(reviewModel)
-
-			if rm.layoutIdx != 1 {
-				t.Errorf("layoutIdx = %d, want 1 after first [L]", rm.layoutIdx)
-			}
-			if !rm.relayouting {
-				t.Error("expected relayouting = true right after pressing [L]")
-			}
-			if cmd == nil {
-				t.Error("expected a non-nil Cmd to kick off the relayout")
-			}
-		}},
-		// TestLayoutKeyNoopsWithoutResolver covers the guard: pressing [L] before a
-		// location resolver is available must not start a relayout that would strip
-		// every file's location.
-		{"LayoutKeyNoopsWithoutResolver", func(t *testing.T) {
-			m := newReviewModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
-
-			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("L")})
-			rm := next.(reviewModel)
-
-			if rm.layoutIdx != 0 || rm.relayouting {
-				t.Error("expected [L] to no-op without a resolver")
-			}
-			if cmd != nil {
-				t.Error("expected no Cmd without a resolver")
-			}
-		}},
 		// TestPressingPAlwaysDispatchesAsync covers that "p" always kicks off
 		// peekCmd — the cache check now happens inside it (it needs the file list to
 		// compute a signature), not synchronously in the key handler.
@@ -541,7 +452,7 @@ func TestReview(t *testing.T) {
 			}
 			// the whole frame must fit the terminal, however the help wrapped
 			for _, m := range []reviewModel{wide, narrow} {
-				total := headerLines + m.visibleRows() + strings.Count(m.footer(), "\n")
+				total := lipgloss.Height(m.header()) + m.visibleRows() + lipgloss.Height(m.footer())
 				if total > m.height {
 					t.Errorf("width %d: frame is %d lines, want <= %d", m.width, total, m.height)
 				}

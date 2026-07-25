@@ -17,9 +17,10 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
@@ -44,21 +45,19 @@ remembered and suggested automatically on future scans.`,
 		Example: `# Review interactively
 wandersort review
 
-# Accept every suggestion without prompting
+# Skip the TUI: accept every suggestion and confirm the plan immediately
 wandersort review --yes
 
-# Re-propose the hierarchy with the current --rules/config.yaml first
-wandersort review --rebuild --rules device,media`,
+# Re-propose the hierarchy with the current config.yaml rules first
+wandersort review --rebuild`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runReview()
 		},
 	}
 
-	cmd.Flags().Bool(flagYes, false, "Accept all suggestions without prompting")
+	cmd.Flags().Bool(flagYes, false, "Skip the interactive review: accept every suggestion and confirm the plan immediately")
 	cmd.Flags().Bool(flagRebuild, false,
-		"Re-run the VFS proposal with the current --rules before reviewing (no re-scan or re-hash)")
-	cmd.Flags().StringSlice(flagRules, nil,
-		"Folder levels below Year/Month: location, date, device, orientation, media, or none (only with --rebuild)")
+		"Re-run the VFS proposal with the current config.yaml rules before reviewing (no re-scan or re-hash)")
 	return cmd
 }
 
@@ -99,7 +98,7 @@ func (a *App) runReview() error {
 		}
 		if approved > 0 && !v.GetBool(flagYes) {
 			return fmt.Errorf("--rebuild would discard the confirmed plan for this session (%d approved files).\n"+
-				"Your confirmed folder names are remembered and will be re-suggested; re-run with --yes to rebuild and re-accept them", approved)
+				"Your confirmed folder names are remembered and will be re-suggested; re-run with --yes to rebuild and confirm the new plan non-interactively", approved)
 		}
 		// EnsureDependencies already opens the resolver (and holds the install
 		// lock while it does), so no separate InitLocationResolver here.
@@ -129,7 +128,7 @@ func (a *App) runReview() error {
 			return err
 		}
 	} else {
-		// rename autocomplete and [L] degrade gracefully without a resolver
+		// rename autocomplete degrades gracefully without a resolver
 		if err := a.InitLocationResolver(ctx); err != nil {
 			a.Log.Warn("Location resolver unavailable, rename suggestions disabled", "error", err)
 		}
@@ -141,12 +140,6 @@ func (a *App) runReview() error {
 		rm := m.(reviewModel)
 		defer cleanupPreviewDirs(rm.previewDirs)
 		if !rm.confirmed {
-			if rm.relayouted {
-				// [L] already ran vfs.Run, which replaced the session's rows —
-				// claiming nothing changed would be a lie
-				return fmt.Errorf("review cancelled — folder names unchanged, but [L] rebuilt the proposal with layout %q; re-run 'wandersort scan' to go back",
-					layoutPresets[rm.layoutIdx].label)
-			}
 			return fmt.Errorf("review cancelled — nothing changed")
 		}
 		for _, r := range rm.rows {
@@ -154,9 +147,6 @@ func (a *App) runReview() error {
 				r.node.Name = name
 			}
 		}
-		// rm.tree, not the outer tree: [L] may have rebuilt it with a new
-		// layout mid-review, replacing every node's ID and the outer tree
-		// variable would then be stale.
 		if err := vfs.Confirm(ctx, sessionID, a.AppDB, rm.tree); err != nil {
 			return err
 		}
@@ -207,15 +197,26 @@ type reviewRow struct {
 	parent  *vfs.Node
 	depth   int
 	newName string
+	// guide is the drawn tree prefix ("│  ├─ "), precomputed here because a row
+	// can't tell whether it's a last child from its depth alone.
+	guide string
 }
 
-// flattenTree lays the whole tree out as indented rows so the reviewer can
-// walk the proposed hierarchy top to bottom and rename any directory in place.
-func flattenTree(nodes []vfs.Node, depth int, parent *vfs.Node) []*reviewRow {
+// flattenTree lays the whole tree out as rows with box-drawing guides, so the
+// reviewer can walk the proposed hierarchy top to bottom and rename any
+// directory in place. prefix is the guide inherited from the parent row.
+func flattenTree(nodes []vfs.Node, depth int, parent *vfs.Node, prefix string) []*reviewRow {
 	var rows []*reviewRow
 	for i := range nodes {
-		rows = append(rows, &reviewRow{node: &nodes[i], parent: parent, depth: depth})
-		rows = append(rows, flattenTree(nodes[i].Children, depth+1, &nodes[i])...)
+		branch, childPrefix := "├─ ", prefix+"│  "
+		if i == len(nodes)-1 {
+			branch, childPrefix = "└─ ", prefix+"   "
+		}
+		if depth == 0 { // top-level rows are roots, not siblings of one trunk
+			branch, childPrefix = "", ""
+		}
+		rows = append(rows, &reviewRow{node: &nodes[i], parent: parent, depth: depth, guide: prefix + branch})
+		rows = append(rows, flattenTree(nodes[i].Children, depth+1, &nodes[i], childPrefix)...)
 	}
 	return rows
 }
@@ -229,8 +230,12 @@ type nameSuggestion struct {
 
 // folderName turns a display name ("Springfield, Illinois") into a folder-safe
 // one ("Springfield_Illinois") — the disambiguation comma is presentation only.
+// folderName turns a picked display name (search results and the rename
+// dropdown keep the comma — "Seoni, Himachal Pradesh" is how a reviewer tells
+// two same-named places apart) into what actually becomes the folder: no
+// space, no comma, same rule Confirm enforces on every node name.
 func folderName(display string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(display, ", ", "_"), ",", "_")
+	return vfs.SanitizeSegment(display)
 }
 
 const maxPreviewBytes = 250 * 1024 * 1024
@@ -250,22 +255,6 @@ const geoCandidateFetch = 64
 // minGazetteerPrefix is how many characters must be typed before the per-
 // keystroke gazetteer search runs; below it every query matches half the table.
 const minGazetteerPrefix = 2
-
-// layoutPreset is one selectable folder-depth shape, cycled with [L].
-type layoutPreset struct {
-	label   string
-	groupBy []string // nil means vfs.Config{}'s zero value — flat Year/Month
-}
-
-// layoutPresets are the shapes [L] cycles through. Index 0 is
-// vfs.DefaultConfig()'s Rules, not this session's — so the first press may
-// change the layout rather than no-op.
-var layoutPresets = []layoutPreset{
-	{"Date + Location", []string{vfs.RuleDate, vfs.RuleLocation}},
-	{"Location only", []string{vfs.RuleLocation}},
-	{"Date only", []string{vfs.RuleDate}},
-	{"Flat Year/Month (no group-by)", nil},
-}
 
 type reviewModel struct {
 	tree      []vfs.Node
@@ -294,6 +283,7 @@ type reviewModel struct {
 	// Structural edits: [V] selects, [m] merges, [d]/[D] remove nesting.
 	visualMode   bool
 	visualAnchor int
+	showHelp     bool // [?] — full-screen key reference; any key closes it
 	quitWarned   bool // [q] with pending edits warns once before discarding
 	// embedded runs the model inside the app-shell (scan → review swap): it
 	// sets done instead of tea.Quit, and the shell wrapper finalizes.
@@ -306,25 +296,21 @@ type reviewModel struct {
 	statusIsErr bool // rejection, not confirmation: rendered in a warning colour
 
 	// async preview copy ([p])
-	previewing   bool
-	previewErr   error
-	previewDirs  map[string]string // file-signature → temp dir, removed on exit
-	spinnerFrame int
-
-	// async layout switch ([L]) — rebuilds the proposal, so renames typed under
-	// the old layout are dropped: a different depth means different node IDs
-	layoutIdx   int
-	relayouting bool
-	relayoutErr error
-	// relayouted records that [L] already persisted a new proposal, so quitting
-	// can't claim nothing changed.
-	relayouted bool
+	previewing  bool
+	previewErr  error
+	previewDirs map[string]string // file-signature → temp dir, removed on exit
+	spin        spinner.Model
 }
 
 func newReviewModel(tree []vfs.Node, ctx context.Context, database *db.DB, sessionID uuid.UUID, resolver *location.Resolver, log logger.Logger) reviewModel {
+	// same spinner the scan and install screens run
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(tui.Primary)
 	m := reviewModel{
+		spin:        sp,
 		tree:        tree,
-		rows:        flattenTree(tree, 0, nil),
+		rows:        flattenTree(tree, 0, nil, ""),
 		ctx:         ctx,
 		db:          database,
 		sessionID:   sessionID,
@@ -346,14 +332,11 @@ func newReviewModel(tree []vfs.Node, ctx context.Context, database *db.DB, sessi
 
 func (m reviewModel) Init() tea.Cmd { return nil }
 
-// headerLines is the fixed block above the tree: banner box (3), subtitle, blank.
-const headerLines = 5
-
 // visibleRows is how many tree lines fit between the header and the footer.
-// The footer is measured, not assumed to be one line — the key help wraps on a
-// narrow terminal.
+// Both are measured, never assumed to be a fixed height — the key help wraps
+// on a narrow terminal and the header carries a status line.
 func (m reviewModel) visibleRows() int {
-	return max(m.height-headerLines-strings.Count(m.footer(), "\n"), 1)
+	return max(m.height-lipgloss.Height(m.header())-lipgloss.Height(m.footer()), 1)
 }
 
 // wrapDim renders dimmed text word-wrapped to the terminal width.
@@ -376,7 +359,7 @@ func (m *reviewModel) reflow() {
 			pending[r.node.ID] = r.newName
 		}
 	}
-	m.rows = flattenTree(m.tree, 0, nil)
+	m.rows = flattenTree(m.tree, 0, nil, "")
 	for _, r := range m.rows {
 		if name, ok := pending[r.node.ID]; ok {
 			r.newName = name
@@ -548,30 +531,19 @@ func (m reviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height, m.width = msg.Height, msg.Width
 		m.scrollIntoView()
 		return m, nil
-	case tickMsg:
-		if m.previewing || m.relayouting {
-			m.spinnerFrame++
-			return m, tickCmd()
+	case spinner.TickMsg:
+		if !m.previewing {
+			return m, nil // let the ticker die once the copy is done
 		}
-		return m, nil
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
 	case previewDoneMsg:
 		m.previewing = false
 		m.previewErr = msg.err
 		if msg.err == nil {
 			m.previewDirs[msg.signature] = msg.dir
 			openInViewer(msg.dir)
-		}
-		return m, nil
-	case relayoutDoneMsg:
-		m.relayouting = false
-		m.relayoutErr = msg.err
-		if msg.err == nil {
-			m.relayouted = true
-			m.tree = msg.tree
-			m.rows = flattenTree(m.tree, 0, nil)
-			m.cursor, m.offset = 0, 0
-			m.visualMode, m.undo = false, nil
-			m.statusMsg, m.statusIsErr = "Layout: "+layoutPresets[m.layoutIdx].label+" — any in-progress renames were reset", false
 		}
 		return m, nil
 	case tea.KeyMsg:
@@ -584,7 +556,7 @@ func (m reviewModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.editing {
 		switch key.Type {
 		case tea.KeyEnter:
-			m.rows[m.cursor].newName = m.input
+			m.rows[m.cursor].newName = folderName(m.input)
 			m.editing = false
 			m.suggestions = nil
 		case tea.KeyEsc:
@@ -612,6 +584,12 @@ func (m reviewModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.loadGeoCandidates() // the only key that re-queries mid-rename
 			m.refreshSuggestions()
 		}
+		return m, nil
+	}
+
+	// the help screen swallows every key: whatever was pressed, come back
+	if m.showHelp {
+		m.showHelp = false
 		return m, nil
 	}
 
@@ -657,7 +635,7 @@ func (m reviewModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// never clobber a manual rename the reviewer already typed, even if
 		// they land back on this row and press enter again.
 		if r := m.rows[m.cursor]; r.newName == "" && len(r.node.Suggestions) > 0 {
-			r.newName = r.node.Suggestions[0].Name
+			r.newName = folderName(r.node.Suggestions[0].Name)
 		}
 		if m.cursor < len(m.rows)-1 {
 			m.cursor++
@@ -676,18 +654,17 @@ func (m reviewModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.previewing {
 			m.previewing = true
 			m.previewErr = nil
-			m.spinnerFrame = 0
 			node := m.rows[m.cursor].node
 			// snapshot, not the live map: peekCmd's closure runs on another
 			// goroutine and must never touch state Update also mutates
 			cached := make(map[string]string, len(m.previewDirs))
 			maps.Copy(cached, m.previewDirs)
-			cmd = tea.Batch(peekCmd(m.ctx, m.db, m.sessionID, node, cached), tickCmd())
+			cmd = tea.Batch(peekCmd(m.ctx, m.db, m.sessionID, node, cached), m.spin.Tick)
 		}
 	case "a":
 		for _, r := range m.rows {
 			if r.newName == "" && len(r.node.Suggestions) > 0 {
-				r.newName = r.node.Suggestions[0].Name
+				r.newName = folderName(r.node.Suggestions[0].Name)
 			}
 		}
 	case "V":
@@ -698,20 +675,14 @@ func (m reviewModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.visualAnchor = m.cursor
 		}
 		m.statusMsg, m.statusIsErr = "", false
-	case "L":
-		if !m.relayouting && m.resolver != nil {
-			m.layoutIdx = (m.layoutIdx + 1) % len(layoutPresets)
-			m.relayouting = true
-			m.relayoutErr = nil
-			m.spinnerFrame = 0
-			cmd = tea.Batch(relayoutCmd(m.ctx, m.db, m.resolver, m.log, m.sessionID, layoutPresets[m.layoutIdx].groupBy), tickCmd())
-		}
 	case "m":
 		m.mergeSelection()
 	case "d":
 		m.dropFolders(m.selectedRows())
 	case "D":
 		m.flattenFolders(m.selectedRows())
+	case "?":
+		m.showHelp = true
 	case "u":
 		if n := len(m.undo); n > 0 {
 			step := m.undo[n-1]
@@ -1097,10 +1068,11 @@ func deepCloneNodes(nodes []vfs.Node) []vfs.Node {
 }
 
 func (m reviewModel) View() string {
+	if m.showHelp {
+		return m.helpView()
+	}
 	var b strings.Builder
-	fmt.Fprintln(&b, tui.Banner("review"))
-	fmt.Fprintln(&b, tui.DimText.Render("Walk the proposed hierarchy — rename any folder, accept suggestions on unresolved ones."))
-	fmt.Fprintln(&b)
+	b.WriteString(m.header())
 
 	selLo, selHi := -1, -1
 	if m.visualMode {
@@ -1112,47 +1084,62 @@ func (m reviewModel) View() string {
 
 	end := min(m.offset+m.visibleRows(), len(m.rows))
 	for i := m.offset; i < end; i++ {
-		r := m.rows[i]
-		selected := selLo != -1 && i >= selLo && i <= selHi
-
-		indent := strings.Repeat("  ", r.depth)
-		branch := ""
-		if r.depth > 0 {
-			branch = "└ "
-		}
-		name := r.node.Name
-		if r.newName != "" && r.newName != r.node.Name {
-			name = r.node.Name + " → " + r.newName
-		}
-		info := fmt.Sprintf("%d files", r.node.FileCount)
-		if len(r.node.Suggestions) > 0 {
-			info += ", suggested: " + r.node.Suggestions[0].Name
-		}
-
-		cursor := "  "
-		if i == m.cursor {
-			cursor = tui.Attn.Render("> ")
-		}
-		if selected {
-			// plain, no per-segment colour: an ANSI reset inside the line would
-			// cut the background highlight short partway through
-			line := fmt.Sprintf("%s%s%s  (%s)", indent, branch, name, info)
-			fmt.Fprintf(&b, "%s%s\n", cursor, tui.Selected.Render(line))
-		} else {
-			styledBranch := ""
-			if branch != "" {
-				styledBranch = tui.DimText.Render(branch)
-			}
-			styledName := r.node.Name
-			if r.newName != "" && r.newName != r.node.Name {
-				styledName = r.node.Name + " → " + tui.OK.Render(r.newName)
-			}
-			fmt.Fprintf(&b, "%s%s%s%s  %s\n", cursor, indent, styledBranch, styledName, tui.DimText.Render("("+info+")"))
-		}
+		b.WriteString("\n")
+		b.WriteString(m.rowView(i, selLo != -1 && i >= selLo && i <= selHi))
 	}
 
-	b.WriteString(m.footer())
-	return b.String()
+	return tui.Screen(b.String(), m.footer(), m.height)
+}
+
+// header is the banner plus one summary line: what this screen is on the left,
+// what it holds on the right — the same left/right split every screen uses.
+func (m reviewModel) header() string {
+	files := 0
+	for i := range m.tree {
+		files += m.tree[i].FileCount
+	}
+	return tui.Banner("review") + "\n" +
+		tui.Row(tui.DimText.Render("Edit the proposed folders — nothing moves until you save."),
+			tui.FaintTxt.Render(fmt.Sprintf("%d folders  %d files", len(m.rows), files)), m.width)
+}
+
+// rowView renders one tree line: guide + name on the left, file count aligned
+// at the right edge (the kit's right column), with the pending rename and any
+// unaccepted suggestion shown inline. The cursor row and every row of a [V]
+// range carry the highlight background — the same way the config wizard marks
+// the option under the cursor.
+func (m reviewModel) rowView(i int, inRange bool) string {
+	r := m.rows[i]
+
+	cursor := "  "
+	name := r.node.Name
+	suggestion := ""
+	if r.newName != "" && r.newName != r.node.Name {
+		name += " → " + r.newName
+	} else if len(r.node.Suggestions) > 0 {
+		suggestion = "  ⇢ " + r.node.Suggestions[0].Name
+	}
+	count := fmt.Sprintf("%d files", r.node.FileCount)
+
+	if inRange || i == m.cursor {
+		// plain, no per-segment colour: an ANSI reset inside the line would cut
+		// the background highlight short partway through
+		if i == m.cursor {
+			cursor = "❯ "
+		}
+		return tui.Selected.Render(tui.Row(cursor+r.guide+name+suggestion, count, m.width))
+	}
+
+	styled := r.node.Name
+	if r.newName != "" && r.newName != r.node.Name {
+		styled += tui.DimText.Render(" → ") + tui.OK.Render(r.newName)
+	}
+	if suggestion != "" {
+		// amber, not dim: an unaccepted suggestion is the one thing on the row
+		// that still wants a keypress
+		styled += tui.Attn.Render(suggestion)
+	}
+	return tui.Row(cursor+tui.FaintTxt.Render(r.guide)+styled, tui.FaintTxt.Render(count), m.width)
 }
 
 // footer is everything below the tree: the rename prompt, a spinner, or the
@@ -1160,45 +1147,123 @@ func (m reviewModel) View() string {
 // it rather than assuming one line.
 func (m reviewModel) footer() string {
 	var b strings.Builder
-	fmt.Fprintln(&b)
 	switch {
 	case m.editing:
-		fmt.Fprintf(&b, "%s%s█\n", tui.Attn.Render("New name: "), m.input)
-		for _, s := range m.suggestions {
-			if s.detail == "" {
-				fmt.Fprintf(&b, "  %s\n", s.label)
-			} else {
-				fmt.Fprintf(&b, "  %s %s\n", s.label, tui.DimText.Render("("+s.detail+")"))
+		fmt.Fprintf(&b, "%s%s%s█\n",
+			tui.DimText.Render("Rename "+m.rows[m.cursor].node.Name+" to"),
+			tui.Title.Render(" » "), tui.Text.Render(m.input))
+		for i, s := range m.suggestions {
+			// same shape as the wizard's completion list: dim rows, and the top
+			// match — what [tab] fills in — says so
+			line := "    " + tui.FaintTxt.Render("· ") + tui.DimText.Render(s.label)
+			if s.detail != "" {
+				line += " " + tui.FaintTxt.Render("("+s.detail+")")
 			}
+			if i == 0 {
+				line += tui.FaintTxt.Render("  ⇥ tab")
+			}
+			fmt.Fprintln(&b, tui.Row(line, "", m.width))
 		}
-		fmt.Fprintln(&b, m.wrapDim("[enter] apply  [tab] use top match  [ctrl+e] wider search  [esc] cancel"))
+		b.WriteString(tui.Footer(strings.Join([]string{
+			tui.KeyHint("enter", "apply"),
+			tui.KeyHint("tab", "use top match"),
+			tui.KeyHint("ctrl+e", "wider search"),
+			tui.KeyHint("esc", "cancel"),
+		}, "   "), m.width))
 	case m.previewing:
-		frames := []string{"|", "/", "-", "\\"}
-		fmt.Fprintf(&b, "%s Copying preview…\n", frames[m.spinnerFrame%len(frames)])
-	case m.relayouting:
-		frames := []string{"|", "/", "-", "\\"}
-		fmt.Fprintf(&b, "%s Rebuilding proposal with layout %q…\n", frames[m.spinnerFrame%len(frames)], layoutPresets[m.layoutIdx].label)
+		b.WriteString(m.spin.View())
+		b.WriteString(tui.DimText.Render(" Copying preview…"))
 	default:
 		if m.previewErr != nil {
-			fmt.Fprintln(&b, tui.Bad.Render("Preview failed: "+m.previewErr.Error()))
+			fmt.Fprintln(&b, tui.Bad.Render("Preview failed: ")+tui.Text.Render(m.previewErr.Error()))
 		}
-		if m.relayoutErr != nil {
-			fmt.Fprintln(&b, tui.Bad.Render("Layout switch failed: "+m.relayoutErr.Error()))
+		if m.visualMode {
+			fmt.Fprintln(&b, tui.Title.Render(fmt.Sprintf("-- SELECT -- %d folders", len(m.selectedRows()))))
 		}
 		if m.statusMsg != "" {
 			if m.statusIsErr {
-				fmt.Fprintln(&b, tui.Attn.Render(m.statusMsg))
+				fmt.Fprintln(&b, tui.Attn.Render("⚠ "+m.statusMsg))
 			} else {
 				fmt.Fprintln(&b, m.wrapDim(m.statusMsg))
 			}
 		}
-		fmt.Fprintln(&b, m.wrapDim(keyHelp))
+		b.WriteString(tui.Footer(m.keyHelp(), m.width))
 	}
 	return b.String()
 }
 
-const keyHelp = "[↑/↓] move  [n/N] next/prev at level  [enter] accept suggestion  [r] rename  [p] peek  [a] accept all  " +
-	"[V] select  [m] merge  [d] drop folder  [D] flatten below  [u] undo  [L] layout  [c] save & exit  [q] discard"
+// keyHelp is the key bar, styled like every other screen's (key in the brand
+// colour, action dim) and ordered by how a review actually goes: move, name,
+// reshape, leave.
+func (m reviewModel) keyHelp() string {
+	hints := []string{
+		tui.KeyHint("↑↓", "move"),
+		tui.KeyHint("n/N", "same level"),
+		tui.KeyHint("enter", "accept"),
+		tui.KeyHint("a", "accept all"),
+		tui.KeyHint("r", "rename"),
+		tui.KeyHint("p", "peek"),
+	}
+	if m.visualMode {
+		hints = append(hints,
+			tui.KeyHint("m", "merge"),
+			tui.KeyHint("d", "drop"),
+			tui.KeyHint("D", "flatten"),
+			tui.KeyHint("esc", "clear selection"))
+	} else {
+		hints = append(hints,
+			tui.KeyHint("V", "select"),
+			tui.KeyHint("d", "drop"),
+			tui.KeyHint("D", "flatten"))
+	}
+	hints = append(hints, tui.KeyHint("u", "undo"), tui.KeyHint("c", "save & exit"), tui.KeyHint("q", "discard"),
+		tui.KeyHint("?", "help"))
+	return strings.Join(hints, "   ")
+}
+
+// helpView is the full-screen key reference behind [?] — the footer names the
+// keys, this explains them. Any key returns to the tree.
+func (m reviewModel) helpView() string {
+	type key struct{ k, what string }
+	sections := []struct {
+		title string
+		keys  []key
+	}{
+		{"Moving", []key{
+			{"↑/↓  j/k", "move one row"},
+			{"n / N", "next / previous folder at the same depth — crosses into other branches"},
+		}},
+		{"Naming", []key{
+			{"enter", "accept this folder's suggestion (never overwrites a rename you typed)"},
+			{"a", "accept every suggestion in the tree"},
+			{"r", "rename — type a name, or pick a nearby place; tab fills the top match"},
+		}},
+		{"Reshaping", []key{
+			{"V", "start selecting folders; move the cursor to extend, esc to clear"},
+			{"m", "merge the selected folders into one, under their common parent"},
+			{"d", "drop the folder — its contents move up one level, the folder goes away"},
+			{"D", "flatten — everything below moves directly into the folder"},
+			{"u", "undo the last reshape; press again to walk further back"},
+		}},
+		{"Leaving", []key{
+			{"p", "peek — copies a sample of the folder's files and opens them (read-only)"},
+			{"c", "save the plan and exit — the only key that writes anything"},
+			{"q", "exit without saving (warns once if you have unsaved edits)"},
+		}},
+	}
+
+	var b strings.Builder
+	b.WriteString(tui.Banner("review · help"))
+	for _, s := range sections {
+		fmt.Fprintf(&b, "\n\n %s", tui.Title.Render(s.title))
+		for _, k := range s.keys {
+			// pad by display width, not bytes — the arrow keys are multibyte
+			pad := strings.Repeat(" ", max(12-lipgloss.Width(k.k), 2))
+			fmt.Fprintf(&b, "\n%s", tui.Row("   "+tui.Text.Render(k.k)+pad+tui.DimText.Render(k.what), "", m.width))
+		}
+	}
+	return tui.Screen(b.String(), tui.Footer(tui.KeyHint("any key", "back to the tree"), m.width), m.height)
+}
 
 /* --- preview: copy up to maxPreviewBytes of a folder's files to a temp dir and open it --- */
 
@@ -1206,12 +1271,6 @@ type previewDoneMsg struct {
 	signature string
 	dir       string
 	err       error
-}
-
-type tickMsg struct{}
-
-func tickCmd() tea.Cmd {
-	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
 // filesSignature keys a preview by file membership, not node ID: a parent and
@@ -1262,31 +1321,6 @@ func peekCmd(ctx context.Context, database *db.DB, sessionID uuid.UUID, node *vf
 func cleanupPreviewDirs(dirs map[string]string) {
 	for _, dir := range dirs {
 		os.RemoveAll(dir)
-	}
-}
-
-/* --- layout switch: rebuild the whole proposal with a different Config.Rules --- */
-
-type relayoutDoneMsg struct {
-	tree []vfs.Node
-	err  error
-}
-
-// relayoutCmd re-runs VFS phase 4 with a different group-by. Safe mid-review:
-// vfs.Run only reads already-hashed masters and replaces the proposal
-// wholesale, touching no files. Reuses sessionID so the rows stay with it.
-func relayoutCmd(ctx context.Context, database *db.DB, resolver *location.Resolver, log logger.Logger, sessionID uuid.UUID, groupBy []string) tea.Cmd {
-	return func() tea.Msg {
-		cfg := vfs.DefaultConfig()
-		cfg.Rules = groupBy
-		if _, err := vfs.New(database, resolver, log, cfg).Run(ctx, sessionID); err != nil {
-			return relayoutDoneMsg{err: err}
-		}
-		tree, err := vfs.BuildTree(ctx, sessionID, database)
-		if err != nil {
-			return relayoutDoneMsg{err: err}
-		}
-		return relayoutDoneMsg{tree: tree}
 	}
 }
 
