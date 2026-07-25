@@ -7,7 +7,6 @@
 package logger
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,30 +14,16 @@ import (
 	"os"
 	"runtime"
 	"sort"
-	"sync"
 	"time"
 )
 
-// ANSI color codes
+// ANSI colour codes for the console line
 const (
-	ansiReset = "\033[0m"
-
-	// ansiBlack        = 30
-	// ansiRed          = 31
-	// ansiGreen        = 32
-	// ansiYellow       = 33
-	// ansiBlue         = 34
-	// ansiMagenta      = 35
-	ansiCyan = 36
-	// ansiLightGray    = 37
-	ansiDarkGray = 90
-	ansiLightRed = 91
-	// ansiLightGreen   = 92
+	ansiReset       = "\033[0m"
+	ansiCyan        = 36
+	ansiDarkGray    = 90
+	ansiLightRed    = 91
 	ansiLightYellow = 93
-	// ansiLightBlue    = 94
-	ansiLightMagenta = 95
-	// ansiLightCyan    = 96
-	ansiWhite = 97
 )
 
 func colorize(colorCode int, v string) string {
@@ -80,151 +65,84 @@ func (l *SlogAdapter) Error(msg string, attrs ...any) {
 	l.log(slog.LevelError, msg, attrs...)
 }
 
-func (l *SlogAdapter) Panic(msg string, attrs ...any) {
-	l.log(slog.LevelError, msg, attrs...)
-	panic(msg)
-}
-
 // UserKey marks a log call as user-facing. Set it truthy (e.g.
 // log.Info("Scanning…", logger.UserKey, true)) and the message shows on the
-// clean console; untagged Info/Debug lines go to the file log only. In debug
-// mode the console shows everything.
+// console; untagged Info/Debug lines go to the file log only.
 const UserKey = "userFacing"
 
-// sessionKey is the pipeline correlation id. It is printed once at session
-// start and then omitted from every console line to avoid spamming it; the JSON
-// file log still carries it on every record for traceability.
+// sessionKey is the pipeline correlation id. Printed once at session start and
+// then dropped from console lines; the JSON file log keeps it on every record.
 const sessionKey = "sessionId"
 
-// PrettyHandler wraps a slog.JSONHandler, captures its output into a buffer,
-// and re-formats it as a human-readable, coloured console line. It surfaces
-// only user-facing lines (see UserKey) and warnings/errors, unless the
-// configured level is debug, in which case it shows every record.
+// consoleHiddenKeys are the TUI-only routing attrs and the correlation id
+// already printed at session start; the plain console hides them.
+var consoleHiddenKeys = []string{sessionKey, PhaseKey, EventKey, ElapsedKey}
+
+// PrettyHandler renders records as human-readable, coloured console lines. It
+// surfaces only user-facing lines (see UserKey) and warnings/errors.
 type PrettyHandler struct {
-	handler  slog.Handler
-	buf      *bytes.Buffer
-	mu       *sync.Mutex
 	minLevel slog.Level
 }
 
 // NewPrettyHandler creates a PrettyHandler with the given options
 func NewPrettyHandler(opts *slog.HandlerOptions) *PrettyHandler {
-	if opts == nil {
-		opts = &slog.HandlerOptions{}
-	}
 	minLevel := slog.LevelInfo
-	if opts.Level != nil {
+	if opts != nil && opts.Level != nil {
 		minLevel = opts.Level.Level()
 	}
-	b := &bytes.Buffer{}
-	return &PrettyHandler{
-		buf: b,
-		handler: slog.NewJSONHandler(b, &slog.HandlerOptions{
-			Level:       opts.Level,
-			AddSource:   false, // source is rendered manually as file:line
-			ReplaceAttr: suppressDefaults(opts.ReplaceAttr),
-		}),
-		mu:       &sync.Mutex{},
-		minLevel: minLevel,
-	}
+	return &PrettyHandler{minLevel: minLevel}
 }
 
-// suppressDefaults removes the default time/level/msg keys so that the
-// PrettyHandler can render them itself while still forwarding any custom
-// ReplaceAttr supplied by the caller
-func suppressDefaults(
-	next func([]string, slog.Attr) slog.Attr,
-) func([]string, slog.Attr) slog.Attr {
-	return func(groups []string, a slog.Attr) slog.Attr {
-		if a.Key == slog.TimeKey ||
-			a.Key == slog.LevelKey ||
-			a.Key == slog.MessageKey ||
-			a.Key == slog.SourceKey {
-			return slog.Attr{}
+func (h *PrettyHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.minLevel
+}
+
+// WithAttrs/WithGroup are no-ops: callers log with inline attrs, never
+// logger.With, so there is nothing to carry.
+func (h *PrettyHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *PrettyHandler) WithGroup(string) slog.Handler      { return h }
+
+// Handle renders one console line: a coloured level tag, the message, then the
+// remaining attrs as dimmed key=value pairs. Timestamp and source stay in the
+// JSON file log (see report-issue).
+func (h *PrettyHandler) Handle(_ context.Context, r slog.Record) error {
+	attrs := make(map[string]any, r.NumAttrs())
+	var userFacing bool
+	r.Attrs(func(a slog.Attr) bool {
+		switch a.Key {
+		case UserKey:
+			userFacing, _ = a.Value.Any().(bool)
+		case StreamKey:
+			// TUI-feed only: never promoted, never shown as a stray stream=true
+		default:
+			attrs[a.Key] = a.Value.Any()
 		}
-		if next == nil {
-			return a
+		return true
+	})
+
+	// in debug mode show everything; otherwise developer detail stays in the
+	// file log and the routing/correlation attrs stay off the line
+	verbose := h.minLevel <= slog.LevelDebug
+	if !verbose {
+		if !userFacing && r.Level < slog.LevelWarn {
+			return nil
 		}
-		return next(groups, a)
+		for _, k := range consoleHiddenKeys {
+			delete(attrs, k)
+		}
 	}
-}
 
-func (h *PrettyHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return h.handler.Enabled(ctx, level)
-}
-
-func (h *PrettyHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &PrettyHandler{handler: h.handler.WithAttrs(attrs), buf: h.buf, mu: h.mu, minLevel: h.minLevel}
-}
-
-func (h *PrettyHandler) WithGroup(name string) slog.Handler {
-	return &PrettyHandler{handler: h.handler.WithGroup(name), buf: h.buf, mu: h.mu, minLevel: h.minLevel}
-}
-
-// computeAttrs delegates to the inner JSONHandler and unmarshals the result
-func (h *PrettyHandler) computeAttrs(ctx context.Context, r slog.Record) (map[string]any, error) {
-	h.mu.Lock()
-	defer func() {
-		h.buf.Reset()
-		h.mu.Unlock()
-	}()
-	if err := h.handler.Handle(ctx, r); err != nil {
-		return nil, fmt.Errorf("error when calling inner handler's Handle: %w", err)
-	}
-	var attrs map[string]any
-	if err := json.Unmarshal(h.buf.Bytes(), &attrs); err != nil {
-		return nil, fmt.Errorf("error when unmarshaling inner handler's Handle result: %w", err)
-	}
-	return attrs, nil
-}
-
-// Handle renders a clean, user-facing console line: a coloured level tag, the
-// message, then any structured attributes as dimmed key=value pairs. Timestamp
-// and source location are intentionally omitted here — the JSON file log keeps
-// them for debugging (see report-issue).
-func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 	levelColor := ansiCyan
 	switch r.Level {
 	case slog.LevelDebug:
 		levelColor = ansiDarkGray
-	case slog.LevelInfo:
-		levelColor = ansiCyan
 	case slog.LevelWarn:
 		levelColor = ansiLightYellow
 	case slog.LevelError:
 		levelColor = ansiLightRed
 	}
 
-	attrs, err := h.computeAttrs(ctx, r)
-	if err != nil {
-		return err
-	}
-
-	userFacing, _ := attrs[UserKey].(bool)
-	delete(attrs, UserKey)
-	// StreamKey lines are TUI-feed only; on the plain console they are neither
-	// promoted nor rendered as a stray stream=true attr. They stay non-user-facing
-	// so the level filter below still drops them unless in debug mode.
-	delete(attrs, StreamKey)
-
-	// In debug mode show everything; otherwise only user-facing lines and
-	// warnings/errors reach the console — the rest is developer detail that
-	// stays in the JSON file log.
-	verbose := h.minLevel <= slog.LevelDebug
-	if !verbose && !userFacing && r.Level < slog.LevelWarn {
-		return nil
-	}
-
-	// The correlation id is printed once at session start; keep it out of every
-	// other console line (it stays in the file log).
-	if !verbose {
-		delete(attrs, sessionKey)
-		delete(attrs, PhaseKey)
-		delete(attrs, EventKey)
-		delete(attrs, ElapsedKey)
-	}
-
-	// Fixed-width level tag keeps message columns aligned.
+	// fixed-width level tag keeps message columns aligned
 	line := colorize(levelColor, fmt.Sprintf("%-5s", r.Level.String())) + " " + r.Message
 
 	keys := make([]string, 0, len(attrs))

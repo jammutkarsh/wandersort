@@ -23,17 +23,11 @@ type Logger interface {
 	Info(msg string, attrs ...any)
 	Warn(msg string, attrs ...any)
 	Error(msg string, attrs ...any)
-	Panic(msg string, attrs ...any)
 }
 
-// New constructs a Logger
-//
-//   - logLevel:  minimum log level ("debug", "info", "warn", "error")
-//   - console: emit colourful logs to stderr
-//   - logFile: path of the JSON log file; empty string disables file logging
-//     (call after telemetry.Setup() has registered the provider)
-//
-// Passing console=false, logFile="", otel=false returns a no-op logger
+// New constructs a Logger fanning out to the coloured stderr console (when
+// console is set) and the JSON file log (when logFile is non-empty). With
+// neither, it returns a no-op logger.
 func New(logLevel string, console bool, logFile string) Logger {
 	if !console && logFile == "" {
 		return NewNoopLogger()
@@ -60,10 +54,9 @@ func New(logLevel string, console bool, logFile string) Logger {
 	}
 }
 
-// NewTUI builds a Logger for full-screen TUI mode. The coloured console handler
-// is OFF (its writes would corrupt the alt-screen); records instead flow to
-// sink so the TUI renders them itself (see StreamKey/UserKey). The JSON file log
-// still captures everything for report-issue.
+// NewTUI builds a Logger for full-screen mode: the console handler is off (its
+// writes would corrupt the alt-screen) and records flow to sink for the TUI to
+// render. The JSON file log still captures everything.
 func NewTUI(logLevel, logFile string, sink Sink) Logger {
 	level := getSlogLevel(logLevel)
 	handlers := []slog.Handler{&teaHandler{sink: sink, minLevel: level}}
