@@ -11,7 +11,22 @@ on:
 
 jobs:
 
-  bare-metal:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build all platforms
+        run: make build-all
+
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -26,35 +41,36 @@ jobs:
       - name: Test
         run: make test
 
-      - name: Test with race detector
-        run: make test-race
-
-      - name: Build all platforms
-        run: make build-all
-
-  docker:
+  race:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract exiftool version
-        id: exiftoolver
-        run: |
-          VERSION=$(grep -oP 'exiftoolVersion = "\K[0-9.]+' pkg/exiftool/verify.go)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and test
-        uses: docker/build-push-action@v6
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          context: .
-          target: test
-          build-args: |
-            EXIFTOOL_VERSION=${{ steps.exiftoolver.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          push: false
-          load: false
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test with race detector
+        run: make test-race
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test with coverage
+        run: go test -coverprofile=coverage.out -coverpkg=./... ./...
+
+      - name: Coverage summary
+        run: |
+          go tool cover -func=coverage.out | grep '^total:' | awk '{print $NF}' | tee -a "$GITHUB_STEP_SUMMARY"
