@@ -337,6 +337,28 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 	}
 	rulesField.Example = func() string { return examplePath("02", "Goa", false) }
 
+	// collapseExample always demonstrates all three collapsible levels
+	// (device/orientation/media), regardless of whether Rules currently has
+	// any of them ticked — the question moved under Home & work, where a
+	// user answering it may not have visited Rules yet or may add a
+	// collapsible level later. Showing "nothing to collapse" when none are
+	// ticked would leave them re-deriving what the setting does the next
+	// time they turn one on. Location uses the home town, since this step
+	// already lives in the home/work context.
+	collapseExample := func() string {
+		segs := []string{"2024", "08_August"}
+		if rulesField.Selected[vfs.RuleDate] {
+			segs = append(segs, "12")
+		}
+		if rulesField.Selected[vfs.RuleLocation] {
+			segs = append(segs, homeTown())
+		}
+		if !collapse {
+			segs = append(segs, ruleSeg[vfs.RuleDevice], ruleSeg[vfs.RuleOrientation], ruleSeg[vfs.RuleMedia])
+		}
+		return strings.Join(segs, "/") + "/IMG_1234.jpg"
+	}
+
 	fields := []*tui.Field{
 		{
 			Kind:        tui.FieldInput,
@@ -360,22 +382,6 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 		},
 		rulesField,
 		{
-			Kind:  tui.FieldConfirm,
-			Title: "Collapse uninformative levels?",
-			Description: "Drop a device/orientation/media folder that would hold every single\n" +
-				"file in the library — one value means the level says nothing.",
-			BoolValue: &collapse,
-			Example: func() string {
-				// With no device/orientation/media level ticked there is nothing
-				// to collapse, and both answers would render the same path —
-				// say so instead of showing an example that doesn't move.
-				if !rulesField.Selected[vfs.RuleDevice] && !rulesField.Selected[vfs.RuleOrientation] && !rulesField.Selected[vfs.RuleMedia] {
-					return examplePath("02", "Goa", collapse) + "\n(no device/orientation/media level ticked — nothing to collapse)"
-				}
-				return examplePath("02", "Goa", collapse)
-			},
-		},
-		{
 			Kind:        tui.FieldGroup,
 			Title:       "Home & work",
 			Description: "The everyday places you shoot from, and how their photos are foldered.",
@@ -397,6 +403,14 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 				{
 					Kind: tui.FieldInput, Title: "Work town", Placeholder: "blank = same as home",
 					Value: &work, Validator: townValidator, Suggest: suggestTown,
+				},
+				{
+					Kind:  tui.FieldConfirm,
+					Title: "Collapse uninformative levels?",
+					Description: "Drop a device/orientation/media folder that would hold every single\n" +
+						"file in the library — one value means the level says nothing.",
+					BoolValue: &collapse,
+					Example:   collapseExample,
 				},
 				{
 					Kind:  tui.FieldConfirm,
