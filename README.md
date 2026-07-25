@@ -84,7 +84,7 @@ wandersort scan --paths ~/Pictures,/Volumes/SD
 wandersort report
 ```
 
-> Prefer to pre-install the dependencies instead of downloading mid-scan? Run `wandersort setup` first (optional).
+> Want to change the defaults (output folder, workers, folder rules, home/work towns)? Run `wandersort config` for a full-screen settings wizard; it writes `~/.wandersort/config.yaml`.
 
 Run `wandersort --help`, or `wandersort <command> --help`, for the full command and flag reference. Any flag can also be set through an environment variable (e.g. `OUTPUT_PATH`, `WORKERS`).
 

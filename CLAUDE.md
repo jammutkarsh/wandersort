@@ -29,12 +29,15 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
   - `root.go` — root cmd, `App` struct, DB/exiftool/resolver lazy-init helpers,
     viper setup, config-override resolution. **`PersistentPreRunE` is the single
     place** flags/env/config-file are resolved (`loadGlobalConfigFile` then
-    `applyOverrides`) and the logger is built — so `--debug` / `--output-path` /
+    `applyOverrides`) and the logger is built — so `--output-path` /
     env vars / `config.yaml` all take effect before any logging or DB work.
     Don't rebuild the logger in `main.go`. `loadGlobalConfigFile` also
-    **creates** `~/.wandersort/config.yaml` from a commented template on the
-    very first command of any kind (not just `setup`/`config`) via
-    `config.EnsureGlobalConfigFile` — the file is always there to find and edit.
+    **creates** `~/.wandersort/config.yaml` (empty) on the very first command
+    of any kind via `config.EnsureGlobalConfigFile` — viper always has a file
+    to read; `wandersort config` is what fills it in. **There is no `--debug`
+    flag**: the JSON file log is always at debug level (`fileHandler`), the
+    console only ever shows `UserKey` lines and warnings, and a verbose console
+    made no sense once the TUI owned the screen. `--plain` is the escape hatch.
     **A config file that doesn't parse is a warning, not a failure**:
     `loadGlobalConfigFile` returns the warning text (not an error), the run
     continues on defaults, and it's logged with `UserKey` once the logger
@@ -43,50 +46,68 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     command — including `wandersort config`, the one that opens the file to
     fix it. Viper only commits parsed values on success, so nothing half-read
     leaks into the settings.
-  - `config.go` — `config` cmd: opens the global config file in `$EDITOR`.
-    Prints it to stdout instead when `--print`/`-p` is given, when stdout
-    isn't a terminal (`wandersort config | grep …`, `> file`), or when
-    `$EDITOR` is unset — launching a full-screen editor into a pipe is never
-    what the caller meant. Just a shortcut to a file `loadGlobalConfigFile`
-    already guarantees exists.
+  - `config.go` — `config` cmd: **the settings wizard** (there is no `setup`
+    command — dependency downloads belong to `scan`). `buildConfigForm` +
+    `tui.FormModel`: a top-down stacked form (answered fields collapse to
+    summary rows, StageList-style) written by `config.SaveGlobal` — one
+    whole-file marshal, since the wizard always submits every setting and the
+    file has no comments to preserve. On success it prints exactly
+    `config saved in <path>`. Step order is **output path, workers, rules,
+    collapse, then one Home & work step** whose sub-fields are home town, work
+    town, "group home/work photos by date only?" and "merge consecutive
+    same-location days?" — both folder questions live *after* the towns
+    because their examples name the town the user just typed.
+    **Every example is computed, not canned**: `examplePath(day, town,
+    collapsed)` renders the path the answers *so far* would produce (it walks
+    `rulesField.Selected`), so turning off the `location` rule removes the city
+    folder from every later example. Examples render in their own block above
+    the footer (`tui.Field.Example` → `FormModel.exampleBlock`, the same place
+    the scan screen pins warnings) and only for the option under the cursor —
+    a description that listed the yes *and* no outcomes at once made the reader
+    work out which one was live. Descriptions explain, examples demonstrate.
+    Output path expands a leading `~` (`expandHome`, applied at save *and*
+    when matching suggestions) and only suggests locations whose parent dir
+    exists on this machine, which is what makes the list platform-correct.
+    Town inputs validate through `canonicalTown` (gazetteer exact-match).
+    **The location DB downloads in the background, with no install screen**:
+    `runConfigTUI` kicks off `InitLocationResolver` in a goroutine, feeds its
+    byte progress into the form's own row under the banner (`a.InstallProgress`
+    → `tui.DownloadMsg`), and hands the form a `gazetteer func() error` closure.
+    The Home & work step is the only one that needs the database, so it holds
+    on `tui.Field.Await` (showing why, with the bar above it) until the
+    goroutine's channel closes; everything above it is answerable meanwhile,
+    and a database already on disk reports no bytes so the row never appears.
+    That channel is also the happens-before edge making `a.LocationResolver`
+    safe to read. A gazetteer that never opens at all (failed download, or
+    another wandersort process holding the location DB — it opens
+    `locking_mode=EXCLUSIVE`) is **not** treated as "pending": `Await` releases
+    and the town is waved through unvalidated and saved as typed, in both
+    `townValidator` and `canonicalTownOrTyped`. Blocking there would trap the
+    user on a pre-filled field they could only escape by clearing it, and would
+    silently drop the towns they already had. `a.Log` is swapped to a sink-less
+    TUI logger for the run so the download's log lines can't draw over the
+    alt-screen. Prints the raw file to stdout instead of running the wizard
+    when `--print`/`-p` is given or stdout/stderr isn't a terminal
+    (`wandersort config | grep …`, `> file`) — launching a full-screen wizard
+    into a pipe is never what the caller meant.
   - `scan.go` — `scan` cmd (the pipeline). Runs **synchronously** in the
     foreground (`Service.RunScan` → `Workflow.RunScan`) so the user watches
     progress and the exit code reflects pipeline success; logs total elapsed
     time on completion. In TUI mode a first-ever run installs missing
     dependencies on the install screen and swaps into the scan screen in the
     same alt-screen program (`runScanTUI`'s `buildScan` via
-    `InstallModel.Next` — same pattern as setup), so nothing downloads in
-    plain console mode just because setup was never run. `--paths/-p` is repeatable + comma-friendly
+    `InstallModel.Next`), Docker-style: first run downloads then works, every
+    run after starts the scan immediately. **`scan`/`serve`/`review` are the
+    only things that install dependencies** (`App.EnsureDependencies`).
+    `--paths/-p` is repeatable + comma-friendly
     (`StringSlice`); `--rules` (also settable via `config.yaml`, see below)
     controls the VFS folder depth for this scan's proposal. Calls
     `syncHomeWorkFromConfig` before the pipeline so any globally-saved home/work
     anchor exists in *this* library's DB before VFS runs.
   - `serve.go` — `serve` cmd, HTTP API (gin) + swagger. Same workflow,
     long-lived; also takes `--rules`.
-  - `setup.go` — downloads exiftool + location DB, then runs the full-screen
-    setup wizard (`buildSetupForm` + `tui.FormModel`): a top-down stacked form
-    (answered fields collapse to summary rows, StageList-style) covering
-    output path, workers, rules, vfs toggles and home/work towns (one
-    `FieldGroup` step with two sub-inputs, not a note + two steps), saved via
-    `config.SaveSettings`. Confirm/rules fields describe themselves through
-    `Field.Describe` closures so the example path re-renders live against the
-    current selection (the rules field builds its tree from what's ticked; the
-    yes/no fields mark the active example line). Output path expands a leading
-    `~` (`expandHome`, applied at save *and* when matching suggestions) and
-    only suggests locations whose parent dir exists on this machine, which is
-    what makes the list platform-correct. **TUI-only** — there is no
-    plain-prompt fallback; without a terminal it installs deps and points at
-    `wandersort config`. `runSetupTUI` swaps `a.Log` to the TUI sink *before*
-    the installed-checks/`installDeps`, in both branches — otherwise a re-run
-    printed every "found/verified" line to the console and then launched the
-    alt-screen over it. Town inputs validate through `canonicalTown`
-    (gazetteer exact-match, same guarantee the old numbered picker gave).
-    **Optional** — scan/serve auto-install missing deps via
-    `App.EnsureDependencies`. Uses a *non-blocking* install lock: if a
-    scan/serve is already installing, setup steps aside.
   - `anchor.go` — the read side of home/work anchors (the write side is the
-    setup wizard, which saves them via `config.SaveSettings`; the old
-    plain-prompt `promptAndSaveHomeWork`/`pickPlace` flow is gone):
+    `config` wizard, which saves them via `config.SaveGlobal`):
     - `syncHomeWorkFromConfig` (called from `scan`) — reads the global config,
       resolves each anchor's coordinates via `ResolveByName` (guaranteed exact
       hit — the wizard's `canonicalTown` validator only saves gazetteer
@@ -230,8 +251,8 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
       acquire/reclaim mechanics (`acquire`, `Lock`, `ErrHeld`) plus the two
       domain wrappers — `AcquireOutput` (one scan/serve per output dir, styled
       "already running" message) and `AcquireInstall` (install coordination
-      across scan/serve/setup: blocking for scan/serve, non-blocking for
-      setup) — and the lock filenames (`OutputFileName`, `InstallFileName`).
+      across scan/serve/review: `EnsureDependencies` tries non-blocking first
+      so it can log a "waiting…" line, then blocks) — and the lock filenames (`OutputFileName`, `InstallFileName`).
       `EnsureDependencies` (in `root.go`) tries the install lock non-blocking
       first so it can log a `UserKey`-tagged "waiting for another process…"
       line before falling back to the blocking acquire — without that, a
@@ -251,18 +272,15 @@ explicitly (`--output-path` → `OUTPUT_PATH` via `v.BindEnv`). Keep new flags
 hyphen-free so they need no explicit bind. Defaults come from `pkg/config`.
 
 The config file is `~/.wandersort/config.yaml` (`pkg/config/global.go`),
-created from a commented template the first time *any* command runs
-(`config.EnsureGlobalConfigFile`) — edit it with `wandersort config`.
-`output-path`, `workers`, `debug`, `rules` are plain viper keys read straight
-out of it (no dedicated struct — same `v.GetX(flagName)` calls `applyOverrides`
-already makes work regardless of source). Template footgun to know about:
-each commented-out line shows the flag's own *default* value (`# debug:
-false`) — uncommenting without also changing the value is a no-op, and reads
-like the setting doesn't work. `home-work.home`/`home-work.work` are the
-one thing viper doesn't manage: `pkg/config.Global` reads them, and
-`SaveHomeWork` writes them via targeted YAML-node surgery (not a full
-struct-marshal) so every other key, and every comment, survives — a struct
-round-trip would silently erase both.
+created **empty** the first time *any* command runs
+(`config.EnsureGlobalConfigFile`) and filled in by `wandersort config`.
+**No comments, no template** — the wizard is the documentation, so the file is
+just the settings, written whole by `SaveGlobal` (a plain struct marshal; the
+old YAML-node surgery existed only to preserve comments). `output-path`,
+`workers`, `rules`, and the vfs toggles are read back through plain viper keys
+(same `v.GetX(flagName)` calls `applyOverrides` already makes work regardless
+of source); `home-work.home`/`home-work.work` are the one thing viper doesn't
+manage — `anchor.go` reads them via `config.LoadGlobal`.
 
 ## Core pipeline (`pkg/core/`)
 
@@ -405,25 +423,30 @@ Only used by `serve`. Standard handler→service→repository split per domain:
 
 - `tui/` — the full-screen TUI kit: adaptive palette + semantic styles
   (`theme.go`), the Docker-buildkit-style `StageList` step stack shared by
-  scan and setup-install (`stagelist.go` — stage rows with right-aligned
+  scan and its dependency install (`stagelist.go` — stage rows with right-aligned
   elapsed times, a progress bar and a live per-file tail nested under the
   running stage), the app `Shell` (one alt-screen program, `Switch` swaps
-  screens without a terminal-restore flash), the huh setup wizard
-  (`form.go`), and shared chrome (`Banner`/`Footer`/`KeyHint`/`Screen`).
+  screens without a terminal-restore flash), the `config` wizard
+  (`form.go` — `Field.Example` blocks above the footer, `Field.Await` to hold a
+  step on a background download, `DownloadMsg` for the progress row, and
+  **numbered** option lists: `1)`/`2)` next to every choice, since an
+  arrow-only list gives the eye nothing to aim at. A `FieldGroup` holds fields
+  of *any* kind, which is what makes the home/work step one screen with two
+  inputs and two yes/no questions), and shared chrome (`Banner`/`Footer`/`KeyHint`/`Screen`).
   Design rules live in `pkg/tui/README.md` — new screens compose from this
   kit, never invent colours/markers. The pipeline feeds it through the logger
   only (`pkg/logger/stream.go`: `StreamKey` per-file lines — logged at **Info**,
-  not Debug: the TUI handler level-filters first, so a Debug stream line only
-  reaches the feed/progress-bar under `--debug`;
+  not Debug: the TUI handler level-filters at the configured level (`info`), so
+  a Debug stream line would never reach the feed/progress-bar at all;
   `console.go` strips StreamKey lines so the plain console never sees them,
   `PhaseKey`/`EventKey`/`ElapsedKey` stage routing); plain mode (`--plain`,
-  `--debug`, non-TTY stderr — `tuiEnabled()`) keeps the line console, styled
+  non-TTY stderr — `tuiEnabled()`) keeps the line console, styled
   with the same theme.
 - `config/` — `Defaults()` (hardcoded config only, no env reads) plus
   `global.go`: the `~/.wandersort/config.yaml` machinery — `GlobalConfigPath`,
-  `EnsureGlobalConfigFile` (writes `configTemplate` if missing), `LoadGlobal`,
-  and `SaveHomeWork` (see the config-precedence note above for why anchors get
-  a hand-rolled YAML-node writer instead of a plain struct marshal).
+  `EnsureGlobalConfigFile` (creates it empty if missing), `LoadGlobal`, and
+  `SaveGlobal` (whole-file marshal of the `Global` struct — every key the
+  wizard collects, nothing else).
 - `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry; `writer.go` batched
   writes; `migrations/` numbered Go migrations; `dbtest/` shared test fixtures
   (fresh migrated DB + seed helpers) used by every pipeline package's tests.
@@ -441,7 +464,8 @@ Only used by `serve`. Standard handler→service→repository split per domain:
   `logger.UserKey` (`log.Info("Scanning…", logger.UserKey, true)`); everything
   untagged is developer detail that goes to the file only. The `sessionId` attr
   is stripped from console lines (printed once at session start, in the message
-  text) to avoid spam. `--debug` bypasses both filters and shows every record.
+  text) to avoid spam. There is no debug flag to bypass the console filter —
+  the JSON file log always has every record.
   The **JSON file** handler keeps timestamp + source (`AddSource`) and every
   attr (incl. `sessionId`) — that's what `report-issue` ships. Never stdlib `log`.
 - `location/` — offline reverse-geocode resolver + its own sqlite DB. `Setup()`
@@ -458,11 +482,52 @@ Only used by `serve`. Standard handler→service→repository split per domain:
   `vfs.resolveLocations` for anchor-folding — don't redefine it locally) is the
   ~50km acceptance radius, matching the outer bounding box `queryNearest`
   expands to — the two used to disagree, which silently dropped a valid match
-  15-40km out instead of using it, fragmenting locations. `ResolveByName`
-  forward-geocodes a name to coordinates (exact match — expects a name that
-  came from `SearchByName`, e.g. an anchor); `SearchByName` is the prefix
-  search behind the `wandersort setup` anchor picker, so a typed-then-selected
-  town name can never drift from what the gazetteer actually calls it.
+  15-40km out instead of using it, fragmenting locations.
+
+  **A place has two names, and which one you use depends on who reads it.**
+  `Candidate`/`PlaceMatch` carry both:
+
+  - `FullName` (`fullName`) — city, state and country spelled out,
+    `Indore, Madhya Pradesh, India`. **Every list a person picks from shows
+    this**: the `config` town suggestions and the review rename picker. Six
+    rows reading `Springfield` are not a choice, and the state/country are the
+    only thing that tells them apart. Whatever the user picks is what gets
+    saved/named — WYSIWYG. `SearchByName` also **dedupes on it**: the gazetteer
+    holds two `Banjar, West Java, Indonesia` a few hundred metres apart, and
+    listing the same string twice is no more pickable than listing `Banjar`
+    twice.
+  - `DisplayName` (`disambiguate`) — the *smallest qualifier that makes this
+    entry unique*, used where nobody chose anything: the folder `Lookup` names
+    automatically. Spelling every folder out to three parts would put
+    `Indore, Madhya Pradesh, India` on a library that only ever saw one Indore.
+
+  The ladder behind `DisplayName` is computed from three correlated counts
+  (`nameCountsSQL`: rows with this name, distinct countries, rows with this
+  name in *this* row's country):
+
+  - unique name → `Shimla`
+  - repeats inside this country → `Springfield, Illinois` (**state**, admin1 —
+    not `region`, which is admin2 and means nothing to a reader)
+  - only repeats abroad → `Hyderabad, India`
+
+  The in-country case takes the state even when the name also occurs abroad —
+  no other Springfield in Illinois exists to collide with. Two rows for the
+  same name in the same state stay identical; a third qualifier would lengthen
+  every folder to fix a near-duplicate in the gazetteer. Cost to know about:
+  globally-repeated famous names get a qualifier too (`Paris, France`,
+  `San Jose, United States`). A population tiebreak would fix that; it isn't
+  worth the rule until someone complains.
+
+  Because a saved anchor is now `Hyderabad, Telangana, India`, **name→coordinate
+  lookup has to honour everything after the city**: `ResolveByName` (and its
+  stripped fallback) splits the string with `splitQualified` and keeps the row
+  whose state/country account for *every* qualifier (`matchesQualifiers`), or
+  the Indian home town resolves to the Pakistani city. All three forms resolve,
+  so anchors saved before this still work — no qualifiers matches any row.
+  `SearchByName` takes the same treatment, since the wizard re-searches the
+  full name it saved itself, and `cli.exactMatch` saves the full form for the
+  same reason. The anchor *fold* in `vfs.resolveLocations` is coordinate-based,
+  so none of this affects it.
 - `classifier/` — extension-based media type detection (`classifier.go`) and
   `ParseMetadata` (`models.go`), which decodes exiftool JSON into a generic map
   and reads only the `CommonMetadata` keys it needs. **Tolerant by design:** a

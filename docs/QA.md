@@ -18,20 +18,22 @@ Execute/move stage isn't written yet, so it isn't here.
 4. `[A]` `wandersort scan --help` → shows `--paths/-p`, `--workers/-w`, `--group-by`, exit 0.
 5. `[A]` `wandersort report` *(empty DB)* → clean "no sessions yet" error, non-zero exit, no stack trace.
 
-## 1. Dependency setup (network, idempotent)
+## 1. Dependency install (network, idempotent, scan-driven)
 
-6. `[H]` `wandersort setup` *(fresh machine)* → downloads ExifTool + location DB, exit 0.
-7. `[A]` `wandersort setup` *(run again)* → detects deps present, no re-download, exit 0.
-8. `[A]` `wandersort setup` with dependencies already installed → no checksum line on the console, just "Setup complete"; the verification is still in the log file. Same for `scan`/`serve`/`review`.
+6. `[H]` `wandersort scan -p <dir>` *(fresh machine)* → the install screen downloads ExifTool + location DB with progress bars, then swaps in-place into the scan screen; exit 0.
+7. `[A]` `wandersort scan -p <dir>` *(run again)* → no install screen at all, the scan screen appears immediately.
+8. `[A]` dependencies already installed → no checksum line on the console; the verification is still in the log file. Same for `scan`/`serve`/`review`.
 9. `[A]` `wandersort scan -p <dir>` → **one** console line per phase carrying both the count and the time (`Scanned N files in 1.996s`), not a separate count line and timing line.
 10. `[A]` `wandersort scan -p <dir>` → before the first phase, one line reports the resolved `workers`, `output` directory and `groupBy` (`Year/Month/location, orientation, media`, or `Year/Month/none (flat Year/Month)`); changing any of them via flag, env or `config.yaml` is reflected there.
 11. `[H]` scan into an output volume smaller than the library → the "Output volume may be too small" warning appears **at the end**, immediately before the "Run 'wandersort review'" line, not in the middle of the pipeline.
 12. `[H]` `wandersort review` on that same library → the same warning is printed once the review is confirmed, before "Folder structure approved".
 13. `[A]` delete exiftool binary, then `wandersort scan -p <dir>` → auto-reinstalls missing dep mid-run, exit 0.
-14. `[A]` `wandersort setup`/`wandersort scan` *(any dep download)* → "checksum verified" line appears on the console, not just in the log file.
-15. `[H]` `wandersort setup` *(fresh machine, interactive TTY)* → prompts for home town, shows ranked matches, typing the exact name auto-selects; then prompts "Work town same as Home? [Y/n]" — enter/`y` reuses the home town, `n` opens the same picker for work.
-16. `[A]` `wandersort setup < /dev/null` (no TTY) → dependency install still runs, anchor prompt is silently skipped, exit 0 (never hangs).
-17. `[A]` `wandersort setup` *(anchors already set)* → no re-prompt.
+14. `[A]` `wandersort scan` *(any dep download)* → "checksum verified" line appears in the scan feed, not just in the log file.
+15. `[A]` `wandersort setup` → unknown-command error (the command is gone; settings live in `wandersort config`).
+16. `[H]` `wandersort config` *(fresh machine, location DB not downloaded yet)* → the wizard opens immediately with no install screen, a `⬇ Location database` bar runs under the banner, and the Home & work step shows "⏳ Waiting for the location database to finish downloading…" until it completes, then unblocks on its own.
+17. `[A]` `wandersort config` *(location DB present)* → no download bar at any point; town suggestions work from the first keystroke.
+17a. `[H]` `wandersort config` → typing `Hyderabad` in the home-town field lists `Hyderabad, Telangana, India` and `Hyderabad, Sindh, Pakistan` — full names, never two identical rows (`Banjar` lists each West Java entry once). Picking one saves that exact string; re-opening `config` accepts it without re-typing, and a scan resolves it to the right city. A unique town still shows in full (`Indore, Madhya Pradesh, India`) but auto-named folders for it stay bare (`Indore`).
+17b. `[H]` `wandersort config` → every option list is numbered; pressing `2` on a yes/no picks "no" without advancing, and the `example` block above the key help changes to that option's path. Turning off the `location` rule removes the city folder from every later example.
 
 ## 2. Classifier (pure, fast, independent)
 
@@ -49,7 +51,7 @@ Execute/move stage isn't written yet, so it isn't here.
 26. `[A]` `wandersort scan` *(no `-p`)* → usage error asking for paths, non-zero exit.
 27. `[A]` scan nested roots `-p /photos -p /photos/2024` → nested root pruned, files counted once.
 28. `[H]` `wandersort scan -p <dir> -w 1` vs `-w 8` → same final counts, both exit 0.
-29. `[A]` `wandersort scan -p <dir>` *(no `--debug`)* → console shows a "phase took" line for each of scan/hash/score/vfs, not just their result-count lines.
+29. `[A]` `wandersort scan -p <dir>` → console shows a "phase took" line for each of scan/hash/score/vfs, not just their result-count lines.
 
 ## 4. Hash + EXIF phase (depends on scan)
 
@@ -92,7 +94,7 @@ Execute/move stage isn't written yet, so it isn't here.
 
 58. `[A]` two GPS points ~15-40km apart, no anchor set → both resolve to *some* named place (previously: silently unlocated past ~11km even though the search box reached 50km).
 59. `[A]` a coordinate near a gazetteer entry with a diacritic in its name (e.g. "Banjār") and a plain-spelled entry at ~the same distance → the plain-spelled name ("Banjar") is proposed, not the diacritic one.
-60. `[H]` set a home anchor (via `setup`), then scan two GPS points both within ~50km of it but resolving to different suburb names → both fold into the anchor's folder name, not two separate suburb folders.
+60. `[H]` set a home anchor (via `wandersort config`), then scan two GPS points both within ~50km of it but resolving to different suburb names → both fold into the anchor's folder name, not two separate suburb folders.
 61. `[A]` scan with no anchors configured → resolved suburbs still get their own individual folders (no unwanted folding).
 62. `[A]` scan a library where most GPS photos resolve to the same city, plus a separate fully-unresolved cluster (e.g. a GPS-less DSLR photo, no EVENT label overlap) with **no confirmed anchor set** → the unresolved cluster's suggestion is the source folder name, *not* the library's dominant city (`anchorCities` no longer guesses from frequency).
 
@@ -178,15 +180,15 @@ Execute/move stage isn't written yet, so it isn't here.
 
 126. `[A]` `WORKERS=2 wandersort scan -p <dir> -w 8` → flag wins (8 workers), env ignored.
 127. `[A]` `OUTPUT_PATH=/tmp/ws wandersort scan -p <dir>` → DB + logs written under `/tmp/ws`.
-128. `[A]` `wandersort --debug scan -p <dir>` → console shows full developer log lines, not just user milestones.
+128. `[A]` `wandersort scan -p <dir> --plain` → console shows the plain line log; the JSON log file holds the full developer detail either way.
 129. `[A]` any command on a machine with no `~/.wandersort/config.yaml` → the file is created with the commented template before the command does anything else.
 130. `[H]` `wandersort config` *(`$EDITOR` set)* → opens the file in `$EDITOR`.
-131. `[A]` `wandersort config` *(`$EDITOR` unset)* → prints the file's contents to stdout instead, exit 0.
-132. `[A]` `wandersort config --print` / `-p` *(`$EDITOR` set)* → prints the file to stdout, no editor launched, exit 0.
-133. `[A]` `wandersort config | cat` *(`$EDITOR` set)* → prints the file instead of launching the editor into the pipe; `wandersort config > out.yaml` writes the file's contents.
+131. `[H]` `wandersort config` *(interactive TTY)* → full-screen wizard, in order: output path, workers, rules, collapse, then one Home & work step holding home town, work town, "group home/work photos by date only?" and "merge consecutive same-location days?"; completing it prints exactly `config saved in ~/.wandersort/config.yaml`, ctrl+c prints "Cancelled — nothing saved." and writes nothing.
+132. `[A]` `wandersort config --print` / `-p` → prints the saved file to stdout, no wizard, exit 0.
+133. `[A]` `wandersort config | cat` → prints the file instead of launching the wizard into the pipe; `wandersort config > out.yaml` writes the file's contents.
 134. `[A]` add `output-path: /tmp/ws-cfg` to `config.yaml`, then `wandersort scan -p <dir>` *(no `-o` flag)* → DB + logs written under `/tmp/ws-cfg`; `-o` on the command line still overrides it.
 135. `[A]` add `group-by: [none]` to `config.yaml`, then scan with no `--group-by` flag → flat `Year/Month` proposal; `--group-by location` on the command line still overrides it.
-136. `[H]` hand-edit `config.yaml` to add a comment and an extra key, then run `wandersort setup` to change an anchor → the hand-added comment and key both survive; only `anchors.home`/`anchors.work` changed.
+136. `[A]` a freshly created `config.yaml` (first ever command) is empty, and one written by the wizard has no comments — every key present is a real setting.
 137. `[A]` put invalid YAML in `config.yaml` (e.g. a leading tab), then run any command → a **warning** naming the file and the parse error, the command continues on defaults, exit code unchanged by the bad file.
 138. `[A]` same broken file, then `wandersort config --print` → still works (the command that fixes the file must not be locked out by it).
-139. `[H]` set `debug: true` in `config.yaml` (not `--debug`) → same effect as the flag; note the template's commented default is `false`, so just uncommenting the line without changing the value has no effect.
+139. `[A]` `wandersort scan --debug` → unknown-flag error (the flag is gone; the JSON log file is always at debug level, use `--plain` for line output).
