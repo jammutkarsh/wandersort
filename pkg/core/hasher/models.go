@@ -6,30 +6,7 @@
 
 package hasher
 
-import (
-	"time"
-
-	"github.com/jammutkarsh/wandersort/pkg/classifier"
-)
-
-// ContentGroup represents a group of files with identical content (hash)
-type ContentGroup struct {
-	ID           int64     `json:"id"`
-	ContentHash  string    `json:"contentHash"`
-	MasterFileID *int64    `json:"masterFileId,omitempty"`
-	TotalCopies  int       `json:"totalCopies"`
-	CreatedAt    time.Time `json:"createdAt"`
-}
-
-// ContentGroupMember represents a file's membership in a content group
-type ContentGroupMember struct {
-	ID            int64     `json:"id"`
-	GroupID       int64     `json:"groupId"`
-	FileID        int64     `json:"fileId"`
-	IsMaster      bool      `json:"isMaster"`
-	MetadataScore int       `json:"metadataScore"`
-	CreatedAt     time.Time `json:"createdAt"`
-}
+import "github.com/jammutkarsh/wandersort/pkg/classifier"
 
 // fileRecord is the minimal info the pipeline passes from the scan phase
 // to drive the hash phase

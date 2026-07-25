@@ -20,14 +20,9 @@ const (
 	MediaTypeUnknown = "UNKNOWN"
 )
 
-// CommonMetadata holds the common attributes across all supported file types
-// All fields are strings; fields absent in a given file type are set to ""
-//
-// Fields are grouped by presence:
-//   - File system:  present in every type (11/11)
-//   - Dimensions:   present in image/video types (10/11, absent in AAE)
-//   - Device/lens:  present in camera-produced files (7-9/11)
-//   - GPS:          present in location-tagged files (7/11)
+// CommonMetadata holds the attributes shared across supported file types. All
+// fields are strings; ones absent in a given type are "". The x/11 counts below
+// are how many of the supported types carry that group.
 type CommonMetadata struct {
 	// --- File system (11/11) ---
 	ExifToolVersion     string `json:"ExifToolVersion"`
