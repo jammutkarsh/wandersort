@@ -131,3 +131,94 @@ func TestFormSuggestAndTabFill(t *testing.T) {
 		t.Errorf("tab should fill top suggestion, got %q", v)
 	}
 }
+
+// Options are picked by number, examples render outside the description (only
+// for the choice under the cursor), and a field can hold on a background
+// download instead of letting the user answer it.
+func TestFormNumberedExampleAwait(t *testing.T) {
+	dateOnly := true
+	town := ""
+	pending := true
+	fields := []*Field{{
+		Kind:  FieldGroup,
+		Title: "Home & work",
+		Await: func() string {
+			if pending {
+				return "Waiting for the location database"
+			}
+			return ""
+		},
+		Subs: []*Field{
+			{Kind: FieldInput, Title: "Home town", Value: &town},
+			{
+				Kind: FieldConfirm, Title: "Date only?", Description: "explanation only",
+				BoolValue: &dateOnly,
+				Example: func() string {
+					if dateOnly {
+						return "2024/08/12/IMG.jpg"
+					}
+					return "2024/08/12/Indore/IMG.jpg"
+				},
+			},
+		},
+	}}
+	m := NewFormModel(fields, nil)
+
+	// Held: the reason shows and enter can't get past it.
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "Waiting for the location database") {
+		t.Errorf("held field must say what it waits for:\n%s", view)
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m2 := next.(FormModel); m2.subIdx != 0 {
+		t.Errorf("enter must not advance a held field, subIdx=%d", m2.subIdx)
+	}
+
+	// Released by the download finishing.
+	pending = false
+	next, _ = m.Update(DownloadMsg{Finished: true})
+	m = next.(FormModel)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(FormModel)
+	if m.subIdx != 1 {
+		t.Fatalf("enter should reach the confirm sub, subIdx=%d", m.subIdx)
+	}
+
+	// "2" picks no — by number, without advancing — and only that option's
+	// example renders, outside the description.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	m = next.(FormModel)
+	if dateOnly {
+		t.Error(`"2" should select no`)
+	}
+	view = ansi.Strip(m.View())
+	if !strings.Contains(view, "1) ") || !strings.Contains(view, "2) ") {
+		t.Errorf("options must be numbered:\n%s", view)
+	}
+	if !strings.Contains(view, "2024/08/12/Indore/IMG.jpg") || strings.Contains(view, "2024/08/12/IMG.jpg\n") {
+		t.Errorf("only the selected option's example should render:\n%s", view)
+	}
+	if strings.Contains(view, "explanation only\n    2024/") {
+		t.Errorf("example must not sit inside the description:\n%s", view)
+	}
+}
+
+// The download row shows progress under the banner and disappears when done.
+func TestFormDownloadRow(t *testing.T) {
+	v := ""
+	m := NewFormModel([]*Field{{Kind: FieldInput, Title: "Output path", Value: &v}}, nil)
+	m.w, m.h = 80, 24
+
+	if strings.Contains(ansi.Strip(m.View()), "Location database") {
+		t.Error("nothing should render before the first download report")
+	}
+	next, _ := m.Update(DownloadMsg{Label: "Location database", Done: 5, Total: 10})
+	m = next.(FormModel)
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "Location database") || !strings.Contains(view, "50%") {
+		t.Errorf("download row missing progress:\n%s", view)
+	}
+	next, _ = m.Update(DownloadMsg{Finished: true})
+	if view := ansi.Strip(next.(FormModel).View()); strings.Contains(view, "Location database") {
+		t.Errorf("finished download must leave no trace:\n%s", view)
+	}
+}

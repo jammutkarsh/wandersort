@@ -58,12 +58,7 @@ func (a *App) runServe() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Gin's verbose debug output only when the user asked for --debug.
-	if a.Config.LogLevel == "debug" {
-		gin.SetMode(gin.DebugMode)
-	} else {
-		gin.SetMode(gin.ReleaseMode)
-	}
+	gin.SetMode(gin.ReleaseMode)
 
 	if err := a.InitAppDB(ctx); err != nil {
 		return err

@@ -14,7 +14,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-// InstallProgressMsg carries dependency-download byte progress into the setup
+// InstallProgressMsg carries dependency-download byte progress into the
 // install screen. It comes straight from a callback (not the logger), so the
 // per-byte ticks never touch the file log.
 type InstallProgressMsg struct {
@@ -25,8 +25,7 @@ type InstallProgressMsg struct {
 
 type installDoneMsg struct{ err error }
 
-// InstallModel is the full-screen dependency-install view shown before the
-// setup wizard: a StageList stage per dependency (exiftool, location DB) with
+// InstallModel is the full-screen dependency-install view shown before a scan: a StageList stage per dependency (exiftool, location DB) with
 // a byte progress bar. Cached dependencies flip straight to done, so a re-run
 // flashes briefly and moves on.
 type InstallModel struct {
@@ -36,7 +35,7 @@ type InstallModel struct {
 	err  error
 
 	// Next, when set, builds the screen to swap to once installs succeed (the
-	// setup wizard) — keeping install→wizard in one alt-screen program so there's
+	// scan screen) — keeping install→work in one alt-screen program so there's
 	// no terminal-restore flash between them. nil means this screen just quits.
 	Next func() (tea.Model, error)
 }
@@ -104,7 +103,7 @@ func (m InstallModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m InstallModel) View() string {
-	body := Banner("setup · dependencies") + "\n\n" + m.sl.View(m.w, 0)
+	body := Banner("dependencies") + "\n\n" + m.sl.View(m.w, 0)
 	return Screen(body, Footer(KeyHint("ctrl+c", "cancel"), m.w), m.h)
 }
 

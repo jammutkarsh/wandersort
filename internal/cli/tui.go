@@ -13,15 +13,11 @@ import (
 )
 
 // tuiEnabled decides whether a command renders the full-screen TUI or falls
-// back to plain line logging. Plain when: --plain is set, debug logging is on
-// (developers want the full log stream on the console, not an alt-screen), or
-// stderr isn't a terminal (piped/redirected). The TUI draws to stderr, matching
-// the review TUI, so stdout stays clean for piping.
+// back to plain line logging. Plain when --plain is set or stderr isn't a
+// terminal (piped/redirected). The TUI draws to stderr, matching the review
+// TUI, so stdout stays clean for piping.
 func (a *App) tuiEnabled() bool {
 	if v.GetBool(flagPlain) {
-		return false
-	}
-	if a.Config.LogLevel == "debug" {
 		return false
 	}
 	return term.IsTerminal(int(os.Stderr.Fd()))

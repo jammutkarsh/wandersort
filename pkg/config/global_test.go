@@ -8,11 +8,12 @@ package config
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
 
-func TestEnsureGlobalConfigFileWritesTemplateOnce(t *testing.T) {
+func TestEnsureGlobalConfigFileDoesNotClobber(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	path, err := EnsureGlobalConfigFile()
@@ -23,12 +24,12 @@ func TestEnsureGlobalConfigFileWritesTemplateOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if string(data) != configTemplate {
-		t.Fatalf("wrote unexpected content:\n%s", data)
+	if len(data) != 0 {
+		t.Fatalf("a fresh config file must start empty, got:\n%s", data)
 	}
 
-	// a second call must not clobber a file that's since been hand-edited
-	if err := os.WriteFile(path, []byte(configTemplate+"\nworkers: 8\n"), 0o644); err != nil {
+	// a second call must not clobber a file that's since been written
+	if err := os.WriteFile(path, []byte("workers: 8\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := EnsureGlobalConfigFile(); err != nil {
@@ -47,47 +48,34 @@ func TestLoadGlobalOnMissingFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	g, err := LoadGlobal()
-	if err != nil || g != (Global{}) {
+	if err != nil || !reflect.DeepEqual(g, Global{}) {
 		t.Fatalf("LoadGlobal on missing file = (%+v, %v), want (zero value, nil)", g, err)
 	}
 }
 
-func TestSaveHomeWorkPreservesRestOfFile(t *testing.T) {
+// TestSaveGlobalRoundTrip is the one that matters: every setting the config
+// wizard collects has to survive the file, including the false bools (which
+// must be written, not omitted as "unset") and the home/work names.
+func TestSaveGlobalRoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	if err := SaveHomeWork("Delhi", ""); err != nil {
-		t.Fatalf("SaveHomeWork: %v", err)
+	want := Global{
+		OutputPath:            "/tmp/lib",
+		Workers:               8,
+		Rules:                 []string{"date", "location"},
+		CollapseLevels:        false,
+		HomeWorkDateOnly:      false,
+		MergeSameLocationDays: true,
+		HomeWork:              HomeWork{Home: "Delhi", Work: "Gurugram"},
 	}
-	g, err := LoadGlobal()
+	if err := SaveGlobal(want); err != nil {
+		t.Fatalf("SaveGlobal: %v", err)
+	}
+	got, err := LoadGlobal()
 	if err != nil {
 		t.Fatalf("LoadGlobal: %v", err)
 	}
-	if g.HomeWork.Home != "Delhi" || g.HomeWork.Work != "" {
-		t.Fatalf("g.HomeWork = %+v, want {Delhi, \"\"}", g.HomeWork)
-	}
-
-	// the template's explanatory comments and commented-out keys must survive
-	path, err := GlobalConfigPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "# output-path:") {
-		t.Errorf("SaveHomeWork dropped the template's comments:\n%s", data)
-	}
-
-	// setting work later must not disturb the home value already saved
-	if err := SaveHomeWork("", "Gurugram"); err != nil {
-		t.Fatalf("SaveHomeWork (work only): %v", err)
-	}
-	g, err = LoadGlobal()
-	if err != nil {
-		t.Fatalf("LoadGlobal: %v", err)
-	}
-	if g.HomeWork.Home != "Delhi" || g.HomeWork.Work != "Gurugram" {
-		t.Fatalf("g.HomeWork = %+v, want {Delhi, Gurugram}", g.HomeWork)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
 	}
 }

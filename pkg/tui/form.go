@@ -9,8 +9,10 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -40,9 +42,19 @@ type Field struct {
 	BoolValue *bool           // for Confirm
 	Options   []string        // for MultiSelect
 	Selected  map[string]bool // for MultiSelect
-	// Subs are the labelled inputs of a FieldGroup, answered in order on one
-	// screen (e.g. home town + work town).
-	Subs        []*Field
+	// Subs are the fields of a FieldGroup, answered in order on one screen (e.g.
+	// home town, work town, and the two questions about how they're foldered).
+	// Any kind is allowed — a group is a screen, not an input list.
+	Subs []*Field
+	// Example returns the concrete result of the field's *current* answer (a
+	// folder path, a tree). It renders in its own block above the footer, not
+	// inside the description: the description explains the question once, the
+	// example shows only what the option under the cursor would do.
+	Example func() string
+	// Await, when it returns a non-empty string, holds the field: the text
+	// renders under it and enter refuses to advance. The config wizard uses it
+	// to make the town fields wait for the location database download.
+	Await       func() string
 	Placeholder string
 	// Suggest returns completions for the typed text (called on every
 	// keystroke — keep it fast; e.g. a location-DB prefix search). ↑/↓ pick,
@@ -50,6 +62,16 @@ type Field struct {
 	Suggest   func(typed string) []string
 	Validator func(string) error
 	Error     string
+}
+
+// DownloadMsg reports the progress of a download running behind the form (the
+// location database, fetched while the user answers everything above the town
+// fields). The form draws it as one row under the banner and drops that row
+// once Finished arrives — a dependency already on disk is never mentioned.
+type DownloadMsg struct {
+	Label       string
+	Done, Total int64
+	Finished    bool
 }
 
 // FormModel is a multi-step form navigator using bubbletea.
@@ -62,9 +84,13 @@ type FormModel struct {
 	err         error
 	aborted     bool
 	multiCursor int      // cursor for multiselect field
-	subIdx      int      // focused sub-input inside a FieldGroup
+	subIdx      int      // focused sub-field inside a FieldGroup
 	sugg        []string // live completions for the current input field
 	suggCursor  int      // ↑/↓-picked suggestion; -1 = none picked
+
+	dl     progress.Model // background-download bar, drawn under the banner
+	dlMsg  DownloadMsg
+	dlSeen bool // a DownloadMsg arrived; nothing renders before the first one
 }
 
 // NewFormModel creates a form with the given fields.
@@ -76,6 +102,7 @@ func NewFormModel(fields []*Field, onSubmit func() error) FormModel {
 		ti:         ti,
 		onSubmit:   onSubmit,
 		suggCursor: -1,
+		dl:         progress.New(progress.WithDefaultGradient(), progress.WithoutPercentage()),
 	}
 	m.seedInput()
 	return m
@@ -170,11 +197,20 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Handle field-specific keys
-		if m.Current < len(m.Fields) {
-			field := m.Fields[m.Current]
+		// Handle field-specific keys. active() (not Fields[Current]) so a
+		// confirm or multiselect nested in a FieldGroup answers the same way as
+		// a top-level one.
+		if field := m.active(); field != nil {
 			switch field.Kind {
 			case FieldMultiSelect:
+				// Options are numbered on screen: the number is the primary way
+				// to pick one, ↑↓ + space the secondary.
+				if n, ok := optionNumber(msg.String(), len(field.Options)); ok {
+					m.multiCursor = n
+					opt := field.Options[n]
+					field.Selected[opt] = !field.Selected[opt]
+					return m, nil
+				}
 				switch msg.String() {
 				case "up", "k":
 					if m.multiCursor > 0 {
@@ -194,6 +230,14 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case FieldConfirm:
+				// 1 = yes, 2 = no — the numbers rendered next to them. They
+				// only select, so the example block can be read before enter.
+				if n, ok := optionNumber(msg.String(), 2); ok {
+					if field.BoolValue != nil {
+						*field.BoolValue = n == 0
+					}
+					return m, nil
+				}
 				switch msg.String() {
 				case "y":
 					if field.BoolValue != nil {
@@ -205,14 +249,13 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						*field.BoolValue = false
 					}
 					return m.moveNext()
-				// "yes" renders on the left, "no" on the right — arrows must
-				// match what's on screen.
-				case "left", "h":
+				// "yes" renders above "no" — both arrow pairs must match.
+				case "up", "k", "left", "h":
 					if field.BoolValue != nil {
 						*field.BoolValue = true
 					}
 					return m, nil
-				case "right", "l":
+				case "down", "j", "right", "l":
 					if field.BoolValue != nil {
 						*field.BoolValue = false
 					}
@@ -221,9 +264,14 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case DownloadMsg:
+		m.dlMsg, m.dlSeen = msg, true
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.w = msg.Width
 		m.h = msg.Height
+		m.dl.Width = clamp(msg.Width/3, 10, 40)
 	}
 
 	// Update the active input (a plain field or a group's focused sub-input).
@@ -266,8 +314,8 @@ func (m FormModel) View() string {
 			rows = append(rows, m.collapsedRow(f, i < m.Current))
 		}
 	}
-	body := Banner("setup") + "\n\n" + strings.Join(rows, "\n")
-	footer := m.renderFooter()
+	body := Banner("config") + "\n" + m.downloadRow() + "\n" + strings.Join(rows, "\n")
+	footer := m.exampleBlock() + m.renderFooter()
 
 	// ponytail: tiny terminals just lose the top of the stack (banner first);
 	// add a scroll window around the current field if that ever matters.
@@ -277,6 +325,77 @@ func (m FormModel) View() string {
 		}
 	}
 	return Screen(body, footer, m.h)
+}
+
+// downloadRow renders the background download under the banner: a labelled bar
+// while it runs, nothing at all before the first report or after it finishes.
+// It's the whole reason the form doesn't need an install screen — the download
+// is visible without owning the screen.
+func (m FormModel) downloadRow() string {
+	if !m.dlSeen || m.dlMsg.Finished {
+		return ""
+	}
+	pct := 0.0
+	if m.dlMsg.Total > 0 {
+		pct = float64(m.dlMsg.Done) / float64(m.dlMsg.Total)
+	}
+	left := FaintTxt.Render(" ⬇ ") + DimText.Render(m.dlMsg.Label) + "  " +
+		m.dl.ViewAs(pct) + "  " + DimText.Render(fmt.Sprintf("%3.0f%%", pct*100))
+	return row(left, "", m.w) + "\n"
+}
+
+// exampleBlock renders the active field's example — what the option under the
+// cursor actually produces — pinned above the footer, the same place the scan
+// screen puts its warnings. Keeping it out of the description is what lets the
+// description explain the question once while the example shows only the
+// choice being considered, instead of listing every option's outcome at once.
+func (m FormModel) exampleBlock() string {
+	f := m.active()
+	if f == nil || f.Example == nil {
+		return ""
+	}
+	ex := strings.TrimSpace(f.Example())
+	if ex == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(FaintTxt.Render(" example") + "\n")
+	for line := range strings.SplitSeq(ex, "\n") {
+		b.WriteString(row("   "+DimText.Render(line), "", m.w))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// awaitReason reports why the current step can't be answered yet ("" = it can).
+// A group's Await holds the whole step, not just the sub-field under the
+// cursor — its members are one screen and one question.
+func (m FormModel) awaitReason() string {
+	if m.Current >= len(m.Fields) {
+		return ""
+	}
+	if f := m.Fields[m.Current]; f.Await != nil {
+		if r := f.Await(); r != "" {
+			return r
+		}
+	}
+	if f := m.active(); f != nil && f.Await != nil {
+		return f.Await()
+	}
+	return ""
+}
+
+// optionNumber maps a "1".."9" keypress to a zero-based option index, false if
+// the key isn't a digit or points past the last option.
+func optionNumber(key string, count int) (int, bool) {
+	if len(key) != 1 || key[0] < '1' || key[0] > '9' {
+		return 0, false
+	}
+	n, _ := strconv.Atoi(key)
+	if n > count {
+		return 0, false
+	}
+	return n - 1, true
 }
 
 // collapsedRow renders a one-line summary of a field: done fields show their
@@ -336,57 +455,89 @@ func (m FormModel) summaryValue(f *Field) string {
 func (m FormModel) expandedField(f *Field) string {
 	var b strings.Builder
 	b.WriteString(row(Title.Render(" => ")+Text.Bold(true).Render(f.Title), "", m.w))
-	desc := f.Description
-	if f.Describe != nil {
-		desc = f.Describe()
-	}
-	for line := range strings.SplitSeq(desc, "\n") {
+	for line := range strings.SplitSeq(describe(f), "\n") {
 		if line != "" {
 			b.WriteString("\n" + row("    "+DimText.Render(line), "", m.w))
 		}
 	}
 
+	// A field waiting on something (the location DB download) says so and shows
+	// no control: there is nothing useful to answer yet.
+	if reason := m.awaitReason(); reason != "" {
+		b.WriteString("\n" + row("    "+Attn.Render("⏳ "+reason), "", m.w))
+		return b.String()
+	}
+
+	if f.Kind == FieldGroup {
+		for i, sub := range f.Subs {
+			b.WriteString(m.subView(sub, i == m.subIdx))
+		}
+		return b.String()
+	}
+	b.WriteString(m.controlView(f, ""))
+	return b.String()
+}
+
+// subView renders one member of a FieldGroup: the focused one gets its full
+// control (and description, since a group's members ask their own questions),
+// the rest collapse to a `Title: answer` line.
+func (m FormModel) subView(sub *Field, focused bool) string {
+	if !focused {
+		return "\n    " + Text.Render(sub.Title+": ") + DimText.Render(m.summaryValue(sub))
+	}
+	var b strings.Builder
+	if sub.Kind != FieldInput {
+		b.WriteString("\n" + row("    "+Text.Bold(true).Render(sub.Title), "", m.w))
+		for line := range strings.SplitSeq(describe(sub), "\n") {
+			if line != "" {
+				b.WriteString("\n" + row("      "+DimText.Render(line), "", m.w))
+			}
+		}
+	}
+	b.WriteString(m.controlView(sub, Text.Render(sub.Title+": ")))
+	return b.String()
+}
+
+// controlView renders a field's interactive part — the text input, the
+// numbered yes/no, or the numbered option list.
+func (m FormModel) controlView(f *Field, label string) string {
+	var b strings.Builder
 	switch f.Kind {
 	case FieldInput:
-		b.WriteString(m.inputView(f, ""))
-	case FieldGroup:
-		for i, sub := range f.Subs {
-			label := Text.Render(sub.Title + ": ")
-			if i == m.subIdx {
-				b.WriteString(m.inputView(sub, label))
-				continue
-			}
-			val := ""
-			if sub.Value != nil {
-				val = strings.TrimSpace(*sub.Value)
-			}
-			shown := DimText.Render(val)
-			if val == "" {
-				shown = FaintTxt.Render(sub.Placeholder)
-			}
-			b.WriteString("\n    " + label + shown)
-		}
+		b.WriteString(m.inputView(f, label))
 	case FieldConfirm:
-		if f.BoolValue != nil && *f.BoolValue {
-			b.WriteString("\n    " + OK.Render("● yes") + "  " + FaintTxt.Render("○ no"))
-		} else {
-			b.WriteString("\n    " + FaintTxt.Render("○ yes") + "  " + Attn.Render("● no"))
-		}
+		on := f.BoolValue != nil && *f.BoolValue
+		b.WriteString("\n" + numberedOption(1, "yes", on, on))
+		b.WriteString("\n" + numberedOption(2, "no", !on, !on))
 	case FieldMultiSelect:
 		for i, opt := range f.Options {
-			var line string
-			if f.Selected[opt] {
-				line = OK.Render("✓ ") + Text.Render(opt)
-			} else {
-				line = FaintTxt.Render("· ") + Text.Render(opt)
-			}
-			if i == m.multiCursor {
-				line = Selected.Render(ansi.Strip(line))
-			}
-			b.WriteString("\n    " + line)
+			b.WriteString("\n" + numberedOption(i+1, opt, f.Selected[opt], i == m.multiCursor))
 		}
 	}
 	return b.String()
+}
+
+// numberedOption renders one pickable option as `n) marker label`. The number
+// is the key that picks it — an arrow-only list gives the user nothing to aim
+// at when the list is long.
+func numberedOption(n int, label string, on, cursor bool) string {
+	marker := FaintTxt.Render("○ ")
+	if on {
+		marker = OK.Render("● ")
+	}
+	line := FaintTxt.Render(fmt.Sprintf("%d) ", n)) + marker + Text.Render(label)
+	if cursor {
+		line = Selected.Render(ansi.Strip(line))
+	}
+	return "      " + line
+}
+
+// describe returns a field's description, preferring the live Describe closure.
+func describe(f *Field) string {
+	if f.Describe != nil {
+		return f.Describe()
+	}
+	return f.Description
 }
 
 // inputView renders the live textinput plus its error and suggestion list —
@@ -422,19 +573,26 @@ func (m FormModel) renderFooter() string {
 	if m.Current >= len(m.Fields) {
 		return ""
 	}
-	field := m.Fields[m.Current]
+	if m.awaitReason() != "" {
+		return Footer(KeyHint("ctrl+c", "quit"), m.w)
+	}
+	field := m.active()
+	if field == nil {
+		return ""
+	}
 	var hints []string
 	switch field.Kind {
 	case FieldMultiSelect:
 		hints = []string{
+			KeyHint(fmt.Sprintf("1-%d", len(field.Options)), "toggle"),
 			KeyHint("↑↓", "navigate"),
-			KeyHint("space", "toggle"),
 			KeyHint("enter", "next"),
 			KeyHint("shift+tab", "back"),
 		}
 	case FieldConfirm:
 		hints = []string{
-			KeyHint("y/n", "choose"),
+			KeyHint("1", "yes"),
+			KeyHint("2", "no"),
 			KeyHint("enter", "next"),
 			KeyHint("shift+tab", "back"),
 		}
@@ -451,6 +609,12 @@ func (m FormModel) renderFooter() string {
 }
 
 func (m FormModel) moveNext() (tea.Model, tea.Cmd) {
+	// Held field (the town step while the location DB downloads): the screen
+	// already says why, and the download row above shows how far along it is.
+	if m.awaitReason() != "" {
+		return m, nil
+	}
+
 	// Validate the active input (a plain field or a group sub-input).
 	if f := m.active(); f != nil && f.Kind == FieldInput {
 		if f.Validator != nil {

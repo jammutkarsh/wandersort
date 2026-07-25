@@ -6,7 +6,7 @@
 
 // Package lock is wandersort's PID-based file locking: generic acquire/reclaim
 // mechanics plus the domain-specific filenames and styled "already running"
-// message for scan/serve/setup coordination.
+// message for scan/serve coordination.
 package lock
 
 import (
@@ -71,10 +71,10 @@ func AcquireOutput(dir string) (*Lock, error) {
 }
 
 // AcquireInstall takes the install-coordination lock shared by scan, serve,
-// and setup, so only one of them downloads dependencies at a time.
+// and review, so only one of them downloads dependencies at a time.
 // When block is true it waits for an in-progress install to finish
 // (EnsureDependencies); when false it returns ErrHeld at once so the caller
-// can step aside (setup's non-blocking path).
+// can step aside (the non-blocking path).
 func AcquireInstall(ctx context.Context, dir string, block bool) (*Lock, error) {
 	return acquire(ctx, dir, InstallFileName, block)
 }

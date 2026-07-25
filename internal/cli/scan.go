@@ -65,7 +65,7 @@ func (a *App) runScan(paths []string) error {
 }
 
 // runScanPlain is the non-TUI path: synchronous pipeline, progress via the
-// console logger's line output. Used with --plain, --debug, or a non-terminal
+// console logger's line output. Used with --plain or a non-terminal
 // stderr. Behaviour is unchanged from before the TUI existed.
 func (a *App) runScanPlain(paths []string) error {
 	start := time.Now()
@@ -109,9 +109,8 @@ func (a *App) runScanPlain(paths []string) error {
 
 // runScanTUI is the full-screen path. Everything the user waits on renders in
 // one alt-screen program: missing dependencies download on the install screen
-// (byte progress bars) which then swaps into the scan screen — same pattern as
-// setup — so a first-ever `wandersort scan` never drops to plain console
-// output. The pipeline logs through a TUI logger whose Sink forwards every
+// (byte progress bars) which then swaps into the scan screen, so a first-ever
+// `wandersort scan` never drops to plain console output. The pipeline logs through a TUI logger whose Sink forwards every
 // user/stream Event into the program; on a clean scan the user can drop
 // straight into review.
 func (a *App) runScanTUI(paths []string) error {

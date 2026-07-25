@@ -30,7 +30,6 @@ import (
 const (
 	// CLI flags
 	flagOutputPath = "output-path"
-	flagDebug      = "debug"
 	flagPaths      = "paths"
 	flagWorkers    = "workers"
 	flagPort       = "port"
@@ -69,7 +68,7 @@ type App struct {
 	// embedders and tests can extend the CLI without editing newRootCmd.
 	Commands []*cobra.Command
 	// InstallProgress, when set, receives dependency-download byte progress
-	// (phase is "exiftool"/"location") so the setup TUI can draw a progress bar.
+	// (phase is "exiftool"/"location") so the install screen can draw a progress bar.
 	// Deliberately not routed through the logger — per-byte ticks would flood
 	// the file log. nil in every non-TUI path.
 	InstallProgress func(phase string, done, total int64)
@@ -127,7 +126,7 @@ func (a *App) installDir() string {
 
 // EnsureDependencies installs the location database and exiftool if missing,
 // then opens the location resolver. It holds the install lock for the duration
-// so a concurrent scan/serve/setup never installs at the same time: callers
+// so a concurrent scan/serve never installs at the same time: callers
 // wait for an in-progress install to finish, then continue (a no-op if it is
 // already done).
 func (a *App) EnsureDependencies(ctx context.Context) error {
@@ -189,7 +188,6 @@ var v = viper.New()
 
 func init() {
 	v.SetDefault(flagOutputPath, "")
-	v.SetDefault(flagDebug, false)
 	v.SetDefault(flagPort, "")
 	v.SetDefault(flagPaths, []string{})
 	v.SetDefault(flagWorkers, 0)
@@ -209,18 +207,16 @@ func init() {
 	v.AutomaticEnv()
 }
 
-// loadGlobalConfigFile ensures ~/.wandersort/config.yaml exists (writing the
-// commented template the first time any command runs) and points viper at
-// it, so its keys (output-path, workers, debug, rules, home-work, ...) layer
-// between env and default (viper's normal config-file precedence: flag > env
-// > config file > default). Every command creates it, not just `setup`/
-// `config`, so the file — and its explanatory comments — is always there for
-// a user to find and edit, not a thing they have to know to create first.
+// loadGlobalConfigFile ensures ~/.wandersort/config.yaml exists (empty the
+// first time any command runs) and points viper at it, so its keys
+// (output-path, workers, rules, home-work, ...) layer between env and default
+// (viper's normal config-file precedence: flag > env > config file >
+// default). `wandersort config` is what fills it in.
 //
-// A config file that doesn't parse is a warning, not a failure: YAML is easy
-// to get subtly wrong (a stray tab, an unquoted colon) and refusing to run at
-// all would mean a typo in an optional settings file bricks every command,
-// including the `config` command that would let the user fix it. Every setting
+// A config file that doesn't parse is a warning, not a failure: it can be
+// hand-edited, and refusing to run at all would mean a stray tab in an
+// optional settings file bricks every command, including the `config` command
+// that would let the user fix it. Every setting
 // in the file is optional and has a default, so the run continues on defaults
 // and says so. The returned string is the warning ("" when there is none) —
 // it's logged once the logger exists, so it reaches the log file too, not just
@@ -252,10 +248,10 @@ func (a *App) newRootCmd() *cobra.Command {
 video directories and it scans them, fingerprints every file to find
 duplicates, and scores copies to pick the best one to keep.
 
-Run 'wandersort setup' once to install its dependencies, then
-'wandersort scan' to process your libraries.`,
-		Example: `# Install dependencies (run once)
-wandersort setup
+Run 'wandersort scan' to process your libraries — it installs anything it
+needs on first use. 'wandersort config' opens the settings wizard.`,
+		Example: `# Change the global settings
+wandersort config
 
 # Scan one or more directories for media and duplicates
 wandersort scan --paths ~/Pictures,/Volumes/SD
@@ -280,7 +276,7 @@ Flags take precedence over environment variables.`,
 			if err := a.applyOverrides(); err != nil {
 				return err
 			}
-			// Build logger after overrides so --debug and --output-path take effect
+			// Build logger after overrides so --output-path takes effect
 			a.Log = logger.New(a.Config.LogLevel, a.Config.LogConsole, a.Config.LogFile)
 			if configWarning != "" {
 				a.Log.Warn(configWarning, logger.UserKey, true)
@@ -290,10 +286,8 @@ Flags take precedence over environment variables.`,
 	}
 
 	rootCmd.PersistentFlags().StringP(flagOutputPath, "o", "", "Output directory (DB and logs)")
-	rootCmd.PersistentFlags().Bool(flagDebug, false, "Enable debug logging")
 	rootCmd.PersistentFlags().Bool(flagPlain, false, "Disable the full-screen TUI; use plain line logging")
 
-	rootCmd.AddCommand(a.newSetupCmd())
 	rootCmd.AddCommand(a.newConfigCmd())
 	rootCmd.AddCommand(a.newScanCmd())
 	rootCmd.AddCommand(a.newServeCmd())
@@ -325,10 +319,9 @@ Where to ideally store the generated scripts:
 // applyOverrides layers ENV, config-file, and CLI flag values over the config
 // defaults. Precedence: flag > env > config file (~/.wandersort/config.yaml,
 // edit with `wandersort config`) > default — viper resolves flag/env/file;
-// defaults come from config.Defaults(). output-path, workers, debug, and
-// rules can all be set in the config file (see pkg/config/global.go's
-// configTemplate); anchors are the one setting viper doesn't manage —
-// they're read/written directly via pkg/config's Global struct.
+// defaults come from config.Defaults(). Every key in the file (see
+// pkg/config.Global) is read here through viper, except home-work, which
+// anchor.go reads directly via config.LoadGlobal.
 func (a *App) applyOverrides() error {
 	if outputPath := v.GetString(flagOutputPath); outputPath != "" {
 		outputPath = path.New().ExpandPath(outputPath)
@@ -337,9 +330,6 @@ func (a *App) applyOverrides() error {
 	}
 	if workers := v.GetInt(flagWorkers); workers > 0 {
 		a.Config.Workers = workers
-	}
-	if v.GetBool(flagDebug) {
-		a.Config.LogLevel = "debug"
 	}
 	if port := v.GetString(flagPort); port != "" {
 		a.Config.ServerPort = port
