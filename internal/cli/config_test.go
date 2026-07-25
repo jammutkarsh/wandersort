@@ -190,9 +190,13 @@ func TestConfig(t *testing.T) {
 			if err := homeField.Validator("indore"); err != nil {
 				t.Errorf("known town must validate, got %v", err)
 			}
-			// ...but a name it has never heard of does not.
-			if err := homeField.Validator("Nowhereville Not A Real Town"); err == nil {
-				t.Error("unknown town must fail validation")
+			// ...and a name it has never heard of is accepted as typed — the
+			// gazetteer missing a village must not trap the user on this field.
+			if err := homeField.Validator("Nowhereville Not A Real Town"); err != nil {
+				t.Errorf("unknown town must validate as typed, got %v", err)
+			}
+			if got, err := a.canonicalTown(context.Background(), "Nowhereville Not A Real Town"); err != nil || got != "Nowhereville Not A Real Town" {
+				t.Errorf("canonicalTown(unknown) = %q, %v, want the typed name back", got, err)
 			}
 
 			// canonicalTown resolves the typed spelling to the gazetteer's own — the
@@ -257,6 +261,47 @@ func TestConfig(t *testing.T) {
 			}
 			if got := v.GetInt(flagWorkers); got != 7 {
 				t.Errorf("workers = %d, want 7 from the config file", got)
+			}
+		}},
+		// TestTreeExample covers the wizard's example renderer: sibling paths must
+		// fold their shared prefix into one branch point (the merge-days "no"
+		// example), and the note lands on the last line only.
+		{"TreeExample", func(t *testing.T) {
+			got := treeExample("(note)",
+				"2024/08_August/02/IMG_1.jpg",
+				"2024/08_August/03/IMG_2.jpg")
+			want := "2024\n" +
+				"└─ 08_August\n" +
+				"   ├─ 02\n" +
+				"   │  └─ IMG_1.jpg\n" +
+				"   └─ 03\n" +
+				"      └─ IMG_2.jpg\n" +
+				"\n" +
+				"(note)"
+			if got != want {
+				t.Errorf("treeExample:\n%s\nwant:\n%s", got, want)
+			}
+		}},
+		// TestScanNeedsConfigFirst covers the gate on scan/serve: the empty
+		// config.yaml every command creates must not count as configured, or the
+		// first scan builds its whole proposal from defaults.
+		{"ScanNeedsConfigFirst", func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+
+			if _, err := config.EnsureGlobalConfigFile(); err != nil {
+				t.Fatal(err)
+			}
+			if err := requireConfigured(); err == nil {
+				t.Error("an empty config.yaml must not count as configured")
+			}
+
+			if err := config.SaveGlobal(config.Global{OutputPath: filepath.Join(home, "out")}); err != nil {
+				t.Fatal(err)
+			}
+			if err := requireConfigured(); err != nil {
+				t.Errorf("after the wizard saved: %v", err)
 			}
 		}},
 	}

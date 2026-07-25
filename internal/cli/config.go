@@ -165,9 +165,10 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 	home := g.HomeWork.Home
 	work := g.HomeWork.Work
 
-	// townValidator rejects a town the gazetteer doesn't know, so a saved place
-	// always resolves later. A gazetteer that never opened at all waves the town
-	// through — a broken dependency must not trap the user on this field.
+	// townValidator rejects a near-miss the gazetteer has close candidates for
+	// (a typo), but waves through a name it doesn't know at all — see
+	// canonicalTown. A gazetteer that never opened at all waves the town
+	// through too — a broken dependency must not trap the user on this field.
 	townValidator := func(s string) error {
 		if strings.TrimSpace(s) == "" {
 			return nil // blank = skip
@@ -197,7 +198,7 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 		if gazetteer() != nil {
 			return typed
 		}
-		return "" // gazetteer works and doesn't know this town
+		return "" // near-miss the validator would have rejected ("did you mean")
 	}
 
 	paths := path.New()
@@ -211,11 +212,17 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 		filepath.Join(homeDir, "WanderSortLibrary"),
 	} {
 		if st, err := os.Stat(filepath.Dir(c)); err == nil && st.IsDir() {
-			outSuggestions = append(outSuggestions, c)
+			outSuggestions = append(outSuggestions, paths.RelativeToHome(c))
 		}
 	}
 	// suggestOut completes like a shell: list directories matching the typed
-	// prefix. Blank input falls back to the canned platform locations.
+	// prefix. Blank input falls back to the canned platform locations. Results
+	// render home-relative (~/Pictures, not /Users/x/Pictures) — ExpandPath
+	// undoes it before the value is used for anything. Capped well past the
+	// 5-row form window (tui.maxFormSuggestions) — the form scrolls the list,
+	// so a directory with a dozen matching children shouldn't be pruned before
+	// the user ever gets a chance to scroll to it.
+	const maxOutSuggestions = 25
 	suggestOut := func(typed string) []string {
 		typed = paths.ExpandPath(strings.TrimSpace(typed))
 		if typed == "" {
@@ -233,12 +240,14 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 		}
 		var out []string
 		for _, e := range entries {
-			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			// bundles (.app, .framework, ...) report IsDir() true but aren't
+			// folders a person would pick as an output path.
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || isBundleDir(e.Name()) {
 				continue
 			}
 			if strings.HasPrefix(strings.ToLower(e.Name()), strings.ToLower(base)) {
-				out = append(out, filepath.Join(dir, e.Name()))
-				if len(out) == 5 {
+				out = append(out, paths.RelativeToHome(filepath.Join(dir, e.Name())))
+				if len(out) == maxOutSuggestions {
 					break
 				}
 			}
@@ -281,9 +290,11 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 		vfs.RuleOrientation: "Vertical",
 		vfs.RuleMedia:       "Photos",
 	}
-	// examplePath renders the path the answers *so far* would produce, so an
+	// examplePath builds the path the answers *so far* would produce, so an
 	// example reacts to the rules ticked earlier rather than showing a canned
 	// tree. Blank day/town drop that level; collapsed drops the other three.
+	// Rendered through treeExample so the example looks like the review screen
+	// — the thing these settings actually shape.
 	examplePath := func(day, town string, collapsed bool) string {
 		segs := []string{"2024", "08_August"}
 		for _, r := range rulesField.Options {
@@ -307,31 +318,92 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 		}
 		return strings.Join(segs, "/") + "/IMG_1234.jpg"
 	}
-	// homeTown is what the home/work examples name; a stand-in until the user
-	// has typed a town, so the example is never blank.
-	homeTown := func() string {
-		if t := strings.TrimSpace(home); t != "" {
-			return t
-		}
-		return "Indore"
-	}
-	rulesField.Example = func() string { return examplePath("02", "Goa", false) }
-
-	// Always demonstrates all three collapsible levels even when Rules has none
-	// ticked: this step sits under Home & work, so the user may not have
-	// visited Rules yet, and "nothing to collapse" teaches them nothing.
-	collapseExample := func() string {
+	// hwExample builds the path for the home/work date-only example. Unlike
+	// examplePath, the location segment is driven directly by loc rather than
+	// rulesField.Selected — this question is specifically about the home/work
+	// city folder, so the example must show its effect even when Rules hasn't
+	// got location ticked yet.
+	hwExample := func(loc string) string {
 		segs := []string{"2024", "08_August"}
 		if rulesField.Selected[vfs.RuleDate] {
 			segs = append(segs, "12")
 		}
-		if rulesField.Selected[vfs.RuleLocation] {
-			segs = append(segs, homeTown())
+		if loc != "" {
+			segs = append(segs, loc)
 		}
 		if !collapse {
-			segs = append(segs, ruleSeg[vfs.RuleDevice], ruleSeg[vfs.RuleOrientation], ruleSeg[vfs.RuleMedia])
+			for _, r := range []string{vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia} {
+				if rulesField.Selected[r] {
+					segs = append(segs, ruleSeg[r])
+				}
+			}
 		}
 		return strings.Join(segs, "/") + "/IMG_1234.jpg"
+	}
+	// homeTown is what the home/work examples name; a stand-in until the user
+	// has typed a town, so the example is never blank. `home` is saved fully
+	// qualified ("Indore, Madhya Pradesh, India") so it round-trips through
+	// ResolveByName, but a folder can't hold a comma and the state/country
+	// only exists to disambiguate the picker — bare city here, same as the
+	// anchor fold in vfs.resolveLocations.
+	homeTown := func() string {
+		if t := strings.TrimSpace(home); t != "" {
+			city, _, _ := strings.Cut(t, ",")
+			return city
+		}
+		return "Indore"
+	}
+	rulesField.Example = func() string { return treeExample("", examplePath("02", "Goa", false)) }
+
+	// Always demonstrates all three collapsible levels even when Rules has none
+	// ticked: this step sits under Home & work, so the user may not have
+	// visited Rules yet, and "nothing to collapse" teaches them nothing.
+	// Two branches, not one — collapsing is about the *repetition* of a
+	// one-value level under every folder, which a single path can't show.
+	collapseExample := func() string {
+		day := func(d string) []string {
+			segs := []string{"2024", "08_August"}
+			if rulesField.Selected[vfs.RuleDate] {
+				segs = append(segs, d)
+			}
+			if rulesField.Selected[vfs.RuleLocation] {
+				segs = append(segs, homeTown())
+			}
+			return segs
+		}
+		leaf := func(segs []string, device, orientation, file string) string {
+			out := append([]string{}, segs...)
+			if !collapse {
+				out = append(out, device, orientation, ruleSeg[vfs.RuleMedia])
+			}
+			return strings.Join(out, "/") + "/" + file
+		}
+		if collapse {
+			d13 := day("13")
+			return treeExample("",
+				leaf(day("12"), "", "", "IMG_1234.jpg"),
+				leaf(d13, "", "", "IMG_1250.jpg"),
+				leaf(d13, "", "", "IMG_1251.jpg"))
+		}
+		// Second branch uses a different device and orientation than the
+		// first — real, so it also shows what does *not* collapse: two
+		// devices and two orientations mean neither level is one value
+		// library-wide, only Photos is.
+		d13 := day("13")
+		return treeExample("",
+			leaf(day("12"), ruleSeg[vfs.RuleDevice], ruleSeg[vfs.RuleOrientation], "IMG_1234.jpg"),
+			leaf(d13, "Canon EOS 700D", "Horizontal", "IMG_1250.jpg"),
+			leaf(d13, "Canon EOS 700D", "Horizontal", "IMG_1251.jpg"))
+	}
+	// What the example *means*, as the question's own description — the example
+	// column is too narrow to hold a sentence without truncating it.
+	collapseDescribe := func() string {
+		d := "Drop a device/orientation/media folder that would hold every single " +
+			"file in the library — one value means the level says nothing."
+		if collapse {
+			return d + " On: those folders are left out below."
+		}
+		return d + " Off: they stay, repeating under every folder even though they never vary."
 	}
 
 	fields := []*tui.Field{
@@ -380,39 +452,52 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 					Value: &work, Validator: townValidator, Suggest: suggestTown,
 				},
 				{
-					Kind:  tui.FieldConfirm,
-					Title: "Collapse uninformative levels?",
-					Description: "Drop a device/orientation/media folder that would hold every single\n" +
-						"file in the library — one value means the level says nothing.",
+					Kind:      tui.FieldConfirm,
+					Title:     "Collapse uninformative levels?",
+					Describe:  collapseDescribe,
 					BoolValue: &collapse,
 					Example:   collapseExample,
 				},
 				{
 					Kind:  tui.FieldConfirm,
 					Title: "Group home/work photos by date only?",
-					Description: "Everyday shots from home/work aren't trips — a city folder there\n" +
-						"mostly repeats itself.",
+					Describe: func() string {
+						d := "Everyday shots from home/work aren't trips — a city folder there mostly repeats itself."
+						if hwDateOnly {
+							return d + " On: no city folder for these."
+						}
+						return d + " Off: nearby suburbs still fold into " + homeTown() + "."
+					},
 					BoolValue: &hwDateOnly,
 					Example: func() string {
 						if hwDateOnly {
-							return examplePath("12", "", collapse) + "   (no city folder)"
+							return treeExample("", hwExample(""))
 						}
-						return examplePath("12", homeTown(), collapse) + "   (suburbs fold into " + homeTown() + ")"
+						return treeExample("", hwExample(homeTown()))
 					},
 				},
 				{
 					Kind:  tui.FieldConfirm,
 					Title: "Merge consecutive same-location days?",
-					Description: "A multi-day trip in one place becomes one folder instead of one per\n" +
-						"day. You can still split or merge days later in review.",
+					Describe: func() string {
+						d := "A multi-day trip in one place becomes one folder instead of one per day. " +
+							"You can still split or merge days later in review."
+						if mergeDays {
+							return d + " On: consecutive same-location days merge."
+						}
+						return d + " Off: each day keeps its own folder."
+					},
 					BoolValue: &mergeDays,
 					Example: func() string {
 						if mergeDays {
-							return examplePath("02_04", "Goa", collapse)
+							return treeExample("", examplePath("02_04", "Greece", collapse))
 						}
-						return examplePath("02", "Goa", collapse) + "\n" +
-							examplePath("03", "Goa", collapse) + "\n" +
-							examplePath("04", "Goa", collapse)
+						// three sibling day branches under one month — exactly the
+						// shape a "no" produces in review
+						return treeExample("",
+							examplePath("02", "Greece", collapse),
+							examplePath("03", "Greece", collapse),
+							examplePath("04", "Greece", collapse))
 					},
 				},
 			},
@@ -453,6 +538,72 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 	return fields, save
 }
 
+// treeExample renders slash paths as the same guided tree the review screen
+// draws, shared prefixes folded together — a wizard example should look like
+// the thing the setting shapes, not like a shell path. note, if any, renders
+// as its own final line — appended to the deepest tree line it was the first
+// thing the side panel truncated.
+func treeExample(note string, paths ...string) string {
+	type node struct {
+		name string
+		kids []*node
+	}
+	root := &node{}
+	for _, p := range paths {
+		cur := root
+		for seg := range strings.SplitSeq(p, "/") {
+			var next *node
+			for _, k := range cur.kids {
+				if k.name == seg {
+					next = k
+					break
+				}
+			}
+			if next == nil {
+				next = &node{name: seg}
+				cur.kids = append(cur.kids, next)
+			}
+			cur = next
+		}
+	}
+	var b strings.Builder
+	var walk func(nodes []*node, prefix string, top bool)
+	walk = func(nodes []*node, prefix string, top bool) {
+		for i, n := range nodes {
+			branch, childPrefix := "├─ ", prefix+"│  "
+			if i == len(nodes)-1 {
+				branch, childPrefix = "└─ ", prefix+"   "
+			}
+			if top { // roots stand alone, same as the review tree
+				branch, childPrefix = "", ""
+			}
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(prefix)
+			b.WriteString(branch)
+			b.WriteString(n.name)
+			walk(n.kids, childPrefix, false)
+		}
+	}
+	walk(root.kids, "", true)
+	if note != "" {
+		b.WriteString("\n\n")
+		b.WriteString(note)
+	}
+	return b.String()
+}
+
+// bundleExts are macOS package directories that report IsDir() true but hold
+// an app/plugin, not something a person would pick as an output folder.
+// ponytail: extension list, not a bundle-detection API — add here if a report
+// names another one (.framework, .kext, ...).
+var bundleExts = map[string]bool{".app": true}
+
+func isBundleDir(name string) bool {
+	return bundleExts[strings.ToLower(filepath.Ext(name))]
+}
+
 // toMap converts a slice to a map for multiselect field initialization.
 func toMap(items []string) map[string]bool {
 	m := make(map[string]bool)
@@ -462,9 +613,12 @@ func toMap(items []string) map[string]bool {
 	return m
 }
 
-// canonicalTown returns the gazetteer's exact spelling of a typed town name, or
-// an error if it has no case-insensitive match. Blank input is an error too
-// (callers treat blank as "skip" before calling for the canonical form).
+// canonicalTown returns the gazetteer's exact spelling of a typed town name.
+// A name the gazetteer has never heard of is accepted as typed — a village
+// missing from the database is the user's problem to spell, not a wall — but a
+// near-miss with real candidates still errors ("did you mean"), since that's a
+// typo, not a gap. Blank input is an error (callers treat blank as "skip"
+// before calling for the canonical form).
 func (a *App) canonicalTown(ctx context.Context, typed string) (string, error) {
 	typed = strings.TrimSpace(typed)
 	if typed == "" || a.LocationResolver == nil {
@@ -472,7 +626,7 @@ func (a *App) canonicalTown(ctx context.Context, typed string) (string, error) {
 	}
 	matches, err := a.LocationResolver.SearchByName(ctx, typed, 8)
 	if err != nil || len(matches) == 0 {
-		return "", fmt.Errorf("no town named %q — check the spelling", typed)
+		return typed, nil
 	}
 	if name, ok := exactMatch(matches, typed); ok {
 		return name, nil
