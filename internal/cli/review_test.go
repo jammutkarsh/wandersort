@@ -22,6 +22,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
+	"github.com/jammutkarsh/wandersort/pkg/location/locationtest"
 )
 
 func sampleTree() []vfs.Node {
@@ -88,10 +89,10 @@ func TestReview(t *testing.T) {
 		}},
 		// TestLayoutKeyCyclesPresetsAndKicksOffRelayout covers [L]: it advances to
 		// the next preset and starts an async rebuild, as long as a resolver is
-		// available (the zero-value *location.Resolver here is never actually
-		// invoked — Update only returns the Cmd, it doesn't run it).
+		// available (a real resolver here, for consistency — but still never
+		// actually invoked, since Update only returns the Cmd, it doesn't run it).
 		{"LayoutKeyCyclesPresetsAndKicksOffRelayout", func(t *testing.T) {
-			m := newReviewModel(sampleTree(), nil, nil, uuid.Nil, &location.Resolver{}, nil)
+			m := newReviewModel(sampleTree(), nil, nil, uuid.Nil, locationtest.Resolver(t), nil)
 
 			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("L")})
 			rm := next.(reviewModel)
