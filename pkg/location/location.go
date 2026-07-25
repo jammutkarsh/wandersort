@@ -20,7 +20,6 @@ import (
 	"time"
 	"unicode"
 
-	"golang.org/x/sync/singleflight"
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -52,7 +51,6 @@ type cacheKey struct {
 type Resolver struct {
 	db    *db.DB
 	cache sync.Map
-	sf    singleflight.Group
 	log   logger.Logger
 }
 
@@ -118,32 +116,16 @@ func (r *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error)
 		lon: math.Round(lon*gpsRoundingFactor) / gpsRoundingFactor,
 	}
 
-	// 1. Load: Returns value and a boolean 'ok'
 	if val, ok := r.cache.Load(key); ok {
 		return val.(string), nil
 	}
 
-	// 2. Singleflight: Protect against cache stampede
-	val, err, _ := r.sf.Do(fmt.Sprintf("%f:%f", key.lat, key.lon), func() (any, error) {
-		// Re-check cache in case another goroutine just finished the DB call
-		if val, ok := r.cache.Load(key); ok {
-			return val, nil
-		}
-
-		city, err := r.queryNearest(ctx, key.lat, key.lon)
-		if err != nil {
-			return "", err
-		}
-
-		// 3. Store: Cache the result
-		r.cache.Store(key, city)
-		return city, nil
-	})
-
+	city, err := r.queryNearest(ctx, key.lat, key.lon)
 	if err != nil {
 		return "", err
 	}
-	return val.(string), nil
+	r.cache.Store(key, city)
+	return city, nil
 }
 
 // queryNearest finds the closest city name to the given coordinates
