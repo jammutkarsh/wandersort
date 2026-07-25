@@ -14,21 +14,12 @@ import (
 	"path/filepath"
 )
 
-// CopyProgress reports incremental progress of a CopyFiles run — called after
-// each file finishes, with that file's path, its size, and the running total
-// across the whole batch. A caller driving a progress bar or spinner can use
-// it to report as it goes; nil is fine if the caller doesn't care.
+// CopyProgress reports a CopyFiles run after each file: that file's path and
+// size, plus the batch's running total. nil if the caller doesn't care.
 type CopyProgress func(srcPath string, fileBytes, totalBytes int64)
 
-// CopyFiles copies srcPaths into destDir, one at a time, stopping once at
-// least maxBytes total has been copied (0 = no cap — copies everything).
-// Sources are never modified. Returns the number of files actually copied.
-//
-// This is the shared copy primitive: the review TUI's preview (internal/cli)
-// uses it to stage a size-capped sample for the OS file viewer, and it's
-// meant to be the same primitive a future Execute phase reuses for the real
-// copy-then-verify-then-delete library move — CopyFile alone (no cap) is the
-// piece that phase would call directly.
+// CopyFiles copies srcPaths into destDir, stopping once maxBytes has been
+// copied (0 = no cap). Sources are never modified. Returns the files copied.
 func CopyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes int64, onProgress CopyProgress) (int, error) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return 0, fmt.Errorf("create dest dir %s: %w", destDir, err)
@@ -58,10 +49,9 @@ func CopyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes 
 	return copied, nil
 }
 
-// CopyFile copies src to dest atomically — a temp file in dest's directory,
-// then a rename — so a failure or cancel partway through never leaves a
-// partial file at dest. src is opened read-only and never modified. Returns
-// bytes written.
+// CopyFile copies src to dest atomically: a temp file in dest's directory,
+// then a rename, so a failure partway never leaves a partial file at dest.
+// Returns bytes written.
 func CopyFile(src, dest string) (int64, error) {
 	in, err := os.Open(src)
 	if err != nil {

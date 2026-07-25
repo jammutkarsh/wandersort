@@ -26,39 +26,35 @@ const (
 	FieldInput FieldKind = iota
 	FieldConfirm
 	FieldMultiSelect
-	FieldNote
 	FieldGroup
 )
+
+// maxFormSuggestions caps the completion list under an input — it renders
+// above the footer, so an unbounded list pushes the step stack off screen.
+const maxFormSuggestions = 5
 
 // Field represents a single form field.
 type Field struct {
 	Kind        FieldKind
 	Title       string
 	Description string
-	// Describe overrides Description when set. Re-evaluated on every render,
-	// so an example path can react live to the current selection.
-	Describe  func() string
-	Value     *string         // for Input
-	BoolValue *bool           // for Confirm
-	Options   []string        // for MultiSelect
-	Selected  map[string]bool // for MultiSelect
-	// Subs are the fields of a FieldGroup, answered in order on one screen (e.g.
-	// home town, work town, and the two questions about how they're foldered).
-	// Any kind is allowed — a group is a screen, not an input list.
+	Value       *string         // for Input
+	BoolValue   *bool           // for Confirm
+	Options     []string        // for MultiSelect
+	Selected    map[string]bool // for MultiSelect
+	// Subs are a FieldGroup's fields, answered in order on one screen. Any kind
+	// is allowed — a group is a screen, not an input list.
 	Subs []*Field
-	// Example returns the concrete result of the field's *current* answer (a
-	// folder path, a tree). It renders in its own block above the footer, not
-	// inside the description: the description explains the question once, the
-	// example shows only what the option under the cursor would do.
+	// Example renders what the option under the cursor would produce, in its own
+	// block above the footer. The description explains the question; the example
+	// demonstrates the one answer being considered.
 	Example func() string
-	// Await, when it returns a non-empty string, holds the field: the text
-	// renders under it and enter refuses to advance. The config wizard uses it
-	// to make the town fields wait for the location database download.
+	// Await holds the field while it returns a non-empty string: the text shows
+	// under the title and enter refuses to advance.
 	Await       func() string
 	Placeholder string
-	// Suggest returns completions for the typed text (called on every
-	// keystroke — keep it fast; e.g. a location-DB prefix search). ↑/↓ pick,
-	// tab/enter fill.
+	// Suggest returns completions for the typed text. Called per keystroke, so
+	// keep it fast. ↑/↓ pick, tab/enter fill.
 	Suggest   func(typed string) []string
 	Validator func(string) error
 	Error     string
@@ -121,11 +117,11 @@ func (m FormModel) active() *Field {
 	return f
 }
 
-func (m FormModel) activeKind() FieldKind {
-	if f := m.active(); f != nil {
-		return f.Kind
-	}
-	return FieldNote
+// inputFocused reports whether keystrokes are going into a text field, where
+// letters and digits are ordinary input rather than shortcuts.
+func (m FormModel) inputFocused() bool {
+	f := m.active()
+	return f != nil && f.Kind == FieldInput
 }
 
 // seedInput points the shared textinput at the active field (no-op controls
@@ -170,16 +166,14 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.aborted = true
 			return m, tea.Quit
 		case "c":
-			// Save whatever's answered and exit — a second-time user often wants
-			// to change one setting, not click through every step again. Same
-			// key as the review TUI's save & exit. Not while a text field is
-			// focused, where "c" is ordinary typed input.
-			if m.activeKind() != FieldInput {
+			// save & exit: same key as the review TUI, for changing one setting
+			// without clicking through every step
+			if !m.inputFocused() {
 				return m.saveAndExit()
 			}
 		case "enter":
-			// An arrowed-onto suggestion: enter picks it instead of advancing.
-			if m.suggCursor >= 0 && m.suggCursor < len(m.sugg) && m.activeKind() == FieldInput {
+			// an arrowed-onto suggestion: pick it instead of advancing
+			if m.suggCursor >= 0 && m.suggCursor < len(m.sugg) && m.inputFocused() {
 				m.fillSuggestion(m.suggCursor)
 				return m, nil
 			}
@@ -187,16 +181,16 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			return m.movePrev()
 		case "tab":
-			// Fill the picked (or top) completion.
-			if len(m.sugg) > 0 && m.activeKind() == FieldInput {
+			// fill the picked (or top) completion
+			if len(m.sugg) > 0 && m.inputFocused() {
 				m.fillSuggestion(max(m.suggCursor, 0))
 				return m, nil
 			}
 		case "up", "down":
-			// Navigate the suggestion list under an input. Falls through to the
-			// multiselect's own ↑/↓ handling below for that kind.
-			if m.activeKind() == FieldInput && len(m.sugg) > 0 {
-				if msg.String() == "down" && m.suggCursor < len(m.sugg)-1 && m.suggCursor < 4 {
+			// under an input, ↑/↓ walk the suggestion list; otherwise they fall
+			// through to the multiselect handling below
+			if m.inputFocused() && len(m.sugg) > 0 {
+				if msg.String() == "down" && m.suggCursor < len(m.sugg)-1 && m.suggCursor < maxFormSuggestions-1 {
 					m.suggCursor++
 				} else if msg.String() == "up" && m.suggCursor > -1 {
 					m.suggCursor--
@@ -205,10 +199,8 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Number keys jump straight to a step (question), the numbers rendered
-		// next to the step list — not while a text field is focused, where a
-		// digit is ordinary typed input (e.g. worker count, a path).
-		if m.activeKind() != FieldInput {
+		// digits jump to the step with that number in the stack
+		if !m.inputFocused() {
 			if n, ok := optionNumber(msg.String(), len(m.Fields)); ok {
 				return m.jumpTo(n)
 			}
@@ -459,7 +451,7 @@ func (m FormModel) expandedField(f *Field, i int) string {
 	var b strings.Builder
 	num := fmt.Sprintf("%d) ", i+1)
 	b.WriteString(row(Title.Render(num)+Text.Bold(true).Render(f.Title), "", m.w))
-	for line := range strings.SplitSeq(describe(f), "\n") {
+	for line := range strings.SplitSeq(f.Description, "\n") {
 		if line != "" {
 			b.WriteString("\n" + row("    "+DimText.Render(line), "", m.w))
 		}
@@ -492,7 +484,7 @@ func (m FormModel) subView(sub *Field, focused bool) string {
 	var b strings.Builder
 	if sub.Kind != FieldInput {
 		b.WriteString("\n" + row("    "+Text.Bold(true).Render(sub.Title), "", m.w))
-		for line := range strings.SplitSeq(describe(sub), "\n") {
+		for line := range strings.SplitSeq(sub.Description, "\n") {
 			if line != "" {
 				b.WriteString("\n" + row("      "+DimText.Render(line), "", m.w))
 			}
@@ -537,14 +529,6 @@ func optionRow(label string, on, cursor bool) string {
 	return "      " + line
 }
 
-// describe returns a field's description, preferring the live Describe closure.
-func describe(f *Field) string {
-	if f.Describe != nil {
-		return f.Describe()
-	}
-	return f.Description
-}
-
 // inputView renders the live textinput plus its error and suggestion list —
 // shared by plain input fields and a group's focused sub-input.
 func (m FormModel) inputView(f *Field, label string) string {
@@ -557,7 +541,7 @@ func (m FormModel) inputView(f *Field, label string) string {
 		b.WriteString("\n    " + Bad.Render("✗ "+f.Error))
 	}
 	for i, s := range m.sugg {
-		if i >= 5 {
+		if i >= maxFormSuggestions {
 			break
 		}
 		var line string

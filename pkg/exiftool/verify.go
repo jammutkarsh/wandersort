@@ -11,6 +11,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,10 +30,8 @@ import (
 const (
 	exiftoolVersion = "13.59"
 
-	// GOOS constants — runtime.GOOS uses these string values
+	// windows is runtime.GOOS's value for Windows; the only one needing a branch
 	windows = "windows"
-	macOS   = "darwin"
-	linux   = "linux"
 
 	filesBaseURL        = "https://wandersort.utkarshchourasia.in/files"
 	releaseMetaFileName = "exiftool.json"
@@ -269,10 +268,10 @@ func checkVersion(path string, log logger.Logger) (bool, error) {
 		return false, fmt.Errorf("unexpected version format: %s", ver)
 	}
 
-	major, err1 := strconv.Atoi(parts[0])
-	minor, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil {
-		return false, fmt.Errorf("parse version %s: %v %v", ver, err1, err2)
+	major, majorErr := strconv.Atoi(parts[0])
+	minor, minorErr := strconv.Atoi(parts[1])
+	if err := errors.Join(majorErr, minorErr); err != nil {
+		return false, fmt.Errorf("parse version %s: %w", ver, err)
 	}
 
 	// Parse required version

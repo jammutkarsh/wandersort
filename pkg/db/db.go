@@ -41,8 +41,6 @@ const (
 	StatusScored     = "SCORED"
 	StatusOrganizing = "ORGANIZING"
 	StatusOrganized  = "ORGANIZED"
-	StatusAnalyzing  = "ANALYZING"
-	StatusAnalyzed   = "ANALYZED"
 	StatusCompleted  = "COMPLETED"
 	StatusFailed     = "FAILED"
 	StatusCancelled  = "CANCELLED"
@@ -52,7 +50,6 @@ const (
 	// virtual_fs_entries lifecycle
 	StatusProposed = "PROPOSED"
 	StatusApproved = "APPROVED"
-	StatusDone     = "DONE"
 )
 
 // TimeLayout is RFC3339 with fixed-width nanoseconds. Fixed width keeps
@@ -85,7 +82,6 @@ const (
 type DB struct {
 	SQL    *sqlx.DB
 	Writer *BulkWriter
-	log    logger.Logger
 }
 
 // New opens the database at dbPath according to dbType and returns a *DB
@@ -182,7 +178,7 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 
 	log.Info("Migration completed", "migrations", count)
 	log.Info("Successfully connected to sqlite database", "path", dbPath)
-	d := &DB{SQL: sqlxDB, log: log}
+	d := &DB{SQL: sqlxDB}
 	d.Writer = NewBulkWriter(sqlxDB, log)
 	return d, nil
 }
@@ -205,7 +201,7 @@ func openLocationDB(dbPath string, log logger.Logger) (*DB, error) {
 	}
 
 	log.Info("Successfully connected to location database", "path", dbPath)
-	return &DB{SQL: sqlx.NewDb(sqlDB, "sqlite"), log: log}, nil
+	return &DB{SQL: sqlx.NewDb(sqlDB, "sqlite")}, nil
 }
 
 // Optimize reclaims SQLite disk space (incremental_vacuum) and releases
