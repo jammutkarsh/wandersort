@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/location/locationtest"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -143,6 +144,73 @@ func TestConfig(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("saved config = %+v, want %+v", got, want)
+			}
+		}},
+		// TestTownFieldsRoundTripARealTown exercises the real gazetteer path that
+		// every other case in this file leaves untouched by never setting
+		// a.LocationResolver: with a ready resolver and gazetteer() reporting no
+		// error, suggestTown/townValidator/canonicalTown must round-trip a real
+		// town through SearchByName/exactMatch to its canonical gazetteer spelling.
+		{"TownFieldsRoundTripARealTown", func(t *testing.T) {
+			// Resolve against the real machine's ~/.wandersort/location.db
+			// *before* HOME gets redirected below — locationtest.Resolver reads
+			// $HOME itself, and pointing it at a fresh temp dir would make it
+			// re-download the ~80MB database instead of reusing the copy
+			// already cached on this machine.
+			resolver := locationtest.Resolver(t)
+
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+
+			cfg, err := config.Defaults()
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := &App{Config: cfg, LocationResolver: resolver}
+
+			fields, save := a.buildConfigForm(context.Background(), func() error { return nil })
+			group := fieldByTitle(t, fields, "Home & work")
+			homeField := group.Subs[0]
+
+			// A partial real city name must surface a real gazetteer entry — the
+			// full "city, state, country" form the picker always lists.
+			suggestions := homeField.Suggest("Indo")
+			found := false
+			for _, s := range suggestions {
+				if s == "Indore, Madhya Pradesh, India" {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("suggestions for %q = %v, want to include %q", "Indo", suggestions, "Indore, Madhya Pradesh, India")
+			}
+
+			// A typed name the gazetteer knows validates clean...
+			if err := homeField.Validator("indore"); err != nil {
+				t.Errorf("known town must validate, got %v", err)
+			}
+			// ...but a name it has never heard of does not.
+			if err := homeField.Validator("Nowhereville Not A Real Town"); err == nil {
+				t.Error("unknown town must fail validation")
+			}
+
+			// canonicalTown resolves the typed spelling to the gazetteer's own — the
+			// full "city, state, country" form, per canonicalNameOf.
+			got, err := a.canonicalTown(context.Background(), "indore")
+			if err != nil {
+				t.Fatalf("canonicalTown(%q): %v", "indore", err)
+			}
+			if want := "Indore, Madhya Pradesh, India"; got != want {
+				t.Errorf("canonicalTown(%q) = %q, want %q", "indore", got, want)
+			}
+
+			*homeField.Value = "indore"
+			if err := save(); err != nil {
+				t.Fatalf("save: %v", err)
+			}
+			if g, _ := config.LoadGlobal(); g.HomeWork.Home != "Indore, Madhya Pradesh, India" {
+				t.Errorf("saved home town = %q, want the canonical gazetteer spelling", g.HomeWork.Home)
 			}
 		}},
 		// TestBadYAMLWarnsAndFallsBackToDefaults covers the escape hatch: a config

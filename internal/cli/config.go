@@ -22,6 +22,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -52,7 +53,7 @@ wandersort config | grep rules`,
 }
 
 func (a *App) runConfig() error {
-	path, err := config.EnsureGlobalConfigFile()
+	configPath, err := config.EnsureGlobalConfigFile()
 	if err != nil {
 		return fmt.Errorf("global config: %w", err)
 	}
@@ -62,7 +63,7 @@ func (a *App) runConfig() error {
 	// fighting over the same stream.
 	interactive := term.IsTerminal(int(os.Stdout.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
 	if v.GetBool(flagPrint) || !interactive {
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(configPath)
 		if err != nil {
 			return fmt.Errorf("read config: %w", err)
 		}
@@ -77,7 +78,7 @@ func (a *App) runConfig() error {
 	case err != nil:
 		return err
 	}
-	fmt.Printf("config saved in %s\n", path)
+	fmt.Printf("config saved in %s\n", configPath)
 	return nil
 }
 
@@ -164,11 +165,9 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 	home := g.HomeWork.Home
 	work := g.HomeWork.Work
 
-	// townValidator rejects a town the gazetteer doesn't know, so the saved
-	// place always resolves later. A gazetteer that never opened at all (failed
-	// download, database held by another process) waves the town through
-	// instead: a broken dependency must not trap the user on this field with no
-	// way forward.
+	// townValidator rejects a town the gazetteer doesn't know, so a saved place
+	// always resolves later. A gazetteer that never opened at all waves the town
+	// through — a broken dependency must not trap the user on this field.
 	townValidator := func(s string) error {
 		if strings.TrimSpace(s) == "" {
 			return nil // blank = skip
@@ -185,10 +184,8 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 		return nil
 	}
 
-	// canonicalTownOrTyped is the same rule at save time: the gazetteer's exact
-	// spelling when it can give one, otherwise what the user typed — dropping a
-	// town they already had because the database wouldn't open would be a silent
-	// data loss.
+	// same rule at save time: the gazetteer's spelling when it can give one,
+	// else what was typed — dropping a town the user already had is data loss
 	canonicalTownOrTyped := func(typed string) string {
 		typed = strings.TrimSpace(typed)
 		if typed == "" {
@@ -203,19 +200,8 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 		return "" // gazetteer works and doesn't know this town
 	}
 
-	homeDir, _ := os.UserHomeDir()
-
-	// expandHome resolves a leading ~ so "~/Photos" works everywhere the path
-	// is matched or saved.
-	expandHome := func(p string) string {
-		if p == "~" {
-			return homeDir
-		}
-		if strings.HasPrefix(p, "~/") {
-			return filepath.Join(homeDir, p[2:])
-		}
-		return p
-	}
+	paths := path.New()
+	homeDir := paths.HomeDir
 
 	// Suggest locations under folders that exist on this machine — ~/Pictures
 	// is a macOS/Windows convention; a Linux box without it won't offer it.
@@ -231,7 +217,7 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 	// suggestOut completes like a shell: list directories matching the typed
 	// prefix. Blank input falls back to the canned platform locations.
 	suggestOut := func(typed string) []string {
-		typed = expandHome(strings.TrimSpace(typed))
+		typed = paths.ExpandPath(strings.TrimSpace(typed))
 		if typed == "" {
 			return outSuggestions
 		}
@@ -272,10 +258,8 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 		if err != nil {
 			return nil
 		}
-		// FullName ("Indore, Madhya Pradesh, India"), not the bare city: a list
-		// of six identical "Springfield"s is unpickable, and the state/country
-		// are exactly what tells them apart. The saved town keeps that form —
-		// location.ResolveByName resolves it back to the right row.
+		// FullName, not the bare city: six identical "Springfield"s are
+		// unpickable. The saved town keeps that form; ResolveByName round-trips it.
 		names := make([]string, len(matches))
 		for i, m := range matches {
 			names[i] = m.FullName
@@ -297,13 +281,9 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 		vfs.RuleOrientation: "Vertical",
 		vfs.RuleMedia:       "Photos",
 	}
-	// examplePath builds the folder path the answers *so far* would produce, so
-	// every example on screen reacts to the rules ticked earlier instead of
-	// showing a canned tree that may include levels the user just turned off.
-	// day/town are the caller's stand-ins for those two levels ("" drops the
-	// level, which is exactly what "date only" and an unresolved location mean);
-	// collapsed drops the device/orientation/media levels the way the collapse
-	// setting does.
+	// examplePath renders the path the answers *so far* would produce, so an
+	// example reacts to the rules ticked earlier rather than showing a canned
+	// tree. Blank day/town drop that level; collapsed drops the other three.
 	examplePath := func(day, town string, collapsed bool) string {
 		segs := []string{"2024", "08_August"}
 		for _, r := range rulesField.Options {
@@ -337,14 +317,9 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 	}
 	rulesField.Example = func() string { return examplePath("02", "Goa", false) }
 
-	// collapseExample always demonstrates all three collapsible levels
-	// (device/orientation/media), regardless of whether Rules currently has
-	// any of them ticked — the question moved under Home & work, where a
-	// user answering it may not have visited Rules yet or may add a
-	// collapsible level later. Showing "nothing to collapse" when none are
-	// ticked would leave them re-deriving what the setting does the next
-	// time they turn one on. Location uses the home town, since this step
-	// already lives in the home/work context.
+	// Always demonstrates all three collapsible levels even when Rules has none
+	// ticked: this step sits under Home & work, so the user may not have
+	// visited Rules yet, and "nothing to collapse" teaches them nothing.
 	collapseExample := func() string {
 		segs := []string{"2024", "08_August"}
 		if rulesField.Selected[vfs.RuleDate] {
@@ -458,7 +433,7 @@ func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 			}
 		}
 		g := config.Global{
-			OutputPath:            expandHome(strings.TrimSpace(out)),
+			OutputPath:            paths.ExpandPath(strings.TrimSpace(out)),
 			Rules:                 selectedRules,
 			CollapseLevels:        collapse,
 			HomeWorkDateOnly:      hwDateOnly,
