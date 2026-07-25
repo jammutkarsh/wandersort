@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -364,6 +365,71 @@ func TestSidecarWithNoOwnTimestampFallsBackToModTime(t *testing.T) {
 	rows := h.build(t, DefaultConfig(), nil)
 	if rows[id].TargetPath == "" {
 		t.Fatal("expected a target path derived from file mtime, got none")
+	}
+}
+
+// TestCaptureGroupSidecarCoLocatesWithPair covers the real reported bug:
+// an AAE sidecar has no EXIF of its own, so without grouping it would land
+// wherever its own file mtime falls (a different day than the HEIC it
+// belongs with — addFile gives every file the same fixed mtime, June 1,
+// while the HEIC pair's real capture date is June 3). With the capture
+// group, the sidecar inherits the pair's directory instead.
+func TestCaptureGroupSidecarCoLocatesWithPair(t *testing.T) {
+	h := newHarness(t)
+	aae := h.addFile(t, "d/IMG_0042.AAE", "SIDECAR", classifier.CommonMetadata{})
+	heic := h.addFile(t, "d/IMG_0042.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
+	edited := h.addFile(t, "d/IMG_E0042.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
+
+	rows := h.build(t, DefaultConfig(), nil)
+	dirAAE := filepath.Dir(rows[aae].TargetPath)
+	dirHEIC := filepath.Dir(rows[heic].TargetPath)
+	dirEdited := filepath.Dir(rows[edited].TargetPath)
+	if dirAAE != dirHEIC || dirHEIC != dirEdited {
+		t.Errorf("capture bundle split across dirs: aae=%q heic=%q edited=%q", dirAAE, dirHEIC, dirEdited)
+	}
+}
+
+// TestCaptureDirsForcesRawJpgTogetherAndKeepsRicherLocation is a direct unit
+// test of captureDirs, deliberately bypassing Run()/clusterAndSuggest: the
+// full pipeline's time-gap spillover (cluster.go's majorityCity) already
+// fills in a same-moment file's missing location from a nearby member
+// regardless of filename, so an end-to-end RAW+JPG test would pass even with
+// captureDirs stubbed out — it wouldn't be testing this feature at all.
+// Also guards the representative choice: the RAW lacks GPS, so picking it as
+// leader (e.g. by insertion order — "IMG_2566.CR2" sorts before
+// "IMG_2566.JPG") would drag the whole group into the location-less
+// fallback and throw away the JPG's real location.
+func TestCaptureDirsForcesRawJpgTogetherAndKeepsRicherLocation(t *testing.T) {
+	takenAt := time.Date(2024, 6, 3, 10, 0, 0, 0, time.UTC)
+	ts := "2024:06:03 10:00:00"
+	masters := []masterFile{
+		{FileDir: "/src/d", FileName: "IMG_2566.CR2", MediaType: classifier.MediaTypeRaw, takenAt: takenAt, DBDateTaken: new(ts)},
+		{FileDir: "/src/d", FileName: "IMG_2566.JPG", MediaType: classifier.MediaTypeImage, takenAt: takenAt, DBDateTaken: new(ts), location: "Calangute"},
+	}
+	v := &VFS{cfg: DefaultConfig()}
+	dirs := v.captureDirs(masters, nil)
+	if len(dirs) != 2 || dirs[0] != dirs[1] {
+		t.Fatalf("want RAW+JPG forced into one shared dir, got %v", dirs)
+	}
+	if !strings.Contains(dirs[0], "Calangute") {
+		t.Errorf("group dir %q dropped the JPG's resolved location — RAW (no GPS) must not win leader over it", dirs[0])
+	}
+}
+
+// TestCaptureGroupConflictingTimestampsStayIndependent is the anti-collision
+// guard: two unrelated shoots reusing the same filename counter (e.g. an
+// AirDropped file landing next to an existing series) must not merge just
+// because the stem matches — only a same-second timestamp agreement groups.
+func TestCaptureGroupConflictingTimestampsStayIndependent(t *testing.T) {
+	h := newHarness(t)
+	a := h.addFile(t, "d/IMG_2566.JPG", "IMAGE", metaWith("2019:03:01 10:00:00", 0, 0, 4000, 3000))
+	b := h.addFile(t, "d/IMG_2566.CR2", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
+
+	rows := h.build(t, DefaultConfig(), nil)
+	dirA := filepath.Dir(rows[a].TargetPath)
+	dirB := filepath.Dir(rows[b].TargetPath)
+	if dirA == dirB {
+		t.Errorf("same-stem files with conflicting timestamps merged into %q — anti-collision guard should keep them independent", dirA)
 	}
 }
 

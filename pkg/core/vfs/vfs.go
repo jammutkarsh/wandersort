@@ -296,16 +296,24 @@ func (v *VFS) mergeSameLocationDays(masters []masterFile) {
 	}
 }
 
-// buildTargets derives every master's destination independently: a file's own
-// time and location decide its directory, never a shared filename stem. Camera
-// filename counters get reused across unrelated shoots, so same-stem does not
-// mean same-capture. A real Live Photo pair still lands together because its
-// members genuinely share GPS and timestamp.
+// buildTargets derives every master's destination independently — a file's
+// own time and location decide its directory — except for a best-effort
+// capture group (see captureDirs): a sidecar or RAW+JPG pair sharing a
+// filename stem and an agreeing EXIF timestamp is forced into one shared
+// directory, since a sidecar has no EXIF of its own and would otherwise
+// scatter by file mtime. Camera filename counters get reused across
+// unrelated shoots, so a bare stem match is never enough on its own — that's
+// what the timestamp agreement guards against. A real Live Photo pair still
+// lands together because its members genuinely share GPS and timestamp.
 func (v *VFS) buildTargets(masters []masterFile) {
 	skip := v.uninformativeLevels(masters)
+	groupDirs := v.captureDirs(masters, skip)
 	taken := map[string]bool{}
 	for i := range masters {
-		dir := v.dirFor(&masters[i], skip)
+		dir, ok := groupDirs[i]
+		if !ok {
+			dir = v.dirFor(&masters[i], skip)
+		}
 		name := masters[i].FileName
 		stem := strings.TrimSuffix(name, filepath.Ext(name))
 		ext := filepath.Ext(name)
@@ -327,11 +335,121 @@ func (v *VFS) buildTargets(masters []masterFile) {
 	}
 }
 
+// variantPrefixes maps an iPhone filename role marker to its canonical form,
+// so a companion file is recognised as the same capture as its original:
+// IMG_E1783 (edited copy) and IMG_O1783 (original-state sidecar with no
+// paired image) both fold to IMG_1783.
+var variantPrefixes = []struct{ variant, canonical string }{
+	{"IMG_E", "IMG_"},
+	{"IMG_O", "IMG_"},
+}
+
+// captureStem normalizes a filename to the key used to group same-capture
+// files: strip the extension, then fold a known variant prefix.
+func captureStem(filename string) string {
+	base := strings.TrimSuffix(filename, filepath.Ext(filename))
+	for _, p := range variantPrefixes {
+		if strings.HasPrefix(base, p.variant) {
+			return p.canonical + base[len(p.variant):]
+		}
+	}
+	return base
+}
+
+// hasExifTime reports whether m's takenAt came from a real EXIF tag rather
+// than deriveAll's file-mtime fallback — exif never runs on a sidecar, so
+// this is false for every .AAE regardless of what takenAt ended up holding.
+func (m *masterFile) hasExifTime() bool {
+	return deref(m.DBDateTaken) != "" || deref(m.DBCreationDate) != "" || deref(m.DBCreateDate) != ""
+}
+
+// captureDirs finds files that are one capture split across extensions — an
+// iPhone edit/sidecar bundle (IMG_1783.AAE + IMG_1783.HEIC + IMG_E1783.HEIC)
+// or a RAW+JPG pair — and returns the directory they should all share, keyed
+// by master index.
+//
+// The candidate key is same source directory + same captureStem. A group
+// only forms when every member that has a real EXIF timestamp agrees to the
+// second: camera filename counters get reused across unrelated shoots (the
+// reason the old unconditional stem-pairing was removed), and two people's
+// overlapping series landing in the same folder (e.g. AirDrop) must not get
+// merged just because a counter happens to collide. A sidecar has no EXIF
+// timestamp of its own to agree or disagree with, so it doesn't vote — it
+// rides along on whatever its real-timestamped siblings agree on. Video is
+// excluded entirely: a Live Photo's .MOV already lands next to its .HEIC
+// because they share the same GPS/timestamp (see buildTargets), and forcing
+// it into the group's dir could push it across the Photos/Videos split.
+func (v *VFS) captureDirs(masters []masterFile, skip map[string]bool) map[int]string {
+	type group struct{ members []int }
+	groups := map[string]*group{}
+	for i := range masters {
+		if masters[i].MediaType == classifier.MediaTypeVideo {
+			continue
+		}
+		key := masters[i].FileDir + "|" + captureStem(masters[i].FileName)
+		g := groups[key]
+		if g == nil {
+			g = &group{}
+			groups[key] = g
+		}
+		g.members = append(g.members, i)
+	}
+
+	dirs := map[int]string{}
+	for _, g := range groups {
+		if len(g.members) < 2 {
+			continue
+		}
+		var agreed time.Time
+		conflict := false
+		for _, i := range g.members {
+			m := &masters[i]
+			if !m.hasExifTime() {
+				continue
+			}
+			t := m.takenAt.Truncate(time.Second)
+			switch {
+			case agreed.IsZero():
+				agreed = t
+			case !t.Equal(agreed):
+				conflict = true
+			}
+		}
+		if conflict || agreed.IsZero() {
+			continue // can't safely anchor this group — leave members independent
+		}
+
+		// representative: a resolved location beats none (a RAW file missing
+		// GPS its JPG sibling has must not drag the group into the
+		// location-less fallback), then the canonical (non-variant) filename,
+		// then insertion order
+		leader, bestScore := g.members[0], -1
+		for _, i := range g.members {
+			score := 0
+			if masters[i].location != "" {
+				score += 2
+			}
+			name := masters[i].FileName
+			if captureStem(name) == strings.TrimSuffix(name, filepath.Ext(name)) {
+				score++
+			}
+			if score > bestScore {
+				leader, bestScore = i, score
+			}
+		}
+		dir := v.dirFor(&masters[leader], skip)
+		for _, i := range g.members {
+			dirs[i] = dir
+		}
+	}
+	return dirs
+}
+
 // dirFor derives the directory segments for one master, honouring Rules
 // order. skip names the levels uninformativeLevels found nothing to say with.
 func (v *VFS) dirFor(m *masterFile, skip map[string]bool) string {
 	if m.takenAt.IsZero() {
-		return sanitizeSegment(v.cfg.Fallback)
+		return SanitizeSegment(v.cfg.Fallback)
 	}
 
 	parts := []string{
@@ -348,7 +466,7 @@ func (v *VFS) dirFor(m *masterFile, skip map[string]bool) string {
 		if seg == "" {
 			continue // level not derivable for this file — skip the folder
 		}
-		parts = append(parts, sanitizeSegment(seg))
+		parts = append(parts, SanitizeSegment(seg))
 		if level == RuleLocation {
 			// the folder a reviewer renames, recorded by path not depth so any
 			// Rules order works — no location level means no suggestion node,
@@ -577,16 +695,25 @@ func deviceName(mk, model string) string {
 	}
 }
 
-// sanitizeSegment makes a derived value safe to use as a single path segment
-func sanitizeSegment(seg string) string {
+// SanitizeSegment makes a derived value safe to use as a single path segment.
+// Spaces and commas — routine in a geocoded place name ("Seoni, Himachal
+// Pradesh") or a device model — become '_', since folder names never carry
+// either; the comma is still fine anywhere a person is *choosing* a name
+// (search results, the rename dropdown), just not in the name once picked.
+func SanitizeSegment(seg string) string {
 	seg = strings.Map(func(r rune) rune {
 		switch r {
 		case '/', '\\', ':', 0:
 			return '-'
+		case ' ', ',', '\t', '\n':
+			return '_'
 		}
 		return r
 	}, seg)
-	seg = strings.Trim(seg, " .")
+	for strings.Contains(seg, "__") {
+		seg = strings.ReplaceAll(seg, "__", "_")
+	}
+	seg = strings.Trim(seg, " ._")
 	if seg == "" {
 		return "_"
 	}
