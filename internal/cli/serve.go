@@ -25,7 +25,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	_ "github.com/jammutkarsh/wandersort/swagger"
+	swaggerdocs "github.com/jammutkarsh/wandersort/swagger"
 	"github.com/spf13/cobra"
 	swaggerfiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -44,13 +44,15 @@ API, with Swagger docs at /internal/v1/swagger. Runs until interrupted.`,
 		Example: `wandersort serve
 wandersort serve --port 8080`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// same pipeline as scan, same requirement
+			if err := requireConfigured(); err != nil {
+				return err
+			}
 			return a.runServe()
 		},
 	}
 
 	cmd.Flags().StringP(flagPort, "p", "", "HTTP listen port (env: PORT)")
-	cmd.Flags().StringSlice(flagRules, nil,
-		`Folder levels below Year/Month new proposals will use, i.e. group by (repeatable or comma-separated): location, date, device, orientation, media, or "none" for flat Year/Month`)
 	return cmd
 }
 
@@ -80,7 +82,13 @@ func (a *App) runServe() error {
 	}
 	defer l.Unlock()
 
-	wf := workflow.NewWorkflow(ctx, a.AppDB, a.LocationResolver, a.Log, a.Config, a.ExiftoolPath)
+	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, workflow.ReadyDeps(a.ExiftoolPath, a.LocationResolver))
+
+	// swag leaves Host/Schemes blank at generation time (the port is only known
+	// at runtime) — an empty Host makes swagger-ui's "Try it out" build a
+	// schemeless request URL, which browsers reject as a CORS failure.
+	swaggerdocs.SwaggerInfo.Host = "localhost:" + a.Config.ServerPort
+	swaggerdocs.SwaggerInfo.Schemes = []string{"http"}
 
 	adminHandler := admin.NewHandler(a.Log, a.AdminService())
 	pipelineHandler := pipeline.NewHandler(a.Log, a.PipelineService(wf))
@@ -96,6 +104,7 @@ func (a *App) runServe() error {
 
 	go func() {
 		a.Log.Info(fmt.Sprintf("Server running on http://localhost:%s (press Ctrl-C to stop)", a.Config.ServerPort), logger.UserKey, true)
+		a.Log.Info(fmt.Sprintf("Swagger docs at http://localhost:%s/internal/v1/swagger/index.html", a.Config.ServerPort), logger.UserKey, true)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			a.Log.Error("server listen failed", "error", err)
 		}
