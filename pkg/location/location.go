@@ -30,19 +30,24 @@ import (
 
 var ErrNoLocation = errors.New("locationResolver: location not found")
 
-// MaxDistSquared is the rejection threshold for the nearest-neighbour search,
-// expressed as squared Euclidean distance in degree-space
-// sqrt(0.2025) = 0.45° ≈ 50 km — matches the outer bounding box below so a
-// match the wide pass finds isn't then thrown away by a tighter threshold
-// (that mismatch was silently fragmenting locations: photos 15-40km from the
-// nearest named place fell back to no location at all instead of the nearest
-// match). Exported so vfs.resolveLocations can reuse the same reach for
-// folding a resolved city into a home/work anchor, instead of picking its own
-// number.
+// MaxDistSquared rejects a nearest-neighbour match beyond ~50 km, as squared
+// Euclidean distance in degree-space (sqrt(0.2025) = 0.45°). Exported so
+// vfs.resolveLocations folds a city into a home/work anchor at the same reach
+// instead of picking its own number.
 const MaxDistSquared = 0.2025
 
 // gpsRoundingFactor rounds coordinates to 4 decimal places (≈ 11 m)
 const gpsRoundingFactor = 10000
+
+// Bounding-box half-widths queryNearest tries, in order: a tight pass that
+// covers most intra-city lookups, then a wide one for rural or coastal photos.
+// farSearchDegrees is sqrt(MaxDistSquared) — the widest box must match the
+// acceptance radius, or a valid match the wide pass finds is thrown away by a
+// tighter threshold.
+const (
+	nearSearchDegrees = 0.09 // ≈ 10 km
+	farSearchDegrees  = 0.45 // ≈ 50 km
+)
 
 type cacheKey struct {
 	lat, lon float64
@@ -81,11 +86,8 @@ func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver
 	if sum != meta.Hash {
 		return nil, fmt.Errorf("location db checksum mismatch: got %s, want %s", sum, meta.Hash)
 	}
-	// Deliberately not UserKey-tagged: New runs on every command that opens the
-	// resolver (config, scan, serve, review), so tagging it printed a checksum
-	// line on the console every single run. It's an integrity check, not a
-	// milestone — Setup already prints a user-facing line on the one run that
-	// actually downloads anything. Failures above are still surfaced as errors.
+	// not UserKey-tagged: this runs on every command that opens the resolver,
+	// and an integrity check is not a milestone. Failures above still error.
 	log.Info("location db checksum verified", "path", dbLocationPath, "hash", sum)
 
 	var count int
@@ -108,9 +110,7 @@ func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver
 // Lookup returns the name of the nearest populated place for the given
 // decimal-degree coordinates
 func (r *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error) {
-	// Round to 4 decimal places ≈ 11 m precision — close enough that photos
-	// from the same physical spot
-	// Formula: round(x * gpsRoundingFactor) / gpsRoundingFactor keeps values stable across minor GPS jitter
+	// round to ~11 m so photos from one spot share a cache key despite GPS jitter
 	key := cacheKey{
 		lat: math.Round(lat*gpsRoundingFactor) / gpsRoundingFactor,
 		lon: math.Round(lon*gpsRoundingFactor) / gpsRoundingFactor,
@@ -128,23 +128,11 @@ func (r *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error)
 	return city, nil
 }
 
-// queryNearest finds the closest city name to the given coordinates
-//
-// It queries using an expanding bounding box, then ranks candidates by squared
-// Euclidean distance in degree-space, and returns the nearest match
-//
-// Approximate real-world search radii:
-//
-//	Start: ~10 km  (±0.09°)
-//	End:   ~50 km  (±0.45°)
-//
-// Returns ErrNoLocation if no candidate is found within either box, or if the
-// closest match exceeds MaxDistSquared
+// queryNearest returns the nearest city name to the given coordinates, or
+// ErrNoLocation if nothing sits within farSearchDegrees.
 func (r *Resolver) queryNearest(ctx context.Context, lat, lon float64) (string, error) {
-	// deltaDegrees lists the bounding-box half-widths to try in order
-	//   0.09° ≈ 10 km — tight first pass, covers most intra-city lookups
-	//   0.45° ≈ 50 km — wider fallback for rural or coastal photos
-	for _, delta := range []float64{0.09, 0.45} {
+	// widen the box only when the tight pass finds nothing
+	for _, delta := range []float64{nearSearchDegrees, farSearchDegrees} {
 		cands, err := r.Candidates(ctx, lat, lon, delta, 1)
 		if err != nil {
 			return "", err
@@ -152,40 +140,36 @@ func (r *Resolver) queryNearest(ctx context.Context, lat, lon float64) (string, 
 		if len(cands) == 0 {
 			continue
 		}
-		// DisplayName, not Name: the folder a photo lands in automatically is
-		// named the same way the review picker and the saved anchors name it,
-		// so a library that saw both Hyderabads doesn't merge them into one
-		// folder. Unique names carry no qualifier, so most folders are unchanged.
+		// DisplayName, not Name: an auto-named folder is qualified the same way
+		// the review picker and saved anchors are, so two Hyderabads stay apart
 		return cands[0].DisplayName, nil
 	}
 	return "", ErrNoLocation
 }
 
-// Candidate is one ranked reverse-geocode match.
-//
-//	Name        plain city name, no qualifier ("Springfield")
-//	DisplayName smallest qualifier that makes it unique — what an automatically
-//	            named folder gets ("Springfield, Illinois")
-//	FullName    city, state and country spelled out — what a person picks from
-//	            ("Springfield, Illinois, United States")
+// Candidate is one ranked reverse-geocode match. Which name to use depends on
+// who reads it: a folder named automatically gets DisplayName, a list a person
+// picks from shows FullName.
 type Candidate struct {
-	Name        string
-	DisplayName string
-	FullName    string
+	Name        string // plain city, no qualifier: "Springfield"
+	DisplayName string // smallest unique qualifier: "Springfield, Illinois"
+	FullName    string // spelled out: "Springfield, Illinois, United States"
 	DistKM      float64
-	hasMarks    bool // the raw gazetteer entry carried diacritics stripDiacritics removed
+	hasMarks    bool // the gazetteer entry carried diacritics stripDiacritics removed
 }
 
-// candidateFetchLimit over-fetches so Candidates has enough rows to prefer a
-// plain-spelled entry over a diacritic one at roughly the same location,
-// rather than just returning whichever the distance sort happened to put first.
+// candidateFetchLimit over-fetches so Candidates can prefer a plain-spelled
+// entry over a diacritic one at roughly the same distance.
 const candidateFetchLimit = 32
 
-// nameCountsSQL are the three correlated subqueries every name-producing query
-// needs: how many cities share this name, across how many countries, and how
-// many of them sit in *this* row's country. disambiguate turns them into the
-// smallest qualifier that makes the folder name unique. All hit
-// idx_geonames_cities_city.
+// searchOverfetchFactor over-fetches in SearchByName, whose qualifier and
+// duplicate filtering runs after the query — limiting in SQL could return a
+// page made entirely of rows that don't survive it.
+const searchOverfetchFactor = 8
+
+// nameCountsSQL counts, for each row: cities sharing this name, the countries
+// they span, and how many sit in this row's own country. disambiguate turns
+// the three into the smallest unique qualifier. All hit idx_geonames_cities_city.
 const nameCountsSQL = `
     	(SELECT COUNT(*)                        FROM geonames_cities g2 WHERE g2.city = gc.city COLLATE NOCASE),
     	(SELECT COUNT(DISTINCT g2.country_code) FROM geonames_cities g2 WHERE g2.city = gc.city COLLATE NOCASE),
@@ -210,12 +194,9 @@ var candidateQuery = `
 // to the user; the search itself stays in degree-space (see MaxDistSquared)
 const kmPerDegree = 111.0
 
-// Candidates returns up to limit reverse-geocode matches within deltaDegrees
-// of the given coordinates. Plain-spelled entries (no diacritics) rank ahead
-// of a diacritic entry even if the latter is a hair closer — a diacritic
-// variant is only offered when no plain entry exists in range at all — and
-// within each group, nearest first. Used by the review TUI to offer ranked
-// alternatives when the top pick (Lookup) is wrong.
+// Candidates returns up to limit matches within deltaDegrees, nearest first,
+// but plain-spelled entries always ahead of diacritic ones. Used by the review
+// TUI to offer alternatives when Lookup's top pick is wrong.
 func (r *Resolver) Candidates(ctx context.Context, lat, lon, deltaDegrees float64, limit int) ([]Candidate, error) {
 	rows, err := r.db.QueryContext(ctx, candidateQuery, lat, lon, deltaDegrees, candidateFetchLimit)
 	if err != nil {
@@ -259,17 +240,12 @@ func (r *Resolver) Candidates(ctx context.Context, lat, lon, deltaDegrees float6
 	return out, nil
 }
 
-// ResolveByName forward-geocodes a typed place name (e.g. a hometown) to
-// coordinates, for storing as an anchor label. Tries an exact, case-insensitive
-// match first, then falls back to comparing diacritic-stripped names: every
-// name this package hands out is stripped (SearchByName, Candidates), so a
-// gazetteer entry spelled "Banjār" is only ever saved as "Banjar" and the exact
-// match alone would never find its way back.
+// ResolveByName forward-geocodes a saved place name to coordinates. Exact
+// case-insensitive match first, then a diacritic-stripped pass: this package
+// only ever hands out stripped names, so "Banjār" is saved as "Banjar".
 func (r *Resolver) ResolveByName(ctx context.Context, name string) (lat, lon float64, err error) {
-	// The name can be any of the three forms the picker hands out, so the
-	// qualifiers after the city have to be honoured: matching the bare city
-	// alone would resolve "Hyderabad, India" to whichever Hyderabad the DB
-	// returns first — the one in Pakistan.
+	// honour the qualifiers: matching the bare city alone would resolve
+	// "Hyderabad, India" to whichever row comes back first, the Pakistani one
 	city, qualifiers := splitQualified(name)
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT COALESCE(state, ''), COALESCE(country, ''), latitude, longitude
@@ -295,12 +271,10 @@ func (r *Resolver) ResolveByName(ctx context.Context, name string) (lat, lon flo
 	return r.resolveStripped(ctx, city, qualifiers)
 }
 
-// resolveStripped is ResolveByName's fallback for names whose gazetteer entry
-// carries diacritics. SQLite's NOCASE collation is ASCII-only and there's no
-// stripped column to index, so this scans.
-// ponytail: full table scan, run at most twice per scan (home + work anchor)
-// and only when the exact match missed. Add a normalized column + index if it
-// ever lands on a hot path.
+// resolveStripped is ResolveByName's fallback for diacritic entries. NOCASE is
+// ASCII-only and there is no stripped column to index, so this scans.
+// ponytail: full scan, but runs at most twice per scan (home + work) and only
+// after an exact miss. Add a normalized column + index if it gets hot.
 func (r *Resolver) resolveStripped(ctx context.Context, name string, qualifiers []string) (lat, lon float64, err error) {
 	want := strings.ToLower(stripDiacritics(name))
 	rows, err := r.db.QueryContext(ctx,
@@ -326,11 +300,9 @@ func (r *Resolver) resolveStripped(ctx context.Context, name string, qualifiers 
 	return 0, 0, ErrNoLocation
 }
 
-// PlaceMatch is one gazetteer entry matching a typed prefix, coordinates
-// included so a caller can use the selection directly without a second lookup.
-// Name/DisplayName/FullName mean the same as on Candidate: the picker shows
-// FullName, an anchor is saved as the string the user actually picked, and
-// ResolveByName can resolve any of the three.
+// PlaceMatch is one gazetteer entry matching a typed prefix, with coordinates
+// so a caller needs no second lookup. The three names mean what they do on
+// Candidate; ResolveByName resolves any of them.
 type PlaceMatch struct {
 	Name        string
 	DisplayName string
@@ -338,19 +310,13 @@ type PlaceMatch struct {
 	Lat, Lon    float64
 }
 
-// SearchByName finds gazetteer entries whose name starts with prefix, so an
-// interactive picker (e.g. the config wizard's town fields) can offer exact DB-backed
-// names instead of free text that might not match anything — the picked name
-// can never drift from what's actually in the location DB.
+// SearchByName finds gazetteer entries starting with prefix, so a picker offers
+// DB-backed names instead of free text that might resolve to nothing later.
 func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) ([]PlaceMatch, error) {
-	// A typed name may already carry its qualifier ("Hyderabad, India") — that's
-	// what the picker offered and what an anchor is saved as, so searching for
-	// it again has to find its way back to the same row.
+	// a typed name may already carry its qualifier — that is what the picker
+	// offered and what an anchor is saved as, so it has to find the same row
 	city, qualifiers := splitQualified(prefix)
-	// Over-fetch: qualifiers and duplicate full names are filtered below, so
-	// limiting in SQL could return a page made entirely of rows that don't
-	// survive — or of the wrong Springfields.
-	fetch := limit * 8
+	fetch := limit * searchOverfetchFactor
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT gc.city, gc.latitude, gc.longitude,
 		        COALESCE(gc.state, ''), COALESCE(gc.country, ''),`+nameCountsSQL+`
@@ -376,9 +342,8 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 			continue
 		}
 		plain := stripDiacritics(name)
-		// The gazetteer carries near-duplicates (two "Banjar, West Java,
-		// Indonesia" a few hundred metres apart). Listing the same string twice
-		// isn't a choice — keep the first, which the ORDER BY makes stable.
+		// the gazetteer has near-duplicates a few hundred metres apart; listing
+		// one string twice isn't a choice. ORDER BY makes "the first" stable.
 		if full := fullName(plain, state, country); seen[full] {
 			continue
 		} else {
@@ -398,21 +363,21 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 }
 
 // disambiguate returns the smallest qualifier that tells same-named cities
-// apart, per entry:
+// apart:
 //
-//	unique name                     -> "Springfield"
-//	several in this same country    -> "Springfield, Illinois"   (state)
-//	one here, more abroad           -> "Springfield, Australia"  (country)
+//	unique name                  -> "Springfield"
+//	several in this country      -> "Springfield, Illinois"  (state)
+//	one here, more abroad        -> "Springfield, Australia" (country)
 //
-// The in-country case takes the state even when the name also occurs abroad:
-// state names are what a person recognizes, and no other Springfield in
-// Illinois exists to collide with. Two entries for the same name in the same
-// state are left identical — the gazetteer has genuine near-duplicates and a
-// third qualifier would only make every folder longer.
+// Two entries with the same name in the same state stay identical: the
+// gazetteer has genuine near-duplicates, and a third qualifier would lengthen
+// every folder to fix one of them.
 func disambiguate(city, state, country string, nameCount, countryCount, inCountryCount int) string {
 	if nameCount <= 1 {
 		return city
 	}
+	// state even when the name also occurs abroad — no other Springfield in
+	// Illinois exists to collide with, and a state is what a reader recognizes
 	if inCountryCount > 1 && state != "" {
 		return city + ", " + stripDiacritics(state)
 	}
@@ -439,10 +404,9 @@ func fullName(city, state, country string) string {
 	return strings.Join(parts, ", ")
 }
 
-// splitQualified splits any of the three name forms back into the city and the
-// qualifiers after it: "Hyderabad" -> ("Hyderabad", nil), "Hyderabad, India"
-// and "Hyderabad, Telangana, India" -> the city plus one or two qualifiers,
-// each of which must match that row's state or country (matchesQualifiers).
+// splitQualified splits any of the three name forms into the city and the
+// qualifiers after it: "Hyderabad, Telangana, India" -> city plus two, each of
+// which must then match a row's state or country.
 func splitQualified(name string) (city string, qualifiers []string) {
 	parts := strings.Split(strings.TrimSpace(name), ",")
 	city = strings.TrimSpace(parts[0])
@@ -468,9 +432,8 @@ func matchesQualifiers(state, country string, qualifiers []string) bool {
 	return true
 }
 
-// stripDiacritics normalizes a raw gazetteer name ("Banjār") to its plain
-// ASCII form ("Banjar") — some entries carry combining marks that read as
-// typos to users unfamiliar with the source script.
+// stripDiacritics normalizes a gazetteer name ("Banjār") to plain ASCII
+// ("Banjar") — combining marks read as typos in an unfamiliar script.
 func stripDiacritics(s string) string {
 	var b strings.Builder
 	for _, r := range norm.NFD.String(s) {

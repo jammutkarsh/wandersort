@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/utils"
@@ -67,4 +68,28 @@ func Setup(ctx context.Context, log logger.Logger, dbPath string, onProgress fun
 	log.Info("location database downloaded", logger.UserKey, true,
 		logger.PhaseKey, "location", logger.EventKey, "done")
 	return nil
+}
+
+// Open downloads the location database if missing, opens it, and returns a
+// verified Resolver plus the underlying *db.DB (the caller owns closing it).
+// This is the single download-open-verify path — application code
+// (cli.App.InitLocationResolver) and tests (pkg/location/locationtest) both
+// go through it, so a test exercising a Resolver exercises the exact same
+// setup the app performs, not a hand-rolled approximation of it.
+func Open(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) (*Resolver, *db.DB, error) {
+	if err := Setup(ctx, log, dbPath, onProgress); err != nil {
+		return nil, nil, fmt.Errorf("location db: %w", err)
+	}
+
+	locationDB, err := db.New(ctx, dbPath, db.LocationDB, log)
+	if err != nil {
+		return nil, nil, fmt.Errorf("location db: %w", err)
+	}
+
+	resolver, err := New(locationDB, dbPath, log)
+	if err != nil {
+		locationDB.Close()
+		return nil, nil, fmt.Errorf("location resolver: %w", err)
+	}
+	return resolver, locationDB, nil
 }
