@@ -64,13 +64,10 @@ type App struct {
 	AppDB            *db.DB
 	LocationDB       *db.DB
 	LocationResolver *location.Resolver
-	// Commands are extra subcommands registered on the root command, so
-	// embedders and tests can extend the CLI without editing newRootCmd.
-	Commands []*cobra.Command
 	// InstallProgress, when set, receives dependency-download byte progress
-	// (phase is "exiftool"/"location") so the install screen can draw a progress bar.
-	// Deliberately not routed through the logger — per-byte ticks would flood
-	// the file log. nil in every non-TUI path.
+	// (phase is "exiftool"/"location") so the install screen can draw a bar.
+	// Not routed through the logger — per-byte ticks would flood the file log.
+	// nil in every non-TUI path.
 	InstallProgress func(phase string, done, total int64)
 }
 
@@ -101,19 +98,11 @@ func (a *App) InitLocationResolver(ctx context.Context) error {
 	}
 	// Download the location database on first use so scan/serve work without a
 	// separate setup step. No-op if it already exists.
-	if err := location.Setup(ctx, a.Log, a.Config.LocationDBPath, a.progressFor("location")); err != nil {
-		return fmt.Errorf("location db: %w", err)
-	}
-	locationDB, err := db.New(ctx, a.Config.LocationDBPath, db.LocationDB, a.Log)
+	resolver, locationDB, err := location.Open(ctx, a.Log, a.Config.LocationDBPath, a.progressFor("location"))
 	if err != nil {
-		return fmt.Errorf("location db: %w", err)
+		return err
 	}
 	a.LocationDB = locationDB
-
-	resolver, err := location.New(locationDB, a.Config.LocationDBPath, a.Log)
-	if err != nil {
-		return fmt.Errorf("location resolver: %w", err)
-	}
 	a.LocationResolver = resolver
 	return nil
 }
@@ -125,11 +114,10 @@ func (a *App) installDir() string {
 }
 
 // EnsureDependencies installs the location database and exiftool if missing,
-// then opens the location resolver. It holds the install lock for the duration
-// so a concurrent scan/serve never installs at the same time: callers
-// wait for an in-progress install to finish, then continue (a no-op if it is
-// already done).
+// then opens the resolver. Holds the install lock throughout, so a concurrent
+// scan/serve waits rather than installing at the same time.
 func (a *App) EnsureDependencies(ctx context.Context) error {
+	// try non-blocking first, so waiting can be announced rather than looking hung
 	l, err := lock.AcquireInstall(ctx, a.installDir(), false)
 	if errors.Is(err, lock.ErrHeld) {
 		a.Log.Info("Waiting for another process to finish installing dependencies...", logger.UserKey, true)
@@ -207,20 +195,14 @@ func init() {
 	v.AutomaticEnv()
 }
 
-// loadGlobalConfigFile ensures ~/.wandersort/config.yaml exists (empty the
-// first time any command runs) and points viper at it, so its keys
-// (output-path, workers, rules, home-work, ...) layer between env and default
-// (viper's normal config-file precedence: flag > env > config file >
-// default). `wandersort config` is what fills it in.
+// loadGlobalConfigFile ensures ~/.wandersort/config.yaml exists and points
+// viper at it, so its keys layer between env and default. Returns the warning
+// text for an unparseable file ("" when there is none) — the caller logs it
+// once the logger exists, so it reaches the log file too.
 //
-// A config file that doesn't parse is a warning, not a failure: it can be
-// hand-edited, and refusing to run at all would mean a stray tab in an
-// optional settings file bricks every command, including the `config` command
-// that would let the user fix it. Every setting
-// in the file is optional and has a default, so the run continues on defaults
-// and says so. The returned string is the warning ("" when there is none) —
-// it's logged once the logger exists, so it reaches the log file too, not just
-// the terminal.
+// Unparseable is a warning, not a failure: the file is hand-editable and every
+// setting in it is optional, so one stray tab must not brick every command —
+// including `wandersort config`, the one that would fix it.
 func loadGlobalConfigFile() (warning string, err error) {
 	path, err := config.EnsureGlobalConfigFile()
 	if err != nil {
@@ -295,7 +277,6 @@ Flags take precedence over environment variables.`,
 	rootCmd.AddCommand(a.newReportCmd())
 	rootCmd.AddCommand(a.newReportIssueCmd())
 	rootCmd.AddCommand(a.newResetCmd())
-	rootCmd.AddCommand(a.Commands...)
 
 	rootCmd.InitDefaultCompletionCmd()
 	for _, cmd := range rootCmd.Commands() {
@@ -316,12 +297,9 @@ Where to ideally store the generated scripts:
 	return rootCmd
 }
 
-// applyOverrides layers ENV, config-file, and CLI flag values over the config
-// defaults. Precedence: flag > env > config file (~/.wandersort/config.yaml,
-// edit with `wandersort config`) > default — viper resolves flag/env/file;
-// defaults come from config.Defaults(). Every key in the file (see
-// pkg/config.Global) is read here through viper, except home-work, which
-// anchor.go reads directly via config.LoadGlobal.
+// applyOverrides layers env, config-file and flag values over the defaults.
+// Precedence: flag > env > config file > default. Every key in the file is
+// read here through viper, except home-work, which anchor.go loads directly.
 func (a *App) applyOverrides() error {
 	if outputPath := v.GetString(flagOutputPath); outputPath != "" {
 		outputPath = path.New().ExpandPath(outputPath)
@@ -339,9 +317,8 @@ func (a *App) applyOverrides() error {
 			if s != groupByNone && !validRules[s] {
 				return fmt.Errorf("invalid --rules value %q (want location, date, device, orientation, media, or none)", s)
 			}
-			// "none" means "no levels at all", so it can't sit alongside one.
-			// vfs.ConfigFor only honours it as the sole value; mixed in, it
-			// would silently drop out as an unrecognised level instead.
+			// ConfigFor honours "none" only as the sole value; mixed in it
+			// would silently drop out as an unrecognised level
 			if s == groupByNone && len(groupBy) > 1 {
 				return fmt.Errorf("invalid --rules %v: %q cannot be combined with other levels", groupBy, groupByNone)
 			}

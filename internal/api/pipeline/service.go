@@ -63,20 +63,8 @@ func (s *Service) RunScan(paths []string) (uuid.UUID, []string, error) {
 	return sessionID, effectivePaths, nil
 }
 
-// prepareScanRoots turns the incoming request into the final list of
-// directories that will actually be scanned
-//
-// Stage 1: resolve each path to a canonical absolute directory
-// Stage 2: remove exact duplicates after canonicalization
-// Stage 3: sort lexicographically — this guarantees every descendant of a
-//
-//	path appears contiguously after it in the slice
-//
-// Stage 4: single-pass prune: compare each candidate only against the last
-//
-//	accepted root. Because paths are sorted, if a candidate is a child
-//	of *any* accepted root it must be a child of the most-recently
-//	accepted one, so one comparison suffices — O(N) instead of O(N²)
+// prepareScanRoots canonicalizes the requested paths and prunes any nested
+// under another, leaving the directories actually worth walking.
 func (s *Service) prepareScanRoots(paths []string) ([]string, error) {
 	canonicalSet := make(map[string]struct{}, len(paths))
 

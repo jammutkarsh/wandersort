@@ -41,19 +41,10 @@ func RespondError(c *gin.Context, apiErr APIError) {
 }
 
 func buildMeta(c *gin.Context) responseMeta {
-	requestID, _ := c.Get("request_id")
+	value, _ := c.Get("request_id")
+	requestID, _ := value.(string)
 	return responseMeta{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		RequestID: toString(requestID),
+		RequestID: requestID,
 	}
-}
-
-func toString(value any) string {
-	if value == nil {
-		return ""
-	}
-	if s, ok := value.(string); ok {
-		return s
-	}
-	return ""
 }

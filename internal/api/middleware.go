@@ -7,13 +7,12 @@
 package api
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"runtime/debug"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -21,7 +20,7 @@ func RequestIDMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := c.GetHeader("X-Request-ID")
 		if requestID == "" {
-			requestID = newRequestID()
+			requestID = uuid.NewString()
 		}
 		c.Set("request_id", requestID)
 		c.Writer.Header().Set("X-Request-ID", requestID)
@@ -58,12 +57,4 @@ func RecoveryMiddleware(log logger.Logger) gin.HandlerFunc {
 		}()
 		c.Next()
 	}
-}
-
-func newRequestID() string {
-	buffer := make([]byte, 16)
-	if _, err := rand.Read(buffer); err != nil {
-		return ""
-	}
-	return hex.EncodeToString(buffer)
 }
