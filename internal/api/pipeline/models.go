@@ -18,9 +18,3 @@ type StartScanResponse struct {
 	Message   string   `json:"message"`
 	ScanPaths []string `json:"scanPaths"`
 }
-
-// FileCountResponse contains the combined file counts for the whole pipeline
-type FileCountResponse struct {
-	FilesScanned int64 `json:"filesScanned"`
-	FilesHashed  int64 `json:"filesHashed"`
-}

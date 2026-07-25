@@ -30,7 +30,6 @@ func NewHandler(log logger.Logger, service *Service) *Handler {
 func (h *Handler) SetupRoutes(v1 *gin.RouterGroup) {
 	routerGroup := v1.Group("/pipeline")
 	routerGroup.POST("/start", h.HandleStartScan)
-	routerGroup.GET("/count", h.HandleGetFileCount)
 }
 
 // HandleStartScan godoc
@@ -76,23 +75,4 @@ func (h *Handler) HandleStartScan(c *gin.Context) {
 		Message:   "Scan started successfully",
 		ScanPaths: scanPaths,
 	})
-}
-
-// HandleGetFileCount godoc
-// @Summary Get combined file counts
-// @Schemes http https
-// @Description Returns the number of files discovered by the scanner and the number hashed
-// @Tags Pipeline
-// @Produce json
-// @Success 200 {object} FileCountResponse
-// @Router /internal/v1/pipeline/count [get]
-func (h *Handler) HandleGetFileCount(c *gin.Context) {
-	resp, err := h.service.GetFileCount(c.Request.Context())
-	if err != nil {
-		h.logger.Error("Failed to get file count", "error", err)
-		api.RespondError(c, api.InternalError("FILE_COUNT_ERROR", "Failed to get file count", nil))
-		return
-	}
-
-	api.RespondOK(c, http.StatusOK, resp)
 }

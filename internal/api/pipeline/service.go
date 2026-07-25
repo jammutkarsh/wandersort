@@ -7,7 +7,6 @@
 package pipeline
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -19,16 +18,15 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
-// Service orchestrates scan submission and related queries
+// Service orchestrates scan submission
 type Service struct {
 	pipeline *workflow.Workflow
-	repo     *Repository
 	logger   logger.Logger
 	resolver *path.Resolver
 }
 
-func NewService(log logger.Logger, workflow *workflow.Workflow, repo *Repository) *Service {
-	return &Service{pipeline: workflow, repo: repo, logger: log, resolver: path.New()}
+func NewService(log logger.Logger, workflow *workflow.Workflow) *Service {
+	return &Service{pipeline: workflow, logger: log, resolver: path.New()}
 }
 
 // StartScan validates roots and submits an async scan (HTTP server path).
@@ -121,8 +119,4 @@ func isChildPath(parent, candidate string) bool {
 	}
 	// Append the separator so "/foo" doesn't falsely match "/foobar"
 	return strings.HasPrefix(candidate, parent+string(filepath.Separator))
-}
-
-func (s *Service) GetFileCount(ctx context.Context) (FileCountResponse, error) {
-	return s.repo.GetFileCount(ctx)
 }
