@@ -19,10 +19,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func (a *App) newReportIssueCmd() *cobra.Command {
+func (a *App) newIssueCmd() *cobra.Command {
 	var includeDB bool
 	cmd := &cobra.Command{
-		Use:   "report-issue",
+		Use:   "issue",
 		Short: "Package logs into a zip you can attach to a bug report",
 		Long: `Collects the WanderSort log into a single zip you can share when something
 goes wrong — send it to the maintainer, or paste the log into any AI assistant
@@ -31,15 +31,16 @@ to diagnose the problem yourself.
 Attach the zip to a new issue at:
   https://github.com/jammutkarsh/wandersort/issues/new/choose
 
-Run this in the same output directory you ran the scan in (or pass the same
---output-path), otherwise it packages a different, empty log.
+The zip is written next to the database/log (your --output-path or the
+configured default). Pass the same --output-path you scanned with, otherwise
+this packages a different, empty log.
 
 The database is not included by default because it holds file paths and photo
 metadata; add --include-db only if you are comfortable sharing that.`,
-		Example: `wandersort report-issue
-wandersort report-issue --include-db`,
+		Example: `wandersort issue
+wandersort issue --include-db`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.runReportIssue(includeDB)
+			return a.runIssue(includeDB)
 		},
 	}
 	cmd.Flags().BoolVar(&includeDB, "include-db", false, "Also include the database (contains file paths and metadata)")
@@ -52,7 +53,7 @@ type zipEntry struct {
 	name string
 }
 
-func (a *App) runReportIssue(includeDB bool) error {
+func (a *App) runIssue(includeDB bool) error {
 	// The logger creates an empty log file at startup, so existence alone is not
 	// enough — treat an empty log as "nothing to report".
 	if info, err := os.Stat(a.Config.LogFile); err != nil || info.Size() == 0 {
@@ -74,7 +75,8 @@ func (a *App) runReportIssue(includeDB bool) error {
 	}
 
 	zipName := fmt.Sprintf("wandersort-issue-%s.zip", time.Now().Format("20060102-150405"))
-	zf, err := os.Create(zipName)
+	zipPath := filepath.Join(filepath.Dir(a.Config.AppDBPath), zipName)
+	zf, err := os.Create(zipPath)
 	if err != nil {
 		return fmt.Errorf("create zip: %w", err)
 	}
@@ -98,8 +100,7 @@ func (a *App) runReportIssue(includeDB bool) error {
 		return fmt.Errorf("finalize zip: %w", err)
 	}
 
-	abs, _ := filepath.Abs(zipName)
-	fmt.Fprintln(os.Stderr, tui.OK.Render("Created "+abs))
+	fmt.Fprintln(os.Stderr, tui.OK.Render("Created "+zipPath))
 	fmt.Fprintln(os.Stderr, tui.FaintTxt.Render("Attach this file to your bug report or share it with the maintainer."))
 	return nil
 }

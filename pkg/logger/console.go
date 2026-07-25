@@ -105,7 +105,7 @@ func (h *PrettyHandler) WithGroup(string) slog.Handler      { return h }
 
 // Handle renders one console line: a coloured level tag, the message, then the
 // remaining attrs as dimmed key=value pairs. Timestamp and source stay in the
-// JSON file log (see report-issue).
+// JSON file log (see the `issue` command).
 func (h *PrettyHandler) Handle(_ context.Context, r slog.Record) error {
 	attrs := make(map[string]any, r.NumAttrs())
 	var userFacing bool

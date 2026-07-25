@@ -59,9 +59,17 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     same-location days?" — both folder questions live *after* the towns
     because their examples name the town the user just typed.
     **Every example is computed, not canned**: `examplePath(day, town,
-    collapsed)` renders the path the answers *so far* would produce (it walks
+    collapsed)` builds the path the answers *so far* would produce (it walks
     `rulesField.Selected`), so turning off the `location` rule removes the city
-    folder from every later example. Examples render in their own block above
+    folder from every later example. **Examples render as the review screen's
+    guided tree, not as slash paths** (`treeExample` in `config.go` — shared
+    prefixes fold into one branch point), because the settings shape a tree
+    and the example should look like the thing being shaped: the merge-days
+    "no" answer shows three sibling day branches under one month, which no
+    flat path list conveys. On a wide terminal (≥100 cols) the example sits in
+    a bordered box in the right-hand column, next to the question, instead of
+    above the footer (`tui.FormModel.examplePanel`/`sidePanel`/`bodyW`); narrow
+    terminals keep the footer block. Examples render in their own block above
     the footer (`tui.Field.Example` → `FormModel.exampleBlock`, the same place
     the scan screen pins warnings) and only for the option under the cursor —
     a description that listed the yes *and* no outcomes at once made the reader
@@ -72,12 +80,17 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     Town inputs validate through `canonicalTown` (gazetteer exact-match).
     **The location DB downloads in the background, with no install screen**:
     `runConfigTUI` kicks off `InitLocationResolver` in a goroutine, feeds its
-    byte progress into the form's own row under the banner (`a.InstallProgress`
-    → `tui.DownloadMsg`), and hands the form a `gazetteer func() error` closure.
+    byte progress into the form's own row above the footer (`a.InstallProgress`
+    → `tui.DownloadMsg`, in the same block the examples pin to), and hands the
+    form a `gazetteer func() error` closure. Once the download finishes the row
+    **persists as a dim `✓ … done` line** rather than vanishing (a bar that
+    disappears the moment it fills reads as a failure); the `Finished` message
+    carries no label, so `FormModel.Update` keeps the one from the byte reports
+    — and ignores a `Finished` with no prior bytes, which is the only message
+    an already-on-disk database sends, so it never gets mentioned at all.
     The Home & work step is the only one that needs the database, so it holds
-    on `tui.Field.Await` (showing why, with the bar above it) until the
-    goroutine's channel closes; everything above it is answerable meanwhile,
-    and a database already on disk reports no bytes so the row never appears.
+    on `tui.Field.Await` (showing why) until the
+    goroutine's channel closes; everything above it is answerable meanwhile.
     That channel is also the happens-before edge making `a.LocationResolver`
     safe to read. A gazetteer that never opens at all (failed download, or
     another wandersort process holding the location DB — it opens
@@ -94,19 +107,42 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
   - `scan.go` — `scan` cmd (the pipeline). Runs **synchronously** in the
     foreground (`Service.RunScan` → `Workflow.RunScan`) so the user watches
     progress and the exit code reflects pipeline success; logs total elapsed
-    time on completion. In TUI mode a first-ever run installs missing
-    dependencies on the install screen and swaps into the scan screen in the
-    same alt-screen program (`runScanTUI`'s `buildScan` via
-    `InstallModel.Next`), Docker-style: first run downloads then works, every
-    run after starts the scan immediately. **`scan`/`serve`/`review` are the
-    only things that install dependencies** (`App.EnsureDependencies`).
+    time on completion. **There is no install screen: the scan starts
+    immediately and missing dependencies download in the background**, with
+    each pipeline phase waiting only on its own dependency (`workflow.Deps`) —
+    scan/hash need nothing, exif blocks on exiftool, vfs blocks on the
+    location DB. `runScanTUI` runs `a.ensureDependencies` in a goroutine with
+    a checkpoint after exiftool (`exifReady`/`allReady` channels — closing
+    them is the happens-before edge for `a.ExiftoolPath`/`a.LocationResolver`);
+    the `Deps` closures log a "Waiting for …" `UserKey` line only when a phase
+    actually stalls, and download byte progress renders as rows under the
+    banner (`tui.InstallProgressMsg` → `ScanModel.viewDownloads`, persisting
+    as `✓ done` like the config wizard's bar). In practice the location DB is
+    already on disk — the (mandatory) `wandersort config` downloads it — so a
+    first scan usually only fetches exiftool; the vfs gate is the fallback for
+    a config run whose download failed. A download that fails mid-pipeline
+    fails the session at the phase that needed it; files stay `HASHED` and the
+    next run resumes. Anchor sync (`syncHomeWorkFromConfig`) happens inside
+    the `Location` dep closure — the earliest point the resolver exists, and
+    vfs is the only phase that reads anchors. **`scan`/`serve`/`review` are
+    the only things that install dependencies** (`App.EnsureDependencies`,
+    which installs exiftool *then* the location DB — the small download
+    unblocks the earlier phase; the big one has the whole pipeline to hide
+    behind).
+    **`scan` and `serve` refuse to run before `wandersort config` has** — see
+    `requireConfigured` in `root.go`. The config file every command creates is
+    empty, so an unconfigured first scan silently builds its entire folder
+    proposal (output path, rules, home/work anchors) from defaults, and the
+    user then redoes the whole thing. The gate is absolute: `-o` and env vars
+    don't satisfy it, because the anchors and rules aren't reachable that way.
     `--paths/-p` is repeatable + comma-friendly
-    (`StringSlice`); `--rules` (also settable via `config.yaml`, see below)
-    controls the VFS folder depth for this scan's proposal. Calls
-    `syncHomeWorkFromConfig` before the pipeline so any globally-saved home/work
-    anchor exists in *this* library's DB before VFS runs.
+    (`StringSlice`); `config.yaml`'s `rules` key (see below) controls the VFS
+    folder depth for this scan's proposal — no CLI flag, set it via
+    `wandersort config`. The plain path (`--plain`/non-TTY) keeps the simple
+    order: blocking `EnsureDependencies`, then `syncHomeWorkFromConfig`, then
+    the pipeline with `workflow.ReadyDeps`.
   - `serve.go` — `serve` cmd, HTTP API (gin) + swagger. Same workflow,
-    long-lived; also takes `--rules`.
+    long-lived.
   - `anchor.go` — the read side of home/work anchors (the write side is the
     `config` wizard, which saves them via `config.SaveGlobal`):
     - `syncHomeWorkFromConfig` (called from `scan`) — reads the global config,
@@ -166,8 +202,7 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     (`snapshot`/`deepCloneNodes`, capped at `maxUndo` = 100) onto a stack,
     since a structural edit can't be undone by restoring per-row name strings
     the way a plain rename-merge could. Trees are folders only, never files,
-    so a clone is cheap. `[L]` clears the stack — a relayout replaces every
-    node ID, so older snapshots describe nodes that no longer exist.
+    so a clone is cheap.
     `d`/`D` **remove nesting the reviewer doesn't want**. Both act on
     `selectedRows` — a `[V]` range (every row in it at the anchor row's depth,
     the same rule `m` uses) or just the cursor row when there's no selection.
@@ -194,24 +229,37 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     Both record the removed IDs (plus anything already folded into them) on
     the surviving node's `MergedIDs`, so files sitting directly in a removed
     folder remap onto it — same machinery as merge, with `remapUnderMerged`
-    covering anything deeper. Both undo via `[u]`. `L`
-    cycles a fixed set of
-    rules presets and **rebuilds the whole proposal in place**
-    (`vfs.New(...).Run` + `BuildTree` — safe mid-review since VFS only reads
-    already-hashed masters and replaces the proposal wholesale; resets any
-    in-progress renames, since a different depth means different node IDs),
+    covering anything deeper. Both undo via `[u]`.
     `c` **save & exit** (the only thing that writes — `q` discards, so `q`
     with pending edits warns once and needs a second `q`; `hasEdits` derives
     "pending" from the rows and the undo snapshot rather than a flag any edit
     path could forget to set). `--yes` accepts every suggestion
     non-interactively; `--rebuild` re-runs `vfs.Run` with the current
-    `--rules`/`config.yaml` *before* reviewing, so a config change
-    re-proposes the hierarchy without a re-scan or re-hash (`--rules` alone,
-    without `--rebuild`, changes nothing).
-    **The footer is measured, not assumed to be one line** (`footer()` +
-    `visibleRows`): the key help word-wraps to the terminal width (`wrapDim`),
-    and the old fixed `height-6` budget let a wrapped help bar push the bottom
-    tree rows off the screen.
+    `config.yaml` `rules` *before* reviewing, so a config change
+    re-proposes the hierarchy without a re-scan or re-hash (editing
+    `config.yaml` alone, without `--rebuild`, changes nothing until the next
+    `wandersort scan`).
+    **The screen is built from `pkg/tui`, like scan and config** — it used to
+    hand-roll its own chrome and looked like a different program: `tui.Screen`
+    pins the footer to the terminal's last row, `header()` is banner + one
+    summary line (folder/file totals in the right column), every tree line is a
+    `tui.Row` with the file count aligned at the right edge (the kit's "right
+    column is the screen's one number" rule), the key bar is `tui.Footer` +
+    `tui.KeyHint`s that swap merge keys in while `[V]` is active, and the peek
+    spinner is the same `bubbles` dot spinner the scan screen runs, not a
+    hand-rolled `|/-\` ticker. **`?` opens a full-screen key reference**
+    (`helpView`, grouped Moving/Naming/Reshaping/Leaving with one-line
+    explanations; any key returns) — the footer names the keys, the help
+    explains them. **Both the header and the footer are measured**
+    (`visibleRows` via `lipgloss.Height`), never a fixed line count: the key
+    help word-wraps on a narrow terminal, and the old fixed `height-6` budget
+    let a wrapped help bar push the bottom tree rows off the screen.
+    Rows are drawn with real box-drawing guides (`reviewRow.guide`, computed in
+    `flattenTree` because a row can't tell it's a last child from its depth) —
+    the old two-space indent plus a `└ ` on every level made sibling and child
+    look alike. An unaccepted suggestion renders as `⇢ name` in `tui.Attn`
+    (amber = still wants a keypress), not as dim `(N files, suggested: …)`
+    parentheses next to the count.
     **Rename precedence is default name < location suggestion < user's own
     rename** — `enter`/`a` only ever fill from a suggestion when the row's
     `newName` is still empty, never clobbering something the reviewer already
@@ -225,11 +273,15 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     `tui.DimText`** — a rejection used to look identical to routine status
     text, easy to miss (a reported "merge doesn't work" turned out to be
     either a missed capital-`V` requirement or exactly this — the rejection
-    message was there, just easy to overlook). **Visual selection is a
-    whole-row background highlight (`tui.Selected`), not a marker
-    character** — a `*` prefix in one column was hard to track across a wide
-    tree; selected rows render plain (no nested per-segment colour) since an
-    inner ANSI reset would cut the background short partway through the line.
+    message was there, just easy to overlook), and it carries a `⚠`.
+    A live `[V]` range also says so above the key bar (`-- SELECT -- n
+    folders`). **Selection is a whole-row background highlight
+    (`tui.Selected`), not a marker character** — a `*` prefix in one column was
+    hard to track across a wide tree. The **cursor row** carries the same
+    highlight (plus a `❯` in `tui.Primary`), matching how the config wizard
+    marks the option under the cursor; highlighted rows render plain (no nested
+    per-segment colour) since an inner ANSI reset would cut the background
+    short partway through the line.
   - `report.go` — read-only per-session summary (opens its own RO sqlite conn).
     Lists every `scan_sessions` row (newest first), each with its own
     scanned/hashed/duplicate counts — duplicates are scoped to that session's
@@ -239,7 +291,7 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     partial if its status isn't terminal (`COMPLETED`/`FAILED`/`CANCELLED`).
     Default output is a bordered table; `--vertical`/`-x` (psql `\x`-style)
     prints each session as expanded label:value pairs for narrow terminals.
-  - `report_issue.go` — `report-issue` cmd: zips the log (renamed
+  - `issue.go` — `issue` cmd: zips the log (renamed
     `wandersort.log`) + `about.txt`; db opt-in via `--include-db` (holds paths/GPS).
   - `reset.go` — wipe scan data (confirm prompt unless `--yes`).
   - `help.go` — custom lipgloss-styled help renderer. Kept in `cli` (unlike
@@ -278,16 +330,23 @@ created **empty** the first time *any* command runs
 **No comments, no template** — the wizard is the documentation, so the file is
 just the settings, written whole by `SaveGlobal` (a plain struct marshal; the
 old YAML-node surgery existed only to preserve comments). `output-path`,
-`workers`, `rules`, and the vfs toggles are read back through plain viper keys
-(same `v.GetX(flagName)` calls `applyOverrides` already makes work regardless
-of source); `home-work.home`/`home-work.work` are the one thing viper doesn't
-manage — `anchor.go` reads them via `config.LoadGlobal`.
+`workers`, and the vfs toggles are read back through plain viper keys (same
+`v.GetX(flagName)` calls `applyOverrides` already makes work regardless of
+source); `rules` and `home-work.home`/`home-work.work` are config-file-only
+(no flag, no env) — `applyOverrides` and `anchor.go` read them straight via
+`config.LoadGlobal`, bypassing viper entirely.
 
 ## Core pipeline (`pkg/core/`)
 
 - `workflow/` — orchestrator. Two entry points over the same `runSession` phase
   loop (scan→hash→exif→score→vfs): `RunScan` (synchronous, CLI) and `SubmitScan`
-  (background goroutine, `serve`; `Close()` waits). `claimRoots` rejects a new
+  (background goroutine, `serve`; `Close()` waits). `NewWorkflow` takes a
+  `Deps` — two blocking getters for the downloadable dependencies — instead of
+  a resolver and exiftool path: the exif and vfs components are built lazily
+  inside their phase closures, calling `deps.Exiftool()`/`deps.Location()`
+  right before running, so a first-ever TUI scan walks and hashes while the
+  downloads are still going. Callers with everything installed up front
+  (plain scan, serve) wrap the values in `workflow.ReadyDeps`. `claimRoots` rejects a new
   session whose roots overlap an in-flight session's (in-memory — the output
   lock guarantees one process). `helpers.go` = session status/finalize writes
   plus `CheckOutputSpace` — exported because `review` runs the same check: the
@@ -357,13 +416,13 @@ manage — `anchor.go` reads them via `config.LoadGlobal`.
   (`deleted_at IS NULL`) rows; re-promotes solo survivors of shrunken groups.
 - `vfs/` — phase 5. Proposes destinations for every live master in the library
   from the persisted metadata (never re-reads files); each run replaces the
-  proposal set wholesale (safe to call again mid-review with a different
-  `Config` — see `review.go`'s `[L]` key). `Config.Rules` (below Year/Month)
+  proposal set wholesale (safe to call again mid-review — see `review.go`'s
+  `--rebuild` flag). `Config.Rules` (below Year/Month)
   is `location`/`orientation`/`device`/`media` in any order, or empty for a
-  flat `Year/Month` — set via `--rules`/`config.yaml` (CLI) or cycled live
-  in the review TUI. `date` is a Day level, so the full
+  flat `Year/Month` — set via `config.yaml`'s `rules` key (`wandersort config`
+  wizard only, no CLI flag). `date` is a Day level, so the full
   `Year/Month/Day/Location/Device/Orientation/Media` shape is
-  `--rules date,location,device,orientation,media`; when a `date` level is
+  `rules: [date, location, device, orientation, media]`; when a `date` level is
   present the location ladder **skips its dated `eventSegment` rung** (falling
   through to device/fallback) — otherwise an unresolved location renders a
   second date right next to the Day folder (`…/03/03-05/`).
@@ -416,7 +475,7 @@ manage — `anchor.go` reads them via `config.LoadGlobal`.
   folder it emitted for the location level as `virtual_fs_entries.suggestion_dir`,
   and `BuildTree` hangs the suggestion + GPS off exactly that node. The old
   fixed `suggestionDepth = 2` assumed location was Rules' first level, so
-  any other order (`--rules device,location`, or a `date` level in front)
+  any other order (`rules: [device, location]`, or a `date` level in front)
   smeared every file's suggestion onto whatever shared Device/Day node sat at
   depth 2 — reported as "one suggestion across the whole tree". No
   `suggestion_dir` (no location level in this proposal) now means no suggestion
@@ -448,7 +507,11 @@ Only used by `serve`. Standard handler→service→repository split per domain:
   elapsed times, a progress bar and a live per-file tail nested under the
   running stage), the app `Shell` (one alt-screen program, `Switch` swaps
   screens without a terminal-restore flash), the `config` wizard
-  (`form.go` — `Field.Example` blocks above the footer, `Field.Await` to hold a
+  (`form.go` — `Field.Example` blocks above the footer, `Field.Describe` for a
+    description that depends on the answer under the cursor — prose belongs
+    there, not in the example, which renders in a narrow column and truncates;
+    descriptions word-wrap to the body width (`descriptionBlock`), so hard line
+    breaks in them are re-flowed — `Field.Await` to hold a
   step on a background download, `DownloadMsg` for the progress row, and
   **numbered** option lists: `1)`/`2)` next to every choice, since an
   arrow-only list gives the eye nothing to aim at. A `FieldGroup` holds fields
@@ -488,7 +551,7 @@ Only used by `serve`. Standard handler→service→repository split per domain:
   text) to avoid spam. There is no debug flag to bypass the console filter —
   the JSON file log always has every record.
   The **JSON file** handler keeps timestamp + source (`AddSource`) and every
-  attr (incl. `sessionId`) — that's what `report-issue` ships. Never stdlib `log`.
+  attr (incl. `sessionId`) — that's what `issue` ships. Never stdlib `log`.
 - `location/` — offline reverse-geocode resolver + its own sqlite DB. `Setup()`
   downloads DB+meta if missing (idempotent) and is the only place that prints
   a user-facing line about it; `New`'s checksum verification is **not**
@@ -593,12 +656,6 @@ go build ./... # quick compile check
   file interleave cleanly (consumers filter by id) — logs are **not** the wall.
   The lock is. Running scans concurrently would need per-session isolation or a
   single owner that multiplexes sessions.
-- `review.go`'s `layoutPresets` is a fixed 4-item list, not derived from
-  whatever `Config.Rules` this session's scan actually started with — the
-  first `[L]` press might not be a no-op. Revisit if users want custom presets
-  instead of cycling a canned list. None of the 4 presets include `device` —
-  it's real (`RuleDevice`) but currently reachable only via
-  `--rules`/`config.yaml`, never via `[L]`.
 - `vfs.resolveLocations`' anchor-fold radius is `location.MaxDistSquared`
   (~50km), not a separate per-user setting. Revisit if a single radius doesn't
   fit both dense and sprawling metros.

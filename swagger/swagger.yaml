@@ -15,13 +15,6 @@ definitions:
       vfsEntriesDeleted:
         type: integer
     type: object
-  pipeline.FileCountResponse:
-    properties:
-      filesHashed:
-        type: integer
-      filesScanned:
-        type: integer
-    type: object
   pipeline.StartScanRequest:
     properties:
       rootPaths:
@@ -137,20 +130,6 @@ paths:
       summary: Reset all application data
       tags:
       - Admin
-  /internal/v1/pipeline/count:
-    get:
-      description: Returns the number of files discovered by the scanner and the number
-        hashed
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/pipeline.FileCountResponse'
-      summary: Get combined file counts
-      tags:
-      - Pipeline
   /internal/v1/pipeline/start:
     post:
       consumes:

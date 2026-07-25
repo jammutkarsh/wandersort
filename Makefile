@@ -4,7 +4,7 @@ BINARY := bin/wandersort
 GO_MAIN := .
 GOOS_LIST := linux darwin windows
 
-.PHONY: help build build-all swagger lint test test-race run
+.PHONY: help build build-all install swagger lint test test-race run
 
 help:
 	@printf "Usage:\n"
@@ -13,6 +13,7 @@ help:
 	@printf "  make test-race         Run all tests with the race detector (CI)\n"
 	@printf "  make build             Build the binary locally\n"
 	@printf "  make build-all         Cross-build binary for linux/darwin/windows\n"
+	@printf "  make install           Install binary via go install\n"
 	@printf "  make lint              Run gofumpt -l -w .\n"
 	@printf "  make swagger		 Generate Swagger docs (swag required)\n"
 
@@ -36,6 +37,9 @@ test:
 test-race:
 	go vet ./...
 	go test -race -count=1 ./...
+
+install:
+	go install ./...
 
 swagger:
 	@which swag >/dev/null 2>&1 || (echo "Swag CLI not found. Install with 'go install github.com/swaggo/swag/cmd/swag@latest'"; exit 1)

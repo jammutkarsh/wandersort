@@ -58,7 +58,7 @@ body:
         Run this command **in the same folder you were scanning into** (the same
         output directory), then drag the file it creates into this issue:
         ```
-        wandersort report-issue
+        wandersort issue
         ```
         Running it somewhere else packages an empty log by mistake. It bundles the
         logs only (no photos, no personal files) so we can see what went wrong.

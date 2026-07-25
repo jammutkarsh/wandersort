@@ -164,12 +164,12 @@ Execute/move stage isn't written yet, so it isn't here.
 115. `[A]` scan, delete some files on disk, re-scan → missing rows soft-deleted, not counted live.
 116. `[A]` scan, add new files, re-scan → only new files processed, existing groups intact.
 
-## 11. Reset & report-issue (destructive / packaging)
+## 11. Reset & issue (destructive / packaging)
 
 117. `[H]` `wandersort reset` → confirmation prompt; answering no leaves data intact.
 118. `[A]` `wandersort reset --yes` → all scan data wiped, `report` then errors "no sessions".
-119. `[A]` `wandersort report-issue` → produces a zip with `wandersort.log` + `about.txt`, no DB by default.
-120. `[A]` `wandersort report-issue --include-db` → zip additionally contains the DB.
+119. `[A]` `wandersort issue` → produces a zip with `wandersort.log` + `about.txt`, no DB by default.
+120. `[A]` `wandersort issue --include-db` → zip additionally contains the DB.
 
 ## 12. Serve / HTTP API (depends on everything — hardest)
 

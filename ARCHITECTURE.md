@@ -61,7 +61,7 @@ One file per command:
 | `report` | Read-only per-session summary — scanned / hashed / duplicate counts, newest first. `--vertical/-x` for narrow terminals. |
 | `setup` | Pre-download dependencies (ExifTool + location DB). Optional — `scan`/`serve` auto-install what's missing. |
 | `reset` | Wipe all scan data (prompts unless `--yes`). |
-| `report-issue` | Zip up logs (and optionally the DB) for a bug report. |
+| `issue` | Zip up logs (and optionally the DB) for a bug report. |
 
 Config precedence is **flag > env > default**. Env names are the uppercased
 flag; keep new flags hyphen-free so `AutomaticEnv` picks them up without an
@@ -123,7 +123,7 @@ mounted under `/internal/v1`:
   re-anchoring) and a free-space preflight.
 - **`logger/`** — slog-based logger fanning out to two handlers: a minimal
   coloured **console** handler that shows only user-facing lines (tagged with
-  `logger.UserKey`) and a full **JSON file** handler (what `report-issue`
+  `logger.UserKey`) and a full **JSON file** handler (what `issue`
   ships). `--debug` bypasses both filters.
 - **`lock/`**, **`style/`**, **`path/`**, **`utils/`** — file locking, terminal
   styling, path canonicalization, atomic downloads.

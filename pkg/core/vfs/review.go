@@ -265,7 +265,7 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 			if name == "" || name == "." || name == ".." {
 				return fmt.Errorf("%w: invalid node name %q", ErrInvalidTree, n.Name)
 			}
-			name = sanitizeSegment(name)
+			name = SanitizeSegment(name)
 			newPath := name
 			if parentNew != "" {
 				newPath = parentNew + "/" + name

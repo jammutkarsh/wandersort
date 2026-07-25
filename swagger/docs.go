@@ -35,26 +35,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/internal/v1/pipeline/count": {
-            "get": {
-                "description": "Returns the number of files discovered by the scanner and the number hashed",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Pipeline"
-                ],
-                "summary": "Get combined file counts",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/pipeline.FileCountResponse"
-                        }
-                    }
-                }
-            }
-        },
         "/internal/v1/pipeline/start": {
             "post": {
                 "description": "Submit root paths to the pipeline. The API validates directories, removes overlapping child paths, returns the effective scanPaths, and then starts scanning immediately",
@@ -177,17 +157,6 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "vfsEntriesDeleted": {
-                    "type": "integer"
-                }
-            }
-        },
-        "pipeline.FileCountResponse": {
-            "type": "object",
-            "properties": {
-                "filesHashed": {
-                    "type": "integer"
-                },
-                "filesScanned": {
                     "type": "integer"
                 }
             }

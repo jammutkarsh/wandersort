@@ -76,8 +76,9 @@ func DefaultConfig() Config {
 	}
 }
 
-// RuleNone is the --rules sentinel for "no levels below Year/Month". Not a
-// level itself: ConfigFor is the only thing that interprets it.
+// RuleNone is the config.yaml `rules` sentinel for "no levels below
+// Year/Month". Not a level itself: ConfigFor is the only thing that
+// interprets it.
 const RuleNone = "none"
 
 // ConfigFor is DefaultConfig with the user's settings applied: empty Rules
