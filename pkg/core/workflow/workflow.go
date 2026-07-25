@@ -27,9 +27,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
-// Workflow orchestrates scan, hash and score workflow for each session
-// Scanning and hashing run in bounded batches to keep memory usage stable on
-// very large roots
+// Workflow orchestrates the phases of one scan session. Scanning and hashing
+// run in bounded batches to keep memory stable on very large roots.
 type Workflow struct {
 	ctx              context.Context
 	db               *db.DB
@@ -42,50 +41,20 @@ type Workflow struct {
 	// the free-space preflight after each scan
 	outputDir string
 
-	/* Pipeline components */
-	scanner Scanner
-	hasher  Hasher
-	scorer  Scorer
-	vfs     VFS
+	/* Pipeline components, run in this order */
+	scanner *scanner.Scanner
+	hasher  *hasher.Hasher
+	scorer  *scorer.Scorer
+	vfs     *vfs.VFS
 
-	// activeRoots tracks the scan roots of in-flight sessions so overlapping
-	// scans are rejected before they can re-stamp each other's registry rows.
-	// In-memory is sufficient: the output-dir lock guarantees a single
-	// scan/serve process, so every live session lives in this Workflow
+	// activeRoots holds the roots of in-flight sessions, so overlapping scans
+	// are rejected before they re-stamp each other's rows. In-memory suffices:
+	// the output-dir lock guarantees one scan/serve process.
 	mu          sync.Mutex
 	activeRoots map[uuid.UUID][]string
 
 	wg sync.WaitGroup
 }
-
-// Scanner, Hasher and Scorer are the three pipeline phases. Interfaces so
-// tests and alternate strategies (see TODO #22 on hashing) can substitute
-// implementations without touching the orchestrator.
-type (
-	Scanner interface {
-		Run(ctx context.Context, sessionID uuid.UUID, paths []string) (int, error)
-	}
-	Hasher interface {
-		Run(ctx context.Context, sessionID uuid.UUID) (int, error)
-	}
-	Scorer interface {
-		Run(ctx context.Context, sessionID uuid.UUID) (int, error)
-	}
-	VFS interface {
-		Run(ctx context.Context, sessionID uuid.UUID) (int, error)
-	}
-)
-
-// Option overrides a default pipeline component on NewWorkflow.
-type Option func(*Workflow)
-
-func WithScanner(s Scanner) Option { return func(wf *Workflow) { wf.scanner = s } }
-
-func WithHasher(h Hasher) Option { return func(wf *Workflow) { wf.hasher = h } }
-
-func WithScorer(s Scorer) Option { return func(wf *Workflow) { wf.scorer = s } }
-
-func WithVFS(v VFS) Option { return func(wf *Workflow) { wf.vfs = v } }
 
 type workflowPhase struct {
 	kind workflowPhaseKind
@@ -131,11 +100,10 @@ func (kind workflowPhaseKind) status() phaseStatus {
 }
 
 // NewWorkflow creates a new workflow instance
-func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration, exiftoolPath string, opts ...Option) *Workflow {
+func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Resolver, log logger.Logger, cfg *config.Configuration, exiftoolPath string) *Workflow {
 	vfsCfg := vfs.ConfigFor(cfg)
-	// user-facing: these three decide where everything lands and how long it
-	// takes, and all three come from flags/env/config.yaml — showing the
-	// resolved values up front is the only way to tell which one won
+	// all three come from flag/env/config.yaml, so showing the resolved values
+	// is the only way to see which source won
 	rules := "none (flat Year/Month)"
 	if len(vfsCfg.Rules) > 0 {
 		rules = strings.Join(vfsCfg.Rules, ", ")
@@ -156,9 +124,6 @@ func NewWorkflow(ctx context.Context, db *db.DB, locationResolver *location.Reso
 		path:             path.New(),
 		outputDir:        filepath.Dir(cfg.AppDBPath),
 		activeRoots:      map[uuid.UUID][]string{},
-	}
-	for _, opt := range opts {
-		opt(wf)
 	}
 	return wf
 }
@@ -212,11 +177,8 @@ func (wf *Workflow) RunScan(paths []string) (uuid.UUID, error) {
 	return sessionID, nil
 }
 
-// prepareSession creates the scan_sessions DB row and returns the new session ID
-//
-// The incoming paths are expected to already be canonical, validated scan roots
-// API-level preparation resolves, deduplicates, and prunes overlapping paths
-// before this method runs
+// prepareSession creates the scan_sessions row and returns the new session ID.
+// paths must already be canonical, deduplicated scan roots.
 func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UUID, error) {
 	storedPaths := make([]string, 0, len(paths))
 	for _, path := range paths {
@@ -249,11 +211,10 @@ func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UU
 	return sessionID, nil
 }
 
-// claimRoots atomically checks the new session's roots against every
-// in-flight session and registers them. Overlapping concurrent scans are
-// rejected: the sweep treats "row not re-stamped by me" as proof a file
-// vanished, so two sessions over the same tree would soft-delete each
-// other's live rows
+// claimRoots registers a session's roots after checking them against every
+// in-flight session. Overlaps are rejected because the sweep reads "row not
+// re-stamped by me" as proof a file vanished — two sessions over one tree
+// would soft-delete each other's live rows.
 func (wf *Workflow) claimRoots(sessionID uuid.UUID, paths []string) error {
 	wf.mu.Lock()
 	defer wf.mu.Unlock()
@@ -277,9 +238,9 @@ func (wf *Workflow) releaseRoots(sessionID uuid.UUID) {
 	delete(wf.activeRoots, sessionID)
 }
 
-// runSession executes the sequential phases for a single scan session and
-// finalizes it. Returns the terminal status and error message (if any) so a
-// synchronous caller can surface failure; the async caller ignores them.
+// runSession runs the phases in order and finalizes the session. Returns the
+// terminal status and error so RunScan can surface failure; SubmitScan ignores
+// both.
 func (wf *Workflow) runSession(sessionID uuid.UUID, paths []string) (finalStatus string, finalErr *string) {
 	defer func() {
 		wf.finalizeSession(sessionID, finalStatus, finalErr)
@@ -299,7 +260,7 @@ func (wf *Workflow) runSession(sessionID uuid.UUID, paths []string) (finalStatus
 
 	// last thing before the session is marked done, so it sits next to the
 	// "run wandersort review" hint rather than scrolling past mid-pipeline
-	wf.warnIfLowSpace(sessionID)
+	CheckOutputSpace(wf.ctx, wf.db, wf.log, wf.outputDir, sessionID)
 
 	if err := wf.setSessionStatus(wf.ctx, sessionID, db.StatusCompleted); err != nil {
 		msg := fmt.Errorf("failed to set %s status: %w", db.StatusCompleted, err).Error()
@@ -345,9 +306,8 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 	}
 }
 
-// run runs a single workflow phase, handles logging,
-// status updates, and consistent error reporting. Returns the result count,
-// final status, error message (if any), and a boolean indicating success
+// run executes one phase with its status writes and logging. Returns the
+// result count, final status, error message, and whether it succeeded.
 func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhase) (int, string, *string, bool) {
 	success := true
 	status := phase.kind.status()
@@ -374,7 +334,7 @@ func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhase) (int, string, 
 		return count, finalStatus, &finalErr, !success
 	}
 
-	wf.db.Writer.Flush()
+	wf.db.Writer.Flush() // make this phase's writes visible to the next one
 
 	// one line per phase: what it did and how long it took
 	msg := fmt.Sprintf("%s phase took %s", phase.kind, elapsed.Round(time.Millisecond))

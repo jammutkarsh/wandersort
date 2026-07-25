@@ -24,20 +24,12 @@ func (wf *Workflow) Close() {
 	wf.wg.Wait()
 }
 
-// warnIfLowSpace preempts a doomed Execute run right after the scan phase:
-// if every live file were copied into the output directory today, would the
-// volume hold it? Warn-only — nothing is copied yet.
+// CheckOutputSpace warns, once, when the output volume cannot hold the whole
+// library. Best-effort: an unreadable size or volume is a warning, never a
+// failure. Exported because `review` runs it too — the last look before a plan
+// is approved is where "the disk is too small" is still actionable.
 // ponytail: the sum counts every live file, an upper bound; narrow it to
 // master copies when the Execute phase lands
-func (wf *Workflow) warnIfLowSpace(sessionID uuid.UUID) {
-	CheckOutputSpace(wf.ctx, wf.db, wf.log, wf.outputDir, sessionID)
-}
-
-// CheckOutputSpace warns, once, when the output volume cannot hold the whole
-// library. Exported because `review` needs the same check: it is the last
-// place a user looks before approving a plan, and finding out mid-move that
-// the disk is too small is far worse than being told beforehand. Best-effort
-// throughout — an unreadable size or volume is a warning, never a failure.
 func CheckOutputSpace(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, sessionID uuid.UUID) {
 	var librarySize int64
 	if err := database.SQL.GetContext(ctx, &librarySize,
