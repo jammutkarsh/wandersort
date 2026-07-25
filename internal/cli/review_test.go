@@ -720,7 +720,7 @@ func TestRefreshSuggestionsFiltersInMemory(t *testing.T) {
 	m.refreshSuggestions()
 	var names []string
 	for _, s := range m.suggestions {
-		names = append(names, s.name)
+		names = append(names, s.label)
 	}
 	if len(names) != 3 || names[0] != "Manali" || names[1] != "Mandi" || names[2] != "Manali Trip" {
 		t.Errorf("suggestions = %v, want [Manali Mandi Manali Trip] (geo first, then labels)", names)
@@ -762,7 +762,7 @@ func TestRenameLoadsGeoCandidatesOnce(t *testing.T) {
 		next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		rm = next.(reviewModel)
 	}
-	if len(rm.suggestions) != 1 || rm.suggestions[0].name != "Manali" {
+	if len(rm.suggestions) != 1 || rm.suggestions[0].label != "Manali" {
 		t.Errorf("suggestions = %+v, want the pre-loaded label filtered in memory", rm.suggestions)
 	}
 }

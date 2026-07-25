@@ -239,10 +239,19 @@ func resolvedName(r *reviewRow) string {
 }
 
 // nameSuggestion is one rename candidate shown under the input: a ranked
-// nearby place (geo) or a name confirmed in an earlier review (label).
+// nearby place (geo) or a name confirmed in an earlier review (label). label is
+// what's shown (may read "Springfield, Illinois"); value is what a pick writes
+// as the folder name — folders can't hold a comma, so it's joined with "_".
 type nameSuggestion struct {
-	name   string
+	label  string
+	value  string
 	detail string
+}
+
+// folderName turns a display name ("Springfield, Illinois") into a folder-safe
+// one ("Springfield_Illinois") — the disambiguation comma is presentation only.
+func folderName(display string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(display, ", ", "_"), ",", "_")
 }
 
 const maxPreviewBytes = 250 * 1024 * 1024
@@ -514,39 +523,64 @@ func (m *reviewModel) loadGeoCandidates() {
 	}
 }
 
-// refreshSuggestions repopulates the rename dropdown from data already in
-// memory — nearby places fetched once by loadGeoCandidates, plus the confirmed
-// labels loaded once at startup. Pure filtering, no I/O: it runs on every
-// keystroke, and a query per keystroke made typing lag on a cold cache.
+// refreshSuggestions repopulates the rename dropdown: nearby places fetched
+// once by loadGeoCandidates (filtered in memory), the confirmed labels loaded
+// at startup, and — so typing a city name works even on an unresolved folder
+// with no GPS to seed geoCands — a gazetteer prefix search. That last one is a
+// DB query per keystroke, but it's an indexed LIKE 'x%' with a small LIMIT, and
+// only fires from two typed characters on.
 func (m *reviewModel) refreshSuggestions() {
 	m.suggestions = nil
 	seen := map[string]bool{}
-	prefix := strings.ToLower(strings.TrimSpace(m.input))
+	typed := strings.TrimSpace(m.input)
+	prefix := strings.ToLower(typed)
+
+	add := func(label, detail string) bool {
+		value := folderName(label)
+		if value == "" || seen[value] {
+			return true
+		}
+		seen[value] = true
+		m.suggestions = append(m.suggestions, nameSuggestion{label: label, value: value, detail: detail})
+		return len(m.suggestions) < maxSuggestions
+	}
 
 	for _, c := range m.geoCands {
-		if prefix != "" && !strings.HasPrefix(strings.ToLower(c.Name), prefix) {
+		// FullName: the reviewer is choosing between places, and "Springfield"
+		// three times over is not a choice. What they pick is what the folder
+		// is named — the shortened DisplayName is only for names nobody picked.
+		name := c.FullName
+		if name == "" {
+			name = c.Name
+		}
+		if prefix != "" && !strings.HasPrefix(strings.ToLower(name), prefix) &&
+			!strings.HasPrefix(strings.ToLower(c.Name), prefix) {
 			continue
 		}
-		if !seen[c.Name] {
-			seen[c.Name] = true
-			m.suggestions = append(m.suggestions, nameSuggestion{name: c.Name, detail: fmt.Sprintf("~%.0fkm", c.DistKM)})
-		}
-		if len(m.suggestions) >= maxSuggestions {
+		if !add(name, fmt.Sprintf("~%.0fkm", c.DistKM)) {
 			return
 		}
 	}
 
-	if prefix != "" {
-		for _, l := range m.labels {
-			if !strings.HasPrefix(strings.ToLower(l), prefix) {
-				continue
-			}
-			if !seen[l] {
-				seen[l] = true
-				m.suggestions = append(m.suggestions, nameSuggestion{name: l, detail: "used before"})
-			}
-			if len(m.suggestions) >= maxSuggestions {
-				return
+	if prefix == "" {
+		return
+	}
+
+	for _, l := range m.labels {
+		if !strings.HasPrefix(strings.ToLower(l), prefix) {
+			continue
+		}
+		if !add(l, "used before") {
+			return
+		}
+	}
+
+	if len(prefix) >= 2 && m.resolver != nil {
+		if matches, err := m.resolver.SearchByName(m.ctx, typed, maxSuggestions); err == nil {
+			for _, pm := range matches {
+				if !add(pm.FullName, "") {
+					return
+				}
 			}
 		}
 	}
@@ -614,7 +648,7 @@ func (m reviewModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.refreshSuggestions()
 		case tea.KeyTab:
 			if len(m.suggestions) > 0 {
-				m.input = m.suggestions[0].name
+				m.input = m.suggestions[0].value
 				m.refreshSuggestions()
 			}
 		case tea.KeyCtrlE:
@@ -1215,7 +1249,11 @@ func (m reviewModel) footer() string {
 	case m.editing:
 		fmt.Fprintf(&b, "%s%s█\n", tui.Attn.Render("New name: "), m.input)
 		for _, s := range m.suggestions {
-			fmt.Fprintf(&b, "  %s %s\n", s.name, tui.DimText.Render("("+s.detail+")"))
+			if s.detail == "" {
+				fmt.Fprintf(&b, "  %s\n", s.label)
+			} else {
+				fmt.Fprintf(&b, "  %s %s\n", s.label, tui.DimText.Render("("+s.detail+")"))
+			}
 		}
 		fmt.Fprintln(&b, m.wrapDim("[enter] apply  [tab] use top match  [ctrl+e] wider search  [esc] cancel"))
 	case m.previewing:

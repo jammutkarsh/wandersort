@@ -19,7 +19,7 @@ import (
 )
 
 // syncHomeWorkFromConfig ensures the home/work anchors saved globally (see
-// `wandersort setup`) exist as ANCHOR_HOME/ANCHOR_WORK user_labels in this
+// `wandersort config`) exist as ANCHOR_HOME/ANCHOR_WORK user_labels in this
 // library's DB — anchors are a global setting, but resolveLocations reads them
 // per-library, so each library's DB needs its own copy. Idempotent and silent
 // once synced; a library with no global anchors set is a no-op.
@@ -69,11 +69,33 @@ func (a *App) syncHomeWorkFromConfig(ctx context.Context) error {
 // exactMatch returns the gazetteer's own spelling when one of matches is a
 // case-insensitive match for typed, e.g. so a user who already typed the
 // right name gets the canonical form without extra steps (see canonicalTown).
+// The town picker lists full names ("Indore, Madhya Pradesh, India"), so all
+// three forms match — and whichever matched is saved as the full name, the
+// only form that names one row for certain (see location.ResolveByName).
 func exactMatch(matches []location.PlaceMatch, typed string) (string, bool) {
+	typed = strings.TrimSpace(typed)
 	for _, m := range matches {
-		if strings.EqualFold(m.Name, typed) {
-			return m.Name, true
+		if strings.EqualFold(m.FullName, typed) {
+			return canonicalNameOf(m), true
+		}
+	}
+	for _, m := range matches {
+		if strings.EqualFold(m.DisplayName, typed) || strings.EqualFold(m.Name, typed) {
+			return canonicalNameOf(m), true
 		}
 	}
 	return "", false
+}
+
+// canonicalNameOf is the form an anchor is saved as: the full name when the
+// gazetteer gave one, else whatever shorter form it has.
+func canonicalNameOf(m location.PlaceMatch) string {
+	switch {
+	case m.FullName != "":
+		return m.FullName
+	case m.DisplayName != "":
+		return m.DisplayName
+	default:
+		return m.Name
+	}
 }
