@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package pipeline
+package workflow
 
 import (
 	"os"
@@ -15,7 +15,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
-func TestComputeScanPaths_FilterDuplicatePaths(t *testing.T) {
+func TestScanRoots_FilterDuplicatePaths(t *testing.T) {
 	root := t.TempDir()
 	child := filepath.Join(root, "child")
 	grandChild := filepath.Join(child, "grand")
@@ -25,18 +25,18 @@ func TestComputeScanPaths_FilterDuplicatePaths(t *testing.T) {
 
 	otherRoot := t.TempDir()
 
-	svc := &Service{logger: logger.NewNoopLogger(), resolver: path.New()}
+	wf := &Workflow{log: logger.NewNoopLogger(), path: path.New()}
 
-	resolvedRoot, err := svc.resolver.RealPath(root)
+	resolvedRoot, err := wf.path.RealPath(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvedOtherRoot, err := svc.resolver.RealPath(otherRoot)
+	resolvedOtherRoot, err := wf.path.RealPath(otherRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	paths, err := svc.prepareScanRoots([]string{
+	paths, err := wf.scanRoots([]string{
 		grandChild,
 		root,
 		child,
@@ -61,7 +61,7 @@ func TestComputeScanPaths_FilterDuplicatePaths(t *testing.T) {
 	}
 }
 
-func TestPrepareScanRoots_ErrorCases(t *testing.T) {
+func TestScanRoots_ErrorCases(t *testing.T) {
 	tests := []struct {
 		name  string
 		setup func(t *testing.T) []string
@@ -87,8 +87,8 @@ func TestPrepareScanRoots_ErrorCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := &Service{logger: logger.NewNoopLogger(), resolver: path.New()}
-			_, err := svc.prepareScanRoots(tt.setup(t))
+			wf := &Workflow{log: logger.NewNoopLogger(), path: path.New()}
+			_, err := wf.scanRoots(tt.setup(t))
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
