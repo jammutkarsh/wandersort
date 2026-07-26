@@ -17,6 +17,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
@@ -25,7 +26,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func (a *App) newScanCmd() *cobra.Command {
+func (a *app) newScanCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "scan",
 		Short: "Scan directories, hash files, and find duplicates",
@@ -60,7 +61,7 @@ wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
 	return cmd
 }
 
-func (a *App) runScan(paths []string) error {
+func (a *app) runScan(paths []string) error {
 	if a.tuiEnabled() {
 		return a.runScanTUI(paths)
 	}
@@ -70,20 +71,20 @@ func (a *App) runScan(paths []string) error {
 // runScanPlain is the non-TUI path: synchronous pipeline, progress via the
 // console logger's line output. Used with --plain or a non-terminal
 // stderr. Behaviour is unchanged from before the TUI existed.
-func (a *App) runScanPlain(paths []string) error {
+func (a *app) runScanPlain(paths []string) error {
 	start := time.Now()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if err := a.InitAppDB(ctx); err != nil {
+	if err := a.initAppDB(ctx); err != nil {
 		return err
 	}
-	if err := a.EnsureDependencies(ctx); err != nil {
+	if err := a.ensureDependencies(ctx, nil); err != nil {
 		return err
 	}
-	defer a.Close()
+	defer a.closeDBs()
 
-	if err := a.syncHomeWorkFromConfig(ctx); err != nil {
+	if err := a.syncAnchors(ctx); err != nil {
 		return fmt.Errorf("anchors: %w", err)
 	}
 
@@ -96,7 +97,7 @@ func (a *App) runScanPlain(paths []string) error {
 	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, workflow.ReadyDeps(a.ExiftoolPath, a.LocationResolver))
 	defer wf.Close()
 
-	sessionID, scanPaths, err := a.PipelineService(wf).RunScan(paths)
+	sessionID, scanPaths, err := wf.RunScan(paths)
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}
@@ -118,19 +119,19 @@ func (a *App) runScanPlain(paths []string) error {
 // and hashing overlap the downloads instead of sitting behind them.
 // The pipeline logs through a TUI logger whose Sink forwards every user/stream
 // Event into the program; on a clean scan the user can drop straight into review.
-func (a *App) runScanTUI(paths []string) error {
+func (a *app) runScanTUI(paths []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := a.InitAppDB(ctx); err != nil {
+	if err := a.initAppDB(ctx); err != nil {
 		return err
 	}
 	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
 	if err != nil {
-		a.Close()
+		a.closeDBs()
 		return fmt.Errorf("acquire lock: %w", err)
 	}
-	defer a.Close()
+	defer a.closeDBs()
 	defer l.Unlock()
 
 	// TUI logger: user/stream Events flow to the program; the JSON file log still
@@ -180,7 +181,7 @@ func (a *App) runScanTUI(paths []string) error {
 			}
 			// anchors need the resolver, so this is the earliest they can sync;
 			// vfs is also the only phase that reads them
-			if err := a.syncHomeWorkFromConfig(ctx); err != nil {
+			if err := a.syncAnchors(ctx); err != nil {
 				return nil, fmt.Errorf("anchors: %w", err)
 			}
 			return a.LocationResolver, nil
@@ -191,7 +192,7 @@ func (a *App) runScanTUI(paths []string) error {
 	defer wf.Close()
 	first := tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {
-			_, _, err := a.PipelineService(wf).RunScan(paths)
+			_, _, err := wf.RunScan(paths)
 			return err
 		},
 		Cancel: cancel,
@@ -220,23 +221,9 @@ func (a *App) runScanTUI(paths []string) error {
 	}
 
 	if shell, ok := final.(tui.Shell); ok {
-		if cur, ok := shell.Current().(reviewScreen); ok {
-			return a.reportReviewOutcome(cur)
+		if confirmed, saveErr, ok := review.Outcome(shell.Current()); ok {
+			return a.reportReviewOutcome(confirmed, saveErr)
 		}
-	}
-	return nil
-}
-
-// reportReviewOutcome prints the in-program review result after the alt-screen
-// has been torn down (so the message lands on the plain terminal).
-func (a *App) reportReviewOutcome(rs reviewScreen) error {
-	switch {
-	case rs.finalErr != nil:
-		return fmt.Errorf("save plan: %w", rs.finalErr)
-	case !rs.confirmed:
-		a.Log.Info("Review cancelled — nothing changed", logger.UserKey, true)
-	default:
-		a.Log.Info("Folder structure approved. Confirmed names will be suggested on future scans.", logger.UserKey, true)
 	}
 	return nil
 }

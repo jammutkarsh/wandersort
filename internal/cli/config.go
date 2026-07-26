@@ -21,12 +21,13 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
-func (a *App) newConfigCmd() *cobra.Command {
+func (a *app) newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Configure WanderSort",
@@ -52,7 +53,7 @@ wandersort config | grep rules`,
 	return cmd
 }
 
-func (a *App) runConfig() error {
+func (a *app) runConfig() error {
 	configPath, err := config.EnsureGlobalConfigFile()
 	if err != nil {
 		return fmt.Errorf("global config: %w", err)
@@ -95,7 +96,7 @@ var errGazetteerPending = errors.New("location database is still downloading")
 // location database (needed only to validate the home/work towns) downloads in
 // the background while the user answers everything above it — there is no
 // install screen here; dependencies are scan's job.
-func (a *App) runConfigTUI(ctx context.Context) error {
+func (a *app) runConfigTUI(ctx context.Context) error {
 	// Console logging off for the run: the alt-screen owns the terminal and
 	// the background download's log lines would draw over it. The file log
 	// still captures everything.
@@ -126,7 +127,7 @@ func (a *App) runConfigTUI(ctx context.Context) error {
 		prog.Send(tui.DownloadMsg{Label: "Location database", Done: done, Total: total})
 	}
 	go func() {
-		locErr = a.InitLocationResolver(ctx)
+		locErr = a.initLocationResolver(ctx)
 		close(ready)
 		prog.Send(tui.DownloadMsg{Finished: true})
 	}()
@@ -147,7 +148,7 @@ func (a *App) runConfigTUI(ctx context.Context) error {
 
 // buildConfigForm builds the wizard's fields (seeded with the current effective
 // values) and a save closure that writes them to ~/.wandersort/config.yaml.
-func (a *App) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*tui.Field, func() error) {
+func (a *app) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*tui.Field, func() error) {
 	g, _ := config.LoadGlobal()
 
 	out := g.OutputPath
@@ -619,7 +620,7 @@ func toMap(items []string) map[string]bool {
 // near-miss with real candidates still errors ("did you mean"), since that's a
 // typo, not a gap. Blank input is an error (callers treat blank as "skip"
 // before calling for the canonical form).
-func (a *App) canonicalTown(ctx context.Context, typed string) (string, error) {
+func (a *app) canonicalTown(ctx context.Context, typed string) (string, error) {
 	typed = strings.TrimSpace(typed)
 	if typed == "" || a.LocationResolver == nil {
 		return "", fmt.Errorf("no town")
@@ -632,4 +633,38 @@ func (a *App) canonicalTown(ctx context.Context, typed string) (string, error) {
 		return name, nil
 	}
 	return "", fmt.Errorf("no exact match for %q (did you mean %s?)", typed, matches[0].Name)
+}
+
+// exactMatch returns the gazetteer's own spelling when one of matches is a
+// case-insensitive match for typed, e.g. so a user who already typed the
+// right name gets the canonical form without extra steps (see canonicalTown).
+// The town picker lists full names ("Indore, Madhya Pradesh, India"), so all
+// three forms match — and whichever matched is saved as the full name, the
+// only form that names one row for certain (see location.ResolveByName).
+func exactMatch(matches []location.PlaceMatch, typed string) (string, bool) {
+	typed = strings.TrimSpace(typed)
+	for _, m := range matches {
+		if strings.EqualFold(m.FullName, typed) {
+			return canonicalNameOf(m), true
+		}
+	}
+	for _, m := range matches {
+		if strings.EqualFold(m.DisplayName, typed) || strings.EqualFold(m.Name, typed) {
+			return canonicalNameOf(m), true
+		}
+	}
+	return "", false
+}
+
+// canonicalNameOf is the form an anchor is saved as: the full name when the
+// gazetteer gave one, else whatever shorter form it has.
+func canonicalNameOf(m location.PlaceMatch) string {
+	switch {
+	case m.FullName != "":
+		return m.FullName
+	case m.DisplayName != "":
+		return m.DisplayName
+	default:
+		return m.Name
+	}
 }

@@ -19,7 +19,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func (a *App) newIssueCmd() *cobra.Command {
+func (a *app) newIssueCmd() *cobra.Command {
 	var includeDB bool
 	cmd := &cobra.Command{
 		Use:   "issue",
@@ -53,7 +53,7 @@ type zipEntry struct {
 	name string
 }
 
-func (a *App) runIssue(includeDB bool) error {
+func (a *app) runIssue(includeDB bool) error {
 	// The logger creates an empty log file at startup, so existence alone is not
 	// enough — treat an empty log as "nothing to report".
 	if info, err := os.Stat(a.Config.LogFile); err != nil || info.Size() == 0 {

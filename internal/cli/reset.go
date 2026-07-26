@@ -20,7 +20,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func (a *App) newResetCmd() *cobra.Command {
+func (a *app) newResetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reset",
 		Short: "Delete all wandersort scan data",
@@ -41,7 +41,7 @@ wandersort reset --yes`,
 	return cmd
 }
 
-func (a *App) runReset() error {
+func (a *app) runReset() error {
 	if _, err := os.Stat(a.Config.AppDBPath); os.IsNotExist(err) {
 		return fmt.Errorf("no database found — nothing to reset")
 	}
@@ -60,12 +60,12 @@ func (a *App) runReset() error {
 
 	ctx := context.Background()
 
-	if err := a.InitAppDB(ctx); err != nil {
+	if err := a.initAppDB(ctx); err != nil {
 		return fmt.Errorf("app db: %w", err)
 	}
-	defer a.Close()
+	defer a.closeDBs()
 
-	if _, err := a.AdminService().Reset(ctx); err != nil {
+	if _, err := a.AppDB.ResetAll(ctx); err != nil {
 		return fmt.Errorf("reset failed: %w", err)
 	}
 
@@ -79,7 +79,7 @@ func (a *App) runReset() error {
 
 // confirmReset asks before the irreversible wipe: a themed dialog in the
 // full-screen TUI, or a plain y/N prompt when --plain / non-interactive.
-func (a *App) confirmReset() bool {
+func (a *app) confirmReset() bool {
 	if !a.tuiEnabled() {
 		fmt.Fprint(os.Stderr, tui.Attn.Render("Delete all wandersort data?")+" (y/N): ")
 		reader := bufio.NewReader(os.Stdin)

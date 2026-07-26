@@ -33,10 +33,10 @@ func terminalStatus(status string) bool {
 	}
 }
 
-// SessionReport summarizes one scan session. Duplicates are scoped to the
+// sessionReport summarizes one scan session. Duplicates are scoped to the
 // session's own files, since two sessions over different roots can have
 // entirely different duplicate pictures.
-type SessionReport struct {
+type sessionReport struct {
 	SessionID       string `json:"sessionId"`
 	Status          string `json:"status"`
 	StartedAt       string `json:"startedAt"`
@@ -52,7 +52,7 @@ var (
 	tableBorderStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(tui.Subtle).Padding(0, 1)
 )
 
-func (a *App) newReportCmd() *cobra.Command {
+func (a *app) newReportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "report",
 		Short: "Show a summary of the last scan",
@@ -71,7 +71,7 @@ wandersort report -x`,
 	return cmd
 }
 
-func (a *App) runReport() error {
+func (a *app) runReport() error {
 	if _, err := os.Stat(a.Config.AppDBPath); os.IsNotExist(err) {
 		return fmt.Errorf("no database found — nothing to report on")
 	}
@@ -94,7 +94,7 @@ func (a *App) runReport() error {
 	return nil
 }
 
-func (a *App) generateReport(ctx context.Context, dbPath string) ([]SessionReport, error) {
+func (a *app) generateReport(ctx context.Context, dbPath string) ([]sessionReport, error) {
 	// busy_timeout lets sqlite wait out a concurrent scan/serve writer instead
 	// of failing outright with SQLITE_BUSY on this read-only connection.
 	dsn := fmt.Sprintf("file:%s?mode=ro&_journal=OFF&_pragma=busy_timeout(5000)", dbPath)
@@ -110,9 +110,9 @@ func (a *App) generateReport(ctx context.Context, dbPath string) ([]SessionRepor
 	}
 	defer rows.Close()
 
-	var sessions []SessionReport
+	var sessions []sessionReport
 	for rows.Next() {
-		var s SessionReport
+		var s sessionReport
 		if err := rows.Scan(&s.SessionID, &s.Status, &s.StartedAt); err != nil {
 			return nil, fmt.Errorf("scan scan_sessions row: %w", err)
 		}
@@ -156,7 +156,7 @@ func (a *App) generateReport(ctx context.Context, dbPath string) ([]SessionRepor
 	return sessions, nil
 }
 
-func (a *App) printReport(sessions []SessionReport) {
+func (a *app) printReport(sessions []sessionReport) {
 	fmt.Println(titleStyle.Render("WanderSort Report"))
 
 	if !terminalStatus(sessions[0].Status) {
@@ -185,7 +185,7 @@ func (a *App) printReport(sessions []SessionReport) {
 
 // printReportVertical renders each session as expanded label:value pairs
 // (psql \x style) instead of a wide table, for narrow terminals.
-func (a *App) printReportVertical(sessions []SessionReport) {
+func (a *app) printReportVertical(sessions []sessionReport) {
 	fmt.Println(titleStyle.Render("WanderSort Report"))
 
 	if !terminalStatus(sessions[0].Status) {
