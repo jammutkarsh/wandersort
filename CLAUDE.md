@@ -24,11 +24,19 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
 
 ## Entry point & CLI
 
-- `main.go` — builds `config.Defaults()`, constructs `cli.App{Config}`, calls
-  `app.Execute()`. **No logger here** — it's built later (see below).
-- `internal/cli/` — cobra CLI. One file per command:
-  - `root.go` — root cmd, `App` struct, DB/exiftool/resolver lazy-init helpers,
-    viper setup, config-override resolution. **`PersistentPreRunE` is the single
+- `main.go` — builds `config.Defaults()` and calls `cli.Execute(cfg)`. **No
+  logger here** — it's built later (see below).
+- `internal/cli/` — cobra CLI. One file per command, plus `app.go` and `root.go`:
+  - `app.go` — `Execute(cfg)`, **the package's only exported symbol**, plus the
+    unexported `app` struct and everything hanging off it: DB/exiftool/resolver
+    lazy-init (`initAppDB`, `initLocationResolver`, `initExiftool`,
+    `ensureDependencies`, `closeDBs`), the install-progress hook, `syncAnchors`,
+    and `tuiEnabled`. Nothing outside this package needs the app or its state,
+    so nothing else is exported — `main.go` has one way in and no struct to
+    assemble. `tuiEnabled` decides TUI vs plain line logging (plain when
+    `--plain` is set or stderr isn't a terminal); the TUI draws to stderr so
+    stdout stays clean for piping.
+  - `root.go` — root cmd, viper setup, config-override resolution. **`PersistentPreRunE` is the single
     place** flags/env/config-file are resolved (`loadGlobalConfigFile` then
     `applyOverrides`) and the logger is built — so `--output-path` /
     env vars / `config.yaml` all take effect before any logging or DB work.
@@ -79,7 +87,7 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     exists on this machine, which is what makes the list platform-correct.
     Town inputs validate through `canonicalTown` (gazetteer exact-match).
     **The location DB downloads in the background, with no install screen**:
-    `runConfigTUI` kicks off `InitLocationResolver` in a goroutine, feeds its
+    `runConfigTUI` kicks off `initLocationResolver` in a goroutine, feeds its
     byte progress into the form's own row above the footer (`a.InstallProgress`
     → `tui.DownloadMsg`, in the same block the examples pin to), and hands the
     form a `gazetteer func() error` closure. Once the download finishes the row
@@ -105,7 +113,8 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     (`wandersort config | grep …`, `> file`) — launching a full-screen wizard
     into a pipe is never what the caller meant.
   - `scan.go` — `scan` cmd (the pipeline). Runs **synchronously** in the
-    foreground (`Service.RunScan` → `Workflow.RunScan`) so the user watches
+    foreground (`Workflow.RunScan`, which canonicalizes and prunes the roots
+    itself and returns the ones actually walked) so the user watches
     progress and the exit code reflects pipeline success; logs total elapsed
     time on completion. **There is no install screen: the scan starts
     immediately and missing dependencies download in the background**, with
@@ -122,10 +131,10 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     first scan usually only fetches exiftool; the vfs gate is the fallback for
     a config run whose download failed. A download that fails mid-pipeline
     fails the session at the phase that needed it; files stay `HASHED` and the
-    next run resumes. Anchor sync (`syncHomeWorkFromConfig`) happens inside
-    the `Location` dep closure — the earliest point the resolver exists, and
-    vfs is the only phase that reads anchors. **`scan`/`serve`/`review` are
-    the only things that install dependencies** (`App.EnsureDependencies`,
+    next run resumes. Anchor sync (`a.syncAnchors` → `vfs.SyncAnchors`) happens
+    inside the `Location` dep closure — the earliest point the resolver exists,
+    and vfs is the only phase that reads anchors. **`scan`/`serve`/`review` are
+    the only things that install dependencies** (`app.ensureDependencies`,
     which installs exiftool *then* the location DB — the small download
     unblocks the earlier phase; the big one has the whole pipeline to hide
     behind).
@@ -139,149 +148,179 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     (`StringSlice`); `config.yaml`'s `rules` key (see below) controls the VFS
     folder depth for this scan's proposal — no CLI flag, set it via
     `wandersort config`. The plain path (`--plain`/non-TTY) keeps the simple
-    order: blocking `EnsureDependencies`, then `syncHomeWorkFromConfig`, then
+    order: blocking `ensureDependencies`, then `syncAnchors`, then
     the pipeline with `workflow.ReadyDeps`.
-  - `serve.go` — `serve` cmd, HTTP API (gin) + swagger. Same workflow,
-    long-lived.
-  - `anchor.go` — the read side of home/work anchors (the write side is the
-    `config` wizard, which saves them via `config.SaveGlobal`):
-    - `syncHomeWorkFromConfig` (called from `scan`) — reads the global config,
-      resolves each anchor's coordinates via `ResolveByName` (guaranteed exact
-      hit — the wizard's `canonicalTown` validator only saves gazetteer
-      spellings), and inserts an `ANCHOR_HOME`/`ANCHOR_WORK` `user_labels` row
-      if this library doesn't have one yet. Idempotent, silent, and a no-op
-      with nothing globally set.
-    - `exactMatch` — canonical-spelling helper `canonicalTown` uses.
-  - `review.go` — `review` cmd: bubbletea **full-tree view** TUI over the VFS
-    proposal (issue #8). Renders the whole hierarchy indented, alt-screen
-    fullscreen, scrollable. Keys: `n`/`N` **hop to the next/previous row at
-    the cursor's own depth** (`jumpSameDepth`), crossing into other branches
-    by design — that's what makes `V` then `n``n` select one level across
-    several months without arrowing through every folder's contents; stops at
-    the ends, never wraps. `enter` accept suggestion, `r` rename (with
-    ranked autocomplete — `Tab` fills the top match, `Ctrl-E` widens the search
-    radius by another ~10km, typed text also prefix-matches previously
-    confirmed `user_labels`), `p` peek (copies up to 250MB of the folder's
-    files into a temp dir via `pkg/utils.CopyFiles` and opens that folder —
-    read-only, nothing on disk is touched), `a` accept all, `V`/`m`/`u`
-    Vim-style merge: `V` starts a contiguous range (sequential — no picking
-    rows out of order), `m` **folds every row in the range at the anchor row's
-    depth into one node under their lowest common ancestor**
-    (`mergeSelection`, `commonPathPrefix` + `findNodeByID`/`removeChildByID` —
-    a real tree-splice, not just a rename), named after the first one's
-    **own** name — or the rename the reviewer typed on it, never its
-    suggestion (an offer nobody accepted; broadcasting one put a name on the
-    merged folder that came from no visible choice) — with the summed
-    `FileCount`. **Anchor depth is the
-    selection rule** — rows deeper than the row `V` was pressed on are that
-    folder's own contents and ride along; shallower ones are scaffolding
-    spanned to reach the next branch. One rule covers both shapes: leaves from
-    different branches (anchor on a leaf) and whole parent folders (anchor on
-    a Day). **Merging parents merges their subtrees**: children whose *final*
-    names match (`finalName` honours a pending rename, since that's what
-    `Confirm` writes) collapse recursively via `mergeInto` — three days in Goa
-    give one Goa holding one merged device folder, not three the reviewer then
-    has to merge by hand. This is what makes merging work across different Month/Day
-    branches (e.g. one camera's photos spread across three months, all folding
-    under the Year) — a plain same-path rename only merges nodes that already
-    share a parent, since the final path is parent-path + name. **The
-    folded-away leaves leave the tree entirely** — their IDs ride along on
-    `vfs.Node.MergedIDs`, which is what `Confirm` remaps their files by
-    (`remapUnderMerged` also covers anything *below* a merged node, which the
-    TUI never produces but the HTTP surface can submit). An earlier version
-    left them in place as same-named siblings and let `Confirm`'s
-    same-path-collapses-to-one-folder behavior sort it out at write time —
-    correct on disk, but the reviewer saw three "Canon EOS 700D" rows next to
-    three now-empty Month/Day chains and read it as "merge didn't work".
-    Emptied ancestors are pruned and ancestor `FileCount`s recomputed
-    (`pruneEmptied`, using a pre-merge leaf-ID set to tell a real leaf from an
-    ancestor the merge hollowed out). Rows caught in the range that still have
-    children (the Month/Day scaffolding between two branches) are skipped, not
-    merged. **`u` undoes structural edits all the way back**, not just the
-    last one: every reshaping edit pushes a whole-tree clone
-    (`snapshot`/`deepCloneNodes`, capped at `maxUndo` = 100) onto a stack,
-    since a structural edit can't be undone by restoring per-row name strings
-    the way a plain rename-merge could. Trees are folders only, never files,
-    so a clone is cheap.
-    `d`/`D` **remove nesting the reviewer doesn't want**. Both act on
-    `selectedRows` — a `[V]` range (every row in it at the anchor row's depth,
-    the same rule `m` uses) or just the cursor row when there's no selection.
-    Nothing acts tree-wide:
-    - `d` (`dropFolders`) drops **each selected folder**, lifting its children
-      onto its parent. Refused on a top-level (Year) row: its files would land in
-      the library root.
-    - `D` (`flattenFolders`) collapses **everything below** each selected
-      folder into it, so the whole subtree's files sit directly in it and the folder
-      itself stays. Works on a Year, since the Year survives to hold them.
-      `2023/April/Indore/Apple iPhone 13` flattened at April is
-      `2023/April` with all ten files. `FileCount` is unchanged — it already
-      counted the subtree. Over a range the folders stay **separate**: several
-      locations under one Day each keep their own folder and lose their
-      splits. Folding them together is `m`'s job, not `D`'s.
+  - `serve.go` — `serve` cmd: owns the `http.Server` lifecycle (signals,
+    graceful shutdown, swagger host) and hands the router off to
+    `server.Router(log, wf, db)` (see `internal/server/` below). Same workflow
+    as `scan`, long-lived.
+  - **There is no `anchor.go`.** The read side of home/work anchors is
+    `app.syncAnchors` (reads the global config) delegating to
+    `vfs.SyncAnchors` (resolves each name via `ResolveByName` — a guaranteed
+    exact hit, since the wizard's `canonicalTown` validator only saves
+    gazetteer spellings — and inserts the `ANCHOR_HOME`/`ANCHOR_WORK`
+    `user_labels` row if this library lacks one). It lives in `core/vfs`
+    because `resolveLocations` is the only thing that reads those rows: the
+    phase that consumes an anchor owns writing it. The write side is the
+    `config` wizard (`config.SaveGlobal`), and its canonical-spelling helpers
+    `exactMatch`/`canonicalNameOf` sit in `config.go` next to their only caller.
+  - `review.go` — `review` cmd: cobra wiring only (db-exists check, output
+    lock, `vfs.ProposalSession`, the `--rebuild` guard via `approvedCount`,
+    `vfs.BuildTree`), then hands off to `internal/review`. It also holds
+    `newReviewScreen`, which builds the embedded screen `scan` swaps into.
+    **The TUI itself lives in `internal/review/`** — see below.
 
-    **Every structural edit re-sorts the tree by name (`sortTree`, called from
-    `reflow`) and the merge puts the cursor on the surviving folder
-    (`focusNode`).** Splices append — a merged node, or children lifted by a
-    drop — at the end of the parent's list, so a 575-file day jumped below its
-    siblings and got reported as "the merge deleted my folder". It hadn't; it
-    was just off-screen at the bottom.
+- `internal/review/` — the bubbletea **full-tree view** TUI over the VFS
+  proposal (issue #8), extracted from `internal/cli` because it was 60% of that
+  package's lines while cobra wiring is the rest. Its whole exported surface is
+  four functions in `run.go`:
+  - `Run(ctx, Options)` — standalone full-screen review; writes the approved
+    plan and runs the free-space check.
+  - `AcceptAll(ctx, Options)` — `--yes`: take every suggestion, no TUI.
+  - `Screen(ctx, Options) tea.Model` — the same review as an app-shell screen,
+    so `scan` can swap into it inside its own program (`screen.go`, which
+    finalizes in-program: on save it runs `vfs.Confirm` itself, then
+    `tui.Switch(nil)` quits the shell).
+  - `Outcome(m tea.Model) (confirmed, err, ok)` — how an embedded review ended.
 
-    Both record the removed IDs (plus anything already folded into them) on
-    the surviving node's `MergedIDs`, so files sitting directly in a removed
-    folder remap onto it — same machinery as merge, with `remapUnderMerged`
-    covering anything deeper. Both undo via `[u]`.
-    `c` **save & exit** (the only thing that writes — `q` discards, so `q`
-    with pending edits warns once and needs a second `q`; `hasEdits` derives
-    "pending" from the rows and the undo snapshot rather than a flag any edit
-    path could forget to set). `--yes` accepts every suggestion
-    non-interactively; `--rebuild` re-runs `vfs.Run` with the current
-    `config.yaml` `rules` *before* reviewing, so a config change
-    re-proposes the hierarchy without a re-scan or re-hash (editing
-    `config.yaml` alone, without `--rebuild`, changes nothing until the next
-    `wandersort scan`).
-    **The screen is built from `pkg/tui`, like scan and config** — it used to
-    hand-roll its own chrome and looked like a different program: `tui.Screen`
-    pins the footer to the terminal's last row, `header()` is banner + one
-    summary line (folder/file totals in the right column), every tree line is a
-    `tui.Row` with the file count aligned at the right edge (the kit's "right
-    column is the screen's one number" rule), the key bar is `tui.Footer` +
-    `tui.KeyHint`s that swap merge keys in while `[V]` is active, and the peek
-    spinner is the same `bubbles` dot spinner the scan screen runs, not a
-    hand-rolled `|/-\` ticker. **`?` opens a full-screen key reference**
-    (`helpView`, grouped Moving/Naming/Reshaping/Leaving with one-line
-    explanations; any key returns) — the footer names the keys, the help
-    explains them. **Both the header and the footer are measured**
-    (`visibleRows` via `lipgloss.Height`), never a fixed line count: the key
-    help word-wraps on a narrow terminal, and the old fixed `height-6` budget
-    let a wrapped help bar push the bottom tree rows off the screen.
-    Rows are drawn with real box-drawing guides (`reviewRow.guide`, computed in
-    `flattenTree` because a row can't tell it's a last child from its depth) —
-    the old two-space indent plus a `└ ` on every level made sibling and child
-    look alike. An unaccepted suggestion renders as `⇢ name` in `tui.Attn`
-    (amber = still wants a keypress), not as dim `(N files, suggested: …)`
-    parentheses next to the count.
-    **Rename precedence is default name < location suggestion < user's own
-    rename** — `enter`/`a` only ever fill from a suggestion when the row's
-    `newName` is still empty, never clobbering something the reviewer already
-    typed. **Preview caching is content-based, not node-based**
-    (`filesSignature`, keyed on the sorted file list, not the node ID): a
-    directory with one child chain (e.g. `.../08/Horizontal/Photos`) shares
-    literally the same files between its parent and its leaf, so peeking
-    either reuses one temp copy instead of making a new one every time; every
-    cached copy is `os.RemoveAll`'d once the TUI exits, however it exits.
-    **A rejected merge (`statusIsErr`) renders in `tui.Attn`, not
-    `tui.DimText`** — a rejection used to look identical to routine status
-    text, easy to miss (a reported "merge doesn't work" turned out to be
-    either a missed capital-`V` requirement or exactly this — the rejection
-    message was there, just easy to overlook), and it carries a `⚠`.
-    A live `[V]` range also says so above the key bar (`-- SELECT -- n
-    folders`). **Selection is a whole-row background highlight
-    (`tui.Selected`), not a marker character** — a `*` prefix in one column was
-    hard to track across a wide tree. The **cursor row** carries the same
-    highlight (plus a `❯` in `tui.Primary`), matching how the config wizard
-    marks the option under the cursor; highlighted rows render plain (no nested
-    per-segment colour) since an inner ANSI reset would cut the background
-    short partway through the line.
+  `Options` carries `DB`/`SessionID`/`Tree`/`Resolver`/`Log`/`OutputDir`; a nil
+  `Resolver` just disables rename autocomplete. `copy.go` holds the unexported
+  `copyFiles`/`copyFile` the peek feature uses (same atomic
+  temp-file-then-rename pattern as `pkg/deps`); it moved here with the TUI
+  because the preview is its only caller.
+
+  The model (`review.go`): renders the whole hierarchy indented, alt-screen
+  fullscreen, scrollable. Keys: `n`/`N` **hop to the next/previous row at
+  the cursor's own depth** (`jumpSameDepth`), crossing into other branches
+  by design — that's what makes `V` then `n``n` select one level across
+  several months without arrowing through every folder's contents; stops at
+  the ends, never wraps. `enter` accept suggestion, `r` rename (with
+  ranked autocomplete — `Tab` fills the top match, `Ctrl-E` widens the search
+  radius by another ~10km, typed text also prefix-matches previously
+  confirmed `user_labels`), `p` peek (copies up to 250MB of the folder's
+  files into a temp dir via `copyFiles` and opens that folder —
+  read-only, nothing on disk is touched), `a` accept all, `V`/`m`/`u`
+  Vim-style merge: `V` starts a contiguous range (sequential — no picking
+  rows out of order), `m` **folds every row in the range at the anchor row's
+  depth into one node under their lowest common ancestor**
+  (`mergeSelection`, `commonPathPrefix` + `findNodeByID`/`removeChildByID` —
+  a real tree-splice, not just a rename), named after the first one's
+  **own** name — or the rename the reviewer typed on it, never its
+  suggestion (an offer nobody accepted; broadcasting one put a name on the
+  merged folder that came from no visible choice) — with the summed
+  `FileCount`. **Anchor depth is the
+  selection rule** — rows deeper than the row `V` was pressed on are that
+  folder's own contents and ride along; shallower ones are scaffolding
+  spanned to reach the next branch. One rule covers both shapes: leaves from
+  different branches (anchor on a leaf) and whole parent folders (anchor on
+  a Day). **Merging parents merges their subtrees**: children whose *final*
+  names match (`finalName` honours a pending rename, since that's what
+  `Confirm` writes) collapse recursively via `mergeInto` — three days in Goa
+  give one Goa holding one merged device folder, not three the reviewer then
+  has to merge by hand. This is what makes merging work across different Month/Day
+  branches (e.g. one camera's photos spread across three months, all folding
+  under the Year) — a plain same-path rename only merges nodes that already
+  share a parent, since the final path is parent-path + name. **The
+  folded-away leaves leave the tree entirely** — their IDs ride along on
+  `vfs.Node.MergedIDs`, which is what `Confirm` remaps their files by
+  (`remapUnderMerged` also covers anything *below* a merged node, which the
+  TUI never produces but the HTTP surface can submit). An earlier version
+  left them in place as same-named siblings and let `Confirm`'s
+  same-path-collapses-to-one-folder behavior sort it out at write time —
+  correct on disk, but the reviewer saw three "Canon EOS 700D" rows next to
+  three now-empty Month/Day chains and read it as "merge didn't work".
+  Emptied ancestors are pruned and ancestor `FileCount`s recomputed
+  (`pruneEmptied`, using a pre-merge leaf-ID set to tell a real leaf from an
+  ancestor the merge hollowed out). Rows caught in the range that still have
+  children (the Month/Day scaffolding between two branches) are skipped, not
+  merged. **`u` undoes structural edits all the way back**, not just the
+  last one: every reshaping edit pushes a whole-tree clone
+  (`snapshot`/`deepCloneNodes`, capped at `maxUndo` = 100) onto a stack,
+  since a structural edit can't be undone by restoring per-row name strings
+  the way a plain rename-merge could. Trees are folders only, never files,
+  so a clone is cheap.
+  `d`/`D` **remove nesting the reviewer doesn't want**. Both act on
+  `selectedRows` — a `[V]` range (every row in it at the anchor row's depth,
+  the same rule `m` uses) or just the cursor row when there's no selection.
+  Nothing acts tree-wide:
+  - `d` (`dropFolders`) drops **each selected folder**, lifting its children
+    onto its parent. Refused on a top-level (Year) row: its files would land in
+    the library root.
+  - `D` (`flattenFolders`) collapses **everything below** each selected
+    folder into it, so the whole subtree's files sit directly in it and the folder
+    itself stays. Works on a Year, since the Year survives to hold them.
+    `2023/April/Indore/Apple iPhone 13` flattened at April is
+    `2023/April` with all ten files. `FileCount` is unchanged — it already
+    counted the subtree. Over a range the folders stay **separate**: several
+    locations under one Day each keep their own folder and lose their
+    splits. Folding them together is `m`'s job, not `D`'s.
+
+  **Every structural edit re-sorts the tree by name (`sortTree`, called from
+  `reflow`) and the merge puts the cursor on the surviving folder
+  (`focusNode`).** Splices append — a merged node, or children lifted by a
+  drop — at the end of the parent's list, so a 575-file day jumped below its
+  siblings and got reported as "the merge deleted my folder". It hadn't; it
+  was just off-screen at the bottom.
+
+  Both record the removed IDs (plus anything already folded into them) on
+  the surviving node's `MergedIDs`, so files sitting directly in a removed
+  folder remap onto it — same machinery as merge, with `remapUnderMerged`
+  covering anything deeper. Both undo via `[u]`.
+  `c` **save & exit** (the only thing that writes — `q` discards, so `q`
+  with pending edits warns once and needs a second `q`; `hasEdits` derives
+  "pending" from the rows and the undo snapshot rather than a flag any edit
+  path could forget to set). `--yes` accepts every suggestion
+  non-interactively; `--rebuild` re-runs `vfs.Run` with the current
+  `config.yaml` `rules` *before* reviewing, so a config change
+  re-proposes the hierarchy without a re-scan or re-hash (editing
+  `config.yaml` alone, without `--rebuild`, changes nothing until the next
+  `wandersort scan`).
+  **The screen is built from `pkg/tui`, like scan and config** — it used to
+  hand-roll its own chrome and looked like a different program: `tui.Screen`
+  pins the footer to the terminal's last row, `header()` is banner + one
+  summary line (folder/file totals in the right column), every tree line is a
+  `tui.Row` with the file count aligned at the right edge (the kit's "right
+  column is the screen's one number" rule), the key bar is `tui.Footer` +
+  `tui.KeyHint`s that swap merge keys in while `[V]` is active, and the peek
+  spinner is the same `bubbles` dot spinner the scan screen runs, not a
+  hand-rolled `|/-\` ticker. **`?` opens a full-screen key reference**
+  (`helpView`, grouped Moving/Naming/Reshaping/Leaving with one-line
+  explanations; any key returns) — the footer names the keys, the help
+  explains them. **Both the header and the footer are measured**
+  (`visibleRows` via `lipgloss.Height`), never a fixed line count: the key
+  help word-wraps on a narrow terminal, and the old fixed `height-6` budget
+  let a wrapped help bar push the bottom tree rows off the screen.
+  Rows are drawn with real box-drawing guides (`reviewRow.guide`, computed in
+  `flattenTree` because a row can't tell it's a last child from its depth) —
+  the old two-space indent plus a `└ ` on every level made sibling and child
+  look alike. An unaccepted suggestion renders as `⇢ name` in `tui.Attn`
+  (amber = still wants a keypress), not as dim `(N files, suggested: …)`
+  parentheses next to the count.
+  **Rename precedence is default name < location suggestion < user's own
+  rename** — `enter`/`a` only ever fill from a suggestion when the row's
+  `newName` is still empty, never clobbering something the reviewer already
+  typed. **Preview caching is content-based, not node-based**
+  (`filesSignature`, keyed on the sorted file list, not the node ID): a
+  directory with one child chain (e.g. `.../08/Horizontal/Photos`) shares
+  literally the same files between its parent and its leaf, so peeking
+  either reuses one temp copy instead of making a new one every time; every
+  cached copy is `os.RemoveAll`'d once the TUI exits, however it exits.
+  **A rejected merge (`statusIsErr`) renders in `tui.Attn`, not
+  `tui.DimText`** — a rejection used to look identical to routine status
+  text, easy to miss (a reported "merge doesn't work" turned out to be
+  either a missed capital-`V` requirement or exactly this — the rejection
+  message was there, just easy to overlook), and it carries a `⚠`.
+  A live `[V]` range also says so above the key bar (`-- SELECT -- n
+  folders`). **Selection is a whole-row background highlight
+  (`tui.Selected`), not a marker character** — a `*` prefix in one column was
+  hard to track across a wide tree. The **cursor row** carries the same
+  highlight (plus a `❯` in `tui.Primary`), matching how the config wizard
+  marks the option under the cursor; highlighted rows render plain (no nested
+  per-segment colour) since an inner ANSI reset would cut the background
+  short partway through the line.
+
+Back in `internal/cli/`:
+
   - `report.go` — read-only per-session summary (opens its own RO sqlite conn).
     Lists every `scan_sessions` row (newest first), each with its own
     scanned/hashed/duplicate counts — duplicates are scoped to that session's
@@ -297,16 +336,19 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
   - `help.go` — custom lipgloss-styled help renderer. Kept in `cli` (unlike
     `lock.go`) since it's a one-off cobra `SetHelpFunc`, not reusable
     logic another entry point would need.
-  - `internal/cli` holds **only** `root.go` + one file per subcommand (plus the
-    `help.go` exception above) — everything else that used to live here moved
+  - `internal/cli` holds **only** `app.go` + `root.go` + one file per
+    subcommand (plus the `help.go` exception above). **No single-function
+    files**: the old `tui.go` (just `tuiEnabled`) and `anchor.go` were folded
+    into `app.go` and `config.go`/`core/vfs` respectively. Everything else that
+    used to live here moved
     out to its own package so a future TUI entry point can reuse it:
     - `pkg/lock/` — all wandersort file locking: generic PID/O_EXCL
       acquire/reclaim mechanics (`acquire`, `Lock`, `ErrHeld`) plus the two
       domain wrappers — `AcquireOutput` (one scan/serve per output dir, styled
       "already running" message) and `AcquireInstall` (install coordination
-      across scan/serve/review: `EnsureDependencies` tries non-blocking first
+      across scan/serve/review: `ensureDependencies` tries non-blocking first
       so it can log a "waiting…" line, then blocks) — and the lock filenames (`OutputFileName`, `InstallFileName`).
-      `EnsureDependencies` (in `root.go`) tries the install lock non-blocking
+      `ensureDependencies` (in `app.go`) tries the install lock non-blocking
       first so it can log a `UserKey`-tagged "waiting for another process…"
       line before falling back to the blocking acquire — without that, a
       scan/serve waiting behind an in-progress install just looks hung.
@@ -324,7 +366,7 @@ hyphen-free flags (`WORKERS`, `PORT`, …), and the one hyphenated flag is bound
 explicitly (`--output-path` → `OUTPUT_PATH` via `v.BindEnv`). Keep new flags
 hyphen-free so they need no explicit bind. Defaults come from `pkg/config`.
 
-The config file is `~/.wandersort/config.yaml` (`pkg/config/global.go`),
+The config file is `~/.wandersort/config.yaml` (`pkg/config/config.go`),
 created **empty** the first time *any* command runs
 (`config.EnsureGlobalConfigFile`) and filled in by `wandersort config`.
 **No comments, no template** — the wizard is the documentation, so the file is
@@ -333,14 +375,18 @@ old YAML-node surgery existed only to preserve comments). `output-path`,
 `workers`, and the vfs toggles are read back through plain viper keys (same
 `v.GetX(flagName)` calls `applyOverrides` already makes work regardless of
 source); `rules` and `home-work.home`/`home-work.work` are config-file-only
-(no flag, no env) — `applyOverrides` and `anchor.go` read them straight via
-`config.LoadGlobal`, bypassing viper entirely.
+(no flag, no env) — `applyOverrides` and `app.syncAnchors` read them straight
+via `config.LoadGlobal`, bypassing viper entirely.
 
 ## Core pipeline (`pkg/core/`)
 
 - `workflow/` — orchestrator. Two entry points over the same `runSession` phase
   loop (scan→hash→exif→score→vfs): `RunScan` (synchronous, CLI) and `SubmitScan`
-  (background goroutine, `serve`; `Close()` waits). `NewWorkflow` takes a
+  (background goroutine, `serve`; `Close()` waits). Both take raw paths and run
+  `scanRoots` first — canonicalize, drop duplicates, prune any root nested under
+  another (O(n) after a lex sort) — returning the roots actually walked
+  alongside the session ID. That pruning used to live in the HTTP layer, which
+  meant `wandersort scan` reached through `internal/api` to get at it. `NewWorkflow` takes a
   `Deps` — two blocking getters for the downloadable dependencies — instead of
   a resolver and exiftool path: the exif and vfs components are built lazily
   inside their phase closures, calling `deps.Exiftool()`/`deps.Location()`
@@ -479,10 +525,15 @@ source); `rules` and `home-work.home`/`home-work.work` are config-file-only
   smeared every file's suggestion onto whatever shared Device/Day node sat at
   depth 2 — reported as "one suggestion across the whole tree". No
   `suggestion_dir` (no location level in this proposal) now means no suggestion
-  node at all, rather than a misplaced one. `suggestion_dir` arrived as
-  migration **004**, deliberately not as an edit to 003 (the usual pre-tag
-  rule): 003 has already run on real libraries, and re-creating the schema
-  would force a full re-hash. A plain `ALTER TABLE` costs nothing. **`Confirm` merges, it doesn't reject:** two nodes renamed to the
+  node at all, rather than a misplaced one. `suggestion_dir` is a column of
+  **003's `CREATE TABLE`**, not its own migration — the pre-tag rule (no tag
+  yet, so no users) says edit the existing migration rather than stack an
+  `ALTER` on it. The cost is that `migrations.Run` tracks versions
+  individually: a database where 003 is already recorded will never get the
+  column, and the vfs phase then fails at runtime on the INSERT. **Deleting
+  `.wandersort.db` is the fix**, and `wandersort reset` is not — the file
+  itself has to go. Same applies to any future edit of an already-run
+  migration. **`Confirm` merges, it doesn't reject:** two nodes renamed to the
   same final path collapse onto one folder (e.g. two unresolved date clusters
   turning out to be the same place) — this used to be an error before a real
   user hit exactly that case. `Node.MergedIDs` is the other merge path: nodes
@@ -490,14 +541,33 @@ source); `rules` and `home-work.home`/`home-work.work` are config-file-only
   their IDs — and, via `remapUnderMerged`, anything below them — remap onto
   the survivor's path from there.
 
-## HTTP layer (`internal/api/`)
+## HTTP layer (`internal/server/`)
 
-Only used by `serve`. Standard handler→service→repository split per domain:
+Only used by `serve`. **Two files, one route group, four routes** — there is no
+handler→service→repository split, and no `internal/api` package any more. The
+operations live in `pkg/core/workflow` and `pkg/db`, which the CLI calls
+directly; this package is one adapter over them, not the only way in. The old
+per-domain tiers existed to hold logic that had no business being in the HTTP
+layer at all: `wandersort scan` and `wandersort reset` imported
+`internal/api/pipeline` and `internal/api/admin` to reach it.
 
-- `pipeline/` — start scans, query counts. `service.go` `prepareScanRoots`
-  canonicalizes + prunes nested roots (O(n) after lex sort).
-- `admin/` — reset/admin ops.
-- `interfaces.go`, `middleware.go`, `response.go`, `errors.go` — shared gin glue.
+- `server.go` — `Router(log, wf, db) *gin.Engine`, plus the gin glue that used
+  to be four files: the `apiError` constructors, the response envelope, and the
+  request-ID/CORS/recovery middleware. All unexported — one package, one caller.
+- `handlers.go` — the `server` struct (log + workflow + db) and its four
+  handlers with their request/response bodies:
+  - `POST /internal/v1/workflow/scan` → `wf.SubmitScan`
+  - `POST /internal/v1/workflow/reset` → `db.ResetAll`
+  - `GET  /internal/v1/workflow/:id/tree` → `vfs.BuildTree`
+  - `POST /internal/v1/workflow/:id/confirm` → `vfs.Confirm`
+
+  One swagger tag (`@Tags Workflow`), not three. Note the static `/scan` sibling
+  next to the `/:id/...` param routes — gin ≥1.7 allows it, but a regression
+  there would only surface as a panic at `serve` startup, which is what
+  `server_test.go` guards by building the real router.
+
+`serve.go` in the CLI keeps the `http.Server` lifecycle (signals, graceful
+shutdown, swagger host) and calls `server.Router`.
 
 ## Supporting packages (`pkg/`)
 
@@ -526,13 +596,19 @@ Only used by `serve`. Standard handler→service→repository split per domain:
   `PhaseKey`/`EventKey`/`ElapsedKey` stage routing); plain mode (`--plain`,
   non-TTY stderr — `tuiEnabled()`) keeps the line console, styled
   with the same theme.
-- `config/` — `Defaults()` (hardcoded config only, no env reads) plus
-  `global.go`: the `~/.wandersort/config.yaml` machinery — `GlobalConfigPath`,
-  `EnsureGlobalConfigFile` (creates it empty if missing), `LoadGlobal`, and
-  `SaveGlobal` (whole-file marshal of the `Global` struct — every key the
-  wizard collects, nothing else).
+- `config/` — **one file**, `config.go`: `Defaults()` (hardcoded config only,
+  no env reads) and the `~/.wandersort/config.yaml` machinery below it —
+  `GlobalConfigPath`, `EnsureGlobalConfigFile` (creates it empty if missing),
+  `LoadGlobal`, and `SaveGlobal` (whole-file marshal of the `Global` struct —
+  every key the wizard collects, nothing else). Note there are still two shapes
+  here: `Configuration` (resolved, runtime) and `Global` (on-disk); the
+  precedence that maps one onto the other lives in `cli`'s `applyOverrides`,
+  not here.
 - `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry; `writer.go` batched
-  writes; `migrations/` numbered Go migrations; `dbtest/` shared test fixtures
+  writes; `reset.go` `DB.ResetAll` (the FK-safe factory wipe, called by both
+  `wandersort reset` and the HTTP reset route — it lives here, not in an HTTP
+  repository tier, because it is a database operation); `migrations/` numbered
+  Go migrations; `dbtest/` shared test fixtures
   (fresh migrated DB + seed helpers) used by every pipeline package's tests.
   All stored timestamps are UTC fixed-width nanoseconds via `db.FormatTime`
   (`db.TimeLayout`); convert to the user's local zone only at display time.
@@ -557,7 +633,7 @@ Only used by `serve`. Standard handler→service→repository split per domain:
   a user-facing line about it; `New`'s checksum verification is **not**
   `UserKey`-tagged, since it runs on every command that opens the resolver and
   printed a checksum on every single run. A mismatch is still a hard error. `exiftool.Setup()` is the same idea
-  for the binary. Both are called lazily by `EnsureDependencies`. `Lookup`
+  for the binary. Both are called lazily by `app.ensureDependencies`. `Lookup`
   (single best match, cached/singleflighted) and `Candidates` (ranked list for
   the review TUI's rename picker) share one query and one rule: a plain-spelled
   gazetteer entry ("Banjar") always ranks ahead of a diacritic one ("Banjār")
@@ -619,12 +695,17 @@ Only used by `serve`. Standard handler→service→repository split per domain:
   (this replaced 11 giant strict per-format structs). No per-format files.
 - `exiftool/` — bundled exiftool wrapper + verify.
 - `path/` — path canonicalization / home-relative helpers.
-- `utils/download.go` — atomic HTTP download (temp file + rename).
-- `utils/copy.go` — `CopyFile` (atomic, same temp-file-then-rename pattern as
-  `download.go`) and `CopyFiles` (size-capped batch, used today by the review
-  TUI's preview-copy). Deliberately the same primitive a future Execute phase
-  (the actual library move) would reuse for its copy half — `CopyFile` alone
-  is what that phase would call directly.
+- `deps/` — **the one place a downloadable dependency is fetched.**
+  `Download(ctx, dest, url, wantSHA256, onProgress)` writes atomically (temp
+  file + rename), reports byte progress, and — when `wantSHA256` is non-empty —
+  verifies the digest and removes `dest` on mismatch. `SHA256File` is exported
+  for the callers that verify at a different moment. `exiftool.Setup` passes the
+  digest from its release manifest; `location.Setup` passes `""` because the
+  expected hash ships in the metadata file it downloads next, and `location.New`
+  checks it when opening. **There is no `pkg/utils`** — a package named for
+  nothing in particular is where unrelated helpers accumulate; `download.go` and
+  `hash.go` had exactly these two callers, and `copy.go` had one (the review
+  TUI's preview), so it went to `internal/review` as unexported `copyFiles`.
 
 ## Conventions that bite if ignored
 
@@ -647,8 +728,17 @@ go build ./... # quick compile check
 ## Open cleanup notes (not yet done)
 
 - `report.go` builds a raw sqlite DSN + inline SQL in the CLI layer, bypassing
-  `pkg/db`/repository. Read-only by design, but a layering shortcut — move to a
-  repository method if it grows.
+  `pkg/db`. Read-only by design, but a layering shortcut — move it next to
+  `db.ResetAll` if it grows.
+- **Config precedence still straddles two packages.** `pkg/config` owns the two
+  shapes (`Configuration`, `Global`); `internal/cli/root.go` owns the viper
+  registry, `loadGlobalConfigFile` and `applyOverrides` that resolve one into
+  the other. Adding a setting therefore touches ~6 places. Folding all of it
+  behind a `config.Resolve(flags)` was considered and deferred: six CLI files
+  read per-command flags (`--paths`, `--yes`, `--plain`, `--rebuild`, …) off the
+  same viper instance, so moving it means either exporting the registry or
+  threading every flag value through — a large diff over load-bearing
+  precedence behaviour, for a modest gain. Revisit if the setting count grows.
 - **Concurrency wall:** `lock.AcquireOutput` (`pkg/lock/`) takes an
   exclusive PID lock on the output dir, so only one scan *or* serve runs
   against a dir at a time. Log
