@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -154,53 +155,125 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 	return wf
 }
 
-// SubmitScan creates a new scan session and runs the pipeline in a background
-// goroutine. Used by the HTTP server, which returns the session ID immediately
-// and reports progress through the sessionId-keyed log stream. CLI scans want
-// foreground progress instead — use RunScan.
-func (wf *Workflow) SubmitScan(paths []string) (uuid.UUID, error) {
+// SubmitScan canonicalizes and prunes nested scan roots, then creates a new
+// scan session and runs the pipeline in a background goroutine. Used by the
+// HTTP server, which returns the session ID immediately and reports progress
+// through the sessionId-keyed log stream. CLI scans want foreground progress
+// instead — use RunScan. Returns the roots actually walked.
+func (wf *Workflow) SubmitScan(paths []string) (uuid.UUID, []string, error) {
 	select {
 	case <-wf.ctx.Done():
-		return uuid.Nil, context.Canceled
+		return uuid.Nil, nil, context.Canceled
 	default:
 	}
 
-	sessionID, err := wf.prepareSession(wf.ctx, paths)
+	roots, err := wf.scanRoots(paths)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, nil, err
+	}
+
+	sessionID, err := wf.prepareSession(wf.ctx, roots)
+	if err != nil {
+		return uuid.Nil, nil, err
 	}
 
 	wf.wg.Go(func() {
-		wf.runSession(sessionID, paths)
+		wf.runSession(sessionID, roots)
 	})
 
-	return sessionID, nil
+	return sessionID, roots, nil
 }
 
-// RunScan creates a scan session and runs the pipeline synchronously on the
-// calling goroutine, so a CLI invocation streams progress and blocks until the
-// scan finishes. Returns an error if the session did not complete.
-func (wf *Workflow) RunScan(paths []string) (uuid.UUID, error) {
+// RunScan canonicalizes and prunes nested scan roots, then creates a scan
+// session and runs the pipeline synchronously on the calling goroutine, so a
+// CLI invocation streams progress and blocks until the scan finishes. Returns
+// the roots actually walked, and an error if the session did not complete.
+func (wf *Workflow) RunScan(paths []string) (uuid.UUID, []string, error) {
 	select {
 	case <-wf.ctx.Done():
-		return uuid.Nil, context.Canceled
+		return uuid.Nil, nil, context.Canceled
 	default:
 	}
 
-	sessionID, err := wf.prepareSession(wf.ctx, paths)
+	roots, err := wf.scanRoots(paths)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, nil, err
 	}
 
-	status, errStr := wf.runSession(sessionID, paths)
+	sessionID, err := wf.prepareSession(wf.ctx, roots)
+	if err != nil {
+		return uuid.Nil, nil, err
+	}
+
+	status, errStr := wf.runSession(sessionID, roots)
 	if status != db.StatusCompleted {
 		if errStr != nil {
-			return sessionID, errors.New(*errStr)
+			return sessionID, roots, errors.New(*errStr)
 		}
-		return sessionID, fmt.Errorf("scan ended with status %s", status)
+		return sessionID, roots, fmt.Errorf("scan ended with status %s", status)
 	}
 
-	return sessionID, nil
+	return sessionID, roots, nil
+}
+
+// scanRoots canonicalizes the requested paths and prunes any nested under
+// another, leaving the directories actually worth walking.
+func (wf *Workflow) scanRoots(paths []string) ([]string, error) {
+	canonicalSet := make(map[string]struct{}, len(paths))
+
+	for _, p := range paths {
+		cleaned := filepath.Clean(p)
+		resolved, err := wf.path.RealPath(cleaned)
+		if err != nil {
+			wf.log.Warn("Invalid root path", "path", p, "error", err)
+			return nil, err
+		}
+
+		isDir, err := wf.path.IsDirectory(resolved)
+		if err != nil {
+			wf.log.Warn("Cannot stat root path", "path", resolved, "error", err)
+			return nil, err
+		}
+		if !isDir {
+			wf.log.Warn("Root path is not a directory", "path", resolved)
+			return nil, fmt.Errorf("path is not a directory: %s", resolved)
+		}
+
+		canonicalSet[resolved] = struct{}{}
+	}
+
+	canonicalPaths := make([]string, 0, len(canonicalSet))
+	for p := range canonicalSet {
+		canonicalPaths = append(canonicalPaths, p)
+	}
+	// Paths will be lexicographically sorted, so any child path follows its parent
+	// This makes the single-pass prune in the next step possible
+	sort.Strings(canonicalPaths)
+
+	// Single-pass prune: O(N)
+	// After lex sort, any descendant of an accepted root immediately follows
+	// it (or follows another descendant of it). Comparing against only the
+	// last accepted root is therefore sufficient
+	effectivePaths := make([]string, 0, len(canonicalPaths))
+	for _, candidate := range canonicalPaths {
+		lenEffective := len(effectivePaths)
+		if lenEffective == 0 || !isChildPath(effectivePaths[lenEffective-1], candidate) {
+			effectivePaths = append(effectivePaths, candidate)
+		}
+	}
+
+	return effectivePaths, nil
+}
+
+// isChildPath reports whether candidate is strictly nested below parent
+// Both paths must already be canonical (filepath.Clean + RealPath)
+func isChildPath(parent, candidate string) bool {
+	// Equal paths are not a parent–child relationship
+	if parent == candidate {
+		return false
+	}
+	// Append the separator so "/foo" doesn't falsely match "/foobar"
+	return strings.HasPrefix(candidate, parent+string(filepath.Separator))
 }
 
 // prepareSession creates the scan_sessions row and returns the new session ID.
