@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package admin
+package db_test
 
 import (
 	"context"
@@ -35,9 +35,9 @@ func TestResetWipesAllTables(t *testing.T) {
 		}
 	}
 
-	resp, err := NewRepository(d).Reset(ctx)
+	resp, err := d.ResetAll(ctx)
 	if err != nil {
-		t.Fatalf("Reset: %v", err)
+		t.Fatalf("ResetAll: %v", err)
 	}
 
 	counts := map[string]int64{

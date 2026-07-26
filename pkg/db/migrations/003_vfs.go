@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS virtual_fs_entries (
         CHECK (status IN ('PROPOSED','APPROVED','DONE','ERROR')),
     suggestion TEXT,
     suggestion_source TEXT,
+    -- the directory a proposal's suggestion belongs to — the folder a reviewer
+    -- renames. The VFS build records it so the review tree can attach the
+    -- suggestion by path instead of guessing a depth (which broke as soon as
+    -- location wasn't the first rules level).
+    suggestion_dir TEXT,
     created_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
 );
 

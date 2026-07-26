@@ -4,30 +4,29 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package admin
+package db
 
 import (
 	"context"
 	"fmt"
-
-	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
-type Repository struct {
-	db *db.DB
+// ResetCounts reports how many rows were deleted from each table
+type ResetCounts struct {
+	VFSEntriesDeleted   int64 `json:"vfsEntriesDeleted"`
+	FileMetadataDeleted int64 `json:"fileMetadataDeleted"`
+	FilesDeleted        int64 `json:"filesDeleted"`
+	ScanSessionsDeleted int64 `json:"scanSessionsDeleted"`
+	UserLabelsDeleted   int64 `json:"userLabelsDeleted"`
 }
 
-func NewRepository(db *db.DB) *Repository {
-	return &Repository{db: db}
-}
+// ResetAll deletes all application data in FK-safe order within a transaction
+func (d *DB) ResetAll(ctx context.Context) (ResetCounts, error) {
+	var resp ResetCounts
 
-// Reset deletes all application data in FK-safe order within a transaction
-func (r *Repository) Reset(ctx context.Context) (ResetResponse, error) {
-	var resp ResetResponse
-
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return ResetResponse{}, fmt.Errorf("reset: begin tx: %w", err)
+		return ResetCounts{}, fmt.Errorf("reset: begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -37,28 +36,28 @@ func (r *Repository) Reset(ctx context.Context) (ResetResponse, error) {
 	// so it must go before the registry delete
 	result, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries`)
 	if err != nil {
-		return ResetResponse{}, fmt.Errorf("reset: delete vfs entries: %w", err)
+		return ResetCounts{}, fmt.Errorf("reset: delete vfs entries: %w", err)
 	}
 	count, _ = result.RowsAffected()
 	resp.VFSEntriesDeleted = count
 
 	result, err = tx.ExecContext(ctx, `DELETE FROM file_metadata`)
 	if err != nil {
-		return ResetResponse{}, fmt.Errorf("reset: delete metadata: %w", err)
+		return ResetCounts{}, fmt.Errorf("reset: delete metadata: %w", err)
 	}
 	count, _ = result.RowsAffected()
 	resp.FileMetadataDeleted = count
 
 	result, err = tx.ExecContext(ctx, `DELETE FROM file_registry`)
 	if err != nil {
-		return ResetResponse{}, fmt.Errorf("reset: delete files: %w", err)
+		return ResetCounts{}, fmt.Errorf("reset: delete files: %w", err)
 	}
 	count, _ = result.RowsAffected()
 	resp.FilesDeleted = count
 
 	result, err = tx.ExecContext(ctx, `DELETE FROM scan_sessions`)
 	if err != nil {
-		return ResetResponse{}, fmt.Errorf("reset: delete sessions: %w", err)
+		return ResetCounts{}, fmt.Errorf("reset: delete sessions: %w", err)
 	}
 	count, _ = result.RowsAffected()
 	resp.ScanSessionsDeleted = count
@@ -67,13 +66,13 @@ func (r *Repository) Reset(ctx context.Context) (ResetResponse, error) {
 	// output dir behaves exactly like a brand-new one
 	result, err = tx.ExecContext(ctx, `DELETE FROM user_labels`)
 	if err != nil {
-		return ResetResponse{}, fmt.Errorf("reset: delete user labels: %w", err)
+		return ResetCounts{}, fmt.Errorf("reset: delete user labels: %w", err)
 	}
 	count, _ = result.RowsAffected()
 	resp.UserLabelsDeleted = count
 
 	if err := tx.Commit(); err != nil {
-		return ResetResponse{}, fmt.Errorf("reset: commit: %w", err)
+		return ResetCounts{}, fmt.Errorf("reset: commit: %w", err)
 	}
 
 	return resp, nil
