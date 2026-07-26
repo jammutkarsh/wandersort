@@ -33,7 +33,7 @@ wandersort reset
 # Skip the confirmation prompt
 wandersort reset --yes`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.runReset()
+			return a.runReset(cmd)
 		},
 	}
 
@@ -41,13 +41,14 @@ wandersort reset --yes`,
 	return cmd
 }
 
-func (a *app) runReset() error {
+func (a *app) runReset(cmd *cobra.Command) error {
 	if _, err := os.Stat(a.Config.AppDBPath); os.IsNotExist(err) {
 		return fmt.Errorf("no database found — nothing to reset")
 	}
 
-	if !v.GetBool(flagYes) {
-		if !a.confirmReset() {
+	yes, _ := cmd.Flags().GetBool(flagYes)
+	if !yes {
+		if !a.confirmReset(cmd) {
 			return fmt.Errorf("reset cancelled")
 		}
 	}
@@ -79,8 +80,8 @@ func (a *app) runReset() error {
 
 // confirmReset asks before the irreversible wipe: a themed dialog in the
 // full-screen TUI, or a plain y/N prompt when --plain / non-interactive.
-func (a *app) confirmReset() bool {
-	if !a.tuiEnabled() {
+func (a *app) confirmReset(cmd *cobra.Command) bool {
+	if !a.tuiEnabled(cmd) {
 		fmt.Fprint(os.Stderr, tui.Attn.Render("Delete all wandersort data?")+" (y/N): ")
 		reader := bufio.NewReader(os.Stdin)
 		input, _ := reader.ReadString('\n')

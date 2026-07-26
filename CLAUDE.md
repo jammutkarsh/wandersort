@@ -36,25 +36,30 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     assemble. `tuiEnabled` decides TUI vs plain line logging (plain when
     `--plain` is set or stderr isn't a terminal); the TUI draws to stderr so
     stdout stays clean for piping.
-  - `root.go` — root cmd, viper setup, config-override resolution. **`PersistentPreRunE` is the single
-    place** flags/env/config-file are resolved (`loadGlobalConfigFile` then
-    `applyOverrides`) and the logger is built — so `--output-path` /
-    env vars / `config.yaml` all take effect before any logging or DB work.
-    Don't rebuild the logger in `main.go`. `loadGlobalConfigFile` also
-    **creates** `~/.wandersort/config.yaml` (empty) on the very first command
-    of any kind via `config.EnsureGlobalConfigFile` — viper always has a file
-    to read; `wandersort config` is what fills it in. **There is no `--debug`
+  - `root.go` — root cmd and flag-name constants. **`PersistentPreRunE` is the
+    single place** config is resolved: it ensures `~/.wandersort/config.yaml`
+    exists (`config.EnsureGlobalConfigFile`), builds a `config.FlagOverrides`
+    from the invoked command's cobra flags (`flagOverridesFrom`), and calls
+    `config.Resolve` — the one function in `pkg/config` that layers flag > env
+    > file > default and returns the fully-resolved `*Configuration`. The
+    logger is built right after, from the resolved config, so `--output-path`
+    / env vars / `config.yaml` all take effect before any logging or DB work.
+    Don't rebuild the logger in `main.go`. There is no global registry here
+    any more (no viper): every other command's own flags — `--yes`,
+    `--plain`, `--rebuild`, `--vertical`, `--print`, `--paths` — are read
+    straight off `cmd.Flags()` inside that command's own `RunE`, since `cmd`
+    is already in scope there. `tuiEnabled` takes the invoked `cmd` for the
+    same reason. **There is no `--debug`
     flag**: the JSON file log is always at debug level (`fileHandler`), the
     console only ever shows `UserKey` lines and warnings, and a verbose console
     made no sense once the TUI owned the screen. `--plain` is the escape hatch.
     **A config file that doesn't parse is a warning, not a failure**:
-    `loadGlobalConfigFile` returns the warning text (not an error), the run
+    `config.Resolve` returns the warning text (not an error), the run
     continues on defaults, and it's logged with `UserKey` once the logger
     exists so it reaches the log file too, not just the terminal. Hard-failing
     would let one stray tab in an all-optional settings file brick every
     command — including `wandersort config`, the one that opens the file to
-    fix it. Viper only commits parsed values on success, so nothing half-read
-    leaks into the settings.
+    fix it.
   - `config.go` — `config` cmd: **the settings wizard** (there is no `setup`
     command — dependency downloads belong to `scan`). `buildConfigForm` +
     `tui.FormModel`: a top-down stacked form (answered fields collapse to
@@ -133,12 +138,12 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     fails the session at the phase that needed it; files stay `HASHED` and the
     next run resumes. Anchor sync (`a.syncAnchors` → `vfs.SyncAnchors`) happens
     inside the `Location` dep closure — the earliest point the resolver exists,
-    and vfs is the only phase that reads anchors. **`scan`/`serve`/`review` are
+    and vfs is the only phase that reads anchors. **`scan`/`review` are
     the only things that install dependencies** (`app.ensureDependencies`,
     which installs exiftool *then* the location DB — the small download
     unblocks the earlier phase; the big one has the whole pipeline to hide
     behind).
-    **`scan` and `serve` refuse to run before `wandersort config` has** — see
+    **`scan` refuses to run before `wandersort config` has** — see
     `requireConfigured` in `root.go`. The config file every command creates is
     empty, so an unconfigured first scan silently builds its entire folder
     proposal (output path, rules, home/work anchors) from defaults, and the
@@ -150,10 +155,6 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     `wandersort config`. The plain path (`--plain`/non-TTY) keeps the simple
     order: blocking `ensureDependencies`, then `syncAnchors`, then
     the pipeline with `workflow.ReadyDeps`.
-  - `serve.go` — `serve` cmd: owns the `http.Server` lifecycle (signals,
-    graceful shutdown, swagger host) and hands the router off to
-    `server.Router(log, wf, db)` (see `internal/server/` below). Same workflow
-    as `scan`, long-lived.
   - **There is no `anchor.go`.** The read side of home/work anchors is
     `app.syncAnchors` (reads the global config) delegating to
     `vfs.SyncAnchors` (resolves each name via `ResolveByName` — a guaranteed
@@ -224,7 +225,8 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
   folded-away leaves leave the tree entirely** — their IDs ride along on
   `vfs.Node.MergedIDs`, which is what `Confirm` remaps their files by
   (`remapUnderMerged` also covers anything *below* a merged node, which the
-  TUI never produces but the HTTP surface can submit). An earlier version
+  TUI never produces itself but the tree-splice logic in `vfs.Confirm` still
+  guards against). An earlier version
   left them in place as same-named siblings and let `Confirm`'s
   same-path-collapses-to-one-folder behavior sort it out at write time —
   correct on disk, but the reviewer saw three "Canon EOS 700D" rows next to
@@ -344,14 +346,14 @@ Back in `internal/cli/`:
     out to its own package so a future TUI entry point can reuse it:
     - `pkg/lock/` — all wandersort file locking: generic PID/O_EXCL
       acquire/reclaim mechanics (`acquire`, `Lock`, `ErrHeld`) plus the two
-      domain wrappers — `AcquireOutput` (one scan/serve per output dir, styled
+      domain wrappers — `AcquireOutput` (one scan per output dir, styled
       "already running" message) and `AcquireInstall` (install coordination
-      across scan/serve/review: `ensureDependencies` tries non-blocking first
+      across scan/review: `ensureDependencies` tries non-blocking first
       so it can log a "waiting…" line, then blocks) — and the lock filenames (`OutputFileName`, `InstallFileName`).
       `ensureDependencies` (in `app.go`) tries the install lock non-blocking
       first so it can log a `UserKey`-tagged "waiting for another process…"
       line before falling back to the blocking acquire — without that, a
-      scan/serve waiting behind an in-progress install just looks hung.
+      scan waiting behind an in-progress install just looks hung.
       Only `cli` uses locking today, but the mechanics are generic, so it
       lives in `pkg/` for reuse by other entry points.
     - Styling (help renderer, lock messages, error output) comes from
@@ -359,40 +361,52 @@ Back in `internal/cli/`:
       one was folded into `pkg/tui/theme.go` so full-screen and plain output
       share one palette.
 
-Config precedence: **flag > env > config file > default** (viper's normal
-config-file precedence — see `loadGlobalConfigFile`/`applyOverrides` in
-`root.go`). Env names are the uppercased flag; `AutomaticEnv` covers the
-hyphen-free flags (`WORKERS`, `PORT`, …), and the one hyphenated flag is bound
-explicitly (`--output-path` → `OUTPUT_PATH` via `v.BindEnv`). Keep new flags
-hyphen-free so they need no explicit bind. Defaults come from `pkg/config`.
+Config precedence: **flag > env > config file > default**, entirely inside
+`config.Resolve` (`pkg/config/config.go`) — the single place all four layers
+meet. `internal/cli/root.go`'s `flagOverridesFrom` builds the flag layer from
+cobra's `cmd.Flags()` (only for the settings `Resolve` knows about:
+`output-path`, `workers`, `collapse-levels`, `home-work-date-only`,
+`merge-same-location-days` — checking `.Changed` so an unset flag reads as
+`nil`, not its zero value); `Resolve` reads the env layer itself via
+`os.Getenv` (`OUTPUT_PATH`, `WORKERS`, …) and the file layer via
+`LoadGlobal`. There is no viper anywhere in this codebase — every other
+command's own flags (`--yes`, `--plain`, …) are read straight off `cmd.Flags()`
+in their own `RunE`, no env-var fallback for those (never documented, so
+dropping it lost nothing). Keep new *config*-affecting flag names hyphen-free
+to match their env var by uppercasing alone. Defaults come from
+`config.Defaults()`, which `Resolve` calls as its base layer.
 
 The config file is `~/.wandersort/config.yaml` (`pkg/config/config.go`),
 created **empty** the first time *any* command runs
 (`config.EnsureGlobalConfigFile`) and filled in by `wandersort config`.
 **No comments, no template** — the wizard is the documentation, so the file is
 just the settings, written whole by `SaveGlobal` (a plain struct marshal; the
-old YAML-node surgery existed only to preserve comments). `output-path`,
-`workers`, and the vfs toggles are read back through plain viper keys (same
-`v.GetX(flagName)` calls `applyOverrides` already makes work regardless of
-source); `rules` and `home-work.home`/`home-work.work` are config-file-only
-(no flag, no env) — `applyOverrides` and `app.syncAnchors` read them straight
-via `config.LoadGlobal`, bypassing viper entirely.
+old YAML-node surgery existed only to preserve comments). `output-path` is
+the marker that the file has been through the wizard (`Configuration.Configured`,
+set by `Resolve`) — `rules`, the three toggle bools, and
+`home-work.home`/`home-work.work` are only read from the file once
+`output-path` is present, since a `bool` field can't otherwise tell "key
+absent" from "explicit false" the way `Resolve`'s flag/env layers can (a nil
+pointer vs. a real value). `home-work.*` has no flag or env of its own —
+`Resolve` doesn't touch it at all; `app.syncAnchors` reads it straight via
+`config.LoadGlobal`.
 
 ## Core pipeline (`pkg/core/`)
 
-- `workflow/` — orchestrator. Two entry points over the same `runSession` phase
-  loop (scan→hash→exif→score→vfs): `RunScan` (synchronous, CLI) and `SubmitScan`
-  (background goroutine, `serve`; `Close()` waits). Both take raw paths and run
+- `workflow/` — orchestrator. `RunScan` runs the `runSession` phase loop
+  (scan→hash→exif→score→vfs) synchronously on the calling goroutine, so a CLI
+  invocation streams progress and blocks until the scan finishes. It runs
   `scanRoots` first — canonicalize, drop duplicates, prune any root nested under
   another (O(n) after a lex sort) — returning the roots actually walked
-  alongside the session ID. That pruning used to live in the HTTP layer, which
+  alongside the session ID. That pruning used to live in an HTTP layer
+  (removed along with `serve` — this is now a single-entry-point CLI), which
   meant `wandersort scan` reached through `internal/api` to get at it. `NewWorkflow` takes a
   `Deps` — two blocking getters for the downloadable dependencies — instead of
   a resolver and exiftool path: the exif and vfs components are built lazily
   inside their phase closures, calling `deps.Exiftool()`/`deps.Location()`
   right before running, so a first-ever TUI scan walks and hashes while the
-  downloads are still going. Callers with everything installed up front
-  (plain scan, serve) wrap the values in `workflow.ReadyDeps`. `claimRoots` rejects a new
+  downloads are still going. Plain-console scans, which install everything up
+  front, wrap the values in `workflow.ReadyDeps`. `claimRoots` rejects a new
   session whose roots overlap an in-flight session's (in-memory — the output
   lock guarantees one process). `helpers.go` = session status/finalize writes
   plus `CheckOutputSpace` — exported because `review` runs the same check: the
@@ -512,8 +526,8 @@ via `config.LoadGlobal`, bypassing viper entirely.
   (a real reported bug — a GPS-less DSLR photo "suggested" whatever city
   dominated the user's phone-photo library). No confirmed anchor means the
   suggestion ladder falls through to the source-folder-name rung instead.
-  `review.go` (issue #8's shared reconcile core, read by both the CLI TUI and
-  the HTTP API) exposes the proposal as a directory tree the reviewer edits
+  `review.go` (issue #8's reconcile core, read by the CLI TUI) exposes the
+  proposal as a directory tree the reviewer edits
   before `Confirm` writes it back: `BuildTree` also carries one exemplar
   GPS coordinate per location node (`Node.Lat/Lon`) for the TUI's expand-radius
   rename, and `FilesUnder` lists a node's source files for the preview-copy
@@ -540,34 +554,6 @@ via `config.LoadGlobal`, bypassing viper entirely.
   the review TUI folded away are absent from the submitted tree entirely, so
   their IDs — and, via `remapUnderMerged`, anything below them — remap onto
   the survivor's path from there.
-
-## HTTP layer (`internal/server/`)
-
-Only used by `serve`. **Two files, one route group, four routes** — there is no
-handler→service→repository split, and no `internal/api` package any more. The
-operations live in `pkg/core/workflow` and `pkg/db`, which the CLI calls
-directly; this package is one adapter over them, not the only way in. The old
-per-domain tiers existed to hold logic that had no business being in the HTTP
-layer at all: `wandersort scan` and `wandersort reset` imported
-`internal/api/pipeline` and `internal/api/admin` to reach it.
-
-- `server.go` — `Router(log, wf, db) *gin.Engine`, plus the gin glue that used
-  to be four files: the `apiError` constructors, the response envelope, and the
-  request-ID/CORS/recovery middleware. All unexported — one package, one caller.
-- `handlers.go` — the `server` struct (log + workflow + db) and its four
-  handlers with their request/response bodies:
-  - `POST /internal/v1/workflow/scan` → `wf.SubmitScan`
-  - `POST /internal/v1/workflow/reset` → `db.ResetAll`
-  - `GET  /internal/v1/workflow/:id/tree` → `vfs.BuildTree`
-  - `POST /internal/v1/workflow/:id/confirm` → `vfs.Confirm`
-
-  One swagger tag (`@Tags Workflow`), not three. Note the static `/scan` sibling
-  next to the `/:id/...` param routes — gin ≥1.7 allows it, but a regression
-  there would only surface as a panic at `serve` startup, which is what
-  `server_test.go` guards by building the real router.
-
-`serve.go` in the CLI keeps the `http.Server` lifecycle (signals, graceful
-shutdown, swagger host) and calls `server.Router`.
 
 ## Supporting packages (`pkg/`)
 
@@ -597,17 +583,20 @@ shutdown, swagger host) and calls `server.Router`.
   non-TTY stderr — `tuiEnabled()`) keeps the line console, styled
   with the same theme.
 - `config/` — **one file**, `config.go`: `Defaults()` (hardcoded config only,
-  no env reads) and the `~/.wandersort/config.yaml` machinery below it —
-  `GlobalConfigPath`, `EnsureGlobalConfigFile` (creates it empty if missing),
-  `LoadGlobal`, and `SaveGlobal` (whole-file marshal of the `Global` struct —
-  every key the wizard collects, nothing else). Note there are still two shapes
-  here: `Configuration` (resolved, runtime) and `Global` (on-disk); the
-  precedence that maps one onto the other lives in `cli`'s `applyOverrides`,
-  not here.
+  no env reads), `Resolve` (the flag > env > file > default precedence chain
+  — see above), `FlagOverrides` (the neutral, framework-agnostic struct the
+  CLI's cobra flags translate into before calling `Resolve` — this package
+  imports no CLI framework), and the `~/.wandersort/config.yaml` machinery
+  below it — `GlobalConfigPath`, `EnsureGlobalConfigFile` (creates it empty if
+  missing), `LoadGlobal`, and `SaveGlobal` (whole-file marshal of the
+  `Global` struct — every key the wizard collects, nothing else). There are
+  still two shapes here: `Configuration` (resolved, runtime — gains a
+  `Configured` field once `Resolve` has run) and `Global` (on-disk); `Resolve`
+  is now the one place that maps one onto the other.
 - `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry; `writer.go` batched
-  writes; `reset.go` `DB.ResetAll` (the FK-safe factory wipe, called by both
-  `wandersort reset` and the HTTP reset route — it lives here, not in an HTTP
-  repository tier, because it is a database operation); `migrations/` numbered
+  writes; `reset.go` `DB.ResetAll` (the FK-safe factory wipe behind
+  `wandersort reset` — it lives here, not in the CLI layer, because it is a
+  database operation); `migrations/` numbered
   Go migrations; `dbtest/` shared test fixtures
   (fresh migrated DB + seed helpers) used by every pipeline package's tests.
   All stored timestamps are UTC fixed-width nanoseconds via `db.FormatTime`
@@ -721,7 +710,6 @@ shutdown, swagger host) and calls `server.Router`.
 make build     # -> bin/wandersort
 make test      # go test -v ./...
 make lint      # gofumpt -l -w .
-make swagger   # regenerate docs/ (needs swag)
 go build ./... # quick compile check
 ```
 
@@ -730,17 +718,8 @@ go build ./... # quick compile check
 - `report.go` builds a raw sqlite DSN + inline SQL in the CLI layer, bypassing
   `pkg/db`. Read-only by design, but a layering shortcut — move it next to
   `db.ResetAll` if it grows.
-- **Config precedence still straddles two packages.** `pkg/config` owns the two
-  shapes (`Configuration`, `Global`); `internal/cli/root.go` owns the viper
-  registry, `loadGlobalConfigFile` and `applyOverrides` that resolve one into
-  the other. Adding a setting therefore touches ~6 places. Folding all of it
-  behind a `config.Resolve(flags)` was considered and deferred: six CLI files
-  read per-command flags (`--paths`, `--yes`, `--plain`, `--rebuild`, …) off the
-  same viper instance, so moving it means either exporting the registry or
-  threading every flag value through — a large diff over load-bearing
-  precedence behaviour, for a modest gain. Revisit if the setting count grows.
 - **Concurrency wall:** `lock.AcquireOutput` (`pkg/lock/`) takes an
-  exclusive PID lock on the output dir, so only one scan *or* serve runs
+  exclusive PID lock on the output dir, so only one scan runs
   against a dir at a time. Log
   lines are already `sessionId`-tagged, so multiple sessions sharing one log
   file interleave cleanly (consumers filter by id) — logs are **not** the wall.

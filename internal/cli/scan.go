@@ -48,10 +48,11 @@ wandersort scan -p ~/Pictures,/Volumes/SD
 # Use 8 workers and a custom output directory
 wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := requireConfigured(); err != nil {
+			if err := requireConfigured(a); err != nil {
 				return err
 			}
-			return a.runScan(v.GetStringSlice(flagPaths))
+			paths, _ := cmd.Flags().GetStringSlice(flagPaths)
+			return a.runScan(cmd, paths)
 		},
 	}
 
@@ -61,8 +62,8 @@ wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
 	return cmd
 }
 
-func (a *app) runScan(paths []string) error {
-	if a.tuiEnabled() {
+func (a *app) runScan(cmd *cobra.Command, paths []string) error {
+	if a.tuiEnabled(cmd) {
 		return a.runScanTUI(paths)
 	}
 	return a.runScanPlain(paths)
@@ -76,6 +77,12 @@ func (a *app) runScanPlain(paths []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
+	if err != nil {
+		return fmt.Errorf("acquire lock: %w", err)
+	}
+	defer l.Unlock()
+
 	if err := a.initAppDB(ctx); err != nil {
 		return err
 	}
@@ -88,14 +95,7 @@ func (a *app) runScanPlain(paths []string) error {
 		return fmt.Errorf("anchors: %w", err)
 	}
 
-	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
-	if err != nil {
-		return fmt.Errorf("acquire lock: %w", err)
-	}
-	defer l.Unlock()
-
 	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, workflow.ReadyDeps(a.ExiftoolPath, a.LocationResolver))
-	defer wf.Close()
 
 	sessionID, scanPaths, err := wf.RunScan(paths)
 	if err != nil {
@@ -103,8 +103,8 @@ func (a *app) runScanPlain(paths []string) error {
 	}
 
 	hint := "wandersort review"
-	if outputPath := v.GetString(flagOutputPath); outputPath != "" {
-		hint = fmt.Sprintf("wandersort review -o %s", outputPath)
+	if a.Config.Configured {
+		hint = fmt.Sprintf("wandersort review -o %s", filepath.Dir(a.Config.AppDBPath))
 	}
 	a.Log.Info(fmt.Sprintf("Scan complete in %s. Run '%s' to review the proposed folders.", time.Since(start).Round(time.Millisecond), hint),
 		logger.UserKey, true, "sessionId", sessionID, "scanPaths", scanPaths)
@@ -189,7 +189,6 @@ func (a *app) runScanTUI(paths []string) error {
 	}
 
 	wf := workflow.NewWorkflow(ctx, a.AppDB, tuiLog, a.Config, deps)
-	defer wf.Close()
 	first := tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {
 			_, _, err := wf.RunScan(paths)

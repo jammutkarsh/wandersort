@@ -41,7 +41,7 @@ wandersort review --yes
 # Re-propose the hierarchy with the current config.yaml rules first
 wandersort review --rebuild`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.runReview()
+			return a.runReview(cmd)
 		},
 	}
 
@@ -51,7 +51,7 @@ wandersort review --rebuild`,
 	return cmd
 }
 
-func (a *app) runReview() error {
+func (a *app) runReview(cmd *cobra.Command) error {
 	if _, err := os.Stat(a.Config.AppDBPath); os.IsNotExist(err) {
 		return fmt.Errorf("no database found — run 'wandersort scan' first")
 	}
@@ -76,9 +76,12 @@ func (a *app) runReview() error {
 		return err
 	}
 
+	rebuild, _ := cmd.Flags().GetBool(flagRebuild)
+	yes, _ := cmd.Flags().GetBool(flagYes)
+
 	// --rebuild re-proposes from metadata already in the DB: a changed rules
 	// setting applies without a re-scan or re-hash
-	if v.GetBool(flagRebuild) {
+	if rebuild {
 		// vfs.Run wipes every entry, including an already-confirmed plan.
 		// Names survive in user_labels and come back as suggestions, but
 		// dropping confirmed work needs saying out loud.
@@ -86,7 +89,7 @@ func (a *app) runReview() error {
 		if err != nil {
 			return err
 		}
-		if approved > 0 && !v.GetBool(flagYes) {
+		if approved > 0 && !yes {
 			return fmt.Errorf("--rebuild would discard the confirmed plan for this session (%d approved files).\n"+
 				"Your confirmed folder names are remembered and will be re-suggested; re-run with --yes to rebuild and confirm the new plan non-interactively", approved)
 		}
@@ -118,7 +121,7 @@ func (a *app) runReview() error {
 		OutputDir: filepath.Dir(a.Config.AppDBPath),
 	}
 
-	if v.GetBool(flagYes) {
+	if yes {
 		if err := review.AcceptAll(ctx, opts); err != nil {
 			return err
 		}

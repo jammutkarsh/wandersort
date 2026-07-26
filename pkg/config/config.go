@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 
+	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -21,11 +23,9 @@ const (
 	DefaultDBFileName  = ".wandersort.db"
 	locationDBFileName = "location.db"
 	defaultLogLevel    = "info"
-	defaultPort        = "7658"
 )
 
 type Configuration struct {
-	ServerPort     string
 	AppDBPath      string
 	LocationDBPath string
 	LogLevel       string
@@ -46,6 +46,11 @@ type Configuration struct {
 	// MergeSameLocationDays collapses consecutive same-location day folders into
 	// a dated range folder — see vfs.Config.MergeSameLocationDays.
 	MergeSameLocationDays bool
+	// Configured is true once output-path has been set by flag, env, or the
+	// config file — the marker `wandersort config` always writes and nothing
+	// else does. False means every field above is still a hardcoded default,
+	// and the pipeline commands (requireConfigured) refuse to run.
+	Configured bool
 }
 
 // Defaults returns a Configuration populated with hardcoded defaults only.
@@ -61,7 +66,6 @@ func Defaults() (*Configuration, error) {
 	outputPath := filepath.Join(home, DefaultLibraryDir)
 
 	return &Configuration{
-		ServerPort:            defaultPort,
 		AppDBPath:             filepath.Join(outputPath, DefaultDBFileName),
 		LocationDBPath:        filepath.Join(appDir, locationDBFileName),
 		LogLevel:              defaultLogLevel,
@@ -73,6 +77,125 @@ func Defaults() (*Configuration, error) {
 		HomeWorkDateOnly:      true,
 		MergeSameLocationDays: true,
 	}, nil
+}
+
+// FlagOverrides carries user-set CLI flag values into Resolve, layered over
+// env vars and the config file. A nil field means the flag was not passed —
+// mirrors cobra's Flag.Changed, since Resolve can't tell "false" from
+// "unset" any other way.
+type FlagOverrides struct {
+	OutputPath            *string
+	Workers               *int
+	CollapseLevels        *bool
+	HomeWorkDateOnly      *bool
+	MergeSameLocationDays *bool
+}
+
+// Resolve builds the runtime Configuration from hardcoded defaults, the
+// global config file, environment variables, and CLI flags, in that
+// precedence order (flag > env > file > default) — the single place all
+// four layers meet. See internal/cli/root.go for how FlagOverrides is built
+// from cobra flags.
+//
+// An unparseable global config file is not fatal: the file is hand-editable
+// and every setting in it is optional, so a stray typo must not brick every
+// command — including `wandersort config`, the one that would fix it. The
+// warning is returned for the caller to log once a logger exists, rather
+// than failing outright.
+func Resolve(overrides FlagOverrides) (cfg *Configuration, warning string, err error) {
+	cfg, err = Defaults()
+	if err != nil {
+		return nil, "", err
+	}
+
+	var outputPath string
+
+	global, loadErr := LoadGlobal()
+	if loadErr != nil {
+		warning = fmt.Sprintf("Ignoring %s — it isn't valid YAML (%v). Using defaults; fix the file or delete it to get a fresh one.", mustGlobalConfigPath(), loadErr)
+	} else {
+		if global.OutputPath != "" {
+			outputPath = global.OutputPath
+		}
+		if global.Workers > 0 {
+			cfg.Workers = global.Workers
+		}
+		if len(global.Rules) > 0 {
+			cfg.Rules = global.Rules
+		}
+		// The three bools below are the only fields where an absent YAML key
+		// and an explicit "false" are the same Go zero value — output-path is
+		// the marker that this file has been through the wizard (SaveGlobal
+		// always writes every key together), so gating on it avoids reading
+		// an empty/hand-edited-partial file's zero-valued bools as "false".
+		if global.OutputPath != "" {
+			cfg.CollapseLevels = global.CollapseLevels
+			cfg.HomeWorkDateOnly = global.HomeWorkDateOnly
+			cfg.MergeSameLocationDays = global.MergeSameLocationDays
+		}
+	}
+
+	if v := os.Getenv("OUTPUT_PATH"); v != "" {
+		outputPath = v
+	}
+	if v := os.Getenv("WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Workers = n
+		}
+	}
+	if v := os.Getenv("COLLAPSE_LEVELS"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.CollapseLevels = b
+		}
+	}
+	if v := os.Getenv("HOME_WORK_DATE_ONLY"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.HomeWorkDateOnly = b
+		}
+	}
+	if v := os.Getenv("MERGE_SAME_LOCATION_DAYS"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.MergeSameLocationDays = b
+		}
+	}
+
+	if overrides.OutputPath != nil && *overrides.OutputPath != "" {
+		outputPath = *overrides.OutputPath
+	}
+	if overrides.Workers != nil && *overrides.Workers > 0 {
+		cfg.Workers = *overrides.Workers
+	}
+	if overrides.CollapseLevels != nil {
+		cfg.CollapseLevels = *overrides.CollapseLevels
+	}
+	if overrides.HomeWorkDateOnly != nil {
+		cfg.HomeWorkDateOnly = *overrides.HomeWorkDateOnly
+	}
+	if overrides.MergeSameLocationDays != nil {
+		cfg.MergeSameLocationDays = *overrides.MergeSameLocationDays
+	}
+
+	if outputPath != "" {
+		cfg.Configured = true
+		outputPath = wspath.New().ExpandPath(outputPath)
+		cfg.AppDBPath = filepath.Join(outputPath, DefaultDBFileName)
+		cfg.LogFile = filepath.Join(outputPath, DefaultLogFileName)
+	}
+
+	return cfg, warning, nil
+}
+
+// mustGlobalConfigPath is GlobalConfigPath without the error return, for the
+// warning message above — os.UserHomeDir() already succeeded once in
+// Defaults() by the time Resolve reaches this point, so a second failure
+// here would be a hardware-fault-tier surprise, not something to plumb an
+// error return through a warning string for.
+func mustGlobalConfigPath() string {
+	p, err := GlobalConfigPath()
+	if err != nil {
+		return GlobalConfigFileName
+	}
+	return p
 }
 
 /* ---------- ~/.wandersort/config.yaml ---------- */
@@ -94,8 +217,8 @@ type HomeWork struct {
 
 // Global is the on-disk shape of ~/.wandersort/config.yaml. `wandersort
 // config` is the only thing that writes it (whole-file marshal — no comments
-// to preserve), and the CLI reads the same keys through viper so flags and env
-// vars still layer over them (see internal/cli/root.go's applyOverrides).
+// to preserve), and Resolve reads the same keys so flags and env vars still
+// layer over them.
 type Global struct {
 	OutputPath            string   `yaml:"output-path,omitempty"`
 	Workers               int      `yaml:"workers,omitempty"`
@@ -118,8 +241,8 @@ func GlobalConfigPath() (string, error) {
 
 // EnsureGlobalConfigFile creates an empty ~/.wandersort/config.yaml if it
 // doesn't exist yet, and always returns its path. Called on every CLI
-// invocation (see cli.loadGlobalConfigFile) so viper always has a file to
-// read. It starts empty on purpose: every setting has a built-in default, and
+// invocation (see Resolve) so there's always a file for LoadGlobal to read.
+// It starts empty on purpose: every setting has a built-in default, and
 // `wandersort config` is what fills the file in.
 func EnsureGlobalConfigFile() (string, error) {
 	path, err := GlobalConfigPath()

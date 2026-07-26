@@ -63,7 +63,7 @@ table would wrap.`,
 wandersort report -o ~/wandersort-out
 wandersort report -x`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.runReport()
+			return a.runReport(cmd)
 		},
 	}
 
@@ -71,7 +71,7 @@ wandersort report -x`,
 	return cmd
 }
 
-func (a *app) runReport() error {
+func (a *app) runReport(cmd *cobra.Command) error {
 	if _, err := os.Stat(a.Config.AppDBPath); os.IsNotExist(err) {
 		return fmt.Errorf("no database found — nothing to report on")
 	}
@@ -86,7 +86,8 @@ func (a *app) runReport() error {
 		return fmt.Errorf("no scan data found — run `wandersort scan` first")
 	}
 
-	if v.GetBool(flagVertical) {
+	vertical, _ := cmd.Flags().GetBool(flagVertical)
+	if vertical {
 		a.printReportVertical(results)
 	} else {
 		a.printReport(results)

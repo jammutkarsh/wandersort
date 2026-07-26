@@ -234,7 +234,7 @@ func TestConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			warning, err := loadGlobalConfigFile()
+			_, warning, err := config.Resolve(config.FlagOverrides{})
 			if err != nil {
 				t.Fatalf("bad YAML must not be a fatal error, got %v", err)
 			}
@@ -256,12 +256,12 @@ func TestConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			warning, err := loadGlobalConfigFile()
+			cfg, warning, err := config.Resolve(config.FlagOverrides{})
 			if err != nil || warning != "" {
 				t.Fatalf("valid config: err=%v warning=%q", err, warning)
 			}
-			if got := v.GetInt(flagWorkers); got != 7 {
-				t.Errorf("workers = %d, want 7 from the config file", got)
+			if cfg.Workers != 7 {
+				t.Errorf("workers = %d, want 7 from the config file", cfg.Workers)
 			}
 		}},
 		// TestTreeExample covers the wizard's example renderer: sibling paths must
@@ -283,7 +283,7 @@ func TestConfig(t *testing.T) {
 				t.Errorf("treeExample:\n%s\nwant:\n%s", got, want)
 			}
 		}},
-		// TestScanNeedsConfigFirst covers the gate on scan/serve: the empty
+		// TestScanNeedsConfigFirst covers the gate on scan: the empty
 		// config.yaml every command creates must not count as configured, or the
 		// first scan builds its whole proposal from defaults.
 		{"ScanNeedsConfigFirst", func(t *testing.T) {
@@ -294,14 +294,22 @@ func TestConfig(t *testing.T) {
 			if _, err := config.EnsureGlobalConfigFile(); err != nil {
 				t.Fatal(err)
 			}
-			if err := requireConfigured(); err == nil {
+			cfg, _, err := config.Resolve(config.FlagOverrides{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := requireConfigured(&app{Config: cfg}); err == nil {
 				t.Error("an empty config.yaml must not count as configured")
 			}
 
 			if err := config.SaveGlobal(config.Global{OutputPath: filepath.Join(home, "out")}); err != nil {
 				t.Fatal(err)
 			}
-			if err := requireConfigured(); err != nil {
+			cfg, _, err = config.Resolve(config.FlagOverrides{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := requireConfigured(&app{Config: cfg}); err != nil {
 				t.Errorf("after the wizard saved: %v", err)
 			}
 		}},

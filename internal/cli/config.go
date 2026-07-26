@@ -33,7 +33,7 @@ func (a *app) newConfigCmd() *cobra.Command {
 		Short: "Configure WanderSort",
 		Long: `Opens a full-screen wizard for every global setting — output folder,
 workers, folder rules, and your home/work towns. They apply to every
-scan/serve unless overridden by a flag or environment variable, and are saved
+scan unless overridden by a flag or environment variable, and are saved
 to ~/.wandersort/config.yaml.
 
 Prints that file to stdout instead when --print is given or when the terminal
@@ -45,7 +45,7 @@ wandersort config
 wandersort config --print
 wandersort config | grep rules`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.runConfig()
+			return a.runConfig(cmd)
 		},
 	}
 
@@ -53,7 +53,7 @@ wandersort config | grep rules`,
 	return cmd
 }
 
-func (a *app) runConfig() error {
+func (a *app) runConfig(cmd *cobra.Command) error {
 	configPath, err := config.EnsureGlobalConfigFile()
 	if err != nil {
 		return fmt.Errorf("global config: %w", err)
@@ -63,7 +63,8 @@ func (a *app) runConfig() error {
 	// redirecting means the caller wants the contents, not an alt-screen
 	// fighting over the same stream.
 	interactive := term.IsTerminal(int(os.Stdout.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
-	if v.GetBool(flagPrint) || !interactive {
+	print, _ := cmd.Flags().GetBool(flagPrint)
+	if print || !interactive {
 		data, err := os.ReadFile(configPath)
 		if err != nil {
 			return fmt.Errorf("read config: %w", err)

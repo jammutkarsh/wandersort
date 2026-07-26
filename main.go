@@ -11,18 +11,11 @@ import (
 	"os"
 
 	"github.com/jammutkarsh/wandersort/internal/cli"
-	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
 func main() {
-	cfg, err := config.Defaults()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "config:", err)
-		os.Exit(1)
-	}
-
-	if err := cli.Execute(cfg); err != nil {
+	if err := cli.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, tui.Bad.Render("Error:"), err)
 		os.Exit(1)
 	}

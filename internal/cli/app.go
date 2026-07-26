@@ -20,14 +20,17 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
 
 // Execute runs the wandersort CLI. It is this package's only exported symbol:
 // the app and everything hanging off it stay internal, so main.go has one way
-// in and no state to assemble.
-func Execute(cfg *config.Configuration) error {
-	a := &app{Config: cfg}
+// in and no state to assemble. a.Config starts nil — PersistentPreRunE builds
+// it via config.Resolve before any command body runs, so nothing here reads
+// it early.
+func Execute() error {
+	a := &app{}
 	return a.newRootCmd().Execute()
 }
 
@@ -70,7 +73,7 @@ func (a *app) initLocationResolver(ctx context.Context) error {
 	if a.LocationResolver != nil {
 		return nil
 	}
-	// Download the location database on first use so scan/serve work without a
+	// Download the location database on first use so scan works without a
 	// separate setup step. No-op if it already exists.
 	resolver, locationDB, err := location.Open(ctx, a.Log, a.Config.LocationDBPath, a.progressFor("location"))
 	if err != nil {
@@ -89,7 +92,7 @@ func (a *app) installDir() string {
 
 // ensureDependencies installs exiftool and the location database if missing,
 // then opens the resolver. Holds the install lock throughout, so a concurrent
-// scan/serve waits rather than installing at the same time.
+// scan waits rather than installing at the same time.
 //
 // Exiftool installs first on purpose: it's the small download and the earlier
 // pipeline phase (exif) is what waits on it — the location database is only
@@ -128,7 +131,7 @@ func (a *app) initExiftool(ctx context.Context) error {
 	if a.ExiftoolPath != "" {
 		return nil
 	}
-	// Install exiftool on first use so scan/serve work without a separate setup
+	// Install exiftool on first use so scan works without a separate setup
 	// step. No-op if a suitable version is already present.
 	exiftoolPath, err := exiftool.Setup(ctx, a.Log, a.Config.ExecutablePath, a.progressFor("exiftool"))
 	if err != nil {
@@ -141,7 +144,7 @@ func (a *app) initExiftool(ctx context.Context) error {
 func (a *app) closeDBs() {
 	a.Log.Info("Closing databases")
 	// A failed Close can leave the WAL/SHM files locked (locking_mode=EXCLUSIVE),
-	// preventing the next scan/serve from starting — always log the cause.
+	// preventing the next scan from starting — always log the cause.
 	if a.AppDB != nil {
 		if err := a.AppDB.Close(); err != nil {
 			a.Log.Error("failed to close app database", "error", err)
@@ -158,8 +161,8 @@ func (a *app) closeDBs() {
 // back to plain line logging. Plain when --plain is set or stderr isn't a
 // terminal (piped/redirected). The TUI draws to stderr, matching the review
 // TUI, so stdout stays clean for piping.
-func (a *app) tuiEnabled() bool {
-	if v.GetBool(flagPlain) {
+func (a *app) tuiEnabled(cmd *cobra.Command) bool {
+	if plain, _ := cmd.Flags().GetBool(flagPlain); plain {
 		return false
 	}
 	return term.IsTerminal(int(os.Stderr.Fd()))
