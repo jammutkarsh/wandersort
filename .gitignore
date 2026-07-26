@@ -37,3 +37,4 @@ vendor/
 Thumbs.db
 log.json
 .tickets
+.claude
