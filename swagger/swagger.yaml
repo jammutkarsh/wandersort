@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Utkarsh Chourasia
 
 definitions:
-  admin.ResetResponse:
+  db.ResetCounts:
     properties:
       fileMetadataDeleted:
         type: integer
@@ -15,7 +15,25 @@ definitions:
       vfsEntriesDeleted:
         type: integer
     type: object
-  pipeline.StartScanRequest:
+  server.ConfirmRequest:
+    properties:
+      tree:
+        items:
+          $ref: '#/definitions/vfs.Node'
+        type: array
+    required:
+    - tree
+    type: object
+  server.ConfirmResponse:
+    properties:
+      message:
+        type: string
+      sessionId:
+        type: string
+      status:
+        type: string
+    type: object
+  server.ScanRequest:
     properties:
       rootPaths:
         items:
@@ -24,7 +42,7 @@ definitions:
     required:
     - rootPaths
     type: object
-  pipeline.StartScanResponse:
+  server.ScanResponse:
     properties:
       message:
         type: string
@@ -37,23 +55,14 @@ definitions:
       status:
         type: string
     type: object
-  vfs.ConfirmRequest:
+  server.TreeResponse:
     properties:
+      sessionId:
+        type: string
       tree:
         items:
           $ref: '#/definitions/vfs.Node'
         type: array
-    required:
-    - tree
-    type: object
-  vfs.ConfirmResponse:
-    properties:
-      message:
-        type: string
-      sessionId:
-        type: string
-      status:
-        type: string
     type: object
   vfs.Node:
     properties:
@@ -101,80 +110,13 @@ definitions:
       source:
         type: string
     type: object
-  vfs.TreeResponse:
-    properties:
-      sessionId:
-        type: string
-      tree:
-        items:
-          $ref: '#/definitions/vfs.Node'
-        type: array
-    type: object
 info:
   contact: {}
   description: API documentation for WanderSort
   title: WanderSort API
   version: "1.0"
 paths:
-  /internal/v1/admin/reset:
-    post:
-      description: Deletes all scan sessions, file registry entries, and file metadata
-        in a single transaction. Irreversible
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/admin.ResetResponse'
-      summary: Reset all application data
-      tags:
-      - Admin
-  /internal/v1/pipeline/start:
-    post:
-      consumes:
-      - application/json
-      description: Submit root paths to the pipeline. The API validates directories,
-        removes overlapping child paths, returns the effective scanPaths, and then
-        starts scanning immediately
-      parameters:
-      - description: Start Scan Request
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/pipeline.StartScanRequest'
-      produces:
-      - application/json
-      responses:
-        "202":
-          description: Accepted
-          schema:
-            $ref: '#/definitions/pipeline.StartScanResponse'
-      summary: Start a new pipeline scan
-      tags:
-      - Pipeline
-  /internal/v1/sessions/{id}/vfs:
-    get:
-      description: Returns the proposed destination hierarchy (folder names only)
-        for a session's files, for review before the move
-      parameters:
-      - description: Session ID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/vfs.TreeResponse'
-      summary: Get the proposed VFS directory tree
-      tags:
-      - VFS
-  /internal/v1/sessions/{id}/vfs/confirm:
+  /internal/v1/workflow/{id}/confirm:
     post:
       consumes:
       - application/json
@@ -191,15 +133,73 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/vfs.ConfirmRequest'
+          $ref: '#/definitions/server.ConfirmRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/vfs.ConfirmResponse'
+            $ref: '#/definitions/server.ConfirmResponse'
       summary: Confirm (approve/correct) the VFS directory tree
       tags:
-      - VFS
+      - Workflow
+  /internal/v1/workflow/{id}/tree:
+    get:
+      description: Returns the proposed destination hierarchy (folder names only)
+        for a session's files, for review before the move
+      parameters:
+      - description: Session ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.TreeResponse'
+      summary: Get the proposed VFS directory tree
+      tags:
+      - Workflow
+  /internal/v1/workflow/reset:
+    post:
+      description: Deletes all scan sessions, file registry entries, and file metadata
+        in a single transaction. Irreversible
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/db.ResetCounts'
+      summary: Reset all application data
+      tags:
+      - Workflow
+  /internal/v1/workflow/scan:
+    post:
+      consumes:
+      - application/json
+      description: Submit root paths to the pipeline. The API validates directories,
+        removes overlapping child paths, returns the effective scanPaths, and then
+        starts scanning immediately
+      parameters:
+      - description: Scan Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.ScanRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/server.ScanResponse'
+      summary: Start a new scan
+      tags:
+      - Workflow
 swagger: "2.0"

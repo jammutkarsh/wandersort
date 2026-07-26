@@ -13,9 +13,9 @@ import (
 	"path/filepath"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/deps"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
-	"github.com/jammutkarsh/wandersort/pkg/utils"
 )
 
 const (
@@ -55,13 +55,14 @@ func Setup(ctx context.Context, log logger.Logger, dbPath string, onProgress fun
 		logger.PhaseKey, "location", logger.EventKey, "start",
 		"dir", path.New().RelativeToHome(dbPath))
 
-	if err := utils.DownloadFileProgress(ctx, dbPath, LocationDownloadBaseURL+"/"+LocationDBFileName,
-		onProgress); err != nil {
+	// no digest here: the expected hash ships in the metadata file downloaded
+	// next, and location.New verifies against it when opening
+	if err := deps.Download(ctx, dbPath, LocationDownloadBaseURL+"/"+LocationDBFileName, "", onProgress); err != nil {
 		return fmt.Errorf("download %s: %w", LocationDBFileName, err)
 	}
 
 	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
-	if err := utils.DownloadFile(ctx, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName); err != nil {
+	if err := deps.Download(ctx, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
 		log.Warn("location db: could not download metadata (non-fatal)", "file", LocationMetaFileName, "error", err)
 	}
 

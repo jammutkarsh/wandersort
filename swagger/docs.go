@@ -15,27 +15,27 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/internal/v1/admin/reset": {
+        "/internal/v1/workflow/reset": {
             "post": {
                 "description": "Deletes all scan sessions, file registry entries, and file metadata in a single transaction. Irreversible",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Admin"
+                    "Workflow"
                 ],
                 "summary": "Reset all application data",
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/admin.ResetResponse"
+                            "$ref": "#/definitions/db.ResetCounts"
                         }
                     }
                 }
             }
         },
-        "/internal/v1/pipeline/start": {
+        "/internal/v1/workflow/scan": {
             "post": {
                 "description": "Submit root paths to the pipeline. The API validates directories, removes overlapping child paths, returns the effective scanPaths, and then starts scanning immediately",
                 "consumes": [
@@ -45,17 +45,17 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "Pipeline"
+                    "Workflow"
                 ],
-                "summary": "Start a new pipeline scan",
+                "summary": "Start a new scan",
                 "parameters": [
                     {
-                        "description": "Start Scan Request",
+                        "description": "Scan Request",
                         "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/pipeline.StartScanRequest"
+                            "$ref": "#/definitions/server.ScanRequest"
                         }
                     }
                 ],
@@ -63,42 +63,13 @@ const docTemplate = `{
                     "202": {
                         "description": "Accepted",
                         "schema": {
-                            "$ref": "#/definitions/pipeline.StartScanResponse"
+                            "$ref": "#/definitions/server.ScanResponse"
                         }
                     }
                 }
             }
         },
-        "/internal/v1/sessions/{id}/vfs": {
-            "get": {
-                "description": "Returns the proposed destination hierarchy (folder names only) for a session's files, for review before the move",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "VFS"
-                ],
-                "summary": "Get the proposed VFS directory tree",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/vfs.TreeResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/internal/v1/sessions/{id}/vfs/confirm": {
+        "/internal/v1/workflow/{id}/confirm": {
             "post": {
                 "description": "Accepts the possibly edited tree, applies renames to target paths, marks entries APPROVED, and remembers renamed locations for future scans",
                 "consumes": [
@@ -108,7 +79,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "VFS"
+                    "Workflow"
                 ],
                 "summary": "Confirm (approve/correct) the VFS directory tree",
                 "parameters": [
@@ -125,7 +96,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/vfs.ConfirmRequest"
+                            "$ref": "#/definitions/server.ConfirmRequest"
                         }
                     }
                 ],
@@ -133,7 +104,36 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/vfs.ConfirmResponse"
+                            "$ref": "#/definitions/server.ConfirmResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/v1/workflow/{id}/tree": {
+            "get": {
+                "description": "Returns the proposed destination hierarchy (folder names only) for a session's files, for review before the move",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Workflow"
+                ],
+                "summary": "Get the proposed VFS directory tree",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.TreeResponse"
                         }
                     }
                 }
@@ -141,7 +141,7 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "admin.ResetResponse": {
+        "db.ResetCounts": {
             "type": "object",
             "properties": {
                 "fileMetadataDeleted": {
@@ -161,7 +161,35 @@ const docTemplate = `{
                 }
             }
         },
-        "pipeline.StartScanRequest": {
+        "server.ConfirmRequest": {
+            "type": "object",
+            "required": [
+                "tree"
+            ],
+            "properties": {
+                "tree": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/vfs.Node"
+                    }
+                }
+            }
+        },
+        "server.ConfirmResponse": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string"
+                },
+                "sessionId": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.ScanRequest": {
             "type": "object",
             "required": [
                 "rootPaths"
@@ -175,7 +203,7 @@ const docTemplate = `{
                 }
             }
         },
-        "pipeline.StartScanResponse": {
+        "server.ScanResponse": {
             "type": "object",
             "properties": {
                 "message": {
@@ -195,31 +223,17 @@ const docTemplate = `{
                 }
             }
         },
-        "vfs.ConfirmRequest": {
+        "server.TreeResponse": {
             "type": "object",
-            "required": [
-                "tree"
-            ],
             "properties": {
+                "sessionId": {
+                    "type": "string"
+                },
                 "tree": {
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/vfs.Node"
                     }
-                }
-            }
-        },
-        "vfs.ConfirmResponse": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string"
-                },
-                "sessionId": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
                 }
             }
         },
@@ -277,20 +291,6 @@ const docTemplate = `{
                 },
                 "source": {
                     "type": "string"
-                }
-            }
-        },
-        "vfs.TreeResponse": {
-            "type": "object",
-            "properties": {
-                "sessionId": {
-                    "type": "string"
-                },
-                "tree": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/vfs.Node"
-                    }
                 }
             }
         }

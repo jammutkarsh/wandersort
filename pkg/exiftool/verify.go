@@ -22,9 +22,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jammutkarsh/wandersort/pkg/deps"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
-	"github.com/jammutkarsh/wandersort/pkg/utils"
 )
 
 const (
@@ -166,7 +166,7 @@ func install(ctx context.Context, binDir string, log logger.Logger, onProgress f
 	// Reuse a cached archive only if its checksum still matches — a mismatch
 	// means either corruption or tampering, so re-download either way
 	if _, err := os.Stat(archiveName); err == nil {
-		if sum, err := utils.SHA256File(archiveName); err == nil && sum == fileMeta.SHA256 {
+		if sum, err := deps.SHA256File(archiveName); err == nil && sum == fileMeta.SHA256 {
 			log.Info("exiftool checksum verified", logger.UserKey, true, "path", archiveName, "hash", sum)
 			log.Info("using cached archive", "path", archiveName)
 		} else {
@@ -177,21 +177,13 @@ func install(ctx context.Context, binDir string, log logger.Logger, onProgress f
 
 	if _, err := os.Stat(archiveName); err != nil {
 		log.Info("Downloading exiftool", logger.UserKey, true, logger.PhaseKey, "exiftool", logger.EventKey, "start")
-		if err := utils.DownloadFileProgress(ctx, archiveName, url, onProgress); err != nil {
+		// deps.Download verifies the digest and removes the file on mismatch
+		if err := deps.Download(ctx, archiveName, url, fileMeta.SHA256, onProgress); err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
 		log.Info("exiftool downloaded", logger.UserKey, true, logger.PhaseKey, "exiftool", logger.EventKey, "done")
+		log.Info("exiftool checksum verified", logger.UserKey, true, "path", archiveName, "hash", fileMeta.SHA256)
 	}
-
-	sum, err := utils.SHA256File(archiveName)
-	if err != nil {
-		return fmt.Errorf("checksum %s: %w", archiveName, err)
-	}
-	if sum != fileMeta.SHA256 {
-		os.Remove(archiveName)
-		return fmt.Errorf("checksum mismatch for %s: got %s, want %s", fileMeta.Name, sum, fileMeta.SHA256)
-	}
-	log.Info("exiftool checksum verified", logger.UserKey, true, "path", archiveName, "hash", sum)
 
 	if err := extractTarGz(archiveName, binDir); err != nil {
 		return fmt.Errorf("extract: %w", err)

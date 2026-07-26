@@ -22,9 +22,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	app := &cli.App{Config: cfg}
-
-	if err := app.Execute(); err != nil {
+	if err := cli.Execute(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, tui.Bad.Render("Error:"), err)
 		os.Exit(1)
 	}
