@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package utils
+package review
 
 import (
 	"context"
@@ -14,13 +14,13 @@ import (
 	"path/filepath"
 )
 
-// CopyProgress reports a CopyFiles run after each file: that file's path and
+// copyProgress reports a copyFiles run after each file: that file's path and
 // size, plus the batch's running total. nil if the caller doesn't care.
-type CopyProgress func(srcPath string, fileBytes, totalBytes int64)
+type copyProgress func(srcPath string, fileBytes, totalBytes int64)
 
-// CopyFiles copies srcPaths into destDir, stopping once maxBytes has been
+// copyFiles copies srcPaths into destDir, stopping once maxBytes has been
 // copied (0 = no cap). Sources are never modified. Returns the files copied.
-func CopyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes int64, onProgress CopyProgress) (int, error) {
+func copyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes int64, onProgress copyProgress) (int, error) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return 0, fmt.Errorf("create dest dir %s: %w", destDir, err)
 	}
@@ -36,7 +36,7 @@ func CopyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes 
 		}
 
 		dest := filepath.Join(destDir, filepath.Base(src))
-		n, err := CopyFile(src, dest)
+		n, err := copyFile(src, dest)
 		if err != nil {
 			return copied, err
 		}
@@ -49,10 +49,10 @@ func CopyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes 
 	return copied, nil
 }
 
-// CopyFile copies src to dest atomically: a temp file in dest's directory,
+// copyFile copies src to dest atomically: a temp file in dest's directory,
 // then a rename, so a failure partway never leaves a partial file at dest.
 // Returns bytes written.
-func CopyFile(src, dest string) (int64, error) {
+func copyFile(src, dest string) (int64, error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return 0, fmt.Errorf("open %s: %w", src, err)
