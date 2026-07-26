@@ -6,15 +6,15 @@
 
 package vfs
 
-// review.go is the shared reconcile core behind issue #8's two review surfaces
-// (the HTTP API and the `wandersort review` CLI). It reads the PROPOSED rows the
-// VFS build wrote and exposes them as a directory-only tree; it applies the
-// user's edits back onto virtual_fs_entries and remembers renamed location
-// names in user_labels so future scans suggest them automatically.
+// review.go is issue #8's reconcile core behind `wandersort review`. It reads
+// the PROPOSED rows the VFS build wrote and exposes them as a directory-only
+// tree; it applies the user's edits back onto virtual_fs_entries and
+// remembers renamed location names in user_labels so future scans suggest
+// them automatically.
 //
 // Nodes are matched by an immutable ID (the proposed directory path at build
-// time), never by diffing two trees — the client edits Name fields and returns
-// the same tree, IDs untouched.
+// time), never by diffing two trees — the reviewer edits Name fields and the
+// TUI hands back the same tree, IDs untouched.
 
 import (
 	"context"
@@ -33,12 +33,12 @@ import (
 )
 
 // ErrInvalidTree wraps every rejection of a submitted review tree (unknown node
-// id, unsafe name, colliding rename). Callers at a trust boundary map it to a 4xx.
+// id, unsafe name, colliding rename).
 var ErrInvalidTree = errors.New("invalid review tree")
 
 // ErrNoProposal means there is nothing to review: no scan has proposed
-// anything yet, or a rescan replaced the proposal mid-review. Callers map it
-// to a 404 (HTTP) or a "run scan first" hint (CLI).
+// anything yet, or a rescan replaced the proposal mid-review. The CLI maps it
+// to a "run scan first" hint.
 var ErrNoProposal = errors.New("no proposal to review")
 
 // Suggestion is a proposed name for a directory node, carried from the VFS
@@ -48,8 +48,8 @@ type Suggestion struct {
 	Source string `json:"source"`
 }
 
-// Node is one directory in the proposed hierarchy. Both review surfaces
-// serialize this tree. ID is the proposed dir path at build time and is
+// Node is one directory in the proposed hierarchy, as the review TUI edits
+// it. ID is the proposed dir path at build time and is
 // immutable — reconcile matches on it. Name is the editable last segment.
 type Node struct {
 	ID          string       `json:"id"`
@@ -221,9 +221,8 @@ func FilesUnder(ctx context.Context, sessionID uuid.UUID, nodeID string, databas
 // Confirm applies the (possibly edited) tree back onto the session's entries:
 // it rewrites target_path for every renamed directory, flips PROPOSED rows to
 // APPROVED, and records renamed location nodes in user_labels so later scans
-// suggest the corrected name. Nodes are matched by ID; unknown IDs, unsafe
-// names, and renames that collide are rejected (trust boundary — the HTTP
-// surface submits this). The write is synchronous: a nil return means the
+// suggest the corrected name. Nodes are matched by ID; unknown IDs and unsafe
+// names are rejected. The write is synchronous: a nil return means the
 // changes are committed.
 func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []Node) error {
 	var targets []string
@@ -252,10 +251,6 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 		name    string
 	}
 	remap := map[string]string{}
-	// merged nodes are gone from the submitted tree along with everything under
-	// them, so their descendants' dirs have no remap entry of their own — they
-	// get rewritten by prefix instead (old subtree root -> new path)
-	merged := map[string]string{}
 	labelIdx := map[string]int{} // name+kind -> index into labels, so a merge accumulates oldDirs instead of double-inserting
 	var labels []labelWrite
 	var walk func(nodes []Node, parentNew string) error
@@ -276,9 +271,6 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 					return fmt.Errorf("%w: unknown node id %q", ErrInvalidTree, id)
 				}
 				remap[id] = newPath
-			}
-			for _, id := range n.MergedIDs {
-				merged[id] = newPath
 			}
 			if newPath != n.ID && len(n.Suggestions) > 0 && !hasUserLabel(n.Suggestions) {
 				key := name + "\x00EVENT"
@@ -345,9 +337,6 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 		for _, e := range entries {
 			dir := path.Dir(e.TargetPath)
 			newDir, ok := remap[dir]
-			if !ok {
-				newDir, ok = remapUnderMerged(merged, dir)
-			}
 			if !ok || newDir == dir {
 				taken[strings.ToLower(e.TargetPath)] = true
 				continue
@@ -396,20 +385,6 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 		return fmt.Errorf("confirm vfs: %w", err)
 	}
 	return nil
-}
-
-// remapUnderMerged rewrites a dir that sits *below* a node folded away by a
-// merge: the subtree root moves to the survivor's path and everything under it
-// keeps its relative shape. Merges from the review TUI only ever fold leaf
-// dirs (nothing below them), but the HTTP surface can submit MergedIDs on any
-// node, and files under it must not be left pointing at the old path.
-func remapUnderMerged(merged map[string]string, dir string) (string, bool) {
-	for oldRoot, newRoot := range merged {
-		if strings.HasPrefix(dir, oldRoot+"/") {
-			return newRoot + dir[len(oldRoot):], true
-		}
-	}
-	return "", false
 }
 
 type capRow struct {

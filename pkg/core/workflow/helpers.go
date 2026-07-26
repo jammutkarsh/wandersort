@@ -18,12 +18,6 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
-// Close gracefully waits for all in-flight sessions to finish
-// Call this before closing the database to prevent panics
-func (wf *Workflow) Close() {
-	wf.wg.Wait()
-}
-
 // CheckOutputSpace warns, once, when the output volume cannot hold the whole
 // library. Best-effort: an unreadable size or volume is a warning, never a
 // failure. Exported because `review` runs it too — the last look before a plan

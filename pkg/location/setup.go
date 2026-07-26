@@ -30,13 +30,6 @@ const (
 	LocationMetaFileName = "location.json"
 )
 
-// Installed reports whether the location database file already exists, so the
-// caller can skip a download-progress screen when Setup would be a no-op.
-func Installed(dbPath string) bool {
-	_, err := os.Stat(dbPath)
-	return err == nil
-}
-
 // Setup downloads the location database and its metadata if they do not exist
 // onProgress (may be nil) reports (bytesDownloaded, totalBytes) while fetching
 // the location database, for a TUI progress bar — the per-byte counts stay out

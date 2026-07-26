@@ -88,8 +88,6 @@ wandersort report
 
 Run `wandersort --help`, or `wandersort <command> --help`, for the full command and flag reference. Any flag can also be set through an environment variable (e.g. `OUTPUT_PATH`, `WORKERS`).
 
-An optional REST API server is available via `wandersort serve` for programmatic integrations.
-
 ---
 
 ## Architecture

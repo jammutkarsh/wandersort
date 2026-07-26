@@ -99,14 +99,6 @@ func Setup(ctx context.Context, log logger.Logger, binDir string, onProgress fun
 	return installExiftool(ctx, log, binDir, onProgress)
 }
 
-// Installed reports whether a usable exiftool is already present (PATH or
-// binDir, correct version), so the caller can skip a download-progress screen
-// when Setup would be a no-op.
-func Installed(log logger.Logger, binDir string) bool {
-	_, err := findExiftool(log, binDir)
-	return err == nil
-}
-
 func findExiftool(log logger.Logger, binDir string) (string, error) {
 	// Check PATH — only accept if version meets requirement
 	if path, err := exec.LookPath(exiftoolBin()); err == nil {

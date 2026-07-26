@@ -76,8 +76,6 @@ type Workflow struct {
 	// the output-dir lock guarantees one scan/serve process.
 	mu          sync.Mutex
 	activeRoots map[uuid.UUID][]string
-
-	wg sync.WaitGroup
 }
 
 type workflowPhase struct {
@@ -153,35 +151,6 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 		activeRoots: map[uuid.UUID][]string{},
 	}
 	return wf
-}
-
-// SubmitScan canonicalizes and prunes nested scan roots, then creates a new
-// scan session and runs the pipeline in a background goroutine. Used by the
-// HTTP server, which returns the session ID immediately and reports progress
-// through the sessionId-keyed log stream. CLI scans want foreground progress
-// instead — use RunScan. Returns the roots actually walked.
-func (wf *Workflow) SubmitScan(paths []string) (uuid.UUID, []string, error) {
-	select {
-	case <-wf.ctx.Done():
-		return uuid.Nil, nil, context.Canceled
-	default:
-	}
-
-	roots, err := wf.scanRoots(paths)
-	if err != nil {
-		return uuid.Nil, nil, err
-	}
-
-	sessionID, err := wf.prepareSession(wf.ctx, roots)
-	if err != nil {
-		return uuid.Nil, nil, err
-	}
-
-	wf.wg.Go(func() {
-		wf.runSession(sessionID, roots)
-	})
-
-	return sessionID, roots, nil
 }
 
 // RunScan canonicalizes and prunes nested scan roots, then creates a scan
@@ -338,8 +307,7 @@ func (wf *Workflow) releaseRoots(sessionID uuid.UUID) {
 }
 
 // runSession runs the phases in order and finalizes the session. Returns the
-// terminal status and error so RunScan can surface failure; SubmitScan ignores
-// both.
+// terminal status and error so RunScan can surface failure.
 func (wf *Workflow) runSession(sessionID uuid.UUID, paths []string) (finalStatus string, finalErr *string) {
 	defer func() {
 		wf.finalizeSession(sessionID, finalStatus, finalErr)
