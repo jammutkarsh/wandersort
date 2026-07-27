@@ -573,8 +573,8 @@ func TestReview(t *testing.T) {
 			if !rm.editing {
 				t.Fatal("expected [r] to open the rename editor")
 			}
-			if rm.radiusDelta != defaultCandidateRadius {
-				t.Errorf("radiusDelta = %v, want it seeded to %v", rm.radiusDelta, defaultCandidateRadius)
+			if rm.radiusDelta != location.NearSearchDegrees {
+				t.Errorf("radiusDelta = %v, want it seeded to %v", rm.radiusDelta, location.NearSearchDegrees)
 			}
 
 			// [r] pre-fills the input with the current name ("June") — clear it the way

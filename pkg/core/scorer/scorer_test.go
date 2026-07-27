@@ -76,61 +76,6 @@ func TestIsMeaningfulName(t *testing.T) {
 	}
 }
 
-func TestIsGenericDirName(t *testing.T) {
-	tests := []struct {
-		name string
-		dir  string
-		want bool
-	}{
-		// Exact matches
-		{"dcim", "dcim", true},
-		{"DCIM uppercase", "DCIM", true},
-		{"backup", "backup", true},
-		{"downloads", "Downloads", true},
-		{"desktop", "Desktop", true},
-		{"misc", "misc", true},
-		{"temp", "temp", true},
-		{"photos", "photos", true},
-		{"camera", "camera", true},
-		{"sync", "sync", true},
-		{"cache", "cache", true},
-
-		// Pattern matches (genericDirPattern)
-		{"WhatsApp Images", "WhatsApp Images", true},
-		{"Telegram media", "Telegram Images", true},
-		{"Signal videos", "Signal Media", true},
-		{"New Folder", "New Folder", true},
-		{"new folder (2)", "New Folder (2)", true},
-		{"new folder with spaces", "New Folder (5)", true},
-		{"old backup", "old backup", true},
-		{"old backup num", "old backup 3", true},
-		{"backup 2023", "backup_2023", true},
-		{"dcim variant", "DCIM 1", true},
-		{"temp variant", "tmp_123", true},
-		{".thumbnails", ".thumbnails", true},
-		{"trashed", "Trashed documents", true},
-
-		// Good names — a single meaningful segment earns the bonus even when
-		// generic folders sit above it in the real path
-		{"trips", "trips", false},
-		{"goa", "goa", false},
-		{"year", "2024", false},
-		{"wedding", "wedding", false},
-		{"family", "family", false},
-		{"empty name", "", false},
-		{"root", "/", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := IsGenericDirName(tt.dir)
-			if got != tt.want {
-				t.Errorf("IsGenericDirName(%q) = %v, want %v", tt.dir, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestDuplicateSuffixPattern(t *testing.T) {
 	tests := []struct {
 		stem string

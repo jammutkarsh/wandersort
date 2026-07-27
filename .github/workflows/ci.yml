@@ -54,7 +54,7 @@ jobs:
           cache: true
 
       - name: Test with race detector
-        run: make test-race
+        run: make race
 
   coverage:
     runs-on: ubuntu-latest

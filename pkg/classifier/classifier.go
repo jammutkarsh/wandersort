@@ -8,6 +8,7 @@ package classifier
 
 import (
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -87,4 +88,25 @@ func (fc *FileClassifier) ClassifyName(name string) (mediaType string, shouldPro
 // ShouldIgnoreDir checks if a directory should be skipped entirely
 func (fc *FileClassifier) ShouldIgnoreDir(name string) bool {
 	return fc.ignoredDirs[name]
+}
+
+var (
+	genericDirs = map[string]bool{
+		"dcim": true, "camera": true, "photos": true, "temp": true,
+		"downloads": true, "desktop": true, "backup": true, "misc": true,
+	}
+
+	genericDirPattern = regexp.MustCompile(`(?i)^(\.?(thumbnails|trashed.*|sync|cache))$` +
+		`|^new folder(\s*\(\d+\))?$` +
+		`|^(old\s+)?backup[\s_-]*\d*$` +
+		`|^(dcim|temp|tmp|misc|downloads?)[\s_-]*\d*$` +
+		`|^(whatsapp|telegram|signal)[\s_-]*(images?|videos?|media)$`)
+)
+
+// IsGenericDirName reports whether a single folder name — one path segment,
+// e.g. filepath.Base of a dir, never a full path — is a known or
+// pattern-matched low-signal name (DCIM, Backup, temp, etc).
+func IsGenericDirName(name string) bool {
+	seg := strings.ToLower(name)
+	return genericDirs[seg] || genericDirPattern.MatchString(seg)
 }

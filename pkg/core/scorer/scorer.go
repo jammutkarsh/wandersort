@@ -16,6 +16,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 
+	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -35,20 +36,6 @@ var (
 
 	// Possibly human-readable names
 	hasLetterPattern = regexp.MustCompile(`[a-zA-Z]`)
-
-	// Known exact low-signal directory names (case-insensitive).
-	genericDirs = map[string]bool{
-		"dcim": true, "camera": true, "photos": true, "temp": true,
-		"downloads": true, "desktop": true, "backup": true, "misc": true,
-	}
-
-	// Catches variants a fixed set can't enumerate: "DCIM 1", "Backup_2023",
-	// "New folder (2)", "old backup", ".thumbnails", "WhatsApp Images", etc.
-	genericDirPattern = regexp.MustCompile(`(?i)^(\.?(thumbnails|trashed.*|sync|cache))$` +
-		`|^new folder(\s*\(\d+\))?$` +
-		`|^(old\s+)?backup[\s_-]*\d*$` +
-		`|^(dcim|temp|tmp|misc|downloads?)[\s_-]*\d*$` +
-		`|^(whatsapp|telegram|signal)[\s_-]*(images?|videos?|media)$`)
 )
 
 const (
@@ -168,7 +155,7 @@ func perFileScore(filePath string) int {
 	// Judge only the immediate parent folder — file_dir is absolute, and
 	// generic segments higher up (Users, Photos, Downloads) must not
 	// disqualify a meaningful leaf folder
-	if !IsGenericDirName(filepath.Base(dir)) {
+	if !classifier.IsGenericDirName(filepath.Base(dir)) {
 		score += scoreDirBonus
 	}
 	// Penalize duplicate-copy suffixes, which are common in camera roll imports and cloud syncs.
@@ -176,12 +163,4 @@ func perFileScore(filePath string) int {
 		score += penaltyDuplicateTag
 	}
 	return score
-}
-
-// IsGenericDirName reports whether a single folder name — one path segment,
-// e.g. filepath.Base of a dir, never a full path — is a known or
-// pattern-matched low-signal name (DCIM, Backup, temp, etc).
-func IsGenericDirName(name string) bool {
-	seg := strings.ToLower(name)
-	return genericDirs[seg] || genericDirPattern.MatchString(seg)
 }

@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/config"
-	"github.com/jammutkarsh/wandersort/pkg/core/scorer"
 )
 
 // cluster groups masters whose capture times sit within the configured gap of
@@ -173,7 +173,7 @@ func suggestFor(masters []masterFile, c *cluster, labels []userLabel, anchors []
 	best, bestN := "", 0
 	for _, i := range c.members {
 		base := filepath.Base(masters[i].FileDir)
-		if base == "." || base == "/" || scorer.IsGenericDirName(base) {
+		if base == "." || base == "/" || classifier.IsGenericDirName(base) {
 			continue
 		}
 		counts[base]++

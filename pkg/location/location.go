@@ -40,7 +40,7 @@ const gpsRoundingFactor = 10000
 // acceptance radius, or a valid match the wide pass finds is thrown away by a
 // tighter threshold.
 const (
-	nearSearchDegrees = 0.09 // ≈ 10 km
+	NearSearchDegrees = 0.09 // ≈ 10 km
 	farSearchDegrees  = 0.45 // ≈ 50 km
 )
 
@@ -86,7 +86,7 @@ func (r *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error)
 // ErrNoLocation if nothing sits within farSearchDegrees.
 func (r *Resolver) queryNearest(ctx context.Context, lat, lon float64) (string, error) {
 	// widen the box only when the tight pass finds nothing
-	for _, delta := range []float64{nearSearchDegrees, farSearchDegrees} {
+	for _, delta := range []float64{NearSearchDegrees, farSearchDegrees} {
 		cands, err := r.Candidates(ctx, lat, lon, delta, 1)
 		if err != nil {
 			return "", err
