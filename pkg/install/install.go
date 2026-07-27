@@ -149,7 +149,6 @@ func (c *Coordinator) acquireLock(ctx context.Context) (*lock.Lock, error) {
 	return l, nil
 }
 
-
 func (c *Coordinator) progressFor(phase string) func(done, total int64) {
 	if c.opts.OnProgress == nil {
 		return nil
