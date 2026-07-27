@@ -33,28 +33,20 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-// geoResolver is the reverse-geocode seam; *location.Resolver satisfies it
-type geoResolver interface {
-	Lookup(ctx context.Context, lat, lon float64) (string, error)
-}
-
 type VFS struct {
 	db       *db.DB
-	resolver geoResolver
+	resolver *location.Resolver
 	log      logger.Logger
 	cfg      Config
 }
 
 func New(db *db.DB, resolver *location.Resolver, log logger.Logger, cfg Config) *VFS {
-	v := &VFS{
-		db:  db,
-		log: log,
-		cfg: cfg,
+	return &VFS{
+		db:       db,
+		resolver: resolver,
+		log:      log,
+		cfg:      cfg,
 	}
-	if resolver != nil { // avoid a typed-nil interface; Run treats nil as "no geocoding"
-		v.resolver = resolver
-	}
-	return v
 }
 
 // Run builds the virtual filesystem proposal for the whole library's master

@@ -19,6 +19,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/location/locationtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -86,15 +87,13 @@ func (h *harness) addScreenshot(t *testing.T, relPath string, meta classifier.Co
 	return id
 }
 
-func (h *harness) build(t *testing.T, cfg Config, geo geoResolver) map[int64]entryRow {
+func (h *harness) build(t *testing.T, cfg Config, geo *location.Resolver) map[int64]entryRow {
 	t.Helper()
 	vfs := &VFS{
-		db:  h.d,
-		log: logger.NewNoopLogger(),
-		cfg: cfg,
-	}
-	if geo != nil {
-		vfs.resolver = geo
+		db:       h.d,
+		log:      logger.NewNoopLogger(),
+		cfg:      cfg,
+		resolver: geo,
 	}
 	if _, err := vfs.Run(context.Background()); err != nil {
 		t.Fatal(err)

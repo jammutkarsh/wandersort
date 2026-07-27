@@ -4,10 +4,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package locationtest opens the real, downloaded location.db for tests, so
-// tests exercising geocoding run against the same data and the same
-// download-open-verify path (install.OpenLocationResolver) that the app
-// uses, instead of a hand-fabricated fixture.
+// Package locationtest opens the real location.db for tests, so tests
+// exercising geocoding run against the same data and the same open-verify
+// path (install.OpenLocationResolver) that the app uses, instead of a
+// hand-fabricated fixture. It does not download the database — a missing
+// database is a test failure, not a skip.
 package locationtest
 
 import (
@@ -22,22 +23,25 @@ import (
 )
 
 // Resolver returns a Resolver backed by the real gazetteer at
-// ~/.wandersort/location.db, downloading it first if this machine doesn't
-// have it yet (once per machine, not once per test run — the same path the
-// app itself uses). Skips only when the download can't happen (offline) or
-// the db is locked by another wandersort process (it opens
-// locking_mode=EXCLUSIVE) — neither is a failure of the code under test.
+// ~/.wandersort/location.db (the same path the app itself uses). Fails the
+// test if the database is missing (run `wandersort config` once to install
+// it) or can't be opened, e.g. locked by another wandersort process (it
+// opens locking_mode=EXCLUSIVE).
 func Resolver(t testing.TB) *location.Resolver {
 	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil {
-		t.Skipf("no home dir: %v", err)
+		t.Fatalf("no home dir: %v", err)
 	}
 	dbPath := filepath.Join(home, ".wandersort", install.LocationDBFileName)
 
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("location database not found at %s — run 'wandersort config' once to install it", dbPath)
+	}
+
 	resolver, locationDB, err := install.OpenLocationResolver(context.Background(), logger.NewNoopLogger(), dbPath, nil)
 	if err != nil {
-		t.Skipf("location.db unavailable (offline, or locked by another wandersort process): %v", err)
+		t.Fatalf("location.db unavailable (locked by another wandersort process?): %v", err)
 	}
 	t.Cleanup(func() { locationDB.Close() })
 	return resolver
