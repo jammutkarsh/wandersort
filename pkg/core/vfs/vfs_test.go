@@ -77,6 +77,18 @@ func (h *harness) addFile(t *testing.T, relPath, mediaType string, meta classifi
 	return id
 }
 
+// addScreenshot seeds a file the same way addFile does, then flips the
+// is_screenshot marker exif would have set from Description/UserComment.
+func (h *harness) addScreenshot(t *testing.T, relPath string, meta classifier.CommonMetadata) int64 {
+	t.Helper()
+	id := h.addFile(t, relPath, classifier.MediaTypeImage, meta)
+	if _, err := h.d.ExecContext(context.Background(),
+		`UPDATE file_metadata SET is_screenshot = 1 WHERE file_id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
 func (h *harness) build(t *testing.T, cfg Config, geo geoResolver) map[int64]entryRow {
 	t.Helper()
 	vfs := &VFS{
@@ -140,6 +152,27 @@ func TestBuildFullExif(t *testing.T) {
 	}
 	if rows[id].ClusterID != nil {
 		t.Errorf("directly located file should have NULL cluster_id, got %v", *rows[id].ClusterID)
+	}
+}
+
+// TestScreenshotGroupsByMonthOnly checks screenshots skip the configured
+// Rules entirely (location/device/orientation) and land together under
+// <Year>/<Month>/Screenshots, regardless of GPS or capture day.
+func TestScreenshotGroupsByMonthOnly(t *testing.T) {
+	h := newHarness(t)
+	a := h.addScreenshot(t, "a.PNG", metaWith("2024:06:03 10:00:00", 15.5439, 73.7553, 1170, 2532))
+	b := h.addScreenshot(t, "b.jpg", metaWith("2024:06:20 09:00:00", 0, 0, 1170, 2532))
+	geo := locationtest.Resolver(t)
+
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation, RuleDevice, RuleOrientation, RuleMedia}
+	rows := h.build(t, cfg, geo)
+
+	for _, id := range []int64{a, b} {
+		want := "2024/06_June/Screenshots/" + filepath.Base(rows[id].TargetPath)
+		if rows[id].TargetPath != want {
+			t.Errorf("file %d target = %q, want %q", id, rows[id].TargetPath, want)
+		}
 	}
 }
 
@@ -497,6 +530,31 @@ func TestHomeWorkDateOnly(t *testing.T) {
 	}
 }
 
+// TestHomeWorkDateOnlySpilloverStaysSuppressed covers a reported bug: a
+// GPS-less file clustered with GPS-tagged home photos (an indoor shot with no
+// fix, taken minutes after ones that resolved to the home anchor) inherited
+// the anchor's location string via clusterAndSuggest's spillover but not the
+// atHomeWork flag, so it alone leaked a location folder HomeWorkDateOnly was
+// supposed to suppress for the whole cluster.
+func TestHomeWorkDateOnlySpilloverStaysSuppressed(t *testing.T) {
+	h := newHarness(t)
+	withGPS := h.addFile(t, "d/h1.HEIC", "IMAGE", metaWith("2024:12:01 10:00:00", 22.7196, 75.8577, 3024, 4032))
+	noGPS := h.addFile(t, "d/h2.HEIC", "IMAGE", metaWith("2024:12:01 10:05:00", 0, 0, 3024, 4032))
+	geo := locationtest.Resolver(t)
+	addHomeAnchor(t, h, "Indore", 22.7196, 75.8577)
+
+	cfg := DefaultConfig() // HomeWorkDateOnly defaults true
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	rows := h.build(t, cfg, geo)
+
+	for _, id := range []int64{withGPS, noGPS} {
+		want := "2024/12_December/01/" + filepath.Base(rows[id].TargetPath)
+		if got := rows[id].TargetPath; got != want {
+			t.Errorf("target = %q, want %q (spillover file should stay date-only too)", got, want)
+		}
+	}
+}
+
 // TestAnchorFoldsNearbySuburb covers the legacy opt-out (HomeWorkDateOnly=false):
 // a directly-resolved GPS location within location.MaxDistSquared of a confirmed
 // home/work label is replaced by that place's name, folding a metro's suburbs
@@ -546,6 +604,34 @@ func TestMergeSameLocationDays(t *testing.T) {
 	}
 	if got := rows[p3].TargetPath; got != "2024/08_August/03/Pune/p3.HEIC" {
 		t.Errorf("Pune target = %q, want 2024/08_August/03/Pune/p3.HEIC (interleaving location keeps its own day)", got)
+	}
+}
+
+// TestMergeSameLocationDaysFoldsHomeWorkDateOnly covers the reported bug:
+// HomeWorkDateOnly leaves atHomeWork photos with no location at all, so
+// mergeSameLocationDays's location=="" exclusion used to skip them outright —
+// six consecutive home days rendered as six separate day folders instead of
+// one range, even though they're all the same place same as a trip is.
+func TestMergeSameLocationDaysFoldsHomeWorkDateOnly(t *testing.T) {
+	h := newHarness(t)
+	ids := make([]int64, 0, 6)
+	for d := 1; d <= 6; d++ {
+		ids = append(ids, h.addFile(t, fmt.Sprintf("d/h%d.HEIC", d), "IMAGE",
+			metaWith(fmt.Sprintf("2024:12:%02d 10:00:00", d), 22.7196, 75.8577, 3024, 4032)))
+	}
+	geo := locationtest.Resolver(t)
+	addHomeAnchor(t, h, "Indore", 22.7196, 75.8577)
+
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	// HomeWorkDateOnly defaults true — the reported config
+	rows := h.build(t, cfg, geo)
+
+	for _, id := range ids {
+		want := "2024/12_December/01_06/" + filepath.Base(rows[id].TargetPath)
+		if got := rows[id].TargetPath; got != want {
+			t.Errorf("target = %q, want %q (consecutive home days should merge with no location folder)", got, want)
+		}
 	}
 }
 

@@ -189,6 +189,11 @@ func (e *Extractor) worker(ctx context.Context, sessionID uuid.UUID, toExtract <
 
 // store builds the write that fills in the row the hash phase inserted
 func (e *Extractor) store(fileID int64, meta classifier.CommonMetadata) db.DBOperation {
+	isScreenshot := 0
+	if meta.IsScreenshot {
+		isScreenshot = 1
+	}
+
 	return func(ctx context.Context, tx *sqlx.Tx) error {
 		if _, err := tx.ExecContext(
 			ctx, `
@@ -196,7 +201,8 @@ func (e *Extractor) store(fileID int64, meta classifier.CommonMetadata) db.DBOpe
 				exif_image_width = ?, exif_image_height = ?, exif_orientation = ?,
 				exif_gps_latitude = ?, exif_gps_longitude = ?,
 				exif_make = ?, exif_model = ?,
-				exif_date_time_original = ?, exif_create_date = ?, exif_creation_date = ?
+				exif_date_time_original = ?, exif_create_date = ?, exif_creation_date = ?,
+				is_screenshot = ?
 			WHERE file_id = ?`,
 			db.IntOrNil(meta.ImageWidth),
 			db.IntOrNil(meta.ImageHeight),
@@ -208,6 +214,7 @@ func (e *Extractor) store(fileID int64, meta classifier.CommonMetadata) db.DBOpe
 			db.StrOrNil(meta.DateTimeOriginal),
 			db.StrOrNil(meta.CreateDate),
 			db.StrOrNil(meta.CreationDate),
+			isScreenshot,
 			fileID,
 		); err != nil {
 			return err

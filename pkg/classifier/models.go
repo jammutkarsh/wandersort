@@ -9,6 +9,7 @@ package classifier
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 )
 
@@ -81,6 +82,38 @@ type CommonMetadata struct {
 	GPSAltitude    string `json:"GPSAltitude"`
 	GPSAltitudeRef string `json:"GPSAltitudeRef"` // "0" = above sea level, "1" = below
 	GPSPosition    string `json:"GPSPosition"`    // combined "lat, lon" string from exiftool
+
+	// IsScreenshot reports the file was captured from a screen — a
+	// screenshot or a screen recording — rather than a camera. Absent from
+	// camera-taken media; see screenshotMarkers for what sets it.
+	IsScreenshot bool
+}
+
+// screenshotMarkers maps an exiftool JSON tag name to the value(s) an OS/OEM
+// writes on it to mark a screen capture. Checked against the raw decoded
+// JSON, not CommonMetadata, so a new platform is one more table entry — no
+// new struct field. macOS/iOS write "Screenshot" to both Description and
+// UserComment; Samsung (One UI) writes "Screenshot" or "Screen recording"
+// (video) to SamsungCaptureInfo.
+var screenshotMarkers = map[string][]string{
+	"Description":        {"Screenshot"},
+	"UserComment":        {"Screenshot"},
+	"SamsungCaptureInfo": {"Screenshot", "Screen recording"},
+}
+
+// isScreenCapture checks the raw decoded exiftool JSON against
+// screenshotMarkers.
+func isScreenCapture(raw map[string]any) bool {
+	for key, values := range screenshotMarkers {
+		v, ok := raw[key]
+		if !ok || v == nil {
+			continue
+		}
+		if slices.Contains(values, numStr(v)) {
+			return true
+		}
+	}
+	return false
 }
 
 // ftoa formats a float without a trailing exponent or ".0".
@@ -167,5 +200,7 @@ func ParseMetadata(ext string, data []byte) (CommonMetadata, error) {
 		GPSAltitude:    get("GPSAltitude"),
 		GPSAltitudeRef: get("GPSAltitudeRef"),
 		GPSPosition:    get("GPSPosition"),
+
+		IsScreenshot: isScreenCapture(raw),
 	}, nil
 }

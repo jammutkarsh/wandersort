@@ -126,6 +126,7 @@ type masterFile struct {
 	DBDateTaken    *string  `db:"exif_date_time_original"`
 	DBCreateDate   *string  `db:"exif_create_date"`
 	DBCreationDate *string  `db:"exif_creation_date"`
+	IsScreenshot   bool     `db:"is_screenshot"`
 
 	absPath          string
 	takenAt          time.Time

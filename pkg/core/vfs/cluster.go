@@ -55,27 +55,30 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Durati
 	clusterNum := 0
 	for ci := range clusters {
 		c := &clusters[ci]
-		city := majorityCity(masters, c.members)
+		city, cityIsHomeWork := majorityCity(masters, c.members)
 
 		var unlocated []int
 		for _, i := range c.members {
-			// atHomeWork files are deliberately location-less: no spillover
-			// city, event segment, or suggestion
-			if masters[i].location == "" && !masters[i].atHomeWork {
+			if masters[i].location == "" {
 				unlocated = append(unlocated, i)
 			}
 		}
 		if len(unlocated) == 0 {
-			continue // every member located directly (or date-only); nothing to decide
+			continue // every member already located (home/work included); nothing to decide
 		}
 
 		clusterNum++
 		id := fmt.Sprintf("c%d", clusterNum)
 
-		// spillover: one located member names the whole event
+		// spillover: one located member names the whole event. A GPS-less file
+		// clustered with home/work photos inherits atHomeWork too — it's
+		// almost certainly the same everyday place (an indoor shot with no
+		// fix), not a location folder HomeWorkDateOnly is meant to suppress
+		// for its neighbours but not for it.
 		if city != "" {
 			for _, i := range unlocated {
 				masters[i].location = city
+				masters[i].atHomeWork = cityIsHomeWork
 				masters[i].clusterID = id
 				masters[i].suggestion = city
 				masters[i].suggestionSource = SuggestionSpillover
@@ -83,13 +86,12 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Durati
 			continue
 		}
 
-		// nothing located: fall back to a dated segment plus a name suggestion
+		// nothing located: fall back to a dated segment plus a name suggestion.
+		// No member here is atHomeWork — that always carries a real location
+		// now, which would have made city non-empty above.
 		seg := eventSegment(c.start, c.end)
 		sug, src := suggestFor(masters, c, labels, anchors)
 		for _, i := range c.members {
-			if masters[i].atHomeWork {
-				continue // date-only; stays out of the event segment
-			}
 			masters[i].clusterID = id
 			masters[i].eventSegment = seg
 			masters[i].suggestion = sug
@@ -98,22 +100,28 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Durati
 	}
 }
 
-// majorityCity returns the most common directly-resolved city among members,
-// or "" when none of them has one
-func majorityCity(masters []masterFile, members []int) string {
+// majorityCity returns the most common directly-resolved city among members
+// (or "" when none of them has one), plus whether any member holding that
+// city got it via atHomeWork — a location string alone can't tell a folded
+// home/work name from a plain resolved one, so this checks the field instead.
+func majorityCity(masters []masterFile, members []int) (city string, atHomeWork bool) {
 	counts := map[string]int{}
+	home := map[string]bool{}
 	best, bestN := "", 0
 	for _, i := range members {
 		city := masters[i].location
 		if city == "" {
 			continue
 		}
+		if masters[i].atHomeWork {
+			home[city] = true
+		}
 		counts[city]++
 		if counts[city] > bestN {
 			best, bestN = city, counts[city]
 		}
 	}
-	return best
+	return best, home[best]
 }
 
 // anchorCities returns confirmed home/work labels in confirmation order, bare

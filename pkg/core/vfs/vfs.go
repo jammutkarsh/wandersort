@@ -106,7 +106,7 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 			fm.exif_image_width, fm.exif_image_height, fm.exif_orientation,
 			fm.exif_gps_latitude, fm.exif_gps_longitude,
 			fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date,
-			fm.exif_creation_date
+			fm.exif_creation_date, fm.is_screenshot
 		FROM live_files fr
 		JOIN file_metadata fm ON fm.file_id = fr.id
 		WHERE fm.is_master = 1
@@ -162,7 +162,13 @@ func deriveAll(masters []masterFile) {
 
 // resolveLocations reverse-geocodes every GPS-tagged master, then folds the
 // result into a confirmed home/work anchor within location.MaxDistSquared —
-// otherwise a home city's own suburbs each get their own folder.
+// otherwise a home city's own suburbs each get their own folder. This always
+// computes the real place, home/work included: whether a home/work file's
+// location folder actually renders is a HomeWorkDateOnly decision made later,
+// in segmentFor. Deriving first and suppressing at render time (rather than
+// blanking m.location here) keeps every later phase — clustering, the day-range
+// merge — working off real data instead of each having to know about
+// HomeWorkDateOnly on its own behalf.
 func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile, labels []userLabel) {
 	if v.resolver == nil {
 		return
@@ -197,15 +203,8 @@ func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile, labels
 		for _, a := range anchors {
 			dLat, dLon := m.lat-*a.GPSLat, m.lon-*a.GPSLon
 			if dLat*dLat+dLon*dLon <= location.MaxDistSquared {
-				if v.cfg.HomeWorkDateOnly {
-					// everyday place: no location level at all. atHomeWork also
-					// keeps clusterAndSuggest from folding this file back into a
-					// located cluster or hanging a suggestion off it.
-					m.location = ""
-					m.atHomeWork = true
-				} else {
-					m.location = anchorNames[a.Label] // fold suburb into the town
-				}
+				m.location = anchorNames[a.Label] // fold suburb into the confirmed home/work town
+				m.atHomeWork = true
 				break
 			}
 		}
@@ -213,14 +212,19 @@ func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile, labels
 }
 
 // applyNameCase normalises derived names once, after every naming decision.
-// Device names, filenames and user-confirmed labels are left alone — re-casing
-// "iPhone" or a name the user typed would do more harm than good.
+// Filenames and user-confirmed labels are left alone — re-casing a name the
+// user typed would do more harm than good. Device names always go through
+// caseDevice regardless of v.cfg.NameCase: a device folder is a vendor
+// string ("samsung", "SAMSUNG Galaxy S23"), not prose, so there's no reading
+// under which "as typed by whichever firmware wrote the EXIF tag" is a
+// choice worth exposing — Title-With-Hyphen is applied unconditionally.
 func (v *VFS) applyNameCase(masters []masterFile) {
 	for i := range masters {
 		masters[i].location = caseName(masters[i].location, v.cfg.NameCase)
 		if masters[i].suggestionSource != SuggestionUserLabel {
 			masters[i].suggestion = caseName(masters[i].suggestion, v.cfg.NameCase)
 		}
+		masters[i].device = caseDevice(masters[i].device)
 	}
 }
 
@@ -228,13 +232,21 @@ func (v *VFS) applyNameCase(masters []masterFile) {
 // one dated range: 2024/08/{02,03,04}/Goa becomes 2024/08/02_04/Goa. A Pune day
 // interleaved at 03 keeps its own folder, and the reviewer can still split a
 // range in the review TUI.
+//
+// This keys on m.location, which resolveLocations sets to the real place for
+// home/work files too (HomeWorkDateOnly only hides the *folder*, in
+// segmentFor — see its comment). So home/work days merge exactly like a trip's
+// do, with no special-casing needed here.
 func (v *VFS) mergeSameLocationDays(masters []masterFile) {
 	if !v.cfg.MergeSameLocationDays {
 		return
 	}
-	// only shape where a per-day folder holds a location beneath it
+	// Date must exist to hold the range label. Location doesn't have to be a
+	// configured Rule — files can still share a real (if unrendered) place —
+	// but when it is, Date has to sit at or above it, or the range folder
+	// wouldn't contain the location folder it's meant to.
 	di, li := slices.Index(v.cfg.Rules, RuleDate), slices.Index(v.cfg.Rules, RuleLocation)
-	if di < 0 || li < 0 || di > li {
+	if di < 0 || (li >= 0 && di > li) {
 		return
 	}
 
@@ -458,6 +470,14 @@ func (v *VFS) dirFor(m *masterFile, skip map[string]bool) string {
 		// Finder and ls; bare names put December above November
 		m.takenAt.Format("01_January"),
 	}
+
+	// A screenshot has no location/device/orientation worth a folder of its
+	// own — group every screenshot in the month together instead of letting
+	// the configured Rules fragment them.
+	if m.IsScreenshot {
+		return strings.Join(append(parts, "Screenshots"), "/")
+	}
+
 	for _, level := range v.cfg.Rules {
 		if skip[level] {
 			continue
@@ -482,6 +502,12 @@ func (v *VFS) dirFor(m *masterFile, skip map[string]bool) string {
 func (v *VFS) segmentFor(m *masterFile, level string) string {
 	switch level {
 	case RuleLocation:
+		// HomeWorkDateOnly: an everyday place gets no location folder, just
+		// the (possibly merged) date range — m.location itself stays real,
+		// it's only the folder that's suppressed.
+		if m.atHomeWork && v.cfg.HomeWorkDateOnly {
+			return ""
+		}
 		// ladder: resolved city → dated event segment → nothing. No device or
 		// "Unsorted" rung: an unknown location says nothing rather than
 		// something false ("…/Canon EOS 700D/Canon EOS 700D/").
@@ -682,6 +708,30 @@ func caseName(name, style string) string {
 	}
 }
 
+// deviceCaseExceptions are device-name words a vendor already writes
+// correctly cased in its own marketing — title-casing "iPhone" word-by-word
+// would give "Iphone", losing the recognizable brand name. Matched
+// case-insensitively per word; extend as more of these turn up.
+var deviceCaseExceptions = map[string]string{
+	"iphone": "iPhone",
+}
+
+// caseDevice title-cases a device name word by word ("samsung galaxy s23" ->
+// "Samsung Galaxy S23"), keeping deviceCaseExceptions words as-is. The
+// hyphen join happens later, in SanitizeSegment, same as every other
+// space-separated segment.
+func caseDevice(name string) string {
+	words := strings.Fields(name)
+	for i, w := range words {
+		if exact, ok := deviceCaseExceptions[strings.ToLower(w)]; ok {
+			words[i] = exact
+			continue
+		}
+		words[i] = caseName(w, CaseTitle)
+	}
+	return strings.Join(words, " ")
+}
+
 // deviceName joins Make and Model, avoiding duplication when the model
 // already contains the make (e.g. "Canon" + "Canon EOS R5")
 func deviceName(mk, model string) string {
@@ -697,25 +747,24 @@ func deviceName(mk, model string) string {
 
 // SanitizeSegment makes a derived value safe to use as a single path segment.
 // Spaces and commas — routine in a geocoded place name ("Seoni, Himachal
-// Pradesh") or a device model — become '_', since folder names never carry
-// either; the comma is still fine anywhere a person is *choosing* a name
-// (search results, the rename dropdown), just not in the name once picked.
+// Pradesh") or a title-cased device name ("Samsung Galaxy S23") — become
+// '-', since folder names never carry either; the comma is still fine
+// anywhere a person is *choosing* a name (search results, the rename
+// dropdown), just not in the name once picked.
 func SanitizeSegment(seg string) string {
 	seg = strings.Map(func(r rune) rune {
 		switch r {
-		case '/', '\\', ':', 0:
+		case '/', '\\', ':', 0, ' ', ',', '\t', '\n':
 			return '-'
-		case ' ', ',', '\t', '\n':
-			return '_'
 		}
 		return r
 	}, seg)
-	for strings.Contains(seg, "__") {
-		seg = strings.ReplaceAll(seg, "__", "_")
+	for strings.Contains(seg, "--") {
+		seg = strings.ReplaceAll(seg, "--", "-")
 	}
-	seg = strings.Trim(seg, " ._")
+	seg = strings.Trim(seg, " ._-")
 	if seg == "" {
-		return "_"
+		return "-"
 	}
 	return seg
 }
