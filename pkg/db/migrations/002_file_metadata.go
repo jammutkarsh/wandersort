@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS file_metadata (
     -- this is what actually lines a video's wall-clock time back up with them
     exif_creation_date      TEXT,
 
+    -- macOS/iOS stamp both Description and UserComment with the literal
+    -- string "Screenshot" on a screen capture; a real camera/phone photo
+    -- never carries either, so this doubles as the screenshot detector
+    is_screenshot INTEGER NOT NULL DEFAULT 0,
+
     -- every file is a master by default; the scorer demotes the losers of
     -- each duplicate group, solo files are never touched
     is_master INTEGER NOT NULL DEFAULT 1,
