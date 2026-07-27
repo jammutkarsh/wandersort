@@ -55,21 +55,30 @@ type reviewRow struct {
 	guide string
 }
 
-// flattenTree lays the whole tree out as rows with box-drawing guides, so the
-// reviewer can walk the proposed hierarchy top to bottom and rename any
-// directory in place. prefix is the guide inherited from the parent row.
-func flattenTree(nodes []vfs.Node, depth int, parent *vfs.Node, prefix string) []*reviewRow {
+// flattenTree lays the whole tree out as rows top to bottom, so the reviewer
+// can walk the proposed hierarchy and rename any directory in place. It does
+// not fill in guide — see buildRows.
+func flattenTree(nodes []vfs.Node, depth int, parent *vfs.Node) []*reviewRow {
 	var rows []*reviewRow
 	for i := range nodes {
-		branch, childPrefix := "├─ ", prefix+"│  "
-		if i == len(nodes)-1 {
-			branch, childPrefix = "└─ ", prefix+"   "
-		}
-		if depth == 0 { // top-level rows are roots, not siblings of one trunk
-			branch, childPrefix = "", ""
-		}
-		rows = append(rows, &reviewRow{node: &nodes[i], parent: parent, depth: depth, guide: prefix + branch})
-		rows = append(rows, flattenTree(nodes[i].Children, depth+1, &nodes[i], childPrefix)...)
+		rows = append(rows, &reviewRow{node: &nodes[i], parent: parent, depth: depth})
+		rows = append(rows, flattenTree(nodes[i].Children, depth+1, &nodes[i])...)
+	}
+	return rows
+}
+
+// buildRows flattens tree and fills in each row's box-drawing guide
+// ("│  ├─ ") via tui.Guides — a row can't tell whether it's a last child from
+// its own depth alone, so that needs every row to exist first.
+func buildRows(tree []vfs.Node) []*reviewRow {
+	rows := flattenTree(tree, 0, nil)
+	depths := make([]int, len(rows))
+	for i, r := range rows {
+		depths[i] = r.depth
+	}
+	guides := tui.Guides(depths)
+	for i, r := range rows {
+		r.guide = guides[i]
 	}
 	return rows
 }
@@ -162,7 +171,7 @@ func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, resolver *l
 	m := Model{
 		spin:        sp,
 		tree:        tree,
-		rows:        flattenTree(tree, 0, nil, ""),
+		rows:        buildRows(tree),
 		ctx:         ctx,
 		db:          database,
 		resolver:    resolver,
@@ -210,7 +219,7 @@ func (m *Model) reflow() {
 			pending[r.node.ID] = r.newName
 		}
 	}
-	m.rows = flattenTree(m.tree, 0, nil, "")
+	m.rows = buildRows(m.tree)
 	for _, r := range m.rows {
 		if name, ok := pending[r.node.ID]; ok {
 			r.newName = name

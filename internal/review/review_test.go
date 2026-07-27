@@ -941,6 +941,28 @@ func TestReview(t *testing.T) {
 				t.Errorf("lifted children = %v (%v), want name order", names, ids)
 			}
 		}},
+		// TestRowsRenderBoxDrawingGuides covers the guides tui.Guides fills in on
+		// every row: a root gets no prefix, a lone child is a last child, and a
+		// deeper row's prefix carries a blank continuation under a last-child
+		// ancestor rather than a bar.
+		{"RowsRenderBoxDrawingGuides", func(t *testing.T) {
+			m := newModel(siblingTree(), nil, nil, nil, nil)
+			want := map[string]string{
+				"2024":         "",
+				"2024/June":    "└─ ",
+				"2024/June/03": "   ├─ ",
+				"2024/June/09": "   └─ ",
+			}
+			for id, wantGuide := range want {
+				row := nodeByID(m.rows, id)
+				if row == nil {
+					t.Fatalf("no row for %q", id)
+				}
+				if row.guide != wantGuide {
+					t.Errorf("guide for %q = %q, want %q", id, row.guide, wantGuide)
+				}
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)

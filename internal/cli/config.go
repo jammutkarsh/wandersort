@@ -562,27 +562,27 @@ func treeExample(note string, paths ...string) string {
 			cur = next
 		}
 	}
-	var b strings.Builder
-	var walk func(nodes []*node, prefix string, top bool)
-	walk = func(nodes []*node, prefix string, top bool) {
-		for i, n := range nodes {
-			branch, childPrefix := "├─ ", prefix+"│  "
-			if i == len(nodes)-1 {
-				branch, childPrefix = "└─ ", prefix+"   "
-			}
-			if top { // roots stand alone, same as the review tree
-				branch, childPrefix = "", ""
-			}
-			if b.Len() > 0 {
-				b.WriteString("\n")
-			}
-			b.WriteString(prefix)
-			b.WriteString(branch)
-			b.WriteString(n.name)
-			walk(n.kids, childPrefix, false)
+	var names []string
+	var depths []int
+	var walk func(nodes []*node, depth int)
+	walk = func(nodes []*node, depth int) {
+		for _, n := range nodes {
+			names = append(names, n.name)
+			depths = append(depths, depth)
+			walk(n.kids, depth+1)
 		}
 	}
-	walk(root.kids, "", true)
+	walk(root.kids, 0)
+
+	guides := tui.Guides(depths)
+	var b strings.Builder
+	for i, name := range names {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(guides[i])
+		b.WriteString(name)
+	}
 	if note != "" {
 		b.WriteString("\n\n")
 		b.WriteString(note)
