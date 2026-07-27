@@ -83,14 +83,18 @@ func (a *app) runReview(cmd *cobra.Command) error {
 			return fmt.Errorf("--rebuild would discard the confirmed plan (%d approved files).\n"+
 				"Your confirmed folder names are remembered and will be re-suggested; re-run with --yes to rebuild and confirm the new plan non-interactively", approved)
 		}
-		// EnsureDependencies already opens the resolver (and holds the install
-		// lock while it does), so no separate initLocationResolver here.
-		if err := a.ensureDependencies(ctx, nil); err != nil {
+		// rebuild only re-runs the vfs phase — no exif phase, so no exiftool
+		// needed. Deps.Start(ctx) below (via the else branch) would download it
+		// for nothing; ask only for what this command needs.
+		a.Deps = a.newDeps(nil)
+		a.Deps.StartLocationOnly(ctx, nil)
+		resolver, err := a.Deps.Location()
+		if err != nil {
 			return fmt.Errorf("dependencies: %w", err)
 		}
 		cfg := vfs.ConfigFor(a.Config)
 		a.Log.Info("Rebuilding folder proposal", "rules", cfg.Rules, logger.UserKey, true)
-		if _, err := vfs.New(a.AppDB, a.LocationResolver, a.Log, cfg).Run(ctx); err != nil {
+		if _, err := vfs.New(a.AppDB, resolver, a.Log, cfg).Run(ctx); err != nil {
 			return fmt.Errorf("rebuild proposal: %w", err)
 		}
 	}
@@ -115,11 +119,17 @@ func (a *app) runReview(cmd *cobra.Command) error {
 			return err
 		}
 	} else {
-		// rename autocomplete degrades gracefully without a resolver
-		if err := a.initLocationResolver(ctx); err != nil {
+		// rename autocomplete degrades gracefully without a resolver. Reuse
+		// the rebuild's Deps if it already ran one, rather than installing twice.
+		if a.Deps == nil {
+			a.Deps = a.newDeps(nil)
+			a.Deps.StartLocationOnly(ctx, nil)
+		}
+		resolver, err := a.Deps.Location()
+		if err != nil {
 			a.Log.Warn("Location resolver unavailable, rename suggestions disabled", "error", err)
 		}
-		opts.Resolver = a.LocationResolver
+		opts.Resolver = resolver
 		if err := review.Run(ctx, opts); err != nil {
 			return err
 		}
@@ -142,8 +152,9 @@ func approvedCount(ctx context.Context, database *db.DB) (int, error) {
 }
 
 // newReviewScreen builds the review screen over the current proposal, reusing
-// the already-open DB and resolver from the scan (no lock/DB re-init — the
-// caller still holds the output lock).
+// the already-open DB and the scan's own Deps (no lock/DB re-init — the
+// caller still holds the output lock; a.Deps was set by runScanTUI and its
+// location download has already resolved by the time vfs ran).
 func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	tree, err := vfs.BuildTree(ctx, a.AppDB)
 	if err != nil {
@@ -153,13 +164,14 @@ func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 		return nil, fmt.Errorf("no proposal to review")
 	}
 	// Rename autocomplete degrades gracefully without a resolver.
-	if err := a.initLocationResolver(ctx); err != nil {
+	resolver, err := a.Deps.Location()
+	if err != nil {
 		a.Log.Warn("Location resolver unavailable, rename suggestions disabled", "error", err)
 	}
 	return review.Screen(ctx, review.Options{
 		DB:        a.AppDB,
 		Tree:      tree,
-		Resolver:  a.LocationResolver,
+		Resolver:  resolver,
 		Log:       a.Log,
 		OutputDir: filepath.Dir(a.Config.AppDBPath),
 	}), nil

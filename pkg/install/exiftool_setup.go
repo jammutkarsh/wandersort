@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package exiftool
+package install
 
 import (
 	"archive/tar"
@@ -26,6 +26,11 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
+
+// This file is the exiftool half of "the one place a dependency's version,
+// download location, and install layout are known" — pkg/exiftool only runs
+// the already-installed binary and parses its output; it has no idea where
+// that binary came from or what version it needs to be.
 
 const (
 	exiftoolVersion = "13.59"
@@ -85,14 +90,14 @@ func exiftoolBin() string {
 	return "exiftool"
 }
 
-// Setup checks exiftool is available, either on $PATH or in WanderSort's
-// own install directory. If the found version is below the requirement, it
-// downloads and installs a bundled copy into ~/.wandersort/bin
+// setupExiftool checks exiftool is available, either on $PATH or in
+// WanderSort's own install directory. If the found version is below the
+// requirement, it downloads and installs a bundled copy into binDir.
 // onProgress (may be nil) is called with (bytesDownloaded, totalBytes) while
 // fetching the bundled archive, so a TUI can show a real progress bar without
 // the per-byte counts polluting the file log (which only sees the download's
 // start/done milestones).
-func Setup(ctx context.Context, log logger.Logger, binDir string, onProgress func(done, total int64)) (string, error) {
+func setupExiftool(ctx context.Context, log logger.Logger, binDir string, onProgress func(done, total int64)) (string, error) {
 	if path, err := findExiftool(log, binDir); err == nil {
 		return path, nil
 	}
@@ -124,7 +129,7 @@ func findExiftool(log logger.Logger, binDir string) (string, error) {
 }
 
 func installExiftool(ctx context.Context, log logger.Logger, binDir string, onProgress func(done, total int64)) (string, error) {
-	if err := install(ctx, binDir, log, onProgress); err != nil {
+	if err := downloadAndExtractExiftool(ctx, binDir, log, onProgress); err != nil {
 		return "", fmt.Errorf("install exiftool: %w", err)
 	}
 
@@ -136,7 +141,7 @@ func installExiftool(ctx context.Context, log logger.Logger, binDir string, onPr
 	return "", fmt.Errorf("exiftool not found after install at %s", binaryPath)
 }
 
-func install(ctx context.Context, binDir string, log logger.Logger, onProgress func(done, total int64)) error {
+func downloadAndExtractExiftool(ctx context.Context, binDir string, log logger.Logger, onProgress func(done, total int64)) error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return fmt.Errorf("create dir %q: %w", binDir, err)
 	}

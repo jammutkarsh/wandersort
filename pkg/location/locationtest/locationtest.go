@@ -6,8 +6,8 @@
 
 // Package locationtest opens the real, downloaded location.db for tests, so
 // tests exercising geocoding run against the same data and the same
-// download-open-verify path (location.Open) that the app uses, instead of a
-// hand-fabricated fixture.
+// download-open-verify path (install.OpenLocationResolver) that the app
+// uses, instead of a hand-fabricated fixture.
 package locationtest
 
 import (
@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -32,9 +33,9 @@ func Resolver(t testing.TB) *location.Resolver {
 	if err != nil {
 		t.Skipf("no home dir: %v", err)
 	}
-	dbPath := filepath.Join(home, ".wandersort", location.LocationDBFileName)
+	dbPath := filepath.Join(home, ".wandersort", install.LocationDBFileName)
 
-	resolver, locationDB, err := location.Open(context.Background(), logger.NewNoopLogger(), dbPath, nil)
+	resolver, locationDB, err := install.OpenLocationResolver(context.Background(), logger.NewNoopLogger(), dbPath, nil)
 	if err != nil {
 		t.Skipf("location.db unavailable (offline, or locked by another wandersort process): %v", err)
 	}

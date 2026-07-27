@@ -32,14 +32,20 @@ one scan ever runs against it at a time (see "Conventions" below):
   logger here** — it's built later (see below).
 - `internal/cli/` — cobra CLI. One file per command, plus `app.go` and `root.go`:
   - `app.go` — `Execute(cfg)`, **the package's only exported symbol**, plus the
-    unexported `app` struct and everything hanging off it: DB/exiftool/resolver
-    lazy-init (`initAppDB`, `initLocationResolver`, `initExiftool`,
-    `ensureDependencies`, `closeDBs`), the install-progress hook, `syncAnchors`,
-    and `tuiEnabled`. Nothing outside this package needs the app or its state,
-    so nothing else is exported — `main.go` has one way in and no struct to
-    assemble. `tuiEnabled` decides TUI vs plain line logging (plain when
-    `--plain` is set or stderr isn't a terminal); the TUI draws to stderr so
-    stdout stays clean for piping.
+    unexported `app` struct and everything hanging off it: `initAppDB`,
+    `closeDBs`, `syncAnchors`, `tuiEnabled`, and `newDeps` — the one-line
+    constructor for a `pkg/install.Coordinator` (see below), stored on
+    `app.Deps`. Exiftool path / location resolver readiness used to be four
+    raw fields (`ExiftoolPath`, `LocationResolver`, `LocationDB`,
+    `InstallProgress`) a background goroutine wrote and a pipeline goroutine
+    read, with the happens-before edge documented in a comment rather than
+    enforced by a type; `app` now holds exactly one field for all of it
+    (`Deps *install.Coordinator`), and every read goes through a getter that
+    blocks until the value is actually there. Nothing outside this package
+    needs the app or its state, so nothing else is exported — `main.go` has
+    one way in and no struct to assemble. `tuiEnabled` decides TUI vs plain
+    line logging (plain when `--plain` is set or stderr isn't a terminal);
+    the TUI draws to stderr so stdout stays clean for piping.
   - `root.go` — root cmd and flag-name constants. **`PersistentPreRunE` is the
     single place** config is resolved: it ensures `~/.wandersort/config.yaml`
     exists (`config.EnsureGlobalConfigFile`), builds a `config.FlagOverrides`
@@ -94,33 +100,41 @@ one scan ever runs against it at a time (see "Conventions" below):
     Output path expands a leading `~` (`expandHome`, applied at save *and*
     when matching suggestions) and only suggests locations whose parent dir
     exists on this machine, which is what makes the list platform-correct.
-    Town inputs validate through `canonicalTown` (gazetteer exact-match).
+    Town inputs validate through `canonicalTown` (gazetteer exact-match) — now
+    a free function taking the resolver as a parameter, not a method reading
+    a shared field, so a test hands it a fake/real resolver directly.
     **The location DB downloads in the background, with no install screen**:
-    `runConfigTUI` kicks off `initLocationResolver` in a goroutine, feeds its
-    byte progress into the form's own row above the footer (`a.InstallProgress`
-    → `tui.DownloadMsg`, in the same block the examples pin to), and hands the
-    form a `gazetteer func() error` closure. Once the download finishes the row
-    **persists as a dim `✓ … done` line** rather than vanishing (a bar that
-    disappears the moment it fills reads as a failure); the `Finished` message
-    carries no label, so `FormModel.Update` keeps the one from the byte reports
-    — and ignores a `Finished` with no prior bytes, which is the only message
-    an already-on-disk database sends, so it never gets mentioned at all.
+    `runConfigTUI` builds a `pkg/install.Coordinator` (`a.newDeps`) and calls
+    `StartLocationOnly`, feeding its byte progress into the form's own row
+    above the footer (`tui.DownloadMsg`, in the same block the examples pin
+    to) and its completion into a `Finished` message. The wizard's `gazetteer`
+    closure is a **non-blocking** peek — `coord.LocationReady()` then
+    `coord.Location()` (which, once ready, never blocks) — used by
+    `townValidator`/`canonicalTownOrTyped`/`suggestTown`, all of which take the
+    resolver from `gazetteer()`'s return value rather than a package-level
+    field. Once the download finishes the row **persists as a dim `✓ … done`
+    line** rather than vanishing (a bar that disappears the moment it fills
+    reads as a failure); the `Finished` message carries no label, so
+    `FormModel.Update` keeps the one from the byte reports — and ignores a
+    `Finished` with no prior bytes, which is the only message an
+    already-on-disk database sends, so it never gets mentioned at all.
     The Home & work step is the only one that needs the database, so it holds
-    on `tui.Field.Await` (showing why) until the
-    goroutine's channel closes; everything above it is answerable meanwhile.
-    That channel is also the happens-before edge making `a.LocationResolver`
-    safe to read. A gazetteer that never opens at all (failed download, or
-    another wandersort process holding the location DB — it opens
-    `locking_mode=EXCLUSIVE`) is **not** treated as "pending": `Await` releases
-    and the town is waved through unvalidated and saved as typed, in both
-    `townValidator` and `canonicalTownOrTyped`. Blocking there would trap the
-    user on a pre-filled field they could only escape by clearing it, and would
-    silently drop the towns they already had. `a.Log` is swapped to a sink-less
-    TUI logger for the run so the download's log lines can't draw over the
-    alt-screen. Prints the raw file to stdout instead of running the wizard
-    when `--print`/`-p` is given or stdout/stderr isn't a terminal
-    (`wandersort config | grep …`, `> file`) — launching a full-screen wizard
-    into a pipe is never what the caller meant.
+    on `tui.Field.Await` (showing why) until `gazetteer()` stops returning
+    `errGazetteerPending`; everything above it is answerable meanwhile.
+    `Coordinator`'s internal channel is the happens-before edge making the
+    resolver safe to read, enforced by the type rather than documented in a
+    comment (see `pkg/install` below). A gazetteer that never opens at all
+    (failed download, or another wandersort process holding the location DB
+    — it opens `locking_mode=EXCLUSIVE`) is **not** treated as "pending":
+    `Await` releases and the town is waved through unvalidated and saved as
+    typed, in both `townValidator` and `canonicalTownOrTyped`. Blocking there
+    would trap the user on a pre-filled field they could only escape by
+    clearing it, and would silently drop the towns they already had. `a.Log`
+    is swapped to a sink-less TUI logger for the run so the download's log
+    lines can't draw over the alt-screen. Prints the raw file to stdout
+    instead of running the wizard when `--print`/`-p` is given or
+    stdout/stderr isn't a terminal (`wandersort config | grep …`, `> file`) —
+    launching a full-screen wizard into a pipe is never what the caller meant.
   - `scan.go` — `scan` cmd (the pipeline). Runs **synchronously** in the
     foreground (`Workflow.RunScan`, which canonicalizes and prunes the roots
     itself and returns the ones actually walked) so the user watches
@@ -129,24 +143,30 @@ one scan ever runs against it at a time (see "Conventions" below):
     immediately and missing dependencies download in the background**, with
     each pipeline phase waiting only on its own dependency (`workflow.Deps`) —
     scan/hash need nothing, exif blocks on exiftool, vfs blocks on the
-    location DB. `runScanTUI` runs `a.ensureDependencies` in a goroutine with
-    a checkpoint after exiftool (`exifReady`/`allReady` channels — closing
-    them is the happens-before edge for `a.ExiftoolPath`/`a.LocationResolver`);
-    the `Deps` closures log a "Waiting for …" `UserKey` line only when a phase
-    actually stalls, and download byte progress renders as rows under the
-    banner (`tui.InstallProgressMsg` → `ScanModel.viewDownloads`, persisting
-    as `✓ done` like the config wizard's bar). In practice the location DB is
-    already on disk — the (mandatory) `wandersort config` downloads it — so a
-    first scan usually only fetches exiftool; the vfs gate is the fallback for
-    a config run whose download failed. A download that fails mid-pipeline
-    fails the run at the phase that needed it; files stay `HASHED` and the
-    next run resumes. Anchor sync (`a.syncAnchors` → `vfs.SyncAnchors`) happens
-    inside the `Location` dep closure — the earliest point the resolver exists,
-    and vfs is the only phase that reads anchors. **`scan`/`review` are
-    the only things that install dependencies** (`app.ensureDependencies`,
-    which installs exiftool *then* the location DB — the small download
-    unblocks the earlier phase; the big one has the whole pipeline to hide
-    behind).
+    location DB. `runScanTUI` builds a `pkg/install.Coordinator` (`a.newDeps`,
+    stored on `a.Deps`) and calls `Start`, then wires `workflow.Deps.Exiftool`/
+    `Location` to `a.Deps.AwaitExiftool`/`AwaitLocation` — each logs a
+    "Waiting for …" `UserKey` line only when that phase actually stalls behind
+    its own still-running download, and returns immediately once ready with no
+    hand-rolled channels or `await` closure in `scan.go` itself. Download byte
+    progress renders as rows under the banner (`tui.InstallProgressMsg` →
+    `ScanModel.viewDownloads`, persisting as `✓ done` like the config
+    wizard's bar). In practice the location DB is already on disk — the
+    (mandatory) `wandersort config` downloads it — so a first scan usually
+    only fetches exiftool; the vfs gate is the fallback for a config run whose
+    download failed. A download that fails mid-pipeline fails the run at the
+    phase that needed it; files stay `HASHED` and the next run resumes.
+    Anchor sync (`a.syncAnchors` → `vfs.SyncAnchors`) happens inside the
+    `Location` dep closure, right after `AwaitLocation` returns — the earliest
+    point the resolver exists, and vfs is the only phase that reads anchors;
+    `syncAnchors` takes the resolver as a parameter rather than reading a
+    shared field. **`scan`/`review` are the only things that install
+    dependencies** (`pkg/install.Coordinator.Start`/`StartLocationOnly`,
+    which install exiftool *then* the location DB when both are asked for —
+    the small download unblocks the earlier phase; the big one has the whole
+    pipeline to hide behind — and each command asks only for what it needs:
+    `review --rebuild` never runs the exif phase, so it starts the location
+    database alone).
     **`scan` refuses to run before `wandersort config` has** — see
     `requireConfigured` in `root.go`. The config file every command creates is
     empty, so an unconfigured first scan silently builds its entire folder
@@ -157,8 +177,8 @@ one scan ever runs against it at a time (see "Conventions" below):
     (`StringSlice`); `config.yaml`'s `rules` key (see below) controls the VFS
     folder depth for this scan's proposal — no CLI flag, set it via
     `wandersort config`. The plain path (`--plain`/non-TTY) keeps the simple
-    order: blocking `ensureDependencies`, then `syncAnchors`, then
-    the pipeline with `workflow.ReadyDeps`.
+    order: blocking `Deps.Start` + `Deps.Exiftool`/`Deps.Location`, then
+    `syncAnchors`, then the pipeline with `workflow.ReadyDeps`.
   - **There is no `anchor.go`.** The read side of home/work anchors is
     `app.syncAnchors` (reads the global config) delegating to
     `vfs.SyncAnchors` (resolves each name via `ResolveByName` — a guaranteed
@@ -372,14 +392,14 @@ Back in `internal/cli/`:
       acquire/reclaim mechanics (`acquire`, `Lock`, `ErrHeld`) plus the two
       domain wrappers — `AcquireOutput` (one scan per output dir, styled
       "already running" message) and `AcquireInstall` (install coordination
-      across scan/review: `ensureDependencies` tries non-blocking first
-      so it can log a "waiting…" line, then blocks) — and the lock filenames (`OutputFileName`, `InstallFileName`).
-      `ensureDependencies` (in `app.go`) tries the install lock non-blocking
-      first so it can log a `UserKey`-tagged "waiting for another process…"
-      line before falling back to the blocking acquire — without that, a
-      scan waiting behind an in-progress install just looks hung.
-      Only `cli` uses locking today, but the mechanics are generic, so it
-      lives in `pkg/` for reuse by other entry points.
+      across scan/review — see `pkg/install` below, the one caller) — and the
+      lock filenames (`OutputFileName`, `InstallFileName`). `Coordinator`
+      tries the install lock non-blocking first so it can log a
+      `UserKey`-tagged "waiting for another process…" line before falling
+      back to the blocking acquire — without that, a scan waiting behind an
+      in-progress install just looks hung. Only `cli` (via `pkg/install`)
+      uses locking today, but the mechanics are generic, so it lives in
+      `pkg/` for reuse by other entry points.
     - Styling (help renderer, lock messages, error output) comes from
       `pkg/tui`'s theme — there is no separate `pkg/style` any more; the old
       one was folded into `pkg/tui/theme.go` so full-screen and plain output
@@ -658,12 +678,12 @@ pointer vs. a real value). `home-work.*` has no flag or env of its own —
   filter — the JSON file log always has every record.
   The **JSON file** handler keeps timestamp + source (`AddSource`) and every
   attr — that's what `issue` ships. Never stdlib `log`.
-- `location/` — offline reverse-geocode resolver + its own sqlite DB. `Setup()`
-  downloads DB+meta if missing (idempotent) and is the only place that prints
-  a user-facing line about it; `New`'s checksum verification is **not**
-  `UserKey`-tagged, since it runs on every command that opens the resolver and
-  printed a checksum on every single run. A mismatch is still a hard error. `exiftool.Setup()` is the same idea
-  for the binary. Both are called lazily by `app.ensureDependencies`. `Lookup`
+- `location/` — offline reverse-geocode resolver over an already-open, already-
+  verified sqlite DB. **This package has no idea where that DB came from,
+  what version it needs to be, or what its checksum should be** — downloading,
+  versioning, and verifying it is entirely `pkg/install`'s job
+  (`install.OpenLocationResolver`; see below). `NewResolver` just wraps an
+  opened `*db.DB` — a query-only constructor, not a setup path. `Lookup`
   (single best match, cached/singleflighted) and `Candidates` (ranked list for
   the review TUI's rename picker) share one query and one rule: a plain-spelled
   gazetteer entry ("Banjar") always ranks ahead of a diacritic one ("Banjār")
@@ -723,7 +743,11 @@ pointer vs. a real value). `home-work.*` has no flag or env of its own —
   and reads only the `CommonMetadata` keys it needs. **Tolerant by design:** a
   type mismatch on any single exiftool tag no longer fails the whole decode
   (this replaced 11 giant strict per-format structs). No per-format files.
-- `exiftool/` — bundled exiftool wrapper + verify.
+- `exiftool/` — `Extractor`: runs an already-installed exiftool binary
+  (`-json -n`) and parses its output via `classifier.ParseMetadata`. That's
+  the whole package — no version check, no download, no install directory.
+  Those live in `pkg/install` (`setupExiftool`; see below), which is the one
+  place that resolves *a path* to hand `exiftool.New`.
 - `path/` — path canonicalization / home-relative helpers.
 - `deps/` — **the one place a downloadable dependency is fetched.**
   `Download(ctx, dest, url, wantSHA256, onProgress)` writes atomically (temp
@@ -736,6 +760,49 @@ pointer vs. a real value). `home-work.*` has no flag or env of its own —
   nothing in particular is where unrelated helpers accumulate; `download.go` and
   `hash.go` had exactly these two callers, and `copy.go` had one (the review
   TUI's preview), so it went to `internal/review` as unexported `copyFiles`.
+- `install/` — **the one place a downloadable dependency's version, download
+  location, on-disk layout, and readiness are all known.** `pkg/exiftool` and
+  `pkg/location` only ever run the already-installed binary or query an
+  already-open, already-verified database — neither imports `deps/` (the
+  byte-level fetch mechanics) or knows a version number, a download URL, or a
+  file path; all of that lives here instead:
+  - `exiftool_setup.go` — `setupExiftool` (version-gated: `$PATH` or
+    `binDir`, else download+extract), `fetchReleaseMeta`, `checkVersion`,
+    `extractTarGz`. Moved verbatim from the old `pkg/exiftool/verify.go`.
+  - `location_setup.go` — `downloadLocationDB`, `verifyLocationDB`
+    (checksum + `geonames_cities` row count against the published meta), and
+    `OpenLocationResolver` (download → open → verify → `location.NewResolver`
+    — the **exported** entry point both `Coordinator` and
+    `pkg/location/locationtest` use, so a test exercising a `Resolver`
+    exercises the app's exact setup path, not a hand-rolled approximation).
+    `LocationDownloadBaseURL`/`LocationDBFileName`/`LocationMetaFileName` live
+    here too, moved from the old `pkg/location/setup.go`.
+
+  On top of that, `Coordinator` owns the install
+  order (exiftool first — the small download the earlier exif phase waits on;
+  the location database behind it, since only the last phase, vfs, needs it),
+  the shared install lock, download byte-progress fan-out (`Options.OnProgress`,
+  phase `"exiftool"`/`"location"`), and readiness. `Start` installs both;
+  `StartLocationOnly` installs just the location database, for a caller (the
+  config wizard) with no use for exiftool. Every caller gets a getter, never a
+  raw channel: `Exiftool`/`Location` block silently; `AwaitExiftool`/
+  `AwaitLocation` block and log a `UserKey` "Waiting for … to finish" line, but
+  only if the call actually has to wait — for a pipeline phase that may be
+  stalled behind its own process's still-running download, not a competing
+  one (`scan`'s TUI path is the only caller that needs this narration, since
+  its scan/hash phases run concurrently with the downloads); `LocationReady`
+  and `LocationDBIfReady` are non-blocking peeks, for a caller (a form
+  validator running on every keystroke, or `closeDBs` at shutdown) that must
+  never wait on a download. This replaced four raw `*app` fields
+  (`ExiftoolPath`, `LocationResolver`, `LocationDB`, `InstallProgress`) a
+  background goroutine wrote and a pipeline goroutine read, with the
+  happens-before edge documented in a comment rather than enforced by a type —
+  `app` now holds one field (`Deps *install.Coordinator`), built per command by
+  `app.newDeps`, and every read blocks on the Coordinator's own internal
+  channel instead of racing a shared field. `review --rebuild` uses
+  `StartLocationOnly` (it only re-runs the vfs phase, never exif) and the
+  plain interactive path reuses the same `Coordinator` if `--rebuild` already
+  built one, rather than installing twice.
 
 ## Conventions that bite if ignored
 

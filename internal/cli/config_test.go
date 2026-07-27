@@ -57,7 +57,7 @@ func TestConfig(t *testing.T) {
 			cfg.CollapseLevels = false
 			a := &app{Config: cfg}
 
-			fields, save := a.buildConfigForm(context.Background(), func() error { return errGazetteerPending })
+			fields, save := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, errGazetteerPending })
 
 			// The two folder questions belong to the home/work step, after the towns:
 			// their examples read off the town typed one field earlier.
@@ -114,7 +114,7 @@ func TestConfig(t *testing.T) {
 			// A gazetteer that never opened (failed download, database busy) must not
 			// trap the user on the field — nor drop the town they already had.
 			broken := errors.New("location db: database is locked")
-			brokenFields, brokenSave := a.buildConfigForm(context.Background(), func() error { return broken })
+			brokenFields, brokenSave := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, broken })
 			brokenGroup := fieldByTitle(t, brokenFields, "Home & work")
 			*brokenGroup.Subs[0].Value = "Indore"
 			if err := brokenGroup.Subs[0].Validator("Indore"); err != nil {
@@ -148,9 +148,9 @@ func TestConfig(t *testing.T) {
 			}
 		}},
 		// TestTownFieldsRoundTripARealTown exercises the real gazetteer path that
-		// every other case in this file leaves untouched by never setting
-		// a.LocationResolver: with a ready resolver and gazetteer() reporting no
-		// error, suggestTown/townValidator/canonicalTown must round-trip a real
+		// every other case in this file leaves untouched by passing a nil
+		// resolver: with a ready resolver and gazetteer() reporting no error,
+		// suggestTown/townValidator/canonicalTown must round-trip a real
 		// town through SearchByName/exactMatch to its canonical gazetteer spelling.
 		{"TownFieldsRoundTripARealTown", func(t *testing.T) {
 			// Resolve against the real machine's ~/.wandersort/location.db
@@ -168,9 +168,9 @@ func TestConfig(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			a := &app{Config: cfg, LocationResolver: resolver}
+			a := &app{Config: cfg}
 
-			fields, save := a.buildConfigForm(context.Background(), func() error { return nil })
+			fields, save := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return resolver, nil })
 			group := fieldByTitle(t, fields, "Home & work")
 			homeField := group.Subs[0]
 
@@ -196,13 +196,13 @@ func TestConfig(t *testing.T) {
 			if err := homeField.Validator("Nowhereville Not A Real Town"); err != nil {
 				t.Errorf("unknown town must validate as typed, got %v", err)
 			}
-			if got, err := a.canonicalTown(context.Background(), "Nowhereville Not A Real Town"); err != nil || got != "Nowhereville Not A Real Town" {
+			if got, err := canonicalTown(context.Background(), resolver, "Nowhereville Not A Real Town"); err != nil || got != "Nowhereville Not A Real Town" {
 				t.Errorf("canonicalTown(unknown) = %q, %v, want the typed name back", got, err)
 			}
 
 			// canonicalTown resolves the typed spelling to the gazetteer's own — the
 			// full "city, state, country" form, per canonicalNameOf.
-			got, err := a.canonicalTown(context.Background(), "indore")
+			got, err := canonicalTown(context.Background(), resolver, "indore")
 			if err != nil {
 				t.Fatalf("canonicalTown(%q): %v", "indore", err)
 			}

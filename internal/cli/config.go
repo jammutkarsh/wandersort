@@ -21,6 +21,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
@@ -103,18 +104,16 @@ func (a *app) runConfigTUI(ctx context.Context) error {
 	// still captures everything.
 	a.Log = logger.NewTUI(a.Config.LogLevel, a.Config.LogFile, func(logger.Event) {})
 
-	var locErr error
-	ready := make(chan struct{})
-	// gazetteer reports whether the town fields can be used yet. Reads of
-	// a.LocationResolver only happen once ready is closed, which is what makes
-	// them safe from the download goroutine below.
-	gazetteer := func() error {
-		select {
-		case <-ready:
-			return locErr
-		default:
-			return errGazetteerPending
+	// gazetteer is a non-blocking peek at the location resolver: errGazetteerPending
+	// while still downloading, otherwise whatever a.Deps.Location() resolved to
+	// (never blocks, since LocationReady() already gates it) — this is the one
+	// place the form reads the resolver, no field on app to race against.
+	var coord *install.Coordinator
+	gazetteer := func() (*location.Resolver, error) {
+		if !coord.LocationReady() {
+			return nil, errGazetteerPending
 		}
+		return coord.Location()
 	}
 
 	fields, save := a.buildConfigForm(ctx, gazetteer)
@@ -124,17 +123,15 @@ func (a *app) runConfigTUI(ctx context.Context) error {
 	// the form's own progress row (tui.DownloadMsg) — no install screen, and
 	// nothing at all on screen when it's already on disk, since a no-op install
 	// reports no bytes and only ever sends the Finished message.
-	a.InstallProgress = func(_ string, done, total int64) {
+	coord = a.newDeps(func(_ string, done, total int64) {
 		prog.Send(tui.DownloadMsg{Label: "Location database", Done: done, Total: total})
-	}
-	go func() {
-		locErr = a.initLocationResolver(ctx)
-		close(ready)
+	})
+	a.Deps = coord
+	coord.StartLocationOnly(ctx, func(error) {
 		prog.Send(tui.DownloadMsg{Finished: true})
-	}()
+	})
 
 	final, err := prog.Run()
-	a.InstallProgress = nil
 	if err != nil {
 		return fmt.Errorf("config ui: %w", err)
 	}
@@ -149,7 +146,7 @@ func (a *app) runConfigTUI(ctx context.Context) error {
 
 // buildConfigForm builds the wizard's fields (seeded with the current effective
 // values) and a save closure that writes them to ~/.wandersort/config.yaml.
-func (a *app) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*tui.Field, func() error) {
+func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
 	g, _ := config.LoadGlobal()
 
 	out := g.OutputPath
@@ -175,13 +172,14 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 		if strings.TrimSpace(s) == "" {
 			return nil // blank = skip
 		}
-		if err := gazetteer(); err != nil {
+		resolver, err := gazetteer()
+		if err != nil {
 			if errors.Is(err, errGazetteerPending) {
 				return err
 			}
 			return nil
 		}
-		if _, err := a.canonicalTown(ctx, s); err != nil {
+		if _, err := canonicalTown(ctx, resolver, s); err != nil {
 			return err
 		}
 		return nil
@@ -194,11 +192,12 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 		if typed == "" {
 			return ""
 		}
-		if name, err := a.canonicalTown(ctx, typed); err == nil {
-			return name
+		resolver, err := gazetteer()
+		if err != nil {
+			return typed // pending or broken gazetteer — never drop what was typed
 		}
-		if gazetteer() != nil {
-			return typed
+		if name, err := canonicalTown(ctx, resolver, typed); err == nil {
+			return name
 		}
 		return "" // near-miss the validator would have rejected ("did you mean")
 	}
@@ -262,10 +261,11 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 	// database is still downloading.
 	suggestTown := func(typed string) []string {
 		typed = strings.TrimSpace(typed)
-		if len(typed) < 2 || gazetteer() != nil {
+		resolver, err := gazetteer()
+		if len(typed) < 2 || err != nil {
 			return nil
 		}
-		matches, err := a.LocationResolver.SearchByName(ctx, typed, 6)
+		matches, err := resolver.SearchByName(ctx, typed, 6)
 		if err != nil {
 			return nil
 		}
@@ -439,7 +439,7 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() error) ([]*t
 			// answerable meanwhile, which is the point of not having an install
 			// screen.
 			Await: func() string {
-				if errors.Is(gazetteer(), errGazetteerPending) {
+				if _, err := gazetteer(); errors.Is(err, errGazetteerPending) {
 					return "Waiting for the location database to finish downloading…"
 				}
 				return ""
@@ -619,14 +619,16 @@ func toMap(items []string) map[string]bool {
 // A name the gazetteer has never heard of is accepted as typed — a village
 // missing from the database is the user's problem to spell, not a wall — but a
 // near-miss with real candidates still errors ("did you mean"), since that's a
-// typo, not a gap. Blank input is an error (callers treat blank as "skip"
-// before calling for the canonical form).
-func (a *app) canonicalTown(ctx context.Context, typed string) (string, error) {
+// typo, not a gap. Blank input, or a nil resolver (not ready yet), is an error
+// (callers treat both as "skip" before calling for the canonical form).
+// Takes the resolver explicitly rather than reading a shared field — the
+// caller already knows it's ready (see the gazetteer closures in buildConfigForm).
+func canonicalTown(ctx context.Context, resolver *location.Resolver, typed string) (string, error) {
 	typed = strings.TrimSpace(typed)
-	if typed == "" || a.LocationResolver == nil {
+	if typed == "" || resolver == nil {
 		return "", fmt.Errorf("no town")
 	}
-	matches, err := a.LocationResolver.SearchByName(ctx, typed, 8)
+	matches, err := resolver.SearchByName(ctx, typed, 8)
 	if err != nil || len(matches) == 0 {
 		return typed, nil
 	}

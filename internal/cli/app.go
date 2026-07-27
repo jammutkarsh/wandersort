@@ -8,17 +8,14 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/exiftool"
+	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
-	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -35,26 +32,26 @@ func Execute() error {
 }
 
 type app struct {
-	Config           *config.Configuration
-	Log              logger.Logger
-	ExiftoolPath     string
-	AppDB            *db.DB
-	LocationDB       *db.DB
-	LocationResolver *location.Resolver
-	// InstallProgress, when set, receives dependency-download byte progress
-	// (phase is "exiftool"/"location") so the install screen can draw a bar.
-	// Not routed through the logger — per-byte ticks would flood the file log.
-	// nil in every non-TUI path.
-	InstallProgress func(phase string, done, total int64)
+	Config *config.Configuration
+	Log    logger.Logger
+	AppDB  *db.DB
+	// Deps coordinates the two downloadable dependencies (exiftool, the
+	// location database) for the current command. Built once per command via
+	// newDeps; nil until then. See pkg/install — this is the one place
+	// exiftool path / location resolver readiness live, replacing what used
+	// to be raw goroutines writing directly into *app fields.
+	Deps *install.Coordinator
 }
 
-// progressFor binds InstallProgress to one install phase for a Setup callback,
-// or returns nil when no TUI is listening (so the download skips the wrapper).
-func (a *app) progressFor(phase string) func(done, total int64) {
-	if a.InstallProgress == nil {
-		return nil
-	}
-	return func(done, total int64) { a.InstallProgress(phase, done, total) }
+// newDeps builds a Coordinator wired to this app's config and log.
+// onProgress may be nil (every non-TUI path).
+func (a *app) newDeps(onProgress func(phase string, done, total int64)) *install.Coordinator {
+	return install.New(install.Options{
+		ExecutablePath: a.Config.ExecutablePath,
+		LocationDBPath: a.Config.LocationDBPath,
+		Log:            a.Log,
+		OnProgress:     onProgress,
+	})
 }
 
 func (a *app) initAppDB(ctx context.Context) error {
@@ -69,78 +66,6 @@ func (a *app) initAppDB(ctx context.Context) error {
 	return nil
 }
 
-func (a *app) initLocationResolver(ctx context.Context) error {
-	if a.LocationResolver != nil {
-		return nil
-	}
-	// Download the location database on first use so scan works without a
-	// separate setup step. No-op if it already exists.
-	resolver, locationDB, err := location.Open(ctx, a.Log, a.Config.LocationDBPath, a.progressFor("location"))
-	if err != nil {
-		return err
-	}
-	a.LocationDB = locationDB
-	a.LocationResolver = resolver
-	return nil
-}
-
-// installDir is the shared directory holding downloaded dependencies (exiftool
-// binaries and the location database). It also hosts the install coordination lock.
-func (a *app) installDir() string {
-	return filepath.Dir(a.Config.LocationDBPath)
-}
-
-// ensureDependencies installs exiftool and the location database if missing,
-// then opens the resolver. Holds the install lock throughout, so a concurrent
-// scan waits rather than installing at the same time.
-//
-// Exiftool installs first on purpose: it's the small download and the earlier
-// pipeline phase (exif) is what waits on it — the location database is only
-// needed by the last phase (vfs), so it downloads behind the rest of the
-// pipeline (see workflow.Deps).
-//
-// onExiftool (may be nil) is a checkpoint: it runs
-// as soon as exiftool is usable (before the location download), so a pipeline
-// gating only its exif phase can proceed while the big download continues.
-func (a *app) ensureDependencies(ctx context.Context, onExiftool func(error)) error {
-	// try non-blocking first, so waiting can be announced rather than looking hung
-	l, err := lock.AcquireInstall(ctx, a.installDir(), false)
-	if errors.Is(err, lock.ErrHeld) {
-		a.Log.Info("Waiting for another process to finish installing dependencies...", logger.UserKey, true)
-		l, err = lock.AcquireInstall(ctx, a.installDir(), true)
-	}
-	if err != nil {
-		if onExiftool != nil {
-			onExiftool(err)
-		}
-		return fmt.Errorf("wait for dependency install: %w", err)
-	}
-	defer l.Unlock()
-
-	exifErr := a.initExiftool(ctx)
-	if onExiftool != nil {
-		onExiftool(exifErr)
-	}
-	if exifErr != nil {
-		return exifErr
-	}
-	return a.initLocationResolver(ctx)
-}
-
-func (a *app) initExiftool(ctx context.Context) error {
-	if a.ExiftoolPath != "" {
-		return nil
-	}
-	// Install exiftool on first use so scan works without a separate setup
-	// step. No-op if a suitable version is already present.
-	exiftoolPath, err := exiftool.Setup(ctx, a.Log, a.Config.ExecutablePath, a.progressFor("exiftool"))
-	if err != nil {
-		return fmt.Errorf("exiftool: %w", err)
-	}
-	a.ExiftoolPath = exiftoolPath
-	return nil
-}
-
 func (a *app) closeDBs() {
 	a.Log.Info("Closing databases")
 	// A failed Close can leave the WAL/SHM files locked (locking_mode=EXCLUSIVE),
@@ -150,9 +75,11 @@ func (a *app) closeDBs() {
 			a.Log.Error("failed to close app database", "error", err)
 		}
 	}
-	if a.LocationDB != nil {
-		if err := a.LocationDB.Close(); err != nil {
-			a.Log.Error("failed to close location database", "error", err)
+	if a.Deps != nil {
+		if ldb := a.Deps.LocationDBIfReady(); ldb != nil {
+			if err := ldb.Close(); err != nil {
+				a.Log.Error("failed to close location database", "error", err)
+			}
 		}
 	}
 }
@@ -170,12 +97,14 @@ func (a *app) tuiEnabled(cmd *cobra.Command) bool {
 
 // syncAnchors reads the globally-saved home/work towns and hands them to the
 // vfs phase that consumes them. A config file it can't read is a warning, not
-// a failure — anchors only sharpen the proposal, they don't gate it.
-func (a *app) syncAnchors(ctx context.Context) error {
+// a failure — anchors only sharpen the proposal, they don't gate it. resolver
+// comes from the caller (the vfs phase's own Deps.Location call), not a
+// shared field — anchor sync takes what it needs explicitly.
+func (a *app) syncAnchors(ctx context.Context, resolver *location.Resolver) error {
 	g, err := config.LoadGlobal()
 	if err != nil {
 		a.Log.Warn("Could not read global config, skipping anchor sync", "error", err)
 		return nil
 	}
-	return vfs.SyncAnchors(ctx, a.AppDB, a.LocationResolver, a.Log, g.HomeWork.Home, g.HomeWork.Work)
+	return vfs.SyncAnchors(ctx, a.AppDB, resolver, a.Log, g.HomeWork.Home, g.HomeWork.Work)
 }

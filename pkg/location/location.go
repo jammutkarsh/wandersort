@@ -8,22 +8,17 @@ package location
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/deps"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	_ "modernc.org/sqlite"
 )
@@ -59,52 +54,11 @@ type Resolver struct {
 	log   logger.Logger
 }
 
-type locationMeta struct {
-	Hash      string         `json:"sha256"`
-	Version   string         `json:"version"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	Rows      map[string]int `json:"rows"`
-}
-
-func New(locationDB *db.DB, dbLocationPath string, log logger.Logger) (*Resolver, error) {
-	metaPath := filepath.Join(filepath.Dir(dbLocationPath), LocationMetaFileName)
-
-	data, err := os.ReadFile(metaPath)
-	if err != nil {
-		return nil, fmt.Errorf("unable to read location meta: %w", err)
-	}
-
-	var meta locationMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return nil, fmt.Errorf("unable to parse location meta: %w", err)
-	}
-
-	sum, err := deps.SHA256File(dbLocationPath)
-	if err != nil {
-		return nil, fmt.Errorf("checksum location db: %w", err)
-	}
-	if sum != meta.Hash {
-		return nil, fmt.Errorf("location db checksum mismatch: got %s, want %s", sum, meta.Hash)
-	}
-	// not UserKey-tagged: this runs on every command that opens the resolver,
-	// and an integrity check is not a milestone. Failures above still error.
-	log.Info("location db checksum verified", "path", dbLocationPath, "hash", sum)
-
-	var count int
-	err = locationDB.QueryRowContext(
-		context.Background(),
-		`SELECT COUNT(*) FROM geonames_cities`,
-	).Scan(&count)
-	if err != nil {
-		return nil, fmt.Errorf("verifying location database: %w", err)
-	}
-
-	if count != meta.Rows["geonames_cities"] {
-		return nil, fmt.Errorf("row count mismatch: db has %d, meta expects %d", count, meta.Rows["geonames_cities"])
-	}
-
-	log.Info("location db verified", "path", dbLocationPath, "rows", count)
-	return &Resolver{db: locationDB, log: log}, nil
+// NewResolver wraps an already-open, already-verified location database.
+// Downloading and verifying that database is pkg/install's job (see
+// install.OpenLocationResolver) — this package only ever queries it.
+func NewResolver(locationDB *db.DB, log logger.Logger) *Resolver {
+	return &Resolver{db: locationDB, log: log}
 }
 
 // Lookup returns the name of the nearest populated place for the given

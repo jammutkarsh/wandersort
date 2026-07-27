@@ -86,16 +86,23 @@ func (a *app) runScanPlain(paths []string) error {
 	if err := a.initAppDB(ctx); err != nil {
 		return err
 	}
-	if err := a.ensureDependencies(ctx, nil); err != nil {
+	a.Deps = a.newDeps(nil)
+	a.Deps.Start(ctx)
+	exiftoolPath, err := a.Deps.Exiftool()
+	if err != nil {
+		return err
+	}
+	resolver, err := a.Deps.Location()
+	if err != nil {
 		return err
 	}
 	defer a.closeDBs()
 
-	if err := a.syncAnchors(ctx); err != nil {
+	if err := a.syncAnchors(ctx, resolver); err != nil {
 		return fmt.Errorf("anchors: %w", err)
 	}
 
-	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, workflow.ReadyDeps(a.ExiftoolPath, a.LocationResolver))
+	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, workflow.ReadyDeps(exiftoolPath, resolver))
 
 	scanPaths, err := wf.RunScan(paths)
 	if err != nil {
@@ -144,47 +151,25 @@ func (a *app) runScanTUI(paths []string) error {
 	a.Log = tuiLog
 	defer func() { a.Log = origLog }()
 
-	// Install in the background with a checkpoint after exiftool (the small
-	// download): exifReady gates the exif phase, allReady gates the vfs phase.
-	// Closed channels are the happens-before edge making a.ExiftoolPath and
-	// a.LocationResolver safe to read from the pipeline goroutine.
-	var exifErr, depsErr error
-	exifReady := make(chan struct{})
-	allReady := make(chan struct{})
-	go func() {
-		depsErr = a.ensureDependencies(ctx, func(err error) {
-			exifErr = err
-			close(exifReady)
-		})
-		close(allReady)
-	}()
-
-	// await logs why a phase is stalled, but only if it actually stalls —
-	// installed dependencies leave no trace.
-	await := func(ch <-chan struct{}, why string) {
-		select {
-		case <-ch:
-		default:
-			tuiLog.Info(why, logger.UserKey, true)
-			<-ch
-		}
-	}
+	// deps.Exiftool/Location gate the exif/vfs phases independently on
+	// a.Deps' own readiness (AwaitExiftool/AwaitLocation log why only if a
+	// phase actually stalls behind its own download) — installed in the
+	// background below, once the scan screen's program exists.
 	deps := workflow.Deps{
 		Exiftool: func() (string, error) {
-			await(exifReady, "Waiting for the exiftool download to finish…")
-			return a.ExiftoolPath, exifErr
+			return a.Deps.AwaitExiftool()
 		},
 		Location: func() (*location.Resolver, error) {
-			await(allReady, "Waiting for the location database download to finish…")
-			if depsErr != nil {
-				return nil, depsErr
+			resolver, err := a.Deps.AwaitLocation()
+			if err != nil {
+				return nil, err
 			}
 			// anchors need the resolver, so this is the earliest they can sync;
 			// vfs is also the only phase that reads them
-			if err := a.syncAnchors(ctx); err != nil {
+			if err := a.syncAnchors(ctx, resolver); err != nil {
 				return nil, fmt.Errorf("anchors: %w", err)
 			}
-			return a.LocationResolver, nil
+			return resolver, nil
 		},
 	}
 
@@ -203,9 +188,10 @@ func (a *app) runScanTUI(paths []string) error {
 	})
 
 	prog := tea.NewProgram(tui.NewShell(first), tea.WithAltScreen(), tea.WithOutput(os.Stderr))
-	a.InstallProgress = func(phase string, done, total int64) {
+	a.Deps = a.newDeps(func(phase string, done, total int64) {
 		prog.Send(tui.InstallProgressMsg{Phase: phase, Done: done, Total: total})
-	}
+	})
+	a.Deps.Start(ctx)
 	go func() {
 		for e := range events {
 			prog.Send(tui.LogEventMsg{Event: e})
@@ -213,8 +199,6 @@ func (a *app) runScanTUI(paths []string) error {
 	}()
 
 	final, runErr := prog.Run()
-
-	a.InstallProgress = nil
 	if runErr != nil {
 		return runErr
 	}
