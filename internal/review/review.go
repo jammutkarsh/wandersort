@@ -213,12 +213,7 @@ func (m *Model) reflow() {
 	vfs.SortTree(m.tree)
 	// flattenTree allocates fresh rows, so pending renames have to be carried
 	// across by node ID or a splice silently discards them
-	pending := map[string]string{}
-	for _, r := range m.rows {
-		if r.newName != "" {
-			pending[r.node.ID] = r.newName
-		}
-	}
+	pending := m.pendingNames()
 	m.rows = buildRows(m.tree)
 	for _, r := range m.rows {
 		if name, ok := pending[r.node.ID]; ok {
@@ -559,6 +554,26 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// applyEdit runs one structural tree edit: snapshot, apply, roll the snapshot
+// back if the edit was refused, then reflow and report. edit returns the new
+// tree and the status line for a success. Reports whether the edit landed, so
+// a caller with follow-up work (merge, which re-focuses the surviving node)
+// knows to do it.
+func (m *Model) applyEdit(name string, edit func([]vfs.Node) ([]vfs.Node, string, error)) bool {
+	m.snapshot(name)
+	newTree, status, err := edit(m.tree)
+	if err != nil {
+		m.undo = m.undo[:len(m.undo)-1] // nothing was mutated, discard the snapshot
+		m.statusMsg, m.statusIsErr = err.Error(), true
+		return false
+	}
+	m.tree = newTree
+	m.reflow()
+	m.visualMode = false
+	m.statusMsg, m.statusIsErr = status, false
+	return true
+}
+
 // mergeSelection folds the selected folders into one node under their lowest
 // common ancestor, with the summed file count. See selectedRows for what
 // counts as selected. The actual reshaping is vfs.MergeNodes' — this only
@@ -580,22 +595,22 @@ func (m *Model) mergeSelection() {
 		ids[i] = r.node.ID
 	}
 
-	m.snapshot("merge")
-	newTree, mergedID, target, ancestor, err := vfs.MergeNodes(m.tree, ids, m.pendingNames())
-	if err != nil {
-		m.undo = m.undo[:len(m.undo)-1] // nothing was mutated, discard the snapshot
-		m.statusMsg, m.statusIsErr = err.Error(), true
+	var mergedID, target string
+	ok := m.applyEdit("merge", func(tree []vfs.Node) ([]vfs.Node, string, error) {
+		newTree, id, name, ancestor, err := vfs.MergeNodes(tree, ids, m.pendingNames())
+		if err != nil {
+			return nil, "", err
+		}
+		mergedID, target = id, name
+		return newTree, fmt.Sprintf("merged %d folders into %q under %q ([u] to undo)", len(ids), name, ancestor), nil
+	})
+	if !ok {
 		return
 	}
-	m.tree = newTree
-
-	m.reflow()
 	if row := nodeRowByID(m.rows, mergedID); row != nil && target != row.node.Name {
 		row.newName = target
 	}
 	m.focusNode(mergedID)
-
-	m.statusMsg, m.statusIsErr = fmt.Sprintf("merged %d folders into %q under %q ([u] to undo)", len(ids), target, ancestor), false
 }
 
 // selectedRows are the rows [m]/[d]/[D] act on: in visual mode every row of the
@@ -643,22 +658,17 @@ func (m *Model) dropFolders(targets []*reviewRow) {
 		ids[i] = r.node.ID
 	}
 
-	m.snapshot("drop")
-	newTree, names, err := vfs.DropNodes(m.tree, ids)
-	if err != nil {
-		m.undo = m.undo[:len(m.undo)-1]
-		m.statusMsg, m.statusIsErr = err.Error(), true
-		return
-	}
-	m.tree = newTree
-
-	m.reflow()
-	m.visualMode = false
-	what := fmt.Sprintf("dropped %q", names[0])
-	if len(names) > 1 {
-		what = fmt.Sprintf("dropped %d folders", len(names))
-	}
-	m.statusMsg, m.statusIsErr = what+" — their files moved up one level ([u] to undo)", false
+	m.applyEdit("drop", func(tree []vfs.Node) ([]vfs.Node, string, error) {
+		newTree, names, err := vfs.DropNodes(tree, ids)
+		if err != nil {
+			return nil, "", err
+		}
+		what := fmt.Sprintf("dropped %q", names[0])
+		if len(names) > 1 {
+			what = fmt.Sprintf("dropped %d folders", len(names))
+		}
+		return newTree, what + " — their files moved up one level ([u] to undo)", nil
+	})
 }
 
 // flattenFolders collapses everything below each selected folder into it, the
@@ -675,22 +685,17 @@ func (m *Model) flattenFolders(targets []*reviewRow) {
 		ids[i] = r.node.ID
 	}
 
-	m.snapshot("flatten")
-	newTree, absorbed, names, err := vfs.FlattenNodes(m.tree, ids)
-	if err != nil {
-		m.undo = m.undo[:len(m.undo)-1]
-		m.statusMsg, m.statusIsErr = err.Error(), true
-		return
-	}
-	m.tree = newTree
-
-	m.reflow()
-	m.visualMode = false
-	into := fmt.Sprintf("%q", names[len(names)-1])
-	if len(names) > 1 {
-		into = fmt.Sprintf("%d folders", len(names))
-	}
-	m.statusMsg, m.statusIsErr = fmt.Sprintf("flattened %d subfolders into %s ([u] to undo)", absorbed, into), false
+	m.applyEdit("flatten", func(tree []vfs.Node) ([]vfs.Node, string, error) {
+		newTree, absorbed, names, err := vfs.FlattenNodes(tree, ids)
+		if err != nil {
+			return nil, "", err
+		}
+		into := fmt.Sprintf("%q", names[len(names)-1])
+		if len(names) > 1 {
+			into = fmt.Sprintf("%d folders", len(names))
+		}
+		return newTree, fmt.Sprintf("flattened %d subfolders into %s ([u] to undo)", absorbed, into), nil
+	})
 }
 
 // nodeRowByID finds the row for a node ID after a reflatten.
