@@ -16,8 +16,8 @@ import (
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
-	"github.com/jammutkarsh/wandersort/pkg/location/locationtest"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -154,11 +154,11 @@ func TestConfig(t *testing.T) {
 		// town through SearchByName/exactMatch to its canonical gazetteer spelling.
 		{"TownFieldsRoundTripARealTown", func(t *testing.T) {
 			// Resolve against the real machine's ~/.wandersort/location.db
-			// *before* HOME gets redirected below — locationtest.Resolver reads
+			// *before* HOME gets redirected below — installtest.Resolver reads
 			// $HOME itself, and pointing it at a fresh temp dir would make it
 			// re-download the ~80MB database instead of reusing the copy
 			// already cached on this machine.
-			resolver := locationtest.Resolver(t)
+			resolver := installtest.Resolver(t)
 
 			home := t.TempDir()
 			t.Setenv("HOME", home)

@@ -15,7 +15,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/location/locationtest"
+	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 )
 
 // renameFirstSuggested edits the first node carrying suggestions (the location
@@ -47,7 +47,7 @@ func TestReview(t *testing.T) {
 			h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:03 16:00:00", 0, 0, 3024, 4032))
 			cfg := DefaultConfig()
 			cfg.Rules = []string{RuleLocation} // eventSegment suggestion rung needs no date level ahead of it
-			h.build(t, cfg, locationtest.Resolver(t))
+			h.build(t, cfg, installtest.Resolver(t))
 
 			ctx := context.Background()
 			tree, err := BuildTree(ctx, h.d)
@@ -108,7 +108,7 @@ func TestReview(t *testing.T) {
 		{"ReviewConfirmRejectsUnknownID", func(t *testing.T) {
 			h := newHarness(t)
 			h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
-			h.build(t, DefaultConfig(), locationtest.Resolver(t))
+			h.build(t, DefaultConfig(), installtest.Resolver(t))
 
 			bogus := []Node{{ID: "not/a/real/path", Name: "x", Children: []Node{}}}
 			if err := Confirm(context.Background(), h.d, bogus); err == nil {
@@ -126,7 +126,7 @@ func TestReview(t *testing.T) {
 			h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
 			cfg := DefaultConfig()
 			cfg.Rules = []string{RuleLocation} // eventSegment suggestion rung needs no date level ahead of it
-			h.build(t, cfg, locationtest.Resolver(t))
+			h.build(t, cfg, installtest.Resolver(t))
 
 			ctx := context.Background()
 			tree, err := BuildTree(ctx, h.d)
@@ -185,7 +185,7 @@ func TestReview(t *testing.T) {
 			h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
 			cfg := DefaultConfig()
 			cfg.Rules = []string{RuleLocation} // eventSegment suggestion rung needs no date level ahead of it
-			h.build(t, cfg, locationtest.Resolver(t))
+			h.build(t, cfg, installtest.Resolver(t))
 
 			ctx := context.Background()
 			tree, err := BuildTree(ctx, h.d)
@@ -345,7 +345,7 @@ func TestReview(t *testing.T) {
 		{"SuggestionEqualToFolderNameIsDropped", func(t *testing.T) {
 			h := newHarness(t)
 			h.addFile(t, "Canon EOS 700D/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
-			h.build(t, DefaultConfig(), locationtest.Resolver(t))
+			h.build(t, DefaultConfig(), installtest.Resolver(t))
 
 			ctx := context.Background()
 			tree, err := BuildTree(ctx, h.d)

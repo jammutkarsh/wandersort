@@ -19,8 +19,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
+	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
-	"github.com/jammutkarsh/wandersort/pkg/location/locationtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -131,7 +131,7 @@ func TestBuildFullExif(t *testing.T) {
 	// 15.5439,73.7553 is Calangute, Goa — a real gazetteer entry with no
 	// disambiguation qualifier needed (unique name)
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5439, 73.7553, 3024, 4032))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleLocation, RuleOrientation, RuleMedia}
@@ -158,7 +158,7 @@ func TestScreenshotGroupsByMonthOnly(t *testing.T) {
 	h := newHarness(t)
 	a := h.addScreenshot(t, "a.PNG", metaWith("2024:06:03 10:00:00", 15.5439, 73.7553, 1170, 2532))
 	b := h.addScreenshot(t, "b.jpg", metaWith("2024:06:20 09:00:00", 0, 0, 1170, 2532))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation, RuleDevice, RuleOrientation, RuleMedia}
@@ -182,7 +182,7 @@ func TestClusterSpillover(t *testing.T) {
 	// and it's the only candidate within the tight first-pass search box, so
 	// it resolves to the bare, unqualified "Manali"
 	c := h.addFile(t, "dump/IMG_0003.HEIC", "IMAGE", metaWith("2024:06:03 11:00:00", 32.2432, 77.1892, 3024, 4032))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleLocation, RuleOrientation, RuleMedia}
@@ -284,7 +284,7 @@ func TestNoAnchorFallsThroughToSourceFolder(t *testing.T) {
 	for i := range 5 {
 		h.addFile(t, fmt.Sprintf("phone/IMG_%d.HEIC", i), "IMAGE", metaWith("2024:05:01 10:00:00", 31.63722, 77.34028, 3024, 4032))
 	}
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	u := h.addFile(t, "Diwali 2024/IMG_9001.JPG", "IMAGE", metaWith("2024:08:15 10:00:00", 0, 0, 6000, 4000))
 
@@ -315,7 +315,7 @@ func TestCoalescingSameCity(t *testing.T) {
 	// two clusters days apart, both resolve to the same city → same folder
 	a := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 22.71667, 75.85, 3024, 4032))
 	b := h.addFile(t, "d/IMG_0002.HEIC", "IMAGE", metaWith("2024:06:20 10:00:00", 22.71667, 75.85, 3024, 4032))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleLocation, RuleOrientation, RuleMedia}
@@ -371,7 +371,7 @@ func TestSameStemSameCaptureStillCoLocatesByOwnAttributes(t *testing.T) {
 	h := newHarness(t)
 	a := h.addFile(t, "d/IMG_0042.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5439, 73.7553, 3024, 4032))
 	b := h.addFile(t, "d/IMG_0042.MOV", "VIDEO", metaWith("2024:06:03 10:00:00", 15.5439, 73.7553, 1920, 1080))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleLocation} // no media split, so a real Live Photo pair still co-locates
@@ -435,8 +435,7 @@ func TestCaptureDirsForcesRawJpgTogetherAndKeepsRicherLocation(t *testing.T) {
 		{FileDir: "/src/d", FileName: "IMG_2566.CR2", MediaType: classifier.MediaTypeRaw, takenAt: takenAt, DBDateTaken: new(ts)},
 		{FileDir: "/src/d", FileName: "IMG_2566.JPG", MediaType: classifier.MediaTypeImage, takenAt: takenAt, DBDateTaken: new(ts), location: "Calangute"},
 	}
-	v := &VFS{cfg: DefaultConfig()}
-	dirs := v.captureDirs(masters, nil)
+	dirs := captureDirs(masters, nil, DefaultConfig())
 	if len(dirs) != 2 || dirs[0] != dirs[1] {
 		t.Fatalf("want RAW+JPG forced into one shared dir, got %v", dirs)
 	}
@@ -465,7 +464,7 @@ func TestCaptureGroupConflictingTimestampsStayIndependent(t *testing.T) {
 func TestCustomRulesOrder(t *testing.T) {
 	h := newHarness(t)
 	id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5439, 73.7553, 3024, 4032))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleMedia, RuleLocation}
@@ -483,7 +482,7 @@ func TestCustomRulesOrder(t *testing.T) {
 func TestEmptyRulesIsFlatYearMonth(t *testing.T) {
 	h := newHarness(t)
 	id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5439, 73.7553, 3024, 4032))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	cfg := DefaultConfig()
 	cfg.Rules = nil
@@ -513,7 +512,7 @@ func TestHomeWorkDateOnly(t *testing.T) {
 	// 28.58,77.33 is real Noida, ~14km (well within location.MaxDistSquared's
 	// ~50km) from the Delhi anchor below
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 28.58, 77.33, 3024, 4032))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 	addHomeAnchor(t, h, "Delhi", 28.65195, 77.23149)
 
 	cfg := DefaultConfig() // HomeWorkDateOnly defaults true
@@ -536,7 +535,7 @@ func TestHomeWorkDateOnlySpilloverStaysSuppressed(t *testing.T) {
 	h := newHarness(t)
 	withGPS := h.addFile(t, "d/h1.HEIC", "IMAGE", metaWith("2024:12:01 10:00:00", 22.7196, 75.8577, 3024, 4032))
 	noGPS := h.addFile(t, "d/h2.HEIC", "IMAGE", metaWith("2024:12:01 10:05:00", 0, 0, 3024, 4032))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 	addHomeAnchor(t, h, "Indore", 22.7196, 75.8577)
 
 	cfg := DefaultConfig() // HomeWorkDateOnly defaults true
@@ -560,7 +559,7 @@ func TestAnchorFoldsNearbySuburb(t *testing.T) {
 	// 28.58,77.33 is real Noida, ~14km (well within location.MaxDistSquared's
 	// ~50km) from the Delhi anchor below
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 28.58, 77.33, 3024, 4032))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 	addHomeAnchor(t, h, "Delhi", 28.65195, 77.23149)
 
 	cfg := DefaultConfig()
@@ -586,7 +585,7 @@ func TestMergeSameLocationDays(t *testing.T) {
 	g3 := h.addFile(t, "d/g3.HEIC", "IMAGE", metaWith("2024:08:03 10:00:00", 15.5439, 73.7553, 3024, 4032))
 	g4 := h.addFile(t, "d/g4.HEIC", "IMAGE", metaWith("2024:08:04 10:00:00", 15.5439, 73.7553, 3024, 4032))
 	p3 := h.addFile(t, "d/p3.HEIC", "IMAGE", metaWith("2024:08:03 10:00:00", 18.51957, 73.85535, 3024, 4032))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation} // date above location
@@ -615,7 +614,7 @@ func TestMergeSameLocationDaysFoldsHomeWorkDateOnly(t *testing.T) {
 		ids = append(ids, h.addFile(t, fmt.Sprintf("d/h%d.HEIC", d), "IMAGE",
 			metaWith(fmt.Sprintf("2024:12:%02d 10:00:00", d), 22.7196, 75.8577, 3024, 4032)))
 	}
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 	addHomeAnchor(t, h, "Indore", 22.7196, 75.8577)
 
 	cfg := DefaultConfig()
@@ -640,7 +639,7 @@ func TestBuildManyFiles(t *testing.T) {
 		ids = append(ids, h.addFile(t, relPath, "IMAGE",
 			metaWith(fmt.Sprintf("2024:06:03 %02d:%02d:00", 10+i/60, i%60), 15.5439, 73.7553, 3024, 4032)))
 	}
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	cfg := DefaultConfig()
 	rows := h.build(t, cfg, geo)
@@ -726,7 +725,7 @@ func TestOrientationTagSwapsDimensions(t *testing.T) {
 	// collapsed away (one distinct value library-wide) and this would assert
 	// nothing about orientation at all
 	h.addFile(t, "d/IMG_0002.HEIC", "IMAGE", metaWith("2024:06:03 15:00:00", 15.5439, 73.7553, 4032, 3024))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleLocation, RuleOrientation, RuleMedia}
@@ -757,7 +756,7 @@ func TestCollisionWithLiteralSuffixStem(t *testing.T) {
 
 func TestRebuildRemovesStaleEntries(t *testing.T) {
 	h := newHarness(t)
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 	keep := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5439, 73.7553, 3024, 4032))
 	gone := h.addFile(t, "d/IMG_0002.HEIC", "IMAGE", metaWith("2024:06:03 15:00:00", 15.5439, 73.7553, 3024, 4032))
 	h.build(t, DefaultConfig(), geo)
@@ -779,7 +778,7 @@ func TestRebuildRemovesStaleEntries(t *testing.T) {
 func TestRebuildIsIdempotent(t *testing.T) {
 	h := newHarness(t)
 	id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5439, 73.7553, 3024, 4032))
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	first := h.build(t, DefaultConfig(), geo)
 	second := h.build(t, DefaultConfig(), geo)
@@ -853,7 +852,7 @@ func TestDateLevelAddsDayFolder(t *testing.T) {
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5439, 73.7553, 3024, 4032))
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation}
-	rows := h.build(t, cfg, locationtest.Resolver(t))
+	rows := h.build(t, cfg, installtest.Resolver(t))
 
 	want := "2024/06_June/03/Calangute/IMG_0001.HEIC"
 	if got := rows[id].TargetPath; got != want {
@@ -871,7 +870,7 @@ func TestUnknownLocationEmitsNoLocationFolder(t *testing.T) {
 	a := h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation, RuleDevice}
-	rows := h.build(t, cfg, locationtest.Resolver(t))
+	rows := h.build(t, cfg, installtest.Resolver(t))
 
 	// device level collapses too (one value library-wide), so the day is all
 	// that is left — the point is that no folder claims to be a location
@@ -898,7 +897,7 @@ func TestSuggestionDirTracksTheLocationLevel(t *testing.T) {
 	h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5439, 73.7553, 3024, 4032))
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation}
-	h.build(t, cfg, locationtest.Resolver(t))
+	h.build(t, cfg, installtest.Resolver(t))
 
 	var dirs []string
 	if err := h.d.SQL.Select(&dirs,
@@ -921,7 +920,7 @@ func TestCollapsesUninformativeLevels(t *testing.T) {
 	video := h.addFile(t, "dump/IMG_0002.MOV", "VIDEO", metaWith("2024:06:03 11:00:00", 15.5439, 73.7553, 3024, 4032))
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation, RuleDevice, RuleOrientation, RuleMedia}
-	rows := h.build(t, cfg, locationtest.Resolver(t))
+	rows := h.build(t, cfg, installtest.Resolver(t))
 
 	for id, want := range map[int64]string{
 		photo: "2024/06_June/03/Calangute/Photos/IMG_0001.HEIC",
@@ -941,7 +940,7 @@ func TestCollapseKeepsDateAndLocation(t *testing.T) {
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5439, 73.7553, 3024, 4032))
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation, RuleMedia}
-	rows := h.build(t, cfg, locationtest.Resolver(t))
+	rows := h.build(t, cfg, installtest.Resolver(t))
 
 	want := "2024/06_June/03/Calangute/IMG_0001.HEIC"
 	if got := rows[id].TargetPath; got != want {
@@ -959,7 +958,7 @@ func TestCollapseReversesWhenALaterScanAddsAVideo(t *testing.T) {
 	photo := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5439, 73.7553, 3024, 4032))
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleLocation, RuleMedia}
-	geo := locationtest.Resolver(t)
+	geo := installtest.Resolver(t)
 
 	rows := h.build(t, cfg, geo)
 	if got, want := rows[photo].TargetPath, "2024/06_June/Calangute/IMG_0001.HEIC"; got != want {
@@ -981,7 +980,7 @@ func TestCollapseDisabled(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleLocation, RuleOrientation, RuleMedia}
 	cfg.CollapseLevels = false
-	rows := h.build(t, cfg, locationtest.Resolver(t))
+	rows := h.build(t, cfg, installtest.Resolver(t))
 
 	want := "2024/06_June/Calangute/Vertical/Photos/IMG_0001.HEIC"
 	if got := rows[id].TargetPath; got != want {

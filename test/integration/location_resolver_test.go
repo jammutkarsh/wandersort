@@ -14,14 +14,14 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
-	"github.com/jammutkarsh/wandersort/pkg/location/locationtest"
 )
 
 // TestCandidates exercises Candidates against real gazetteer rows: expanding
 // search radius, plain-spelling preference over diacritics, and distance sort.
 func TestCandidates(t *testing.T) {
-	r := locationtest.Resolver(t)
+	r := installtest.Resolver(t)
 	ctx := context.Background()
 
 	tests := []struct {
@@ -116,7 +116,7 @@ func TestCandidates(t *testing.T) {
 // exact match, fuzzy match, diacritic-stripped round-trip, and qualifier
 // disambiguation (Hyderabad, India vs Hyderabad, Pakistan).
 func TestResolveByName(t *testing.T) {
-	r := locationtest.Resolver(t)
+	r := installtest.Resolver(t)
 	ctx := context.Background()
 
 	tests := []struct {
@@ -206,7 +206,7 @@ func TestResolveByName(t *testing.T) {
 // ambiguous names with distinct FullNames, prefix matches, and the picker
 // round-trip (finding a name it previously handed out).
 func TestSearchByName(t *testing.T) {
-	r := locationtest.Resolver(t)
+	r := installtest.Resolver(t)
 	ctx := context.Background()
 
 	t.Run("five distinct Delhi rows each with unique FullName", func(t *testing.T) {
@@ -292,7 +292,7 @@ func TestSearchByName(t *testing.T) {
 // against real gazetteer rows: unique name → bare, repeats in-country →
 // state, repeats only abroad → country.
 func TestCandidatesDisambiguatesRealDB(t *testing.T) {
-	r := locationtest.Resolver(t)
+	r := installtest.Resolver(t)
 	ctx := context.Background()
 
 	tests := []struct {

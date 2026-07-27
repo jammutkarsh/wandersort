@@ -121,7 +121,7 @@ func verifyLocationDB(dbPath string, locationDB *db.DB, log logger.Logger) error
 // it against its published metadata, and returns a ready location.Resolver
 // plus the underlying *db.DB (the caller owns closing it). This is the
 // single download-open-verify path — application code (pkg/install.Coordinator)
-// and tests (pkg/location/locationtest) both go through it, so a test
+// and tests (pkg/install/installtest) both go through it, so a test
 // exercising a Resolver exercises the exact same setup the app performs, not
 // a hand-rolled approximation of it.
 func OpenLocationResolver(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) (*location.Resolver, *db.DB, error) {

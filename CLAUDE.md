@@ -124,8 +124,8 @@ one scan ever runs against it at a time (see "Conventions" below):
     `Coordinator`'s internal channel is the happens-before edge making the
     resolver safe to read, enforced by the type rather than documented in a
     comment (see `pkg/install` below). A gazetteer that never opens at all
-    (failed download, or another wandersort process holding the location DB
-    — it opens `locking_mode=EXCLUSIVE`) is **not** treated as "pending":
+    (a failed download — `location.db` opens `mode=ro`, so concurrent
+    wandersort processes never contend for it) is **not** treated as "pending":
     `Await` releases and the town is waved through unvalidated and saved as
     typed, in both `townValidator` and `canonicalTownOrTyped`. Blocking there
     would trap the user on a pre-filled field they could only escape by
