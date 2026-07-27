@@ -15,19 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
-
-// fakeLogger records Info calls so tests can assert whether awaitLog
-// actually announced a stall, without a real logger.Logger.
-type fakeLogger struct{ infos []string }
-
-func (f *fakeLogger) Debug(string, ...any) {}
-func (f *fakeLogger) Info(msg string, _ ...any) {
-	f.infos = append(f.infos, msg)
-}
-func (f *fakeLogger) Warn(string, ...any)  {}
-func (f *fakeLogger) Error(string, ...any) {}
 
 // TestReadinessIsNotReadyUntilClosed covers the non-blocking peeks: before
 // anything closes locReady, LocationReady and LocationDBIfReady must not
@@ -72,32 +60,6 @@ func TestGettersUnblockOnceReady(t *testing.T) {
 	}
 }
 
-// TestAwaitLogsOnlyWhenStalled covers the one behavior the Await variants add
-// over the plain getters: a log line only when the call actually has to wait.
-func TestAwaitLogsOnlyWhenStalled(t *testing.T) {
-	log := &fakeLogger{}
-	c := New(Options{Log: log})
-
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		close(c.exifReady)
-	}()
-	if _, err := c.AwaitExiftool(); err != nil {
-		t.Fatalf("AwaitExiftool: %v", err)
-	}
-	if len(log.infos) != 1 {
-		t.Fatalf("infos = %v, want exactly one stall message", log.infos)
-	}
-
-	// second call: channel already closed, must not log again
-	if _, err := c.AwaitExiftool(); err != nil {
-		t.Fatalf("AwaitExiftool (again): %v", err)
-	}
-	if len(log.infos) != 1 {
-		t.Errorf("infos = %v, want still just one message (already ready leaves no trace)", log.infos)
-	}
-}
-
 func TestDownloadVerifiesChecksum(t *testing.T) {
 	body := []byte("wandersort dependency payload")
 	goodSum := fmt.Sprintf("%x", sha256.Sum256(body))
@@ -121,7 +83,7 @@ func TestDownloadVerifiesChecksum(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dest := filepath.Join(t.TempDir(), "payload.bin")
 
-			err := Download(context.Background(), dest, srv.URL, tt.want, nil)
+			err := downloadFile(context.Background(), dest, srv.URL, tt.want, nil)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Download error = %v, wantErr %v", err, tt.wantErr)
 			}

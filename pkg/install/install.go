@@ -92,14 +92,17 @@ func (c *Coordinator) Start(ctx context.Context) {
 		}
 		defer l.Unlock()
 
-		c.exifPath, c.exifErr = c.installExiftool(ctx)
+		c.exifPath, c.exifErr = setupExiftool(ctx, c.opts.Log, c.opts.ExecutablePath, c.progressFor("exiftool"))
+		if c.exifErr != nil {
+			c.exifErr = fmt.Errorf("exiftool: %w", c.exifErr)
+		}
 		close(c.exifReady)
 		if c.exifErr != nil {
 			close(c.locReady)
 			return
 		}
 
-		c.resolver, c.locationDB, c.locErr = c.installLocation(ctx)
+		c.resolver, c.locationDB, c.locErr = OpenLocationResolver(ctx, c.opts.Log, c.opts.LocationDBPath, c.progressFor("location"))
 		close(c.locReady)
 	}()
 }
@@ -122,7 +125,7 @@ func (c *Coordinator) StartLocationOnly(ctx context.Context, onReady func(error)
 		}
 		defer l.Unlock()
 
-		c.resolver, c.locationDB, c.locErr = c.installLocation(ctx)
+		c.resolver, c.locationDB, c.locErr = OpenLocationResolver(ctx, c.opts.Log, c.opts.LocationDBPath, c.progressFor("location"))
 		close(c.locReady)
 		if onReady != nil {
 			onReady(c.locErr)
@@ -146,17 +149,6 @@ func (c *Coordinator) acquireLock(ctx context.Context) (*lock.Lock, error) {
 	return l, nil
 }
 
-func (c *Coordinator) installExiftool(ctx context.Context) (string, error) {
-	path, err := setupExiftool(ctx, c.opts.Log, c.opts.ExecutablePath, c.progressFor("exiftool"))
-	if err != nil {
-		return "", fmt.Errorf("exiftool: %w", err)
-	}
-	return path, nil
-}
-
-func (c *Coordinator) installLocation(ctx context.Context) (*location.Resolver, *db.DB, error) {
-	return OpenLocationResolver(ctx, c.opts.Log, c.opts.LocationDBPath, c.progressFor("location"))
-}
 
 func (c *Coordinator) progressFor(phase string) func(done, total int64) {
 	if c.opts.OnProgress == nil {
@@ -232,7 +224,7 @@ func (c *Coordinator) awaitLog(ch <-chan struct{}, why string) {
 	<-ch
 }
 
-// Download fetches url and writes the body to dest atomically (via a temp file
+// downloadFile fetches url and writes the body to dest atomically (via a temp file
 // in the same directory) so a partial or tampered download never leaves a bad
 // file at dest.
 //
@@ -242,7 +234,7 @@ func (c *Coordinator) awaitLog(ch <-chan struct{}, why string) {
 //
 // wantSHA256 (may be empty) is the expected hex digest. A mismatch removes dest
 // and returns an error.
-func Download(ctx context.Context, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
+func downloadFile(ctx context.Context, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("create request %s: %w", url, err)
@@ -284,7 +276,7 @@ func Download(ctx context.Context, dest, url, wantSHA256 string, onProgress func
 	}
 
 	if wantSHA256 != "" {
-		sum, err := SHA256File(dest)
+		sum, err := fileSHA256(dest)
 		if err != nil {
 			os.Remove(dest)
 			return fmt.Errorf("checksum %s: %w", dest, err)
@@ -298,8 +290,8 @@ func Download(ctx context.Context, dest, url, wantSHA256 string, onProgress func
 	return nil
 }
 
-// SHA256File returns the hex-encoded SHA-256 hash of the file at path.
-func SHA256File(path string) (string, error) {
+// fileSHA256 returns the hex-encoded SHA-256 hash of the file at path.
+func fileSHA256(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("open %s: %w", path, err)
