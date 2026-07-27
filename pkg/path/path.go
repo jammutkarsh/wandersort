@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -89,4 +90,60 @@ func Overlaps(a, b string) bool {
 		return true
 	}
 	return strings.HasPrefix(b, a+sep) || strings.HasPrefix(a, b+sep)
+}
+
+// ReduceRoots canonicalizes each path, validates it is a directory,
+// deduplicates, and prunes any path strictly nested under another.
+// Returns the minimal set of roots to scan.
+func ReduceRoots(r *Resolver, paths []string) ([]string, error) {
+	canonicalSet := make(map[string]struct{}, len(paths))
+
+	for _, p := range paths {
+		cleaned := filepath.Clean(p)
+		resolved, err := r.RealPath(cleaned)
+		if err != nil {
+			return nil, err
+		}
+
+		isDir, err := r.IsDirectory(resolved)
+		if err != nil {
+			return nil, err
+		}
+		if !isDir {
+			return nil, fmt.Errorf("path is not a directory: %s", resolved)
+		}
+
+		canonicalSet[resolved] = struct{}{}
+	}
+
+	canonicalPaths := make([]string, 0, len(canonicalSet))
+	for p := range canonicalSet {
+		canonicalPaths = append(canonicalPaths, p)
+	}
+	// Paths will be lexicographically sorted, so any child path follows its parent
+	// This makes the single-pass prune in the next step possible
+	sort.Strings(canonicalPaths)
+
+	// Single-pass prune: O(N)
+	// After lex sort, any descendant of an accepted root immediately follows
+	// it (or follows another descendant of it). Comparing against only the
+	// last accepted root is therefore sufficient
+	effectivePaths := make([]string, 0, len(canonicalPaths))
+	for _, candidate := range canonicalPaths {
+		if len(effectivePaths) == 0 || !isChildPath(effectivePaths[len(effectivePaths)-1], candidate) {
+			effectivePaths = append(effectivePaths, candidate)
+		}
+	}
+
+	return effectivePaths, nil
+}
+
+// isChildPath reports whether candidate is strictly nested below parent.
+// Both paths must already be canonical.
+func isChildPath(parent, candidate string) bool {
+	if parent == candidate {
+		return false
+	}
+	// Append the separator so "/foo" doesn't falsely match "/foobar"
+	return strings.HasPrefix(candidate, parent+string(filepath.Separator))
 }

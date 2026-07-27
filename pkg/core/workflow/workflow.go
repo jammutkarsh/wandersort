@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -130,8 +129,9 @@ func (wf *Workflow) RunScan(paths []string) ([]string, error) {
 	default:
 	}
 
-	roots, err := wf.scanRoots(paths)
+	roots, err := path.ReduceRoots(wf.path, paths)
 	if err != nil {
+		wf.log.Warn("Invalid scan roots", "error", err)
 		return nil, err
 	}
 
@@ -150,66 +150,6 @@ func (wf *Workflow) RunScan(paths []string) ([]string, error) {
 	}
 
 	return roots, nil
-}
-
-// scanRoots canonicalizes the requested paths and prunes any nested under
-// another, leaving the directories actually worth walking.
-func (wf *Workflow) scanRoots(paths []string) ([]string, error) {
-	canonicalSet := make(map[string]struct{}, len(paths))
-
-	for _, p := range paths {
-		cleaned := filepath.Clean(p)
-		resolved, err := wf.path.RealPath(cleaned)
-		if err != nil {
-			wf.log.Warn("Invalid root path", "path", p, "error", err)
-			return nil, err
-		}
-
-		isDir, err := wf.path.IsDirectory(resolved)
-		if err != nil {
-			wf.log.Warn("Cannot stat root path", "path", resolved, "error", err)
-			return nil, err
-		}
-		if !isDir {
-			wf.log.Warn("Root path is not a directory", "path", resolved)
-			return nil, fmt.Errorf("path is not a directory: %s", resolved)
-		}
-
-		canonicalSet[resolved] = struct{}{}
-	}
-
-	canonicalPaths := make([]string, 0, len(canonicalSet))
-	for p := range canonicalSet {
-		canonicalPaths = append(canonicalPaths, p)
-	}
-	// Paths will be lexicographically sorted, so any child path follows its parent
-	// This makes the single-pass prune in the next step possible
-	sort.Strings(canonicalPaths)
-
-	// Single-pass prune: O(N)
-	// After lex sort, any descendant of an accepted root immediately follows
-	// it (or follows another descendant of it). Comparing against only the
-	// last accepted root is therefore sufficient
-	effectivePaths := make([]string, 0, len(canonicalPaths))
-	for _, candidate := range canonicalPaths {
-		lenEffective := len(effectivePaths)
-		if lenEffective == 0 || !isChildPath(effectivePaths[lenEffective-1], candidate) {
-			effectivePaths = append(effectivePaths, candidate)
-		}
-	}
-
-	return effectivePaths, nil
-}
-
-// isChildPath reports whether candidate is strictly nested below parent
-// Both paths must already be canonical (filepath.Clean + RealPath)
-func isChildPath(parent, candidate string) bool {
-	// Equal paths are not a parent–child relationship
-	if parent == candidate {
-		return false
-	}
-	// Append the separator so "/foo" doesn't falsely match "/foobar"
-	return strings.HasPrefix(candidate, parent+string(filepath.Separator))
 }
 
 // runSession runs the phases in order and finalizes the run. Returns the
