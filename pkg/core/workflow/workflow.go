@@ -37,15 +37,6 @@ type Deps struct {
 	Location func() (*location.Resolver, error) // open gazetteer resolver
 }
 
-// ReadyDeps wraps dependencies that already exist (the plain-console and serve
-// paths, which install everything up front before building the workflow).
-func ReadyDeps(exiftoolPath string, r *location.Resolver) Deps {
-	return Deps{
-		Exiftool: func() (string, error) { return exiftoolPath, nil },
-		Location: func() (*location.Resolver, error) { return r, nil },
-	}
-}
-
 // Workflow orchestrates the phases of one scan session. Scanning and hashing
 // run in bounded batches to keep memory stable on very large roots.
 type Workflow struct {

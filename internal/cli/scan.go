@@ -19,7 +19,6 @@ import (
 
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
-	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
@@ -88,21 +87,9 @@ func (a *app) runScanPlain(paths []string) error {
 	}
 	a.Deps = a.newDeps(nil)
 	a.Deps.Start(ctx)
-	exiftoolPath, err := a.Deps.Exiftool()
-	if err != nil {
-		return err
-	}
-	resolver, err := a.Deps.Location()
-	if err != nil {
-		return err
-	}
 	defer a.closeDBs()
 
-	if err := a.syncAnchors(ctx, resolver); err != nil {
-		return fmt.Errorf("anchors: %w", err)
-	}
-
-	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, workflow.ReadyDeps(exiftoolPath, resolver))
+	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, a.workflowDeps(ctx))
 
 	scanPaths, err := wf.RunScan(paths)
 	if err != nil {
@@ -151,29 +138,7 @@ func (a *app) runScanTUI(paths []string) error {
 	a.Log = tuiLog
 	defer func() { a.Log = origLog }()
 
-	// deps.Exiftool/Location gate the exif/vfs phases independently on
-	// a.Deps' own readiness (AwaitExiftool/AwaitLocation log why only if a
-	// phase actually stalls behind its own download) — installed in the
-	// background below, once the scan screen's program exists.
-	deps := workflow.Deps{
-		Exiftool: func() (string, error) {
-			return a.Deps.AwaitExiftool()
-		},
-		Location: func() (*location.Resolver, error) {
-			resolver, err := a.Deps.AwaitLocation()
-			if err != nil {
-				return nil, err
-			}
-			// anchors need the resolver, so this is the earliest they can sync;
-			// vfs is also the only phase that reads them
-			if err := a.syncAnchors(ctx, resolver); err != nil {
-				return nil, fmt.Errorf("anchors: %w", err)
-			}
-			return resolver, nil
-		},
-	}
-
-	wf := workflow.NewWorkflow(ctx, a.AppDB, tuiLog, a.Config, deps)
+	wf := workflow.NewWorkflow(ctx, a.AppDB, tuiLog, a.Config, a.workflowDeps(ctx))
 	first := tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {
 			_, err := wf.RunScan(paths)

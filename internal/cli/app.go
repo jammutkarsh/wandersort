@@ -12,6 +12,7 @@ import (
 	"os"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
@@ -52,6 +53,30 @@ func (a *app) newDeps(onProgress func(phase string, done, total int64)) *install
 		Log:            a.Log,
 		OnProgress:     onProgress,
 	})
+}
+
+// workflowDeps gates each pipeline phase on its own dependency and syncs
+// anchors at the earliest point the resolver exists — the same wiring for the
+// plain and the full-screen path. a.Deps must already be built (newDeps) and
+// started (Start) before the returned Deps' closures are called.
+func (a *app) workflowDeps(ctx context.Context) workflow.Deps {
+	return workflow.Deps{
+		Exiftool: func() (string, error) {
+			return a.Deps.AwaitExiftool()
+		},
+		Location: func() (*location.Resolver, error) {
+			resolver, err := a.Deps.AwaitLocation()
+			if err != nil {
+				return nil, err
+			}
+			// anchors need the resolver, so this is the earliest they can sync;
+			// vfs is also the only phase that reads them
+			if err := a.syncAnchors(ctx, resolver); err != nil {
+				return nil, fmt.Errorf("anchors: %w", err)
+			}
+			return resolver, nil
+		},
+	}
 }
 
 func (a *app) initAppDB(ctx context.Context) error {
