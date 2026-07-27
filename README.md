@@ -69,7 +69,7 @@ Build from source (requires Go 1.26+):
 ```bash
 git clone https://github.com/jammutkarsh/wandersort.git
 cd wandersort
-make build          # produces ./bin/wandersort
+make install         installs to $GOPATH/bin/wandersort (requires Go 1.26.5 or above)
 ```
 
 ### Usage
