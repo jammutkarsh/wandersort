@@ -225,7 +225,7 @@ func TestReview(t *testing.T) {
 				t.Fatalf("expected success, got error status: %q", m.statusMsg)
 			}
 
-			year := findNodeByID(m.tree, "2017")
+			year := vfs.FindNode(m.tree, "2017")
 			if year == nil {
 				t.Fatal("2017 node missing from tree")
 			}
@@ -243,7 +243,7 @@ func TestReview(t *testing.T) {
 				t.Errorf("2017 FileCount = %d, want 3", year.FileCount)
 			}
 			for _, month := range []string{"April", "August", "October", "April/20"} {
-				if n := findNodeByID(m.tree, "2017/"+month); n != nil {
+				if n := vfs.FindNode(m.tree, "2017/"+month); n != nil {
 					t.Errorf("%s should have been pruned — nothing left under it", month)
 				}
 			}
@@ -281,7 +281,7 @@ func TestReview(t *testing.T) {
 				t.Fatalf("flatten April: %q", rm.statusMsg)
 			}
 
-			april := findNodeByID(rm.tree, "2023/April")
+			april := vfs.FindNode(rm.tree, "2023/April")
 			if april == nil || len(april.Children) != 0 {
 				t.Fatalf("April = %+v, want a childless node", april)
 			}
@@ -303,7 +303,7 @@ func TestReview(t *testing.T) {
 				}
 			}
 			// August is untouched — [D] acts on the cursor's subtree, nothing else
-			if aug := findNodeByID(rm.tree, "2023/August/Indore/Apple iPhone 13"); aug == nil {
+			if aug := vfs.FindNode(rm.tree, "2023/August/Indore/Apple iPhone 13"); aug == nil {
 				t.Error("August's subtree should be untouched by a flatten on April")
 			}
 		}},
@@ -352,11 +352,11 @@ func TestReview(t *testing.T) {
 			if rm.statusIsErr {
 				t.Fatalf("expected success, got %q", rm.statusMsg)
 			}
-			april := findNodeByID(rm.tree, "2023/April")
+			april := vfs.FindNode(rm.tree, "2023/April")
 			if len(april.Children) != 1 || april.Children[0].Name != "Apple iPhone 13" {
 				t.Fatalf("April children = %+v, want the lifted device node", april.Children)
 			}
-			if findNodeByID(rm.tree, "2023/August/Indore") == nil {
+			if vfs.FindNode(rm.tree, "2023/August/Indore") == nil {
 				t.Error("[d] dropped more than the cursor's folder — August's Indore should be untouched")
 			}
 			if got := april.MergedIDs; len(got) != 1 || got[0] != "2023/April/Indore" {
@@ -390,10 +390,10 @@ func TestReview(t *testing.T) {
 			next2, _ := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 			rm2 := next2.(Model)
 
-			if findNodeByID(rm2.tree, "2023/April/Indore/Apple iPhone 13") == nil {
+			if vfs.FindNode(rm2.tree, "2023/April/Indore/Apple iPhone 13") == nil {
 				t.Error("April's subtree should be back after undo")
 			}
-			if april := findNodeByID(rm2.tree, "2023/April"); len(april.MergedIDs) != 0 {
+			if april := vfs.FindNode(rm2.tree, "2023/April"); len(april.MergedIDs) != 0 {
 				t.Errorf("undo left MergedIDs behind: %v", april.MergedIDs)
 			}
 		}},
@@ -413,11 +413,11 @@ func TestReview(t *testing.T) {
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 			rm := next.(Model)
 
-			april20 := findNodeByID(rm.tree, "2017/April/20")
+			april20 := vfs.FindNode(rm.tree, "2017/April/20")
 			if april20 == nil || len(april20.Children) != 1 || april20.Children[0].Name != "Canon EOS 700D" {
 				t.Errorf("2017/April/20 should have its Canon EOS 700D leaf back after undo, got %+v", april20)
 			}
-			year := findNodeByID(rm.tree, "2017")
+			year := vfs.FindNode(rm.tree, "2017")
 			for _, c := range year.Children {
 				if c.Name == "Canon EOS 700D" {
 					t.Error("2017 should not have a direct Canon EOS 700D child after undo")
@@ -606,7 +606,7 @@ func TestReview(t *testing.T) {
 			if m.statusIsErr {
 				t.Fatalf("expected success, got %q", m.statusMsg)
 			}
-			june := findNodeByID(m.tree, "2024/06_June")
+			june := vfs.FindNode(m.tree, "2024/06_June")
 			if len(june.Children) != 1 {
 				t.Fatalf("June has %d children, want 1 merged day", len(june.Children))
 			}
@@ -644,7 +644,7 @@ func TestReview(t *testing.T) {
 				t.Fatalf("expected success, got %q", m.statusMsg)
 			}
 			// all three Goas merged under their lowest common ancestor, the month
-			june := findNodeByID(m.tree, "2024/06_June")
+			june := vfs.FindNode(m.tree, "2024/06_June")
 			if len(june.Children) != 1 || june.Children[0].Name != "Goa" {
 				t.Fatalf("June children = %+v, want one Goa (the days were emptied and pruned)", june.Children)
 			}
@@ -658,7 +658,7 @@ func TestReview(t *testing.T) {
 
 			m.mergeSelection()
 
-			goa := findNodeByID(m.tree, "2024/06_June/03/Goa")
+			goa := vfs.FindNode(m.tree, "2024/06_June/03/Goa")
 			if goa == nil || len(goa.Children) != 1 {
 				t.Fatalf("Goa children = %+v, want one — the renamed Canon collapses into iPhone", goa)
 			}
@@ -741,7 +741,7 @@ func TestReview(t *testing.T) {
 			if len(rm.rows) != before {
 				t.Errorf("%d rows after undoing everything, want the original %d", len(rm.rows), before)
 			}
-			if findNodeByID(rm.tree, "2023/April/Indore/Apple iPhone 13") == nil {
+			if vfs.FindNode(rm.tree, "2023/April/Indore/Apple iPhone 13") == nil {
 				t.Error("the original tree should be fully restored")
 			}
 
@@ -765,7 +765,7 @@ func TestReview(t *testing.T) {
 				t.Fatalf("expected success, got %q", rm.statusMsg)
 			}
 
-			day := findNodeByID(rm.tree, "2024/06_June/03")
+			day := vfs.FindNode(rm.tree, "2024/06_June/03")
 			if len(day.Children) != 3 {
 				t.Fatalf("day has %d children, want the 3 locations still separate", len(day.Children))
 			}
@@ -796,7 +796,7 @@ func TestReview(t *testing.T) {
 				t.Fatalf("expected success, got %q", rm.statusMsg)
 			}
 
-			day := findNodeByID(rm.tree, "2024/06_June/03")
+			day := vfs.FindNode(rm.tree, "2024/06_June/03")
 			if len(day.Children) != 3 {
 				t.Fatalf("day children = %d, want the three lifted iPhone folders", len(day.Children))
 			}
@@ -820,10 +820,10 @@ func TestReview(t *testing.T) {
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
 			rm := next.(Model)
 
-			if goa := findNodeByID(rm.tree, "2024/06_June/03/Goa"); len(goa.Children) != 0 {
+			if goa := vfs.FindNode(rm.tree, "2024/06_June/03/Goa"); len(goa.Children) != 0 {
 				t.Error("Goa should be flattened")
 			}
-			if p := findNodeByID(rm.tree, "2024/06_June/03/Panaji"); p == nil || len(p.Children) != 1 {
+			if p := vfs.FindNode(rm.tree, "2024/06_June/03/Panaji"); p == nil || len(p.Children) != 1 {
 				t.Error("Panaji was outside the range and must be untouched")
 			}
 		}},
@@ -906,7 +906,7 @@ func TestReview(t *testing.T) {
 			m.visualAnchor, m.cursor, m.visualMode = 4, 5, true
 			m.mergeSelection()
 
-			dec := findNodeByID(m.tree, "2017/12_December")
+			dec := vfs.FindNode(m.tree, "2017/12_December")
 			var names []string
 			for _, c := range dec.Children {
 				names = append(names, c.Name)
@@ -928,7 +928,7 @@ func TestReview(t *testing.T) {
 			m.visualAnchor, m.cursor, m.visualMode = 3, 11, true
 			m.dropFolders(m.selectedRows())
 
-			day := findNodeByID(m.tree, "2024/06_June/03")
+			day := vfs.FindNode(m.tree, "2024/06_June/03")
 			var ids []string
 			for _, c := range day.Children {
 				ids = append(ids, c.ID)

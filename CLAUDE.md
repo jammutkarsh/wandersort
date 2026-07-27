@@ -197,6 +197,24 @@ one scan ever runs against it at a time (see "Conventions" below):
   temp-file-then-rename pattern as `pkg/deps`); it moved here with the TUI
   because the preview is its only caller.
 
+  **The tree-reshaping rules themselves — merge, drop, flatten, and the
+  tree-walking helpers they share — live in `pkg/core/vfs/edit.go`
+  (`vfs.MergeNodes`/`DropNodes`/`FlattenNodes`/`SortTree`/`CloneTree`/
+  `FindNode`), not on `Model`.** They take a `[]vfs.Node` and a list of IDs and
+  return the edited tree plus what happened; nothing in that file knows a
+  keypress or a row exists. `Model`'s `mergeSelection`/`dropFolders`/
+  `flattenFolders` are thin callers: resolve `selectedRows()` into an ID list,
+  call across the seam, then apply the result back onto cursor/undo/status
+  state the tree edit itself has no business touching. This is also
+  `MergedIDs`' one owner now — `vfs.Confirm` was already the other half of
+  that invariant (interpreting what this file writes), so putting both in
+  `pkg/core/vfs` means one package, not two, understands it. The payoff: a
+  tree edit is tested by stating a tree, calling the function, asserting the
+  result (`pkg/core/vfs/edit_test.go`) — no `tea.KeyMsg`, no terminal.
+  `review_test.go` still drives some of the same edits through keypresses,
+  but that's now testing the wiring (selection → ID list → seam call), not
+  the reshaping logic itself.
+
   The model (`review.go`): renders the whole hierarchy indented, alt-screen
   fullscreen, scrollable. Keys: `n`/`N` **hop to the next/previous row at
   the cursor's own depth** (`jumpSameDepth`), crossing into other branches
@@ -211,7 +229,7 @@ one scan ever runs against it at a time (see "Conventions" below):
   Vim-style merge: `V` starts a contiguous range (sequential — no picking
   rows out of order), `m` **folds every row in the range at the anchor row's
   depth into one node under their lowest common ancestor**
-  (`mergeSelection`, `commonPathPrefix` + `findNodeByID`/`removeChildByID` —
+  (`vfs.MergeNodes`, via `commonPathPrefix` + `FindNode`/`removeChildByID` —
   a real tree-splice, not just a rename), named after the first one's
   **own** name — or the rename the reviewer typed on it, never its
   suggestion (an offer nobody accepted; broadcasting one put a name on the
@@ -223,7 +241,8 @@ one scan ever runs against it at a time (see "Conventions" below):
   different branches (anchor on a leaf) and whole parent folders (anchor on
   a Day). **Merging parents merges their subtrees**: children whose *final*
   names match (`finalName` honours a pending rename, since that's what
-  `Confirm` writes) collapse recursively via `mergeInto` — three days in Goa
+  `Confirm` writes) collapse recursively via `mergeInto` (both unexported,
+  `pkg/core/vfs/edit.go`) — three days in Goa
   give one Goa holding one merged device folder, not three the reviewer then
   has to merge by hand. This is what makes merging work across different Month/Day
   branches (e.g. one camera's photos spread across three months, all folding
@@ -244,7 +263,8 @@ one scan ever runs against it at a time (see "Conventions" below):
   children (the Month/Day scaffolding between two branches) are skipped, not
   merged. **`u` undoes structural edits all the way back**, not just the
   last one: every reshaping edit pushes a whole-tree clone
-  (`snapshot`/`deepCloneNodes`, capped at `maxUndo` = 100) onto a stack,
+  (`Model.snapshot` calling `vfs.CloneTree`, capped at `maxUndo` = 100) onto
+  a stack,
   since a structural edit can't be undone by restoring per-row name strings
   the way a plain rename-merge could. Trees are folders only, never files,
   so a clone is cheap.
@@ -252,10 +272,10 @@ one scan ever runs against it at a time (see "Conventions" below):
   `selectedRows` — a `[V]` range (every row in it at the anchor row's depth,
   the same rule `m` uses) or just the cursor row when there's no selection.
   Nothing acts tree-wide:
-  - `d` (`dropFolders`) drops **each selected folder**, lifting its children
-    onto its parent. Refused on a top-level (Year) row: its files would land in
-    the library root.
-  - `D` (`flattenFolders`) collapses **everything below** each selected
+  - `d` (`dropFolders` → `vfs.DropNodes`) drops **each selected folder**,
+    lifting its children onto its parent. Refused on a top-level (Year) row:
+    its files would land in the library root.
+  - `D` (`flattenFolders` → `vfs.FlattenNodes`) collapses **everything below** each selected
     folder into it, so the whole subtree's files sit directly in it and the folder
     itself stays. Works on a Year, since the Year survives to hold them.
     `2023/April/Indore/Apple iPhone 13` flattened at April is
@@ -264,8 +284,8 @@ one scan ever runs against it at a time (see "Conventions" below):
     locations under one Day each keep their own folder and lose their
     splits. Folding them together is `m`'s job, not `D`'s.
 
-  **Every structural edit re-sorts the tree by name (`sortTree`, called from
-  `reflow`) and the merge puts the cursor on the surviving folder
+  **Every structural edit re-sorts the tree by name (`vfs.SortTree`, called
+  from `reflow`) and the merge puts the cursor on the surviving folder
   (`focusNode`).** Splices append — a merged node, or children lifted by a
   drop — at the end of the parent's list, so a 575-file day jumped below its
   siblings and got reported as "the merge deleted my folder". It hadn't; it

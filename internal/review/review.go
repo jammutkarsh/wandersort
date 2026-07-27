@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -202,7 +201,7 @@ func (m Model) wrapDim(s string) string {
 
 // reflow rebuilds the row list after a structural edit (merge, drop, undo).
 func (m *Model) reflow() {
-	sortTree(m.tree)
+	vfs.SortTree(m.tree)
 	// flattenTree allocates fresh rows, so pending renames have to be carried
 	// across by node ID or a splice silently discards them
 	pending := map[string]string{}
@@ -234,7 +233,7 @@ const maxUndo = 100
 // snapshot records the tree before a structural edit so [u] can walk back to
 // it. Called by every edit that reshapes the tree — merge, drop, flatten.
 func (m *Model) snapshot(edit string) {
-	m.undo = append(m.undo, undoStep{tree: deepCloneNodes(m.tree), edit: edit})
+	m.undo = append(m.undo, undoStep{tree: vfs.CloneTree(m.tree), edit: edit})
 	if len(m.undo) > maxUndo {
 		m.undo = m.undo[len(m.undo)-maxUndo:]
 	}
@@ -269,16 +268,6 @@ func (m *Model) jumpSameDepth(step int) {
 		}
 	}
 	m.statusMsg, m.statusIsErr = "no more folders at this level", true
-}
-
-// sortTree restores name order after a structural edit. BuildTree emits sorted
-// levels, but a splice appends — a folder landing below its siblings instead of
-// between them reads as "the merge deleted it".
-func sortTree(nodes []vfs.Node) {
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
-	for i := range nodes {
-		sortTree(nodes[i].Children)
-	}
 }
 
 // focusNode puts the cursor on a node by ID, so an edit that moves a folder
@@ -562,8 +551,10 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // mergeSelection folds the selected folders into one node under their lowest
-// common ancestor, with the summed file count. See selectedRows for what counts
-// as selected.
+// common ancestor, with the summed file count. See selectedRows for what
+// counts as selected. The actual reshaping is vfs.MergeNodes' — this only
+// resolves the row selection into IDs and applies the result back onto the
+// row/undo/status state a tree edit knows nothing about.
 func (m *Model) mergeSelection() {
 	if !m.visualMode {
 		m.statusMsg, m.statusIsErr = "press V to select folders, then m to merge", true
@@ -571,72 +562,31 @@ func (m *Model) mergeSelection() {
 	}
 	sel := m.selectedRows()
 	m.visualMode = false
-
-	type pick struct {
-		row    *reviewRow
-		id     string
-		parent *vfs.Node
-		value  vfs.Node
-	}
-	picks := make([]pick, 0, len(sel))
-	for _, r := range sel {
-		picks = append(picks, pick{row: r, id: r.node.ID, parent: r.parent, value: *r.node})
-	}
-	if len(picks) < 2 {
+	if len(sel) < 2 {
 		m.statusMsg, m.statusIsErr = "select at least two folders at the same level to merge", true
 		return
 	}
-
-	lcaID := picks[0].id
-	for _, p := range picks[1:] {
-		lcaID = commonPathPrefix(lcaID, p.id)
-	}
-	if lcaID == "" {
-		m.statusMsg, m.statusIsErr = "selected folders share no common ancestor to merge under", true
-		return
-	}
-	lca := findNodeByID(m.tree, lcaID)
-	if lca == nil {
-		m.statusMsg, m.statusIsErr = "internal error locating merge destination", true
-		return
+	ids := make([]string, len(sel))
+	for i, r := range sel {
+		ids[i] = r.node.ID
 	}
 
 	m.snapshot("merge")
-
-	// leaves *before* the splice — afterwards a childless node is either one of
-	// these or an ancestor the merge emptied out
-	leafIDs := map[string]bool{}
-	collectLeafIDs(m.tree, leafIDs)
-
-	// name it after the first pick's own name, or the rename typed on it —
-	// never its suggestion, which is an offer nobody accepted
-	pending := m.pendingNames()
-	target := finalName(picks[0].value, pending)
-
-	// absorb the rest; mergeInto collapses same-named children recursively, so
-	// three Goa days give one Goa holding one merged device folder
-	merged := picks[0].value
-	for _, p := range picks[1:] {
-		mergeInto(&merged, p.value, pending)
+	newTree, mergedID, target, ancestor, err := vfs.MergeNodes(m.tree, ids, m.pendingNames())
+	if err != nil {
+		m.undo = m.undo[:len(m.undo)-1] // nothing was mutated, discard the snapshot
+		m.statusMsg, m.statusIsErr = err.Error(), true
+		return
 	}
-
-	// splice: the picks leave the tree entirely and reappear as one child of
-	// the LCA. Their IDs ride along on MergedIDs so Confirm remaps their files.
-	for _, p := range picks {
-		if p.parent != nil {
-			removeChildByID(p.parent, p.id)
-		}
-	}
-	lca.Children = append(lca.Children, merged)
-	m.tree, _ = pruneEmptied(m.tree, leafIDs)
+	m.tree = newTree
 
 	m.reflow()
-	if row := nodeRowByID(m.rows, merged.ID); row != nil && target != row.node.Name {
+	if row := nodeRowByID(m.rows, mergedID); row != nil && target != row.node.Name {
 		row.newName = target
 	}
-	m.focusNode(merged.ID)
+	m.focusNode(mergedID)
 
-	m.statusMsg, m.statusIsErr = fmt.Sprintf("merged %d folders into %q under %q ([u] to undo)", len(picks), target, lca.Name), false
+	m.statusMsg, m.statusIsErr = fmt.Sprintf("merged %d folders into %q under %q ([u] to undo)", len(ids), target, ancestor), false
 }
 
 // selectedRows are the rows [m]/[d]/[D] act on: in visual mode every row of the
@@ -674,82 +624,30 @@ func (m *Model) pendingNames() map[string]string {
 	return pending
 }
 
-// mergeInto folds src into dst, recursively merging same-named children rather
-// than leaving them as duplicate siblings.
-func mergeInto(dst *vfs.Node, src vfs.Node, pending map[string]string) {
-	dst.FileCount += src.FileCount
-	dst.Samples = append(dst.Samples, src.Samples...)
-	dst.MergedIDs = append(dst.MergedIDs, src.ID)
-	dst.MergedIDs = append(dst.MergedIDs, src.MergedIDs...)
-	for _, c := range src.Children {
-		if twin := childByName(dst, finalName(c, pending), pending); twin != nil {
-			mergeInto(twin, c, pending)
-			continue
-		}
-		dst.Children = append(dst.Children, c)
-	}
-}
-
-// finalName is the segment a node will be written as: the typed rename, else
-// the proposed name. Suggestions count only once accepted.
-func finalName(n vfs.Node, pending map[string]string) string {
-	if name, ok := pending[n.ID]; ok {
-		return name
-	}
-	return n.Name
-}
-
-// childByName finds parent's child that will end up named name, if any.
-func childByName(parent *vfs.Node, name string, pending map[string]string) *vfs.Node {
-	for i := range parent.Children {
-		if finalName(parent.Children[i], pending) == name {
-			return &parent.Children[i]
-		}
-	}
-	return nil
-}
-
 // dropFolders removes each selected folder and lifts its children onto its
 // parent — dropping "Apple iPhone 13" then "Indore" under 2023/April leaves
-// April holding the files, one group-by level shallower.
+// April holding the files, one group-by level shallower. vfs.DropNodes does
+// the actual reshaping; see mergeSelection's comment for the split.
 func (m *Model) dropFolders(targets []*reviewRow) {
-	// addressed by parent ID, not row pointer: removing one child reslices the
-	// parent's Children. selectedRows returns one depth, so no target here is
-	// an ancestor of another.
-	type drop struct {
-		parentID string
-		node     vfs.Node
-	}
-	drops := make([]drop, 0, len(targets))
-	for _, r := range targets {
-		// a top-level row's files would land in the library root; [D] instead
-		if r.parent == nil {
-			m.statusMsg, m.statusIsErr = "can't drop a top-level folder — its files would land in the library root ([D] flattens it instead)", true
-			return
-		}
-		drops = append(drops, drop{parentID: r.parent.ID, node: *r.node})
-	}
-	if len(drops) == 0 {
-		return
+	ids := make([]string, len(targets))
+	for i, r := range targets {
+		ids[i] = r.node.ID
 	}
 
 	m.snapshot("drop")
-	for _, d := range drops {
-		parent := findNodeByID(m.tree, d.parentID)
-		if parent == nil {
-			continue
-		}
-		removeChildByID(parent, d.node.ID)
-		parent.Children = append(parent.Children, d.node.Children...)
-		// files sitting directly in the dropped folder remap onto the parent
-		parent.MergedIDs = append(parent.MergedIDs, append([]string{d.node.ID}, d.node.MergedIDs...)...)
+	newTree, names, err := vfs.DropNodes(m.tree, ids)
+	if err != nil {
+		m.undo = m.undo[:len(m.undo)-1]
+		m.statusMsg, m.statusIsErr = err.Error(), true
+		return
 	}
+	m.tree = newTree
 
 	m.reflow()
 	m.visualMode = false
-	what := fmt.Sprintf("dropped %q", drops[0].node.Name)
-	if len(drops) > 1 {
-		what = fmt.Sprintf("dropped %d folders", len(drops))
+	what := fmt.Sprintf("dropped %q", names[0])
+	if len(names) > 1 {
+		what = fmt.Sprintf("dropped %d folders", len(names))
 	}
 	m.statusMsg, m.statusIsErr = what+" — their files moved up one level ([u] to undo)", false
 }
@@ -760,81 +658,30 @@ func (m *Model) dropFolders(targets []*reviewRow) {
 // unlike [d], since the Year survives to hold them.
 //
 // Over a [V] range the folders stay separate — folding them together is [m]'s
-// job. FileCount is unchanged; it already counted the subtree.
+// job. FileCount is unchanged; it already counted the subtree. vfs.FlattenNodes
+// does the actual reshaping; see mergeSelection's comment for the split.
 func (m *Model) flattenFolders(targets []*reviewRow) {
-	ids := make([]string, 0, len(targets))
-	for _, r := range targets {
-		if len(r.node.Children) > 0 {
-			ids = append(ids, r.node.ID)
-		}
-	}
-	if len(ids) == 0 {
-		m.statusMsg, m.statusIsErr = "nothing below the selected folder(s) to flatten", true
-		return
+	ids := make([]string, len(targets))
+	for i, r := range targets {
+		ids[i] = r.node.ID
 	}
 
 	m.snapshot("flatten")
-	absorbed, lastName := 0, ""
-	for _, id := range ids {
-		node := findNodeByID(m.tree, id)
-		if node == nil {
-			continue
-		}
-		// record every descendant so Confirm remaps their files onto this node
-		var absorb func(children []vfs.Node)
-		absorb = func(children []vfs.Node) {
-			for _, c := range children {
-				absorbed++
-				node.MergedIDs = append(node.MergedIDs, c.ID)
-				node.MergedIDs = append(node.MergedIDs, c.MergedIDs...)
-				absorb(c.Children)
-			}
-		}
-		absorb(node.Children)
-		node.Children = nil
-		lastName = node.Name
+	newTree, absorbed, names, err := vfs.FlattenNodes(m.tree, ids)
+	if err != nil {
+		m.undo = m.undo[:len(m.undo)-1]
+		m.statusMsg, m.statusIsErr = err.Error(), true
+		return
 	}
+	m.tree = newTree
 
 	m.reflow()
 	m.visualMode = false
-	into := fmt.Sprintf("%q", lastName)
-	if len(ids) > 1 {
-		into = fmt.Sprintf("%d folders", len(ids))
+	into := fmt.Sprintf("%q", names[len(names)-1])
+	if len(names) > 1 {
+		into = fmt.Sprintf("%d folders", len(names))
 	}
 	m.statusMsg, m.statusIsErr = fmt.Sprintf("flattened %d subfolders into %s ([u] to undo)", absorbed, into), false
-}
-
-// collectLeafIDs records every childless node's ID, used to tell a real leaf
-// from an ancestor a merge emptied out.
-func collectLeafIDs(nodes []vfs.Node, out map[string]bool) {
-	for i := range nodes {
-		if len(nodes[i].Children) == 0 {
-			out[nodes[i].ID] = true
-		}
-		collectLeafIDs(nodes[i].Children, out)
-	}
-}
-
-// pruneEmptied drops ancestors a merge left with no children and refreshes
-// FileCount bottom-up. leafIDs is the pre-merge leaf set: anything childless
-// outside it is an emptied ancestor. Returns the kept nodes and their count.
-func pruneEmptied(nodes []vfs.Node, leafIDs map[string]bool) ([]vfs.Node, int) {
-	out, total := nodes[:0], 0
-	for i := range nodes {
-		n := nodes[i]
-		if len(n.Children) > 0 {
-			kept, sum := pruneEmptied(n.Children, leafIDs)
-			if len(kept) == 0 {
-				continue
-			}
-			n.Children, n.FileCount = kept, sum
-		} else if !leafIDs[n.ID] {
-			continue
-		}
-		total += n.FileCount
-		out = append(out, n)
-	}
-	return out, total
 }
 
 // nodeRowByID finds the row for a node ID after a reflatten.
@@ -845,78 +692,6 @@ func nodeRowByID(rows []*reviewRow, id string) *reviewRow {
 		}
 	}
 	return nil
-}
-
-// commonPathPrefix returns the longest shared leading run of "/"-separated
-// segments between two node IDs (which are literally their proposed
-// directory paths) — i.e. their lowest common ancestor's ID. "" means no
-// shared ancestor at all (e.g. different years).
-func commonPathPrefix(a, b string) string {
-	as := strings.Split(a, "/")
-	bs := strings.Split(b, "/")
-	n := min(len(as), len(bs))
-	var i int
-	for i = 0; i < n; i++ {
-		if as[i] != bs[i] {
-			break
-		}
-	}
-	return strings.Join(as[:i], "/")
-}
-
-// findNodeByID searches the tree for the node with the given ID.
-func findNodeByID(nodes []vfs.Node, id string) *vfs.Node {
-	for i := range nodes {
-		if nodes[i].ID == id {
-			return &nodes[i]
-		}
-		if found := findNodeByID(nodes[i].Children, id); found != nil {
-			return found
-		}
-	}
-	return nil
-}
-
-// removeChildByID removes the child with the given ID from parent's
-// Children, if present.
-func removeChildByID(parent *vfs.Node, id string) {
-	for i, c := range parent.Children {
-		if c.ID == id {
-			parent.Children = append(parent.Children[:i], parent.Children[i+1:]...)
-			return
-		}
-	}
-}
-
-// deepCloneNodes copies a node tree so an undo snapshot is unaffected by later
-// in-place mutation.
-func deepCloneNodes(nodes []vfs.Node) []vfs.Node {
-	if nodes == nil {
-		return nil
-	}
-	out := make([]vfs.Node, len(nodes))
-	for i, n := range nodes {
-		out[i] = n
-		out[i].Children = deepCloneNodes(n.Children)
-		if n.Samples != nil {
-			out[i].Samples = append([]string(nil), n.Samples...)
-		}
-		if n.Suggestions != nil {
-			out[i].Suggestions = append([]vfs.Suggestion(nil), n.Suggestions...)
-		}
-		if n.MergedIDs != nil {
-			out[i].MergedIDs = append([]string(nil), n.MergedIDs...)
-		}
-		if n.Lat != nil {
-			lat := *n.Lat
-			out[i].Lat = &lat
-		}
-		if n.Lon != nil {
-			lon := *n.Lon
-			out[i].Lon = &lon
-		}
-	}
-	return out
 }
 
 func (m Model) View() string {
