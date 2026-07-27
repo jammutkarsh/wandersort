@@ -35,6 +35,13 @@ type InstallProgressMsg struct {
 // scanDoneMsg reports the pipeline goroutine returned.
 type scanDoneMsg struct{ err error }
 
+// reviewReadyMsg reports ReviewNext (BuildTree + DB work) finished off the UI
+// goroutine — see the "y" case in handleKey for why this can't run inline.
+type reviewReadyMsg struct {
+	model tea.Model
+	err   error
+}
+
 // ScanConfig wires the scan screen to the pipeline.
 type ScanConfig struct {
 	// Pipeline runs the scan (RunScan) and blocks until it finishes. Its
@@ -72,8 +79,20 @@ type ScanModel struct {
 	failErr    error // non-nil = pipeline failed
 	cancelling bool  // ctrl+c pressed, waiting for the pipeline to unwind
 	finished   bool  // succeeded; showing the review prompt
+	loading    bool  // "y" pressed before the prefetch below landed
 	reviewErr  error // building the review screen failed
 	gotoReview bool  // user chose review and there was no in-program ReviewNext
+
+	// reviewModel/reviewFetching prefetch the review screen (vfs.BuildTree +
+	// DB read) the moment the vfs phase's writes are flushed — the organize
+	// phase itself only proposes destinations (virtual_fs_entries rows); it
+	// never builds the review TUI's tree, so this is the earliest that read
+	// can start. It overlaps session finalize/space-check instead of waiting
+	// for "y", so by the time the reviewer can react the screen is usually
+	// already built. A "n" quit while it's still in flight just discards the
+	// result — nothing to undo, nothing was written.
+	reviewModel    tea.Model
+	reviewFetching bool
 }
 
 // WantsReview reports whether the user accepted the post-scan review prompt but
@@ -120,6 +139,19 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.downloads = append(m.downloads, msg)
 		return m, nil
+	case reviewReadyMsg:
+		m.reviewFetching = false
+		if msg.err != nil {
+			m.reviewErr = msg.err
+			m.loading = false
+			return m, nil
+		}
+		m.reviewModel = msg.model
+		if m.loading { // "y" already pressed, waiting on this
+			m.loading = false
+			return m, Switch(m.reviewModel)
+		}
+		return m, nil
 	case scanDoneMsg:
 		m.done = true
 		if msg.err != nil {
@@ -153,24 +185,37 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	}
-	if m.finished {
+	if m.finished && !m.loading {
 		switch k.String() {
 		case "y", "Y", "enter":
-			if m.cfg.ReviewNext == nil {
+			switch {
+			case m.cfg.ReviewNext == nil:
 				m.gotoReview = true
 				return m, tea.Quit
-			}
-			next, err := m.cfg.ReviewNext()
-			if err != nil {
-				m.reviewErr = err
+			case m.reviewModel != nil: // prefetch already landed — instant switch
+				return m, Switch(m.reviewModel)
+			case m.reviewErr != nil: // prefetch already failed — footer shows it
 				return m, nil
+			case m.reviewFetching: // still in flight — switch once it lands
+				m.loading = true
+				return m, nil
+			default: // shouldn't happen (vfs "done" always precedes "finished"); fall back
+				m.loading = true
+				return m, m.fetchReview()
 			}
-			return m, Switch(next)
 		case "n", "N":
 			return m, tea.Quit
 		}
 	}
 	return m, nil
+}
+
+// fetchReview runs ReviewNext (vfs.BuildTree + DB read) off the UI goroutine.
+func (m ScanModel) fetchReview() tea.Cmd {
+	return func() tea.Msg {
+		model, err := m.cfg.ReviewNext()
+		return reviewReadyMsg{model: model, err: err}
+	}
 }
 
 func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
@@ -185,6 +230,10 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 		case "done":
 			elapsed, _ := e.Attrs[logger.ElapsedKey].(string)
 			m.sl.Done(p, strings.TrimSuffix(e.Message, " in "+elapsed), elapsed)
+			if p == "vfs" && m.cfg.ReviewNext != nil {
+				m.reviewFetching = true
+				return m, m.fetchReview()
+			}
 		}
 		return m, nil
 	}
@@ -344,6 +393,10 @@ func (m ScanModel) footer() string {
 		b.WriteString(Text.Render(m.reviewErr.Error()))
 		b.WriteString("\n")
 		b.WriteString(Footer(KeyHint("q", "quit"), m.w))
+	case m.loading:
+		b.WriteString(OK.Render("✓ Scan complete."))
+		b.WriteString("  ")
+		b.WriteString(DimText.Render("Opening review…"))
 	case m.finished:
 		b.WriteString(OK.Render("✓ Scan complete."))
 		b.WriteString("  ")
