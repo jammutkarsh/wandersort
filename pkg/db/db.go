@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/db/migrations"
@@ -30,22 +29,16 @@ const (
 	LocationDB
 )
 
-// Pattern: -ING = active phase, -ED = completed/terminal
+// Pattern: -ING = active phase, -ED = completed/terminal.
+// StatusCompleted/StatusFailed/StatusCancelled are workflow's in-memory
+// result sentinels — nothing persists them, they just classify how a run ended.
 const (
-	StatusStarted  = "STARTED"
-	StatusScanning = "SCANNING"
-	StatusScanned  = "SCANNED"
-	StatusHashing  = "HASHING"
-	StatusHashed   = "HASHED"
+	StatusHashing = "HASHING"
+	StatusHashed  = "HASHED"
 	// A file is ANALYZING while the exif phase holds it and ANALYZED once its
-	// metadata row is filled in. The scan session reuses the same two values
-	// for that phase — one pair, two scopes, same meaning
+	// metadata row is filled in.
 	StatusAnalyzing  = "ANALYZING"
 	StatusAnalyzed   = "ANALYZED"
-	StatusScoring    = "SCORING"
-	StatusScored     = "SCORED"
-	StatusOrganizing = "ORGANIZING"
-	StatusOrganized  = "ORGANIZED"
 	StatusCompleted  = "COMPLETED"
 	StatusFailed     = "FAILED"
 	StatusCancelled  = "CANCELLED"
@@ -68,7 +61,7 @@ func FormatTime(t time.Time) string {
 	return t.UTC().Format(TimeLayout)
 }
 
-// SQLite connection pool and retry tuning
+// SQLite connection pool tuning
 const (
 	// maxOpenConns is 1 because SQLite is single-writer — one Go-level connection
 	// serialises access and avoids SQLITE_BUSY lock contention
@@ -76,10 +69,6 @@ const (
 	maxIdleConns = 1
 	// connMaxLifetime of 0 means connections live forever, acceptable with maxOpenConns=1
 	connMaxLifetime = 0
-	// retryInitialBackoff is the starting sleep between SQLITE_BUSY retries
-	retryInitialBackoff = 50 * time.Millisecond
-	// retryMaxBackoff caps exponential backoff to keep retry latency bounded
-	retryMaxBackoff = 500 * time.Millisecond
 )
 
 // DB wraps *sql.DB with a BulkWriter for database operations
@@ -242,49 +231,6 @@ func (db *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql
 // QueryRowContext executes a query that is expected to return at most one row
 func (db *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	return db.SQL.QueryRowContext(ctx, query, args...)
-}
-
-// ExecRetry executes a query with exponential backoff if the database is busy
-// This is useful for multi-threaded SQLite environments
-func (db *DB) ExecRetry(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	const maxAttempts = 12
-	backoff := retryInitialBackoff
-	// Max time: 50ms * (2^12 - 1) = ~3.4s total retry time before giving up
-
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		result, err := db.SQL.ExecContext(ctx, query, args...)
-		if err == nil {
-			return result, nil
-		}
-		lastErr = err
-
-		if !isSQLITEBusy(err) || attempt == maxAttempts {
-			return nil, err
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(backoff):
-		}
-
-		// Exponential backoff capped to keep retries bounded
-		if backoff < retryMaxBackoff {
-			backoff *= 2
-		}
-	}
-
-	return nil, lastErr
-}
-
-// isSQLITEBusy checks if an error is a SQLite busy/locked error
-func isSQLITEBusy(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "database is locked")
 }
 
 func appIDFromTag() int32 {

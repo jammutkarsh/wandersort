@@ -58,8 +58,8 @@ wandersort config
 # Scan one or more directories for media and duplicates
 wandersort scan --paths ~/Pictures,/Volumes/SD
 
-# Show a summary of the last scan
-wandersort report`,
+# Review and confirm the proposed folder structure
+wandersort review`,
 		Annotations: map[string]string{
 			"env": `All flags can also be set via environment variables, using the uppercased
 flag name (--output-path becomes OUTPUT_PATH, --workers becomes WORKERS).
@@ -91,7 +91,6 @@ Flags take precedence over environment variables.`,
 	rootCmd.AddCommand(a.newConfigCmd())
 	rootCmd.AddCommand(a.newScanCmd())
 	rootCmd.AddCommand(a.newReviewCmd())
-	rootCmd.AddCommand(a.newReportCmd())
 	rootCmd.AddCommand(a.newIssueCmd())
 	rootCmd.AddCommand(a.newResetCmd())
 

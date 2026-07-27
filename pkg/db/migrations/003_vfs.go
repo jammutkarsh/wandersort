@@ -21,7 +21,6 @@ var schema003 = Migration{
 const virtualFSEntries = `
 CREATE TABLE IF NOT EXISTS virtual_fs_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES scan_sessions(id),
     file_id INTEGER NOT NULL REFERENCES file_registry(id),
     source_path TEXT NOT NULL,
     target_path TEXT NOT NULL,
@@ -38,8 +37,9 @@ CREATE TABLE IF NOT EXISTS virtual_fs_entries (
     created_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_vfs_session_file ON virtual_fs_entries(session_id, file_id);
-CREATE INDEX IF NOT EXISTS idx_vfs_session ON virtual_fs_entries(session_id);
+-- one proposal row per file, ever — the VFS phase always wholesale-replaces
+-- the whole table, so there is never more than one live batch to disambiguate
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vfs_file ON virtual_fs_entries(file_id);
 CREATE INDEX IF NOT EXISTS idx_vfs_status ON virtual_fs_entries(status);
 `
 

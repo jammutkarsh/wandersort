@@ -19,33 +19,32 @@ import (
 func TestApprovedCountGuardsRebuild(t *testing.T) {
 	ctx := context.Background()
 	d := dbtest.New(t)
-	sessionID := dbtest.NewSession(t, d, db.StatusScored)
 
 	insert := func(fileID int64, name, status string) {
-		dbtest.SeedFile(t, d, sessionID, fileID, "/src", name, 1024)
+		dbtest.SeedFile(t, d, fileID, "/src", name, 1024)
 		if _, err := d.ExecContext(ctx, `
-			INSERT INTO virtual_fs_entries (session_id, file_id, source_path, target_path, status)
-			VALUES (?, ?, ?, ?, ?)`,
-			sessionID.String(), fileID, "/src/"+name, "2024/June/"+name, status); err != nil {
+			INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
+			VALUES (?, ?, ?, ?)`,
+			fileID, "/src/"+name, "2024/June/"+name, status); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	n, err := approvedCount(ctx, d, sessionID)
+	n, err := approvedCount(ctx, d)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
-		t.Errorf("approvedCount on a fresh session = %d, want 0 (rebuild is free)", n)
+		t.Errorf("approvedCount on a fresh db = %d, want 0 (rebuild is free)", n)
 	}
 
 	insert(1, "a.jpg", db.StatusProposed)
-	if n, err = approvedCount(ctx, d, sessionID); err != nil || n != 0 {
+	if n, err = approvedCount(ctx, d); err != nil || n != 0 {
 		t.Errorf("approvedCount = %d, %v; PROPOSED rows are not a confirmed plan", n, err)
 	}
 
 	insert(2, "b.jpg", db.StatusApproved)
-	if n, err = approvedCount(ctx, d, sessionID); err != nil || n != 1 {
+	if n, err = approvedCount(ctx, d); err != nil || n != 1 {
 		t.Errorf("approvedCount = %d, %v; want 1 so --rebuild refuses without --yes", n, err)
 	}
 }

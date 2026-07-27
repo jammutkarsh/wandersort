@@ -16,7 +16,6 @@ type ResetCounts struct {
 	VFSEntriesDeleted   int64 `json:"vfsEntriesDeleted"`
 	FileMetadataDeleted int64 `json:"fileMetadataDeleted"`
 	FilesDeleted        int64 `json:"filesDeleted"`
-	ScanSessionsDeleted int64 `json:"scanSessionsDeleted"`
 	UserLabelsDeleted   int64 `json:"userLabelsDeleted"`
 }
 
@@ -54,13 +53,6 @@ func (d *DB) ResetAll(ctx context.Context) (ResetCounts, error) {
 	}
 	count, _ = result.RowsAffected()
 	resp.FilesDeleted = count
-
-	result, err = tx.ExecContext(ctx, `DELETE FROM scan_sessions`)
-	if err != nil {
-		return ResetCounts{}, fmt.Errorf("reset: delete sessions: %w", err)
-	}
-	count, _ = result.RowsAffected()
-	resp.ScanSessionsDeleted = count
 
 	// Factory wipe: confirmed folder names and anchors go too, so a reset
 	// output dir behaves exactly like a brand-new one

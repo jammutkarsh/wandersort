@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
@@ -26,7 +25,6 @@ import (
 // autocomplete degrades gracefully without it.
 type Options struct {
 	DB        *db.DB
-	SessionID uuid.UUID
 	Tree      []vfs.Node
 	Resolver  *location.Resolver
 	Log       logger.Logger
@@ -36,7 +34,7 @@ type Options struct {
 // Run drives the standalone full-screen review to completion and writes the
 // approved plan. Returns an error if the reviewer quit without saving.
 func Run(ctx context.Context, o Options) error {
-	m, err := tea.NewProgram(newModel(o.Tree, ctx, o.DB, o.SessionID, o.Resolver, o.Log),
+	m, err := tea.NewProgram(newModel(o.Tree, ctx, o.DB, o.Resolver, o.Log),
 		tea.WithOutput(os.Stderr), tea.WithAltScreen()).Run()
 	if err != nil {
 		return fmt.Errorf("review ui: %w", err)
@@ -51,12 +49,12 @@ func Run(ctx context.Context, o Options) error {
 			r.node.Name = name
 		}
 	}
-	if err := vfs.Confirm(ctx, o.SessionID, o.DB, rm.tree); err != nil {
+	if err := vfs.Confirm(ctx, o.DB, rm.tree); err != nil {
 		return err
 	}
 	// review is the last look before a plan is approved — finding out mid-move
 	// that the output volume is too small is far worse than being told here
-	workflow.CheckOutputSpace(ctx, o.DB, o.Log, o.OutputDir, o.SessionID)
+	workflow.CheckOutputSpace(ctx, o.DB, o.Log, o.OutputDir)
 	return nil
 }
 
@@ -66,10 +64,10 @@ func AcceptAll(ctx context.Context, o Options) error {
 	for _, it := range collectReviewable(o.Tree) {
 		it.Name = it.Suggestions[0].Name
 	}
-	if err := vfs.Confirm(ctx, o.SessionID, o.DB, o.Tree); err != nil {
+	if err := vfs.Confirm(ctx, o.DB, o.Tree); err != nil {
 		return err
 	}
-	workflow.CheckOutputSpace(ctx, o.DB, o.Log, o.OutputDir, o.SessionID)
+	workflow.CheckOutputSpace(ctx, o.DB, o.Log, o.OutputDir)
 	return nil
 }
 
@@ -77,12 +75,11 @@ func AcceptAll(ctx context.Context, o Options) error {
 // inside its own bubbletea program. Pass the model the shell leaves behind to
 // Outcome.
 func Screen(ctx context.Context, o Options) tea.Model {
-	m := newModel(o.Tree, ctx, o.DB, o.SessionID, o.Resolver, o.Log)
+	m := newModel(o.Tree, ctx, o.DB, o.Resolver, o.Log)
 	m.embedded = true
 	return screen{
 		inner:     m,
 		ctx:       ctx,
-		sessionID: o.SessionID,
 		db:        o.DB,
 		log:       o.Log,
 		outputDir: o.OutputDir,

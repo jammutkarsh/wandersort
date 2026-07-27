@@ -16,7 +16,6 @@ Execute/move stage isn't written yet, so it isn't here.
 2. `[A]` `wandersort --version` → prints a version string, exit 0.
 3. `[A]` `wandersort bogus-cmd` → unknown-command error, non-zero exit.
 4. `[A]` `wandersort scan --help` → shows `--paths/-p`, `--workers/-w`, `--group-by`, exit 0.
-5. `[A]` `wandersort report` *(empty DB)* → clean "no sessions yet" error, non-zero exit, no stack trace.
 
 ## 1. Dependency install (network, idempotent, scan-driven)
 
@@ -151,13 +150,6 @@ Execute/move stage isn't written yet, so it isn't here.
 108. `[A]` set `group-by: [location]` in `config.yaml`, then `wandersort review --rebuild` with no flag → the config's levels are used.
 109. `[A]` `wandersort review --group-by device` *(no `--rebuild`)* → the existing proposal is reviewed unchanged; the flag alone does not re-propose.
 
-## 9. Report (read-only, depends on a prior scan)
-
-110. `[H]` `wandersort report` after a scan → table with scanned/hashed/duplicate counts for that session.
-111. `[A]` `wandersort report -x` → same data as expanded label:value pairs.
-112. `[A]` two scans over different roots, then `report` → two rows, duplicate counts don't bleed across sessions.
-113. `[A]` `report` while a scan is mid-run → newest session flagged partial (non-terminal status).
-
 ## 10. Re-scan / incremental (depends on prior scan — determinism)
 
 114. `[A]` scan a dir, then scan the exact same dir again → counts stable, pipeline deterministic.
@@ -167,7 +159,7 @@ Execute/move stage isn't written yet, so it isn't here.
 ## 11. Reset & issue (destructive / packaging)
 
 117. `[H]` `wandersort reset` → confirmation prompt; answering no leaves data intact.
-118. `[A]` `wandersort reset --yes` → all scan data wiped, `report` then errors "no sessions".
+118. `[A]` `wandersort reset --yes` → all scan data wiped.
 119. `[A]` `wandersort issue` → produces a zip with `wandersort.log` + `about.txt`, no DB by default.
 120. `[A]` `wandersort issue --include-db` → zip additionally contains the DB.
 

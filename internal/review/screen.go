@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
@@ -28,7 +27,6 @@ import (
 type screen struct {
 	inner     Model
 	ctx       context.Context
-	sessionID uuid.UUID
 	db        *db.DB
 	log       logger.Logger
 	outputDir string
@@ -77,10 +75,10 @@ func (s screen) finalize() tea.Cmd {
 				r.node.Name = name
 			}
 		}
-		if err := vfs.Confirm(s.ctx, s.sessionID, s.db, s.inner.tree); err != nil {
+		if err := vfs.Confirm(s.ctx, s.db, s.inner.tree); err != nil {
 			return finalizeMsg{err: err}
 		}
-		workflow.CheckOutputSpace(s.ctx, s.db, s.log, s.outputDir, s.sessionID)
+		workflow.CheckOutputSpace(s.ctx, s.db, s.log, s.outputDir)
 		return finalizeMsg{}
 	}
 }

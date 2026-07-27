@@ -13,10 +13,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/exif"
 	"github.com/jammutkarsh/wandersort/pkg/core/hasher"
@@ -70,12 +68,6 @@ type Workflow struct {
 	scorer  *scorer.Scorer
 	workers int
 	vfsCfg  vfs.Config
-
-	// activeRoots holds the roots of in-flight sessions, so overlapping scans
-	// are rejected before they re-stamp each other's rows. In-memory suffices:
-	// the output-dir lock guarantees one scan/serve process.
-	mu          sync.Mutex
-	activeRoots map[uuid.UUID][]string
 }
 
 type workflowPhase struct {
@@ -96,31 +88,15 @@ const (
 	workflowPhaseExif  workflowPhaseKind = "exif"
 	workflowPhaseScore workflowPhaseKind = "score"
 	workflowPhaseVFS   workflowPhaseKind = "vfs"
-	// defaultFinalizeTimeout is the deadline for writing the final session
-	// status when the pipeline completed without interruption
-	defaultFinalizeTimeout = 15 * time.Second
 )
 
-// phaseStatus holds the status transitions and console message for a workflow phase.
-type phaseStatus struct {
-	inProgress string
-	completed  string
-	message    string
-}
-
-var phaseStatusByKind = map[workflowPhaseKind]phaseStatus{
-	workflowPhaseScan:  {db.StatusScanning, db.StatusScanned, "Scanning your files…"},
-	workflowPhaseHash:  {db.StatusHashing, db.StatusHashed, "Looking for duplicate files…"},
-	workflowPhaseExif:  {db.StatusAnalyzing, db.StatusAnalyzed, "Reading photo details…"},
-	workflowPhaseScore: {db.StatusScoring, db.StatusScored, "Selecting the best copy of each duplicate…"},
-	workflowPhaseVFS:   {db.StatusOrganizing, db.StatusOrganized, "Proposing an organized folder structure…"},
-}
-
-func (kind workflowPhaseKind) status() phaseStatus {
-	if s, ok := phaseStatusByKind[kind]; ok {
-		return s
-	}
-	return phaseStatus{db.StatusFailed, db.StatusFailed, "Working…"}
+// phaseMessageByKind is the one user-facing line logged when a phase starts.
+var phaseMessageByKind = map[workflowPhaseKind]string{
+	workflowPhaseScan:  "Scanning your files…",
+	workflowPhaseHash:  "Looking for duplicate files…",
+	workflowPhaseExif:  "Reading photo details…",
+	workflowPhaseScore: "Selecting the best copy of each duplicate…",
+	workflowPhaseVFS:   "Proposing an organized folder structure…",
 }
 
 // NewWorkflow creates a new workflow instance
@@ -137,52 +113,52 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 		"output", filepath.Dir(cfg.AppDBPath),
 		"rules", "Year/Month/"+rules)
 	wf := &Workflow{
-		ctx:         ctx,
-		db:          db,
-		deps:        deps,
-		scanner:     scanner.New(db, log, cfg.Workers),
-		hasher:      hasher.New(db, log, cfg.Workers),
-		scorer:      scorer.New(db, log),
-		workers:     cfg.Workers,
-		vfsCfg:      vfsCfg,
-		log:         log,
-		path:        path.New(),
-		outputDir:   filepath.Dir(cfg.AppDBPath),
-		activeRoots: map[uuid.UUID][]string{},
+		ctx:       ctx,
+		db:        db,
+		deps:      deps,
+		scanner:   scanner.New(db, log, cfg.Workers),
+		hasher:    hasher.New(db, log, cfg.Workers),
+		scorer:    scorer.New(db, log),
+		workers:   cfg.Workers,
+		vfsCfg:    vfsCfg,
+		log:       log,
+		path:      path.New(),
+		outputDir: filepath.Dir(cfg.AppDBPath),
 	}
 	return wf
 }
 
-// RunScan canonicalizes and prunes nested scan roots, then creates a scan
-// session and runs the pipeline synchronously on the calling goroutine, so a
-// CLI invocation streams progress and blocks until the scan finishes. Returns
-// the roots actually walked, and an error if the session did not complete.
-func (wf *Workflow) RunScan(paths []string) (uuid.UUID, []string, error) {
+// RunScan canonicalizes and prunes nested scan roots, then runs the pipeline
+// synchronously on the calling goroutine, so a CLI invocation streams progress
+// and blocks until the scan finishes. Returns the roots actually walked, and
+// an error if the run did not complete.
+func (wf *Workflow) RunScan(paths []string) ([]string, error) {
 	select {
 	case <-wf.ctx.Done():
-		return uuid.Nil, nil, context.Canceled
+		return nil, context.Canceled
 	default:
 	}
 
 	roots, err := wf.scanRoots(paths)
 	if err != nil {
-		return uuid.Nil, nil, err
+		return nil, err
 	}
 
-	sessionID, err := wf.prepareSession(wf.ctx, roots)
-	if err != nil {
-		return uuid.Nil, nil, err
+	storedPaths := make([]string, 0, len(roots))
+	for _, p := range roots {
+		storedPaths = append(storedPaths, wf.path.RelativeToHome(p))
 	}
+	wf.log.Info("Starting scan", logger.UserKey, true, "paths", storedPaths)
 
-	status, errStr := wf.runSession(sessionID, roots)
+	status, errStr := wf.runSession(roots)
 	if status != db.StatusCompleted {
 		if errStr != nil {
-			return sessionID, roots, errors.New(*errStr)
+			return roots, errors.New(*errStr)
 		}
-		return sessionID, roots, fmt.Errorf("scan ended with status %s", status)
+		return roots, fmt.Errorf("scan ended with status %s", status)
 	}
 
-	return sessionID, roots, nil
+	return roots, nil
 }
 
 // scanRoots canonicalizes the requested paths and prunes any nested under
@@ -245,114 +221,47 @@ func isChildPath(parent, candidate string) bool {
 	return strings.HasPrefix(candidate, parent+string(filepath.Separator))
 }
 
-// prepareSession creates the scan_sessions row and returns the new session ID.
-// paths must already be canonical, deduplicated scan roots.
-func (wf *Workflow) prepareSession(ctx context.Context, paths []string) (uuid.UUID, error) {
-	storedPaths := make([]string, 0, len(paths))
-	for _, path := range paths {
-		storedPaths = append(storedPaths, wf.path.RelativeToHome(path))
-	}
-
-	wf.log.Info("Preparing scan session", "paths", storedPaths)
-
-	// Create scan session
-	sessionID, _ := uuid.NewV7()
-	if sessionID == uuid.Nil {
-		sessionID = uuid.New()
-	}
-
-	if err := wf.claimRoots(sessionID, paths); err != nil {
-		return uuid.Nil, err
-	}
-
-	_, err := wf.db.ExecContext(ctx, `
-		INSERT INTO scan_sessions (id, started_at, status, root_paths)
-		VALUES (?, ?, ?, ?)
-	`, sessionID, db.FormatTime(time.Now()), db.StatusStarted, strings.Join(storedPaths, ","))
-	if err != nil {
-		wf.releaseRoots(sessionID)
-		return uuid.Nil, fmt.Errorf("failed to create scan session: %w", err)
-	}
-	msg := fmt.Sprintf("Started session %s", sessionID)
-	wf.log.Info(msg, logger.UserKey, true, "sessionId", sessionID, "rootPaths", storedPaths)
-
-	return sessionID, nil
-}
-
-// claimRoots registers a session's roots after checking them against every
-// in-flight session. Overlaps are rejected because the sweep reads "row not
-// re-stamped by me" as proof a file vanished — two sessions over one tree
-// would soft-delete each other's live rows.
-func (wf *Workflow) claimRoots(sessionID uuid.UUID, paths []string) error {
-	wf.mu.Lock()
-	defer wf.mu.Unlock()
-	for activeID, activePaths := range wf.activeRoots {
-		for _, active := range activePaths {
-			for _, p := range paths {
-				if path.Overlaps(active, p) {
-					return fmt.Errorf("path %s overlaps %s, which session %s is still scanning", p, active, activeID)
-				}
-			}
-		}
-	}
-	wf.activeRoots[sessionID] = paths
-	return nil
-}
-
-// releaseRoots frees a session's claimed scan roots
-func (wf *Workflow) releaseRoots(sessionID uuid.UUID) {
-	wf.mu.Lock()
-	defer wf.mu.Unlock()
-	delete(wf.activeRoots, sessionID)
-}
-
-// runSession runs the phases in order and finalizes the session. Returns the
+// runSession runs the phases in order and finalizes the run. Returns the
 // terminal status and error so RunScan can surface failure.
-func (wf *Workflow) runSession(sessionID uuid.UUID, paths []string) (finalStatus string, finalErr *string) {
+func (wf *Workflow) runSession(paths []string) (finalStatus string, finalErr *string) {
 	defer func() {
-		wf.finalizeSession(sessionID, finalStatus, finalErr)
+		wf.finalizeSession(finalStatus, finalErr)
 	}()
 
-	wf.log.Info("Workflow session started", "sessionId", sessionID, "phases", "scanning → hashing → extracting → scoring → organizing")
+	wf.log.Info("Workflow started", "phases", "scanning → hashing → extracting → scoring → organizing")
 
-	phases := wf.workflowPhases(sessionID, paths)
+	phases := wf.workflowPhases(paths)
 
 	for _, phase := range phases {
-		_, status, errStr, ok := wf.run(sessionID, phase)
+		_, status, errStr, ok := wf.run(phase)
 		finalStatus, finalErr = status, errStr
 		if !ok {
 			return
 		}
 	}
 
-	// last thing before the session is marked done, so it sits next to the
+	// last thing before the run is marked done, so it sits next to the
 	// "run wandersort review" hint rather than scrolling past mid-pipeline
-	CheckOutputSpace(wf.ctx, wf.db, wf.log, wf.outputDir, sessionID)
+	CheckOutputSpace(wf.ctx, wf.db, wf.log, wf.outputDir)
 
-	if err := wf.setSessionStatus(wf.ctx, sessionID, db.StatusCompleted); err != nil {
-		msg := fmt.Errorf("failed to set %s status: %w", db.StatusCompleted, err).Error()
-		finalStatus = db.StatusFailed
-		finalErr = &msg
-		return
-	}
 	finalStatus = db.StatusCompleted
 	return
 }
 
-// workflowPhases builds the ordered list of pipeline phases for a session
-func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workflowPhase {
+// workflowPhases builds the ordered list of pipeline phases for a run
+func (wf *Workflow) workflowPhases(paths []string) []workflowPhase {
 	return []workflowPhase{
 		{
 			kind: workflowPhaseScan,
 			run: func() (int, error) {
-				return wf.scanner.Run(wf.ctx, sessionID, paths)
+				return wf.scanner.Run(wf.ctx, paths)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Scanned %d files", count) },
 		},
 		{
 			kind: workflowPhaseHash,
 			run: func() (int, error) {
-				return wf.hasher.Run(wf.ctx, sessionID)
+				return wf.hasher.Run(wf.ctx)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Checked %d files for duplicates", count) },
 		},
@@ -365,14 +274,14 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 				if err != nil {
 					return 0, fmt.Errorf("exiftool: %w", err)
 				}
-				return exif.New(wf.db, wf.log, exiftoolPath, wf.workers).Run(wf.ctx, sessionID)
+				return exif.New(wf.db, wf.log, exiftoolPath, wf.workers).Run(wf.ctx)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Read details from %d files", count) },
 		},
 		{
 			kind: workflowPhaseScore,
 			run: func() (int, error) {
-				return wf.scorer.Run(wf.ctx, sessionID)
+				return wf.scorer.Run(wf.ctx)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Reviewed %d duplicate groups", count) },
 		},
@@ -385,25 +294,24 @@ func (wf *Workflow) workflowPhases(sessionID uuid.UUID, paths []string) []workfl
 				if err != nil {
 					return 0, fmt.Errorf("location resolver: %w", err)
 				}
-				return vfs.New(wf.db, resolver, wf.log, wf.vfsCfg).Run(wf.ctx, sessionID)
+				return vfs.New(wf.db, resolver, wf.log, wf.vfsCfg).Run(wf.ctx)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Proposed destinations for %d files", count) },
 		},
 	}
 }
 
-// run executes one phase with its status writes and logging. Returns the
-// result count, final status, error message, and whether it succeeded.
-func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhase) (int, string, *string, bool) {
+// run executes one phase and logs its start/end. Returns the result count,
+// final status, error message, and whether it succeeded.
+func (wf *Workflow) run(phase workflowPhase) (int, string, *string, bool) {
 	success := true
-	status := phase.kind.status()
-	if err := wf.setSessionStatus(wf.ctx, sessionID, status.inProgress); err != nil {
-		msg := fmt.Errorf("failed to set %s status: %w", status.inProgress, err).Error()
-		return 0, db.StatusFailed, &msg, !success
+	message := phaseMessageByKind[phase.kind]
+	if message == "" {
+		message = "Working…"
 	}
 
-	wf.log.Info(status.message, logger.UserKey, true,
-		logger.PhaseKey, string(phase.kind), logger.EventKey, "start", "sessionId", sessionID)
+	wf.log.Info(message, logger.UserKey, true,
+		logger.PhaseKey, string(phase.kind), logger.EventKey, "start")
 	start := time.Now()
 	count, err := phase.run()
 	elapsed := time.Since(start)
@@ -412,10 +320,10 @@ func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhase) (int, string, 
 		var finalErr string
 		if errors.Is(err, context.Canceled) {
 			finalStatus = db.StatusCancelled
-			finalErr = fmt.Sprintf("pipeline cancelled during %s phase", status.inProgress)
+			finalErr = fmt.Sprintf("pipeline cancelled during %s phase", phase.kind)
 		} else {
 			finalStatus = db.StatusFailed
-			finalErr = fmt.Sprintf("%s phase failed: %v", status.inProgress, err)
+			finalErr = fmt.Sprintf("%s phase failed: %v", phase.kind, err)
 		}
 		return count, finalStatus, &finalErr, !success
 	}
@@ -429,12 +337,7 @@ func (wf *Workflow) run(sessionID uuid.UUID, phase workflowPhase) (int, string, 
 	}
 	wf.log.Info(msg, logger.UserKey, true,
 		logger.PhaseKey, string(phase.kind), logger.EventKey, "done",
-		logger.ElapsedKey, elapsed.Round(time.Millisecond).String(), "sessionId", sessionID)
+		logger.ElapsedKey, elapsed.Round(time.Millisecond).String())
 
-	if err := wf.setSessionStatus(wf.ctx, sessionID, status.completed); err != nil {
-		msg := fmt.Errorf("failed to set %s status: %w", status.completed, err).Error()
-		return count, db.StatusFailed, &msg, !success
-	}
-
-	return count, status.completed, nil, success
+	return count, "", nil, success
 }

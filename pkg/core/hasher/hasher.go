@@ -20,7 +20,6 @@ import (
 
 	"github.com/jmoiron/sqlx"
 
-	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"lukechampine.com/blake3"
@@ -48,31 +47,30 @@ func New(db *db.DB, log logger.Logger, workers int) *Hasher {
 	}
 }
 
-// Run fetches hashable files for the given session in pages and executes
-// hashing in bounded worker pools
-func (h *Hasher) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
+// Run fetches every DISCOVERED file in pages and executes hashing in bounded
+// worker pools
+func (h *Hasher) Run(ctx context.Context) (int, error) {
 	toHash := make(chan fileRecord, 2*h.workers)
 	toStore := make(chan hashedRecord, 2*h.workers)
 	producerErr := make(chan error, 1)
 	hasherErr := make(chan error, 1)
 
 	var hashedCount atomic.Int64
-	var errorCount atomic.Int64
 
 	ctxWithCancel, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	h.log.Info("Hashing session", "sessionId", sessionID)
+	h.log.Info("Hashing")
 
 	var total int
 	if err := h.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM live_files WHERE scan_session_id = ? AND scan_status = ?
-	`, sessionID.String(), db.StatusDiscovered).Scan(&total); err != nil {
-		h.log.Warn("Failed to count files to hash", "sessionId", sessionID, "error", err)
+		SELECT COUNT(*) FROM live_files WHERE scan_status = ?
+	`, db.StatusDiscovered).Scan(&total); err != nil {
+		h.log.Warn("Failed to count files to hash", "error", err)
 	}
 
-	go h.producer(ctxWithCancel, sessionID, cancel, toHash, producerErr)
-	go h.hasher(ctxWithCancel, sessionID, cancel, toHash, toStore, &errorCount, total)
+	go h.producer(ctxWithCancel, cancel, toHash, producerErr)
+	go h.hasher(ctxWithCancel, cancel, toHash, toStore, total)
 	go h.store(ctxWithCancel, cancel, toStore, &hashedCount, hasherErr)
 
 	if err := <-producerErr; err != nil {
@@ -83,25 +81,16 @@ func (h *Hasher) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	}
 
 	persisted := int(hashedCount.Load())
-	errorTotal := errorCount.Load()
-	if _, upErr := h.db.ExecContext(ctx, `
-		UPDATE scan_sessions
-		SET files_hashed = ?, errors_encountered = errors_encountered + ?
-		WHERE id = ?
-	`, persisted, errorTotal, sessionID.String()); upErr != nil {
-		h.log.Error("Failed to update hash counters", "sessionId", sessionID, "error", upErr)
-	}
-
-	h.log.Info("Hashing complete", "sessionId", sessionID, "filesHashed", persisted)
+	h.log.Info("Hashing complete", "filesHashed", persisted)
 	return persisted, nil
 }
 
 // producer fetches hashable files from the database and feeds them into the toHash channel
-func (h *Hasher) producer(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, toHash chan<- fileRecord, producerErr chan<- error) {
+func (h *Hasher) producer(ctx context.Context, cancel context.CancelFunc, toHash chan<- fileRecord, producerErr chan<- error) {
 	defer close(toHash)
 
 	for {
-		record, ok, err := h.getFile(ctx, sessionID)
+		record, ok, err := h.getFile(ctx)
 		if err != nil {
 			producerErr <- err
 			cancel()
@@ -122,7 +111,7 @@ func (h *Hasher) producer(ctx context.Context, sessionID uuid.UUID, cancel conte
 }
 
 // getFile atomically claims the next undiscovered file and returns its record
-func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, bool, error) {
+func (h *Hasher) getFile(ctx context.Context) (fileRecord, bool, error) {
 	var id int64
 	var fileDir, fileName string
 	query := `
@@ -131,15 +120,14 @@ func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, 
 	WHERE id = (
 		SELECT id
 		FROM live_files
-		WHERE scan_session_id = ?
-			AND scan_status = ?
+		WHERE scan_status = ?
 		ORDER BY id
 		LIMIT 1
 	)
 	RETURNING id, file_dir, file_name`
 
 	err := h.db.
-		QueryRowContext(ctx, query, db.StatusHashing, sessionID.String(), db.StatusDiscovered).
+		QueryRowContext(ctx, query, db.StatusHashing, db.StatusDiscovered).
 		Scan(&id, &fileDir, &fileName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fileRecord{}, false, nil
@@ -152,7 +140,7 @@ func (h *Hasher) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, 
 }
 
 // hasher runs the bounded worker pool that computes BLAKE3 hashes
-func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, toHash <-chan fileRecord, toPersist chan<- hashedRecord, errorCount *atomic.Int64, total int) {
+func (h *Hasher) hasher(ctx context.Context, cancel context.CancelFunc, toHash <-chan fileRecord, toPersist chan<- hashedRecord, total int) {
 	var hashedN atomic.Int64
 	var hashWG sync.WaitGroup
 
@@ -165,7 +153,7 @@ func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context
 
 				hash, err := h.hashFile(file.absPath)
 				if err != nil {
-					h.log.Error("Failed to hash file", "sessionId", sessionID, "fileId", file.id, "path", file.absPath, "error", err)
+					h.log.Error("Failed to hash file", "fileId", file.id, "path", file.absPath, "error", err)
 					h.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 						// The file's content is unknown now, so any previous
 						// metadata row (old hash, old EXIF) is stale — drop it
@@ -178,7 +166,6 @@ func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context
 							SET scan_status = 'ERROR' WHERE id = ?`, file.id)
 						return err
 					})
-					errorCount.Add(1)
 					continue
 				}
 				// Per-file feed line for the TUI (StreamKey: feed + file log, never
@@ -186,7 +173,7 @@ func (h *Hasher) hasher(ctx context.Context, sessionID uuid.UUID, cancel context
 				// level, so a Debug line would vanish outside --debug and the bar
 				// would never move. It carries the running count so the bar
 				// advances one file at a time.
-				h.log.Info("Hashing", logger.StreamKey, true, "sessionId", sessionID,
+				h.log.Info("Hashing", logger.StreamKey, true,
 					"file", filepath.Base(file.absPath), "hashed", hashedN.Add(1), "total", total)
 
 				select {

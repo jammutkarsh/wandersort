@@ -18,7 +18,6 @@ package vfs
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"path"
@@ -26,7 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -73,30 +71,11 @@ type Node struct {
 
 const maxSamples = 3
 
-// ProposalSession returns the session that wrote the current proposal set
-// (each VFS run replaces the set wholesale, so all rows share one session).
-func ProposalSession(ctx context.Context, database *db.DB) (uuid.UUID, error) {
-	var raw string
-	err := database.SQL.GetContext(ctx, &raw,
-		`SELECT session_id FROM virtual_fs_entries ORDER BY id DESC LIMIT 1`)
-	if errors.Is(err, sql.ErrNoRows) {
-		return uuid.Nil, ErrNoProposal
-	}
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("load proposal session: %w", err)
-	}
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("parse proposal session id: %w", err)
-	}
-	return id, nil
-}
-
-// BuildTree reads the session's still-reviewable entries (PROPOSED/APPROVED —
-// executed or failed rows are past reviewing) and returns the proposed
-// directory tree (folder names only, no files). An empty result means the
-// session has no proposal — the caller decides whether that is a 404.
-func BuildTree(ctx context.Context, sessionID uuid.UUID, database *db.DB) ([]Node, error) {
+// BuildTree reads the still-reviewable entries (PROPOSED/APPROVED — executed
+// or failed rows are past reviewing) and returns the proposed directory tree
+// (folder names only, no files). An empty result means there is no proposal —
+// the caller decides whether that is a 404.
+func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 	var rows []struct {
 		TargetPath       string   `db:"target_path"`
 		SourcePath       string   `db:"source_path"`
@@ -111,8 +90,8 @@ func BuildTree(ctx context.Context, sessionID uuid.UUID, database *db.DB) ([]Nod
 		        vfe.suggestion_dir, fm.exif_gps_latitude, fm.exif_gps_longitude
 		 FROM virtual_fs_entries vfe
 		 LEFT JOIN file_metadata fm ON fm.file_id = vfe.file_id
-		 WHERE vfe.session_id = ? AND vfe.status IN (?, ?)`,
-		sessionID.String(), db.StatusProposed, db.StatusApproved); err != nil {
+		 WHERE vfe.status IN (?, ?)`,
+		db.StatusProposed, db.StatusApproved); err != nil {
 		return nil, fmt.Errorf("query vfs entries: %w", err)
 	}
 
@@ -203,35 +182,35 @@ func BuildTree(ctx context.Context, sessionID uuid.UUID, database *db.DB) ([]Nod
 // FilesUnder returns the source paths of every file proposed under nodeID
 // (that directory or any descendant), in a stable order — used by the review
 // TUI's preview to stage more than the handful of Samples a Node carries.
-func FilesUnder(ctx context.Context, sessionID uuid.UUID, nodeID string, database *db.DB) ([]string, error) {
+func FilesUnder(ctx context.Context, nodeID string, database *db.DB) ([]string, error) {
 	var paths []string
 	// prefix compare, not GLOB/LIKE: a folder name can legitimately contain
 	// *, ?, [ or ], and a pattern match would read those as wildcards
 	prefix := nodeID + "/"
 	if err := database.SQL.SelectContext(ctx, &paths,
 		`SELECT source_path FROM virtual_fs_entries
-		 WHERE session_id = ? AND status IN (?, ?) AND substr(target_path, 1, length(?)) = ?
+		 WHERE status IN (?, ?) AND substr(target_path, 1, length(?)) = ?
 		 ORDER BY source_path`,
-		sessionID.String(), db.StatusProposed, db.StatusApproved, prefix, prefix); err != nil {
+		db.StatusProposed, db.StatusApproved, prefix, prefix); err != nil {
 		return nil, fmt.Errorf("query files under %q: %w", nodeID, err)
 	}
 	return paths, nil
 }
 
-// Confirm applies the (possibly edited) tree back onto the session's entries:
-// it rewrites target_path for every renamed directory, flips PROPOSED rows to
-// APPROVED, and records renamed location nodes in user_labels so later scans
-// suggest the corrected name. Nodes are matched by ID; unknown IDs and unsafe
-// names are rejected. The write is synchronous: a nil return means the
-// changes are committed.
-func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []Node) error {
+// Confirm applies the (possibly edited) tree back onto the proposal's
+// entries: it rewrites target_path for every renamed directory, flips
+// PROPOSED rows to APPROVED, and records renamed location nodes in
+// user_labels so later scans suggest the corrected name. Nodes are matched by
+// ID; unknown IDs and unsafe names are rejected. The write is synchronous: a
+// nil return means the changes are committed.
+func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 	var targets []string
 	if err := database.SQL.SelectContext(ctx, &targets,
-		`SELECT DISTINCT target_path FROM virtual_fs_entries WHERE session_id = ?`, sessionID.String()); err != nil {
+		`SELECT DISTINCT target_path FROM virtual_fs_entries`); err != nil {
 		return fmt.Errorf("load vfs dirs: %w", err)
 	}
 	if len(targets) == 0 {
-		return fmt.Errorf("%w for session %s", ErrNoProposal, sessionID)
+		return ErrNoProposal
 	}
 	valid := map[string]bool{}
 	for _, tp := range targets {
@@ -298,8 +277,7 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 			SELECT vfe.target_path, fm.exif_date_time_original, fm.exif_create_date, fr.file_modified_at
 			FROM virtual_fs_entries vfe
 			JOIN file_registry fr ON fr.id = vfe.file_id
-			JOIN file_metadata fm ON fm.file_id = vfe.file_id
-			WHERE vfe.session_id = ?`, sessionID.String()); err != nil {
+			JOIN file_metadata fm ON fm.file_id = vfe.file_id`); err != nil {
 			return fmt.Errorf("load capture times: %w", err)
 		}
 	}
@@ -312,12 +290,12 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 			TargetPath string `db:"target_path"`
 		}
 		if err := tx.SelectContext(ctx, &entries,
-			`SELECT id, target_path FROM virtual_fs_entries WHERE session_id = ? AND status IN (?, ?)`,
-			sessionID.String(), db.StatusProposed, db.StatusApproved); err != nil {
+			`SELECT id, target_path FROM virtual_fs_entries WHERE status IN (?, ?)`,
+			db.StatusProposed, db.StatusApproved); err != nil {
 			return err
 		}
 		// a rescan replaces the proposal set wholesale; if it won the race the
-		// session's rows are gone and this confirm must fail, not half-apply
+		// rows are gone and this confirm must fail, not half-apply
 		if len(entries) == 0 {
 			return fmt.Errorf("%w: proposal was replaced by a newer scan", ErrNoProposal)
 		}
@@ -365,8 +343,8 @@ func Confirm(ctx context.Context, sessionID uuid.UUID, database *db.DB, roots []
 			}
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE virtual_fs_entries SET status = ? WHERE session_id = ? AND status = ?`,
-			db.StatusApproved, sessionID.String(), db.StatusProposed); err != nil {
+			`UPDATE virtual_fs_entries SET status = ? WHERE status = ?`,
+			db.StatusApproved, db.StatusProposed); err != nil {
 			return err
 		}
 		for _, l := range labels {

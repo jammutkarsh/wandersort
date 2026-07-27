@@ -8,13 +8,11 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/jammutkarsh/wandersort/internal/review"
@@ -68,14 +66,6 @@ func (a *app) runReview(cmd *cobra.Command) error {
 	}
 	defer a.closeDBs()
 
-	sessionID, err := vfs.ProposalSession(ctx, a.AppDB)
-	if err != nil {
-		if errors.Is(err, vfs.ErrNoProposal) {
-			return fmt.Errorf("no proposal to review — run 'wandersort scan' first")
-		}
-		return err
-	}
-
 	rebuild, _ := cmd.Flags().GetBool(flagRebuild)
 	yes, _ := cmd.Flags().GetBool(flagYes)
 
@@ -85,12 +75,12 @@ func (a *app) runReview(cmd *cobra.Command) error {
 		// vfs.Run wipes every entry, including an already-confirmed plan.
 		// Names survive in user_labels and come back as suggestions, but
 		// dropping confirmed work needs saying out loud.
-		approved, err := approvedCount(ctx, a.AppDB, sessionID)
+		approved, err := approvedCount(ctx, a.AppDB)
 		if err != nil {
 			return err
 		}
 		if approved > 0 && !yes {
-			return fmt.Errorf("--rebuild would discard the confirmed plan for this session (%d approved files).\n"+
+			return fmt.Errorf("--rebuild would discard the confirmed plan (%d approved files).\n"+
 				"Your confirmed folder names are remembered and will be re-suggested; re-run with --yes to rebuild and confirm the new plan non-interactively", approved)
 		}
 		// EnsureDependencies already opens the resolver (and holds the install
@@ -100,12 +90,12 @@ func (a *app) runReview(cmd *cobra.Command) error {
 		}
 		cfg := vfs.ConfigFor(a.Config)
 		a.Log.Info("Rebuilding folder proposal", "rules", cfg.Rules, logger.UserKey, true)
-		if _, err := vfs.New(a.AppDB, a.LocationResolver, a.Log, cfg).Run(ctx, sessionID); err != nil {
+		if _, err := vfs.New(a.AppDB, a.LocationResolver, a.Log, cfg).Run(ctx); err != nil {
 			return fmt.Errorf("rebuild proposal: %w", err)
 		}
 	}
 
-	tree, err := vfs.BuildTree(ctx, sessionID, a.AppDB)
+	tree, err := vfs.BuildTree(ctx, a.AppDB)
 	if err != nil {
 		return err
 	}
@@ -115,7 +105,6 @@ func (a *app) runReview(cmd *cobra.Command) error {
 
 	opts := review.Options{
 		DB:        a.AppDB,
-		SessionID: sessionID,
 		Tree:      tree,
 		Log:       a.Log,
 		OutputDir: filepath.Dir(a.Config.AppDBPath),
@@ -140,13 +129,13 @@ func (a *app) runReview(cmd *cobra.Command) error {
 	return nil
 }
 
-// approvedCount is how many of the session's entries the user already
-// confirmed — the size of the plan a --rebuild would throw away.
-func approvedCount(ctx context.Context, database *db.DB, sessionID uuid.UUID) (int, error) {
+// approvedCount is how many entries the user already confirmed — the size of
+// the plan a --rebuild would throw away.
+func approvedCount(ctx context.Context, database *db.DB) (int, error) {
 	var n int
 	if err := database.SQL.GetContext(ctx, &n,
-		`SELECT COUNT(*) FROM virtual_fs_entries WHERE session_id = ? AND status = ?`,
-		sessionID.String(), db.StatusApproved); err != nil {
+		`SELECT COUNT(*) FROM virtual_fs_entries WHERE status = ?`,
+		db.StatusApproved); err != nil {
 		return 0, fmt.Errorf("count approved entries: %w", err)
 	}
 	return n, nil
@@ -156,14 +145,7 @@ func approvedCount(ctx context.Context, database *db.DB, sessionID uuid.UUID) (i
 // the already-open DB and resolver from the scan (no lock/DB re-init — the
 // caller still holds the output lock).
 func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
-	sessionID, err := vfs.ProposalSession(ctx, a.AppDB)
-	if err != nil {
-		if errors.Is(err, vfs.ErrNoProposal) {
-			return nil, fmt.Errorf("no proposal to review")
-		}
-		return nil, err
-	}
-	tree, err := vfs.BuildTree(ctx, sessionID, a.AppDB)
+	tree, err := vfs.BuildTree(ctx, a.AppDB)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +158,6 @@ func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	}
 	return review.Screen(ctx, review.Options{
 		DB:        a.AppDB,
-		SessionID: sessionID,
 		Tree:      tree,
 		Resolver:  a.LocationResolver,
 		Log:       a.Log,

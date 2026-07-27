@@ -8,7 +8,6 @@ package vfs
 
 import (
 	"context"
-	"errors"
 	"path"
 	"slices"
 	"strings"
@@ -51,7 +50,7 @@ func TestReview(t *testing.T) {
 			h.build(t, cfg, locationtest.Resolver(t))
 
 			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.sessionID, h.d)
+			tree, err := BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -64,7 +63,7 @@ func TestReview(t *testing.T) {
 				t.Fatal("no node carried a suggestion to rename")
 			}
 
-			if err := Confirm(ctx, h.sessionID, h.d, tree); err != nil {
+			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatal(err)
 			}
 
@@ -73,8 +72,7 @@ func TestReview(t *testing.T) {
 				Status     string `db:"status"`
 			}
 			if err := h.d.SQL.Select(&rows,
-				`SELECT target_path, status FROM virtual_fs_entries WHERE session_id = ?`,
-				h.sessionID.String()); err != nil {
+				`SELECT target_path, status FROM virtual_fs_entries`); err != nil {
 				t.Fatal(err)
 			}
 			oldSeg := "/" + path.Base(oldID) + "/"
@@ -113,7 +111,7 @@ func TestReview(t *testing.T) {
 			h.build(t, DefaultConfig(), locationtest.Resolver(t))
 
 			bogus := []Node{{ID: "not/a/real/path", Name: "x", Children: []Node{}}}
-			if err := Confirm(context.Background(), h.sessionID, h.d, bogus); err == nil {
+			if err := Confirm(context.Background(), h.d, bogus); err == nil {
 				t.Fatal("expected error for unknown node id")
 			}
 		}},
@@ -131,7 +129,7 @@ func TestReview(t *testing.T) {
 			h.build(t, cfg, locationtest.Resolver(t))
 
 			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.sessionID, h.d)
+			tree, err := BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -152,13 +150,13 @@ func TestReview(t *testing.T) {
 			suggested[0].Name = "Manali"
 			suggested[1].Name = "Manali"
 
-			if err := Confirm(ctx, h.sessionID, h.d, tree); err != nil {
+			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatalf("Confirm merge: %v", err)
 			}
 
 			var targets []string
 			if err := h.d.SQL.Select(&targets,
-				`SELECT DISTINCT target_path FROM virtual_fs_entries WHERE session_id = ?`, h.sessionID.String()); err != nil {
+				`SELECT DISTINCT target_path FROM virtual_fs_entries`); err != nil {
 				t.Fatal(err)
 			}
 			for _, tp := range targets {
@@ -190,7 +188,7 @@ func TestReview(t *testing.T) {
 			h.build(t, cfg, locationtest.Resolver(t))
 
 			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.sessionID, h.d)
+			tree, err := BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -213,13 +211,13 @@ func TestReview(t *testing.T) {
 			suggested[0].MergedIDs = []string{foldedID}
 			tree = dropNodeByID(tree, foldedID)
 
-			if err := Confirm(ctx, h.sessionID, h.d, tree); err != nil {
+			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatalf("Confirm merge: %v", err)
 			}
 
 			var targets []string
 			if err := h.d.SQL.Select(&targets,
-				`SELECT target_path FROM virtual_fs_entries WHERE session_id = ?`, h.sessionID.String()); err != nil {
+				`SELECT target_path FROM virtual_fs_entries`); err != nil {
 				t.Fatal(err)
 			}
 			if len(targets) != 2 {
@@ -229,12 +227,6 @@ func TestReview(t *testing.T) {
 				if !strings.Contains(tp, "/Manali/") {
 					t.Errorf("target_path = %q, want merged under Manali", tp)
 				}
-			}
-		}},
-		{"ProposalSessionEmptyDB", func(t *testing.T) {
-			h := newHarness(t)
-			if _, err := ProposalSession(context.Background(), h.d); !errors.Is(err, ErrNoProposal) {
-				t.Fatalf("err = %v, want ErrNoProposal", err)
 			}
 		}},
 		// TestConfirmSuffixesCollidingBasenames covers a data-loss risk opened when
@@ -253,7 +245,7 @@ func TestReview(t *testing.T) {
 			h.build(t, cfg, nil)
 
 			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.sessionID, h.d)
+			tree, err := BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -274,14 +266,13 @@ func TestReview(t *testing.T) {
 			// merge them onto one folder — both files now want the same basename
 			suggested[0].Name, suggested[1].Name = "Manali", "Manali"
 
-			if err := Confirm(ctx, h.sessionID, h.d, tree); err != nil {
+			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatalf("Confirm: %v", err)
 			}
 
 			var targets []string
 			if err := h.d.SQL.Select(&targets,
-				`SELECT target_path FROM virtual_fs_entries WHERE session_id = ? ORDER BY target_path`,
-				h.sessionID.String()); err != nil {
+				`SELECT target_path FROM virtual_fs_entries ORDER BY target_path`); err != nil {
 				t.Fatal(err)
 			}
 			if len(targets) != 2 {
@@ -309,18 +300,18 @@ func TestReview(t *testing.T) {
 			h.build(t, cfg, nil)
 
 			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.sessionID, h.d)
+			tree, err := BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, ok := renameFirstSuggested(tree, "Goa [2024]"); !ok {
 				t.Fatal("no renameable node in the proposal")
 			}
-			if err := Confirm(ctx, h.sessionID, h.d, tree); err != nil {
+			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatal(err)
 			}
 
-			tree, err = BuildTree(ctx, h.sessionID, h.d)
+			tree, err = BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -339,7 +330,7 @@ func TestReview(t *testing.T) {
 				t.Fatal("rename to a bracketed name did not reach target_path")
 			}
 
-			files, err := FilesUnder(ctx, h.sessionID, bracketed, h.d)
+			files, err := FilesUnder(ctx, bracketed, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -357,7 +348,7 @@ func TestReview(t *testing.T) {
 			h.build(t, DefaultConfig(), locationtest.Resolver(t))
 
 			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.sessionID, h.d)
+			tree, err := BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}

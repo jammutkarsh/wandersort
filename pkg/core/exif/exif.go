@@ -19,7 +19,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
@@ -33,8 +32,7 @@ import (
 // their own, so they are never claimed and stay at HASHED
 const hashedFiles = `
 	FROM live_files
-	WHERE scan_session_id = ?
-		AND scan_status = ?
+	WHERE scan_status = ?
 		AND COALESCE(media_type, '') != ?`
 
 // Extractor reads EXIF from hashed files and persists it
@@ -54,9 +52,9 @@ func New(db *db.DB, log logger.Logger, exiftoolPath string, workers int) *Extrac
 	}
 }
 
-// Run claims every hashed file of the session in pages and extracts its
-// metadata in a bounded worker pool. Returns how many files were persisted
-func (e *Extractor) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
+// Run claims every hashed file in pages and extracts its metadata in a
+// bounded worker pool. Returns how many files were persisted
+func (e *Extractor) Run(ctx context.Context) (int, error) {
 	toExtract := make(chan fileRecord, 2*e.workers)
 	producerErr := make(chan error, 1)
 
@@ -65,15 +63,15 @@ func (e *Extractor) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	ctxWithCancel, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	e.log.Info("Extracting metadata", "sessionId", sessionID)
+	e.log.Info("Extracting metadata")
 
 	var total int
 	if err := e.db.QueryRowContext(ctx, `SELECT COUNT(*) `+hashedFiles,
-		sessionID.String(), db.StatusHashed, classifier.MediaTypeSidecar).Scan(&total); err != nil {
-		e.log.Warn("Failed to count files to extract", "sessionId", sessionID, "error", err)
+		db.StatusHashed, classifier.MediaTypeSidecar).Scan(&total); err != nil {
+		e.log.Warn("Failed to count files to extract", "error", err)
 	}
 
-	go e.producer(ctxWithCancel, sessionID, cancel, toExtract, producerErr)
+	go e.producer(ctxWithCancel, cancel, toExtract, producerErr)
 
 	// Workers write straight through the BulkWriter rather than funnelling into
 	// a store goroutine: the writer already serializes every operation, so the
@@ -81,7 +79,7 @@ func (e *Extractor) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	var wg sync.WaitGroup
 	for range e.workers {
 		wg.Go(func() {
-			e.worker(ctxWithCancel, sessionID, toExtract, &extracted, total)
+			e.worker(ctxWithCancel, toExtract, &extracted, total)
 		})
 	}
 	wg.Wait()
@@ -94,16 +92,16 @@ func (e *Extractor) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 	}
 
 	persisted := int(extracted.Load())
-	e.log.Info("Metadata extraction complete", "sessionId", sessionID, "filesExtracted", persisted)
+	e.log.Info("Metadata extraction complete", "filesExtracted", persisted)
 	return persisted, nil
 }
 
 // producer claims hashed files one at a time and feeds them to the workers
-func (e *Extractor) producer(ctx context.Context, sessionID uuid.UUID, cancel context.CancelFunc, toExtract chan<- fileRecord, producerErr chan<- error) {
+func (e *Extractor) producer(ctx context.Context, cancel context.CancelFunc, toExtract chan<- fileRecord, producerErr chan<- error) {
 	defer close(toExtract)
 
 	for {
-		record, ok, err := e.getFile(ctx, sessionID)
+		record, ok, err := e.getFile(ctx)
 		if err != nil {
 			producerErr <- err
 			cancel()
@@ -126,7 +124,7 @@ func (e *Extractor) producer(ctx context.Context, sessionID uuid.UUID, cancel co
 // getFile atomically claims the next hashed file and returns its record. The
 // ANALYZING stamp is what makes an interrupted phase resumable: the next scan
 // resets those rows to HASHED instead of re-hashing them
-func (e *Extractor) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecord, bool, error) {
+func (e *Extractor) getFile(ctx context.Context) (fileRecord, bool, error) {
 	var id int64
 	var fileDir, fileName string
 	query := `
@@ -140,7 +138,7 @@ func (e *Extractor) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecor
 	RETURNING id, file_dir, file_name`
 
 	err := e.db.
-		QueryRowContext(ctx, query, db.StatusAnalyzing, sessionID.String(), db.StatusHashed, classifier.MediaTypeSidecar).
+		QueryRowContext(ctx, query, db.StatusAnalyzing, db.StatusHashed, classifier.MediaTypeSidecar).
 		Scan(&id, &fileDir, &fileName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fileRecord{}, false, nil
@@ -153,7 +151,7 @@ func (e *Extractor) getFile(ctx context.Context, sessionID uuid.UUID) (fileRecor
 }
 
 // worker extracts one file at a time and enqueues its metadata write
-func (e *Extractor) worker(ctx context.Context, sessionID uuid.UUID, toExtract <-chan fileRecord, extracted *atomic.Int64, total int) {
+func (e *Extractor) worker(ctx context.Context, toExtract <-chan fileRecord, extracted *atomic.Int64, total int) {
 	for file := range toExtract {
 		if ctx.Err() != nil {
 			return
@@ -170,18 +168,18 @@ func (e *Extractor) worker(ctx context.Context, sessionID uuid.UUID, toExtract <
 			if ctx.Err() != nil {
 				return
 			}
-			e.log.Warn("Failed to extract exif data", "sessionId", sessionID, "fileId", file.id, "path", file.absPath, "error", err)
+			e.log.Warn("Failed to extract exif data", "fileId", file.id, "path", file.absPath, "error", err)
 		}
 
 		// Per-file feed line for the TUI (StreamKey: feed + file log, never the
 		// plain console). Logged at Info — the TUI handler filters by level, so
 		// a Debug line would never reach the bar. It carries the running count
 		// so the bar advances one file at a time.
-		e.log.Info("Reading metadata", logger.StreamKey, true, "sessionId", sessionID,
+		e.log.Info("Reading metadata", logger.StreamKey, true,
 			"file", filepath.Base(file.absPath), "extracted", extracted.Add(1), "total", total)
 
 		if !e.db.Writer.Write(e.store(file.id, meta)) {
-			e.log.Warn("Bulk writer closed; dropping metadata write", "sessionId", sessionID, "fileId", file.id)
+			e.log.Warn("Bulk writer closed; dropping metadata write", "fileId", file.id)
 			return
 		}
 	}

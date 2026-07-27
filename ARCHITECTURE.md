@@ -8,7 +8,7 @@ How WanderSort is put together — the map of the codebase for contributors. If
 you're a *user*, start with the [README](README.md); this document is about the
 code.
 
-WanderSort is a single Go binary. It runs as a foreground CLI (`scan`, `report`,
+WanderSort is a single Go binary. It runs as a foreground CLI (`scan`, `review`,
 …) and can also expose the same pipeline over a local REST API (`serve`). No
 daemon, no external services — everything is local: a SQLite file, a bundled
 ExifTool binary, and an offline location database.
@@ -58,7 +58,6 @@ One file per command:
 | --- | --- |
 | `scan` | Run the full pipeline synchronously in the foreground. `--paths/-p` is repeatable and comma-friendly. |
 | `serve` | Long-lived HTTP API (gin) with Swagger docs. Same pipeline, background sessions. |
-| `report` | Read-only per-session summary — scanned / hashed / duplicate counts, newest first. `--vertical/-x` for narrow terminals. |
 | `setup` | Pre-download dependencies (ExifTool + location DB). Optional — `scan`/`serve` auto-install what's missing. |
 | `reset` | Wipe all scan data (prompts unless `--yes`). |
 | `issue` | Zip up logs (and optionally the DB) for a bug report. |

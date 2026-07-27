@@ -97,7 +97,7 @@ func (a *app) runScanPlain(paths []string) error {
 
 	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, workflow.ReadyDeps(a.ExiftoolPath, a.LocationResolver))
 
-	sessionID, scanPaths, err := wf.RunScan(paths)
+	scanPaths, err := wf.RunScan(paths)
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}
@@ -107,7 +107,7 @@ func (a *app) runScanPlain(paths []string) error {
 		hint = fmt.Sprintf("wandersort review -o %s", filepath.Dir(a.Config.AppDBPath))
 	}
 	a.Log.Info(fmt.Sprintf("Scan complete in %s. Run '%s' to review the proposed folders.", time.Since(start).Round(time.Millisecond), hint),
-		logger.UserKey, true, "sessionId", sessionID, "scanPaths", scanPaths)
+		logger.UserKey, true, "scanPaths", scanPaths)
 	return nil
 }
 
@@ -191,7 +191,7 @@ func (a *app) runScanTUI(paths []string) error {
 	wf := workflow.NewWorkflow(ctx, a.AppDB, tuiLog, a.Config, deps)
 	first := tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {
-			_, _, err := wf.RunScan(paths)
+			_, err := wf.RunScan(paths)
 			return err
 		},
 		Cancel: cancel,

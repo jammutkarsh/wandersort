@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
@@ -96,7 +95,7 @@ func TestScanner(t *testing.T) {
 			root := createTestTree(t)
 			sc := newTestScanner(t)
 			filesChan := make(chan FileDiscovery, 200)
-			err := sc.walkRoot(context.Background(), uuid.Nil, root, "", filesChan)
+			err := sc.walkRoot(context.Background(), root, "", filesChan)
 			close(filesChan)
 			if err != nil {
 				t.Fatalf("walkRoot: %v", err)
@@ -126,7 +125,7 @@ func TestScanner(t *testing.T) {
 			cancel() // cancel immediately
 
 			filesChan := make(chan FileDiscovery, 200)
-			err := sc.walkRoot(ctx, uuid.Nil, root, "", filesChan)
+			err := sc.walkRoot(ctx, root, "", filesChan)
 			close(filesChan)
 
 			if err == nil {
@@ -146,7 +145,7 @@ func TestScanner(t *testing.T) {
 			var wg sync.WaitGroup
 			for range walkers {
 				wg.Go(func() {
-					_ = sc.walkRoot(context.Background(), uuid.Nil, root, "", filesChan)
+					_ = sc.walkRoot(context.Background(), root, "", filesChan)
 				})
 			}
 
@@ -181,8 +180,7 @@ func TestScanner(t *testing.T) {
 				}
 			}
 
-			session1 := dbtest.NewSession(t, d, db.StatusStarted)
-			if _, err := sc.Run(ctx, session1, []string{root}); err != nil {
+			if _, err := sc.Run(ctx, []string{root}); err != nil {
 				t.Fatalf("first scan: %v", err)
 			}
 			d.Writer.Flush()
@@ -216,8 +214,7 @@ func TestScanner(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			session2 := dbtest.NewSession(t, d, db.StatusStarted)
-			if _, err := sc.Run(ctx, session2, []string{root}); err != nil {
+			if _, err := sc.Run(ctx, []string{root}); err != nil {
 				t.Fatalf("re-scan: %v", err)
 			}
 			d.Writer.Flush()
@@ -248,8 +245,7 @@ func TestScanner(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "delete.jpg"), []byte("doomed bytes"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			session3 := dbtest.NewSession(t, d, db.StatusStarted)
-			if _, err := sc.Run(ctx, session3, []string{root}); err != nil {
+			if _, err := sc.Run(ctx, []string{root}); err != nil {
 				t.Fatalf("resurrect scan: %v", err)
 			}
 			d.Writer.Flush()
@@ -265,12 +261,11 @@ func TestScanner(t *testing.T) {
 			ctx := context.Background()
 			sc, d := newDBScanner(t)
 
-			stale := dbtest.NewSession(t, d, db.StatusCompleted)
-			dbtest.SeedFile(t, d, stale, 1, "/photos/trips", "gone.jpg", 10)
-			dbtest.SeedFile(t, d, stale, 2, "/", "root.jpg", 10)
+			// SeedFile stamps a fixed 2024-01-01 last_seen_at, well before "now"
+			dbtest.SeedFile(t, d, 1, "/photos/trips", "gone.jpg", 10)
+			dbtest.SeedFile(t, d, 2, "/", "root.jpg", 10)
 
-			current := dbtest.NewSession(t, d, db.StatusStarted)
-			if err := sc.sweep(ctx, current, "/"); err != nil {
+			if err := sc.sweep(ctx, time.Now(), "/"); err != nil {
 				t.Fatalf("sweep: %v", err)
 			}
 
@@ -289,19 +284,18 @@ func TestScanner(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "photo.jpg"), []byte("bytes"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			session1 := dbtest.NewSession(t, d, db.StatusStarted)
-			if _, err := sc.Run(ctx, session1, []string{root}); err != nil {
+			if _, err := sc.Run(ctx, []string{root}); err != nil {
 				t.Fatalf("first scan: %v", err)
 			}
 			d.Writer.Flush()
+			seenAfterFirst := registryByName(t, d)["photo.jpg"].LastSeenAt
 
 			// Unplugged-drive scenario: the root vanishes entirely. The scan must fail
 			// and the index must survive untouched
 			if err := os.RemoveAll(root); err != nil {
 				t.Fatal(err)
 			}
-			session2 := dbtest.NewSession(t, d, db.StatusStarted)
-			if _, err := sc.Run(ctx, session2, []string{root}); err == nil {
+			if _, err := sc.Run(ctx, []string{root}); err == nil {
 				t.Fatal("scan of a missing root should fail")
 			}
 			d.Writer.Flush()
@@ -313,8 +307,8 @@ func TestScanner(t *testing.T) {
 			if rows["photo.jpg"].DeletedAt != nil {
 				t.Error("missing root soft-deleted a file it never scanned")
 			}
-			if rows["photo.jpg"].SessionID != session1.String() {
-				t.Errorf("surviving row reassigned to session %s", rows["photo.jpg"].SessionID)
+			if rows["photo.jpg"].LastSeenAt != seenAfterFirst {
+				t.Errorf("surviving row's last_seen_at changed to %s, want unchanged %s", rows["photo.jpg"].LastSeenAt, seenAfterFirst)
 			}
 		}},
 		// TestRunPartialRootFailureSweepsOnlyCleanRoots: with two disjoint roots where
@@ -334,11 +328,11 @@ func TestScanner(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			session1 := dbtest.NewSession(t, d, db.StatusStarted)
-			if _, err := sc.Run(ctx, session1, []string{rootA, rootB}); err != nil {
+			if _, err := sc.Run(ctx, []string{rootA, rootB}); err != nil {
 				t.Fatalf("first scan: %v", err)
 			}
 			d.Writer.Flush()
+			seenAfterFirst := registryByName(t, d)["photo.jpg"].LastSeenAt
 
 			if err := os.Remove(filepath.Join(rootA, "gone.jpg")); err != nil {
 				t.Fatal(err)
@@ -346,8 +340,7 @@ func TestScanner(t *testing.T) {
 			if err := os.RemoveAll(rootB); err != nil {
 				t.Fatal(err)
 			}
-			session2 := dbtest.NewSession(t, d, db.StatusStarted)
-			if _, err := sc.Run(ctx, session2, []string{rootA, rootB}); err == nil {
+			if _, err := sc.Run(ctx, []string{rootA, rootB}); err == nil {
 				t.Fatal("scan with a missing root should fail")
 			}
 			d.Writer.Flush()
@@ -362,8 +355,8 @@ func TestScanner(t *testing.T) {
 			if rows["photo.jpg"].DeletedAt != nil {
 				t.Error("failed root's file was swept despite the walk never running")
 			}
-			if rows["photo.jpg"].SessionID != session1.String() {
-				t.Errorf("failed root's row reassigned to session %s", rows["photo.jpg"].SessionID)
+			if rows["photo.jpg"].LastSeenAt != seenAfterFirst {
+				t.Errorf("failed root's row last_seen_at changed to %s, want unchanged %s", rows["photo.jpg"].LastSeenAt, seenAfterFirst)
 			}
 		}},
 		{"RunPurgesExpiredRows", func(t *testing.T) {
@@ -372,8 +365,7 @@ func TestScanner(t *testing.T) {
 
 			// A file soft-deleted beyond the retention window, with dependent
 			// metadata and vfs rows that must be purged in FK order
-			old := dbtest.NewSession(t, d, db.StatusCompleted)
-			dbtest.SeedFile(t, d, old, 1, "/gone", "expired.jpg", 10)
+			dbtest.SeedFile(t, d, 1, "/gone", "expired.jpg", 10)
 			if _, err := d.ExecContext(ctx,
 				`UPDATE file_registry SET deleted_at = ? WHERE id = 1`,
 				db.FormatTime(time.Now().Add(-deletedRetention-time.Hour))); err != nil {
@@ -384,20 +376,19 @@ func TestScanner(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := d.ExecContext(ctx, `
-		INSERT INTO virtual_fs_entries (session_id, file_id, source_path, target_path)
-		VALUES (?, 1, '/gone/expired.jpg', 'stale/expired.jpg')`, old.String()); err != nil {
+		INSERT INTO virtual_fs_entries (file_id, source_path, target_path)
+		VALUES (1, '/gone/expired.jpg', 'stale/expired.jpg')`); err != nil {
 				t.Fatal(err)
 			}
 			// A file inside the retention window survives the purge
-			dbtest.SeedFile(t, d, old, 2, "/gone", "recent.jpg", 10)
+			dbtest.SeedFile(t, d, 2, "/gone", "recent.jpg", 10)
 			if _, err := d.ExecContext(ctx,
 				`UPDATE file_registry SET deleted_at = ? WHERE id = 2`,
 				db.FormatTime(time.Now().Add(-time.Hour))); err != nil {
 				t.Fatal(err)
 			}
 
-			session := dbtest.NewSession(t, d, db.StatusStarted)
-			if _, err := sc.Run(ctx, session, []string{t.TempDir()}); err != nil {
+			if _, err := sc.Run(ctx, []string{t.TempDir()}); err != nil {
 				t.Fatalf("scan: %v", err)
 			}
 			d.Writer.Flush()
@@ -442,11 +433,11 @@ func newDBScanner(t *testing.T) (*Scanner, *db.DB) {
 }
 
 type registryRow struct {
-	ID        int64   `db:"id"`
-	FileName  string  `db:"file_name"`
-	Status    string  `db:"scan_status"`
-	SessionID string  `db:"scan_session_id"`
-	DeletedAt *string `db:"deleted_at"`
+	ID         int64   `db:"id"`
+	FileName   string  `db:"file_name"`
+	Status     string  `db:"scan_status"`
+	LastSeenAt string  `db:"last_seen_at"`
+	DeletedAt  *string `db:"deleted_at"`
 }
 
 // registryByName keys every registry row by file name; test trees use unique
@@ -455,7 +446,7 @@ func registryByName(t *testing.T, d *db.DB) map[string]registryRow {
 	t.Helper()
 	var rows []registryRow
 	if err := d.SQL.Select(&rows,
-		`SELECT id, file_name, scan_status, scan_session_id, deleted_at FROM file_registry`); err != nil {
+		`SELECT id, file_name, scan_status, last_seen_at, deleted_at FROM file_registry`); err != nil {
 		t.Fatal(err)
 	}
 	byName := map[string]registryRow{}

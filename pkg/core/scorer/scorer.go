@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -68,8 +67,8 @@ func New(db *db.DB, log logger.Logger) *Scorer {
 	return &Scorer{db: db, log: log}
 }
 
-func (s *Scorer) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
-	s.log.Info("Scoring session", "sessionId", sessionID)
+func (s *Scorer) Run(ctx context.Context) (int, error) {
+	s.log.Info("Scoring duplicates")
 
 	// Re-promote solo files stuck at is_master = 0: when a re-scan sweeps every
 	// other member of a duplicate group, the demoted survivor is no longer in
@@ -144,11 +143,11 @@ func (s *Scorer) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 			return count, fmt.Errorf("persist master for hash %s: writer closed", master.FileHash)
 		}
 
-		s.log.Debug("Persisted group master", "sessionId", sessionID, "hash", master.FileHash,
+		s.log.Debug("Persisted group master", "hash", master.FileHash,
 			"masterFileId", master.FileID, "memberCount", len(duplicates))
 	}
 
-	s.log.Info("Scored duplicate groups", "sessionId", sessionID, "count", count)
+	s.log.Info("Scored duplicate groups", "count", count)
 	return count, nil
 }
 

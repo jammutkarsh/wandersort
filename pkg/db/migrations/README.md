@@ -54,47 +54,6 @@ Auto-created by the migration runner. Tracks which migrations have been applied.
 
 ---
 
-### `scan_sessions`
-
-**Purpose:** Track each scan invocation — its progress, status, and error state. Enables **incremental scanning** (only process new/changed files) and **resumability** (pick up where a failed scan left off).
-
-```sql
-    id TEXT PRIMARY KEY,
-    started_at TEXT NOT NULL,
-    completed_at TEXT,
-    status TEXT NOT NULL CHECK(status IN ('SCAN','HASH','SCORE','FAILED','CANCELLED')),
-```
-
-- `id`: UUID as TEXT. **Why TEXT not INTEGER?** Sessions are created by the application before any DB insert (passed into workers). UUID avoids autoincrement coordination across goroutines.
-- `status`: Phase/state machine. Success path is `SCAN -> HASH -> SCORE`; terminal failure states are `FAILED` and `CANCELLED`.
-
-```sql
-    root_paths TEXT NOT NULL,
-```
-
-- `root_paths`: JSON array of scanned directories. **Why store it?** A single scan can cover multiple roots (`["/Photos", "/Backups"]`). Without this, you can't answer "which directories did scan X cover?" — needed for incremental re-scan logic.
-
-```sql
-    files_discovered INTEGER NOT NULL DEFAULT 0,
-    files_skipped INTEGER NOT NULL DEFAULT 0,
-    files_new INTEGER NOT NULL DEFAULT 0,
-    files_modified INTEGER NOT NULL DEFAULT 0,
-    files_hashed INTEGER NOT NULL DEFAULT 0,
-    errors_encountered INTEGER NOT NULL DEFAULT 0,
-    last_error TEXT,
-```
-
-**The progress counters:**
-
-- `files_discovered`: Total files found during filesystem walk. **Why?** UI progress bar denominator.
-- `files_skipped`: Files excluded by extension filter or symlink rules. **Why separate from discovered?** So you can report "scanned 50k files, skipped 2k non-media files".
-- `files_new`: Files not previously in `file_registry`. **Why track?** Tells you how much new content was found — useful for "nothing new since last scan" feedback.
-- `files_modified`: Files whose mtime changed since last seen. **Why?** These need re-hashing even though they already had a hash.
-- `files_hashed`: Count of files hashed during this session (added in v2). **Why separate counter?** Hashing is a distinct phase from discovery — you might discover 50k files but only hash 5k new ones.
-- `errors_encountered` / `last_error`: **Why?** If a scan fails on 3 out of 50k files (permission denied, corrupt path), you still want the scan to succeed. These let the UI show "completed with 3 errors" and the last error message for debugging.
-
----
-
 ### `file_registry`
 
 **Purpose:** The **census** of every file ever scanned. It answers: "Does this file exist in my system?" One row per unique file path.
@@ -117,15 +76,13 @@ Auto-created by the migration runner. Tracks which migrations have been applied.
 ```sql
     discovered_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
-    scan_session_id TEXT NOT NULL,
     source_root TEXT NOT NULL,
 ```
 
 **The "audit trail" columns:**
 
 - `discovered_at`: When we first saw this file. **Why?** You can query "show me files added this week".
-- `last_seen_at`: Updated on every scan that encounters this file. **Why?** If `last_seen_at` is older than the latest scan, the file was deleted from disk. Critical for stale-file detection.
-- `scan_session_id`: Which scan found this file. **Why?** Links back to `scan_sessions` for incremental scan logic. If file isn't seen in the latest scan session, it may have been moved or deleted.
+- `last_seen_at`: Updated on every scan that encounters this file. **Why?** A scan captures its own start time in memory and stamps every file it touches with a fresh `last_seen_at`; anything under a scanned root with an older `last_seen_at` wasn't re-seen and is stale (no session table needed for this — see `scanner.sweep`).
 - `source_root`: Which root directory the file was found under. **Why?** You might scan 5 different drives. This tracks provenance — "this file came from the backup drive, not the phone import".
 
 ```sql

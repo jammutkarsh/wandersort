@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -30,28 +29,16 @@ func New(t *testing.T) *db.DB {
 	return d
 }
 
-// NewSession inserts a scan_sessions row with the given status and returns its id
-func NewSession(t *testing.T, d *db.DB, status string) uuid.UUID {
-	t.Helper()
-	id := uuid.New()
-	if _, err := d.ExecContext(context.Background(),
-		`INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, ?, '/tmp')`,
-		id.String(), status); err != nil {
-		t.Fatal(err)
-	}
-	return id
-}
-
 // SeedFile inserts a live file_registry row with fixed timestamps and returns nothing;
 // callers pick the id so tests can reference rows without querying back
-func SeedFile(t *testing.T, d *db.DB, sessionID uuid.UUID, id int64, dir, name string, size int64) {
+func SeedFile(t *testing.T, d *db.DB, id int64, dir, name string, size int64) {
 	t.Helper()
 	if _, err := d.ExecContext(context.Background(), `
 		INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
-			scan_session_id, file_extension, media_type, discovered_at, last_seen_at)
-		VALUES (?, ?, ?, ?, '2024-01-01T00:00:00.000000000Z', ?, ?, 'IMAGE',
+			file_extension, media_type, discovered_at, last_seen_at)
+		VALUES (?, ?, ?, ?, '2024-01-01T00:00:00.000000000Z', ?, 'IMAGE',
 			'2024-01-01T00:00:00.000000000Z', '2024-01-01T00:00:00.000000000Z')`,
-		id, dir, name, size, sessionID.String(), filepath.Ext(name)); err != nil {
+		id, dir, name, size, filepath.Ext(name)); err != nil {
 		t.Fatal(err)
 	}
 }

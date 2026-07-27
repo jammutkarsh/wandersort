@@ -80,8 +80,8 @@ make install         installs to $GOPATH/bin/wandersort (requires Go 1.26.5 or a
 #    first run — no separate setup step required.
 wandersort scan --paths ~/Pictures,/Volumes/SD
 
-# 2. See what was found — scanned, hashed, and duplicate counts.
-wandersort report
+# 2. Review and confirm the proposed folder structure.
+wandersort review
 ```
 
 > Want to change the defaults (output folder, workers, folder rules, home/work towns)? Run `wandersort config` for a full-screen settings wizard; it writes `~/.wandersort/config.yaml`.

@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/google/uuid"
-
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
@@ -23,9 +21,9 @@ import (
 // seedHashed puts one live file in the state the hash phase leaves behind: a
 // registry row with a metadata row holding only its hash. The insert trigger
 // is what flips scan_status to HASHED
-func seedHashed(t *testing.T, d *db.DB, sessionID uuid.UUID, id int64, dir, name string) {
+func seedHashed(t *testing.T, d *db.DB, id int64, dir, name string) {
 	t.Helper()
-	dbtest.SeedFile(t, d, sessionID, id, dir, name, 13)
+	dbtest.SeedFile(t, d, id, dir, name, 13)
 	if _, err := d.ExecContext(context.Background(),
 		`INSERT INTO file_metadata (file_hash, file_id) VALUES (?, ?)`,
 		"hash-of-"+name, id); err != nil {
@@ -58,12 +56,11 @@ func TestExtractor(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "photo.jpg"), []byte("bytes"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			sessionID := dbtest.NewSession(t, d, db.StatusHashed)
-			seedHashed(t, d, sessionID, 1, root, "photo.jpg")
+			seedHashed(t, d, 1, root, "photo.jpg")
 
 			// A nonexistent exiftool path makes every extraction fail
 			e := New(d, logger.NewNoopLogger(), filepath.Join(t.TempDir(), "missing-exiftool"), 1)
-			count, err := e.Run(ctx, sessionID)
+			count, err := e.Run(ctx)
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -90,15 +87,14 @@ func TestExtractor(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
 
-			sessionID := dbtest.NewSession(t, d, db.StatusHashed)
-			seedHashed(t, d, sessionID, 1, t.TempDir(), "IMG_0001.AAE")
+			seedHashed(t, d, 1, t.TempDir(), "IMG_0001.AAE")
 			if _, err := d.ExecContext(ctx,
 				`UPDATE file_registry SET media_type = ? WHERE id = 1`, classifier.MediaTypeSidecar); err != nil {
 				t.Fatal(err)
 			}
 
 			e := New(d, logger.NewNoopLogger(), filepath.Join(t.TempDir(), "missing-exiftool"), 1)
-			count, err := e.Run(ctx, sessionID)
+			count, err := e.Run(ctx)
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -116,8 +112,7 @@ func TestExtractor(t *testing.T) {
 		{"StoreFillsInTheHashedRow", func(t *testing.T) {
 			d := dbtest.New(t)
 
-			sessionID := dbtest.NewSession(t, d, db.StatusHashed)
-			seedHashed(t, d, sessionID, 1, t.TempDir(), "photo.jpg")
+			seedHashed(t, d, 1, t.TempDir(), "photo.jpg")
 
 			e := New(d, logger.NewNoopLogger(), "exiftool", 1)
 			if !d.Writer.Write(e.store(1, classifier.CommonMetadata{

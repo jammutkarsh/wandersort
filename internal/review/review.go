@@ -19,7 +19,6 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/google/uuid"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -122,11 +121,10 @@ type Model struct {
 	input     string
 	confirmed bool
 
-	ctx       context.Context
-	db        *db.DB
-	sessionID uuid.UUID
-	resolver  *location.Resolver
-	log       logger.Logger
+	ctx      context.Context
+	db       *db.DB
+	resolver *location.Resolver
+	log      logger.Logger
 
 	// Rename autocomplete. Both sources are fetched up front and filtered in
 	// memory per keystroke, so typing never hits the DB.
@@ -157,7 +155,7 @@ type Model struct {
 	spin        spinner.Model
 }
 
-func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, sessionID uuid.UUID, resolver *location.Resolver, log logger.Logger) Model {
+func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, resolver *location.Resolver, log logger.Logger) Model {
 	// same spinner the scan and install screens run
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -168,7 +166,6 @@ func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, sessionID u
 		rows:        flattenTree(tree, 0, nil, ""),
 		ctx:         ctx,
 		db:          database,
-		sessionID:   sessionID,
 		resolver:    resolver,
 		log:         log,
 		previewDirs: map[string]string{},
@@ -514,7 +511,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// goroutine and must never touch state Update also mutates
 			cached := make(map[string]string, len(m.previewDirs))
 			maps.Copy(cached, m.previewDirs)
-			cmd = tea.Batch(peekCmd(m.ctx, m.db, m.sessionID, node, cached), m.spin.Tick)
+			cmd = tea.Batch(peekCmd(m.ctx, m.db, node, cached), m.spin.Tick)
 		}
 	case "a":
 		for _, r := range m.rows {
@@ -1137,13 +1134,13 @@ func filesSignature(files []string) string {
 // peekCmd copies a folder's files to a temp dir for the OS viewer, reusing a
 // cached copy with the same file membership. cached is a snapshot taken before
 // dispatch — this runs off the UI goroutine.
-func peekCmd(ctx context.Context, database *db.DB, sessionID uuid.UUID, node *vfs.Node, cached map[string]string) tea.Cmd {
+func peekCmd(ctx context.Context, database *db.DB, node *vfs.Node, cached map[string]string) tea.Cmd {
 	return func() tea.Msg {
 		var files []string
 		// a merged node's files still live under the folded-away paths until
 		// Confirm rewrites them, so look under each
 		for _, id := range append([]string{node.ID}, node.MergedIDs...) {
-			under, err := vfs.FilesUnder(ctx, sessionID, id, database)
+			under, err := vfs.FilesUnder(ctx, id, database)
 			if err != nil {
 				return previewDoneMsg{err: err}
 			}

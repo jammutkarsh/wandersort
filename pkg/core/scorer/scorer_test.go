@@ -10,7 +10,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -192,11 +191,10 @@ func TestDatePattern(t *testing.T) {
 func TestRun(t *testing.T) {
 	d := dbtest.New(t)
 	ctx := context.Background()
-	sessionId := dbtest.NewSession(t, d, db.StatusHashed)
 
-	dbtest.SeedFile(t, d, sessionId, 1, "/photos/trips/goa", "sunset.jpg", 1024)
-	dbtest.SeedFile(t, d, sessionId, 2, "/backup/dcim", "IMG_3162.jpg", 1024)
-	dbtest.SeedFile(t, d, sessionId, 3, "/photos/trips/goa", "beach.jpg", 2048)
+	dbtest.SeedFile(t, d, 1, "/photos/trips/goa", "sunset.jpg", 1024)
+	dbtest.SeedFile(t, d, 2, "/backup/dcim", "IMG_3162.jpg", 1024)
+	dbtest.SeedFile(t, d, 3, "/photos/trips/goa", "beach.jpg", 2048)
 
 	for _, seed := range []struct {
 		hash   string
@@ -212,7 +210,7 @@ func TestRun(t *testing.T) {
 
 	assertMasters := func() {
 		t.Helper()
-		n, err := s.Run(ctx, sessionId)
+		n, err := s.Run(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -258,7 +256,7 @@ func TestRun(t *testing.T) {
 		`UPDATE file_registry SET deleted_at = '2026-01-01T00:00:00.000000000Z' WHERE id = 2`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (&Scorer{db: d, log: logger.NewNoopLogger()}).Run(ctx, sessionId); err != nil {
+	if _, err := (&Scorer{db: d, log: logger.NewNoopLogger()}).Run(ctx); err != nil {
 		t.Fatal(err)
 	}
 	d.Writer.Flush()
@@ -284,13 +282,12 @@ func TestRun(t *testing.T) {
 func TestRunDirBonusIgnoresGenericAncestors(t *testing.T) {
 	d := dbtest.New(t)
 	ctx := context.Background()
-	sessionId := dbtest.NewSession(t, d, db.StatusHashed)
 
 	// Same camera filename, absolute dirs sharing a generic ancestor (Photos).
 	// Only the leaf folder may decide the dir bonus: the meaningful leaf must
 	// win even though the generic-leaf path is shorter
-	dbtest.SeedFile(t, d, sessionId, 1, "/Users/x/Photos/dcim", "IMG_1.jpg", 1024)
-	dbtest.SeedFile(t, d, sessionId, 2, "/Users/x/Photos/Goa Trip 2024", "IMG_1.jpg", 1024)
+	dbtest.SeedFile(t, d, 1, "/Users/x/Photos/dcim", "IMG_1.jpg", 1024)
+	dbtest.SeedFile(t, d, 2, "/Users/x/Photos/Goa Trip 2024", "IMG_1.jpg", 1024)
 	for _, id := range []int64{1, 2} {
 		if _, err := d.ExecContext(ctx,
 			`INSERT INTO file_metadata (file_hash, file_id) VALUES ('dup', ?)`, id); err != nil {
@@ -299,7 +296,7 @@ func TestRunDirBonusIgnoresGenericAncestors(t *testing.T) {
 	}
 
 	s := &Scorer{db: d, log: logger.NewNoopLogger()}
-	if _, err := s.Run(ctx, sessionId); err != nil {
+	if _, err := s.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
 	d.Writer.Flush()
@@ -317,7 +314,6 @@ func TestRunDirBonusIgnoresGenericAncestors(t *testing.T) {
 func TestRunDeterministicTieBreak(t *testing.T) {
 	d := dbtest.New(t)
 	ctx := context.Background()
-	sessionId := dbtest.NewSession(t, d, db.StatusHashed)
 
 	// Two duplicates with identical score and identical path length; the
 	// (file_dir, file_name) ordering must decide the winner, not the
@@ -330,7 +326,7 @@ func TestRunDeterministicTieBreak(t *testing.T) {
 		{2, "beach_a.jpg"},
 	}
 	for _, f := range seed {
-		dbtest.SeedFile(t, d, sessionId, f.id, "/photos/trips/goa", f.name, 1024)
+		dbtest.SeedFile(t, d, f.id, "/photos/trips/goa", f.name, 1024)
 		if _, err := d.ExecContext(ctx,
 			`INSERT INTO file_metadata (file_hash, file_id) VALUES ('tied', ?)`, f.id); err != nil {
 			t.Fatal(err)
@@ -338,7 +334,7 @@ func TestRunDeterministicTieBreak(t *testing.T) {
 	}
 
 	s := &Scorer{db: d, log: logger.NewNoopLogger()}
-	if _, err := s.Run(ctx, sessionId); err != nil {
+	if _, err := s.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
 	d.Writer.Flush()

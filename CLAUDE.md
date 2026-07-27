@@ -11,7 +11,11 @@ lives where and how the pieces fit.
 ## What WanderSort is
 
 A black-box media organizer. Feed it unorganized photos/videos; it produces an
-ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
+ordered folder hierarchy. Pipeline runs in ordered phases per `wandersort scan`
+invocation — there is no persisted session/run record and no in-memory run
+identity either; the output DB (one per output path) is the durable state,
+and `lock.AcquireOutput`'s exclusive PID lock is what already guarantees only
+one scan ever runs against it at a time (see "Conventions" below):
 
 1. **Scan** — walk roots, build a file index.
 2. **Hash** — content-hash for duplicate detection.
@@ -19,7 +23,7 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
 4. **Score** — within a duplicate group, elect one master copy (same bytes,
    different storage context — e.g. folder named `Goa Trip 2024`).
 5. **VFS** — propose a destination hierarchy for every live master in the
-   library (not just the session's), using the user's prior folder-naming as
+   library (not just this run's), using the user's prior folder-naming as
    context when EXIF is absent. Nothing on disk is touched.
 
 ## Entry point & CLI
@@ -135,7 +139,7 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     already on disk — the (mandatory) `wandersort config` downloads it — so a
     first scan usually only fetches exiftool; the vfs gate is the fallback for
     a config run whose download failed. A download that fails mid-pipeline
-    fails the session at the phase that needed it; files stay `HASHED` and the
+    fails the run at the phase that needed it; files stay `HASHED` and the
     next run resumes. Anchor sync (`a.syncAnchors` → `vfs.SyncAnchors`) happens
     inside the `Location` dep closure — the earliest point the resolver exists,
     and vfs is the only phase that reads anchors. **`scan`/`review` are
@@ -166,9 +170,12 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
     `config` wizard (`config.SaveGlobal`), and its canonical-spelling helpers
     `exactMatch`/`canonicalNameOf` sit in `config.go` next to their only caller.
   - `review.go` — `review` cmd: cobra wiring only (db-exists check, output
-    lock, `vfs.ProposalSession`, the `--rebuild` guard via `approvedCount`,
-    `vfs.BuildTree`), then hands off to `internal/review`. It also holds
-    `newReviewScreen`, which builds the embedded screen `scan` swaps into.
+    lock, the `--rebuild` guard via `approvedCount`, `vfs.BuildTree`), then
+    hands off to `internal/review`. There is no session lookup before
+    `BuildTree` — `virtual_fs_entries` always holds exactly one proposal
+    batch (the VFS phase deletes-then-reinserts wholesale every run), so an
+    empty tree from `BuildTree` alone means "nothing to review yet". It also
+    holds `newReviewScreen`, which builds the embedded screen `scan` swaps into.
     **The TUI itself lives in `internal/review/`** — see below.
 
 - `internal/review/` — the bubbletea **full-tree view** TUI over the VFS
@@ -323,15 +330,12 @@ ordered folder hierarchy. Pipeline runs in ordered phases per scan session:
 
 Back in `internal/cli/`:
 
-  - `report.go` — read-only per-session summary (opens its own RO sqlite conn).
-    Lists every `scan_sessions` row (newest first), each with its own
-    scanned/hashed/duplicate counts — duplicates are scoped to that session's
-    own files via `scan_session_id` (two sessions over different roots can
-    have unrelated duplicate pictures, so counts never bleed across sessions).
-    Errors out if the DB has no sessions yet; flags the newest session as
-    partial if its status isn't terminal (`COMPLETED`/`FAILED`/`CANCELLED`).
-    Default output is a bordered table; `--vertical`/`-x` (psql `\x`-style)
-    prints each session as expanded label:value pairs for narrow terminals.
+  - **There is no `report` command.** It used to print per-session
+    scanned/hashed/duplicate counts read from `scan_sessions`; once that
+    table was dropped (no persisted session/run record — see "What
+    WanderSort is" above), there was nothing left for it to read, so it was
+    deleted rather than rewritten. `wandersort review` is the natural next
+    step after `scan` now.
   - `issue.go` — `issue` cmd: zips the log (renamed
     `wandersort.log`) + `about.txt`; db opt-in via `--include-db` (holds paths/GPS).
   - `reset.go` — wipe scan data (confirm prompt unless `--yes`).
@@ -397,38 +401,54 @@ pointer vs. a real value). `home-work.*` has no flag or env of its own —
   (scan→hash→exif→score→vfs) synchronously on the calling goroutine, so a CLI
   invocation streams progress and blocks until the scan finishes. It runs
   `scanRoots` first — canonicalize, drop duplicates, prune any root nested under
-  another (O(n) after a lex sort) — returning the roots actually walked
-  alongside the session ID. That pruning used to live in an HTTP layer
-  (removed along with `serve` — this is now a single-entry-point CLI), which
-  meant `wandersort scan` reached through `internal/api` to get at it. `NewWorkflow` takes a
-  `Deps` — two blocking getters for the downloadable dependencies — instead of
-  a resolver and exiftool path: the exif and vfs components are built lazily
-  inside their phase closures, calling `deps.Exiftool()`/`deps.Location()`
-  right before running, so a first-ever TUI scan walks and hashes while the
-  downloads are still going. Plain-console scans, which install everything up
-  front, wrap the values in `workflow.ReadyDeps`. `claimRoots` rejects a new
-  session whose roots overlap an in-flight session's (in-memory — the output
-  lock guarantees one process). `helpers.go` = session status/finalize writes
-  plus `CheckOutputSpace` — exported because `review` runs the same check: the
-  last look before a plan is approved is exactly where "the output volume is
-  too small" is still actionable. It fires **at the end of the session**, next
-  to the "run wandersort review" hint, not after the scan phase where it used
-  to scroll past mid-pipeline. `NewWorkflow` logs the resolved
-  `workers`/`output`/`groupBy` as a `UserKey` line: all three come from
-  flag/env/config.yaml, so showing the resolved values up front is the only
-  way to see which source won.
+  another (O(n) after a lex sort) — returning the roots actually walked. That
+  pruning used to live in an HTTP layer (removed along with `serve` — this is
+  now a single-entry-point CLI), which meant `wandersort scan` reached through
+  `internal/api` to get at it. `NewWorkflow` takes a `Deps` — two blocking
+  getters for the downloadable dependencies — instead of a resolver and
+  exiftool path: the exif and vfs components are built lazily inside their
+  phase closures, calling `deps.Exiftool()`/`deps.Location()` right before
+  running, so a first-ever TUI scan walks and hashes while the downloads are
+  still going. Plain-console scans, which install everything up front, wrap
+  the values in `workflow.ReadyDeps`. **There is no `scan_sessions` table and
+  no in-memory run-overlap guard either** — `RunScan` takes no ID and returns
+  none; two scans can never race against the same output dir because
+  `lock.AcquireOutput`'s exclusive PID lock already serializes at the process
+  level, and within one process `RunScan` only ever runs once, synchronously,
+  per `scan` invocation (the old `claimRoots`/`activeRoots` map existed for
+  the since-removed `serve` API's concurrent sessions and was unreachable
+  dead code by the time it was deleted). `helpers.go` holds `CheckOutputSpace`
+  — exported because `review` runs the same check: the last look before a
+  plan is approved is exactly where "the output volume is too small" is still
+  actionable. It fires **at the end of the run**, next to the "run wandersort
+  review" hint, not after the scan phase where it used to scroll past
+  mid-pipeline. `NewWorkflow` logs the resolved `workers`/`output`/`groupBy`
+  as a `UserKey` line: all three come from flag/env/config.yaml, so showing
+  the resolved values up front is the only way to see which source won.
   Each phase reports **one** user-facing line: `workflowPhase.summary(count)`
   with the elapsed time appended (`Scanned 15481 files in 1.996s`). It used to
   be two — a count line from `onSuccess` plus a separate `"%s phase took %s"`
   — which is twice the console noise for one fact. `onSuccess` survives for
   side effects only (the post-scan space check); anything user-facing goes in
-  `summary`.
+  `summary`. Per-run counters (`files_discovered`, `files_hashed`, …) are not
+  persisted anywhere — they were columns on `scan_sessions`, and the TUI's
+  progress bar and the phase-summary lines above were always driven by the
+  phase's own return value and by `StreamKey` log lines, never by reading
+  those columns back, so nothing was lost when the table went away.
 - `scanner/` — phase 1. Bounded-worker directory walk. Files are identified by
   absolute `(file_dir, file_name)`; each root's volume UUID is stamped for
-  future drive re-anchoring. After a clean walk, `sweep` **soft-deletes**
-  (`deleted_at`) rows the session didn't re-see; `purgeExpired` hard-deletes
-  them after 30 days (`deletedRetention`), so unplugged drives and transient
-  errors self-heal. **No filename-stem capture-grouping** (there used to be
+  future drive re-anchoring. `Run` captures `scanStartedAt := time.Now()`
+  once, before any walking begins; after a clean walk, `sweep` **soft-deletes**
+  (`deleted_at`) rows under that root whose `last_seen_at` is still older than
+  `scanStartedAt` — i.e. the walk didn't re-see them. This replaced an earlier
+  session-identity check (`scan_session_id != this session`) with a pure
+  wall-clock cutoff once sessions were removed: `storeScan`'s upsert always
+  sets `last_seen_at` to the write-time `now()` for every file it touches,
+  which is guaranteed to land after `scanStartedAt`, so the two checks are
+  equivalent — one just doesn't need an identity to compare against.
+  `purgeExpired` hard-deletes swept rows after 30 days (`deletedRetention`),
+  so unplugged drives and transient errors self-heal. **No filename-stem
+  capture-grouping** (there used to be
   one, `capture.go`'s `DeriveCapture` — deleted): it force-paired files
   sharing a base filename (e.g. `IMG_8017.HEIC`+`.MOV`+`.JPG`) into one target
   directory on the assumption that same-stem meant same-capture (Live Photo
@@ -611,12 +631,13 @@ pointer vs. a real value). `home-work.*` has no flag or env of its own —
   coloured level tag + message + dimmed `key=value` attrs, no timestamp/source.
   It shows **only user-facing lines and warnings/errors** — tag a milestone with
   `logger.UserKey` (`log.Info("Scanning…", logger.UserKey, true)`); everything
-  untagged is developer detail that goes to the file only. The `sessionId` attr
-  is stripped from console lines (printed once at session start, in the message
-  text) to avoid spam. There is no debug flag to bypass the console filter —
-  the JSON file log always has every record.
+  untagged is developer detail that goes to the file only. `PhaseKey`/
+  `EventKey`/`ElapsedKey` are stripped from console lines (`consoleHiddenKeys`
+  in `console.go`) — they exist for the TUI's phase routing, not for a human
+  reading the plain console. There is no debug flag to bypass the console
+  filter — the JSON file log always has every record.
   The **JSON file** handler keeps timestamp + source (`AddSource`) and every
-  attr (incl. `sessionId`) — that's what `issue` ships. Never stdlib `log`.
+  attr — that's what `issue` ships. Never stdlib `log`.
 - `location/` — offline reverse-geocode resolver + its own sqlite DB. `Setup()`
   downloads DB+meta if missing (idempotent) and is the only place that prints
   a user-facing line about it; `New`'s checksum verification is **not**
@@ -698,9 +719,6 @@ pointer vs. a real value). `home-work.*` has no flag or env of its own —
 
 ## Conventions that bite if ignored
 
-- Every pipeline function takes `sessionID uuid.UUID` right after `ctx`; log key
-  is `"sessionId"` (camelCase). Progress is surfaced **only** through logs keyed
-  by `sessionId` — no separate status channel.
 - Bounded worker pools, never fire-and-forget goroutines.
 - Wrap errors with `%w`. Upserts over SELECT-then-INSERT.
 
@@ -715,16 +733,14 @@ go build ./... # quick compile check
 
 ## Open cleanup notes (not yet done)
 
-- `report.go` builds a raw sqlite DSN + inline SQL in the CLI layer, bypassing
-  `pkg/db`. Read-only by design, but a layering shortcut — move it next to
-  `db.ResetAll` if it grows.
 - **Concurrency wall:** `lock.AcquireOutput` (`pkg/lock/`) takes an
-  exclusive PID lock on the output dir, so only one scan runs
-  against a dir at a time. Log
-  lines are already `sessionId`-tagged, so multiple sessions sharing one log
-  file interleave cleanly (consumers filter by id) — logs are **not** the wall.
-  The lock is. Running scans concurrently would need per-session isolation or a
-  single owner that multiplexes sessions.
+  exclusive PID lock on the output dir, so only one scan runs against a dir
+  at a time — that lock is the entire wall, there is no other run-identity
+  mechanism backing it up. Running scans concurrently against one output dir
+  would need a real per-run isolation mechanism (there was one, keyed by a
+  now-removed `sessionID`, built for the since-removed `serve` API's
+  concurrent sessions — see `workflow/` above) or a single owner process that
+  multiplexes runs.
 - `vfs.resolveLocations`' anchor-fold radius is `location.MaxDistSquared`
   (~50km), not a separate per-user setting. Revisit if a single radius doesn't
   fit both dense and sprawling metros.

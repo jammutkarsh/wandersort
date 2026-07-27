@@ -24,7 +24,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
@@ -58,16 +57,16 @@ func New(db *db.DB, resolver *location.Resolver, log logger.Logger, cfg Config) 
 }
 
 // Run builds the virtual filesystem proposal for the whole library's master
-// files; sessionID only stamps provenance on the rows it writes
-func (v *VFS) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
-	v.log.Info("Building virtual filesystem", "sessionId", sessionID)
+// files
+func (v *VFS) Run(ctx context.Context) (int, error) {
+	v.log.Info("Building virtual filesystem")
 
 	masters, err := v.loadMasters(ctx)
 	if err != nil {
 		return 0, err
 	}
 	if len(masters) == 0 {
-		v.log.Info("No master files to organize", "sessionId", sessionID)
+		v.log.Info("No master files to organize")
 		return 0, nil
 	}
 
@@ -86,12 +85,12 @@ func (v *VFS) Run(ctx context.Context, sessionID uuid.UUID) (int, error) {
 		return 0, ctx.Err()
 	}
 
-	count, err := v.persist(sessionID, masters)
+	count, err := v.persist(masters)
 	if err != nil {
 		return count, err
 	}
 
-	v.log.Info("Virtual filesystem proposed", "sessionId", sessionID, "entries", count)
+	v.log.Info("Virtual filesystem proposed", "entries", count)
 	return count, nil
 }
 
@@ -587,10 +586,10 @@ func (v *VFS) uninformativeLevels(masters []masterFile) map[string]bool {
 	return skip
 }
 
-// persist replaces the whole previous proposal — one live set for the library,
-// whichever session wrote it. The delete goes through the same FIFO writer as
-// the inserts, so a rebuild leaves no stale rows behind.
-func (v *VFS) persist(sessionID uuid.UUID, masters []masterFile) (int, error) {
+// persist replaces the whole previous proposal — one live set for the
+// library. The delete goes through the same FIFO writer as the inserts, so a
+// rebuild leaves no stale rows behind.
+func (v *VFS) persist(masters []masterFile) (int, error) {
 	if !v.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 		_, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries`)
 		return err
@@ -602,9 +601,9 @@ func (v *VFS) persist(sessionID uuid.UUID, masters []masterFile) (int, error) {
 		if !v.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO virtual_fs_entries
-					(session_id, file_id, source_path, target_path, cluster_id, status, suggestion, suggestion_source, suggestion_dir)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				sessionID.String(), m.FileID, m.absPath, m.targetPath,
+					(file_id, source_path, target_path, cluster_id, status, suggestion, suggestion_source, suggestion_dir)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				m.FileID, m.absPath, m.targetPath,
 				nullable(m.clusterID), db.StatusProposed,
 				nullable(m.suggestion), nullable(m.suggestionSource), nullable(m.suggestionDir)); err != nil {
 				return fmt.Errorf("persist vfs entry for file %d: %w", m.FileID, err)

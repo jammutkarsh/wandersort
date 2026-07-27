@@ -10,31 +10,9 @@ var schema001 = Migration{
 	Version:     0o01,
 	Description: "scanner_schema",
 	SQL: []string{
-		scanSessions,
 		fileRegistry,
 	},
 }
-
-const scanSessions = `
-CREATE TABLE IF NOT EXISTS scan_sessions (
-    id TEXT PRIMARY KEY,
-    started_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `,
-    completed_at TEXT,
-    status TEXT NOT NULL DEFAULT 'STARTED',
-
-    root_paths TEXT NOT NULL,
-
-    -- Progress tracking
-    files_discovered INTEGER DEFAULT 0,
-    files_skipped    INTEGER DEFAULT 0,
-    files_new        INTEGER DEFAULT 0,
-    files_modified   INTEGER DEFAULT 0,
-    files_hashed     INTEGER DEFAULT 0,
-
-    -- Error tracking
-    errors_encountered INTEGER DEFAULT 0,
-    last_error         TEXT
-);`
 
 // file_registry table with indexes
 const fileRegistry = `
@@ -53,9 +31,8 @@ CREATE TABLE IF NOT EXISTS file_registry (
     volume_uuid TEXT,
 
     -- Discovery metadata
-    discovered_at   TEXT NOT NULL,
-    last_seen_at    TEXT NOT NULL,
-    scan_session_id TEXT NOT NULL REFERENCES scan_sessions(id),
+    discovered_at TEXT NOT NULL,
+    last_seen_at  TEXT NOT NULL,
 
     -- Soft delete: stamped when a clean scan of the file's root no longer
     -- sees it, cleared if the file reappears, hard-purged after retention
@@ -75,7 +52,6 @@ CREATE TABLE IF NOT EXISTS file_registry (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_registry_dir_name ON file_registry(file_dir, file_name);
-CREATE INDEX IF NOT EXISTS idx_file_registry_session ON file_registry(scan_session_id);
 CREATE INDEX IF NOT EXISTS idx_file_registry_status ON file_registry(scan_status);
 -- Partial over deleted rows only, for purgeExpired's cutoff scan. Live-row
 -- filters (deleted_at IS NULL) match the vast majority of rows, so an index

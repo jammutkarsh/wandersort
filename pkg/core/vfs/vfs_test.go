@@ -15,8 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
@@ -34,15 +32,13 @@ type entryRow struct {
 }
 
 type harness struct {
-	d         *db.DB
-	sessionID uuid.UUID
-	nextID    int64
+	d      *db.DB
+	nextID int64
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	d := dbtest.New(t)
-	return &harness{d: d, sessionID: dbtest.NewSession(t, d, db.StatusScored)}
+	return &harness{d: dbtest.New(t)}
 }
 
 // addFile seeds a registry row (under the /src root) plus a master metadata
@@ -55,10 +51,10 @@ func (h *harness) addFile(t *testing.T, relPath, mediaType string, meta classifi
 	name := filepath.Base(relPath)
 	if _, err := h.d.ExecContext(context.Background(), `
 		INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
-			scan_session_id, file_extension, media_type, discovered_at, last_seen_at)
-		VALUES (?, ?, ?, 1024, '2024-06-01T10:00:00.000000000Z', ?, ?, ?,
+			file_extension, media_type, discovered_at, last_seen_at)
+		VALUES (?, ?, ?, 1024, '2024-06-01T10:00:00.000000000Z', ?, ?,
 			'2024-06-01T10:00:00.000000000Z', '2024-06-01T10:00:00.000000000Z')`,
-		id, dir, name, h.sessionID.String(), filepath.Ext(name), mediaType); err != nil {
+		id, dir, name, filepath.Ext(name), mediaType); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.d.ExecContext(context.Background(), `
@@ -99,7 +95,7 @@ func (h *harness) build(t *testing.T, cfg Config, geo geoResolver) map[int64]ent
 	if geo != nil {
 		vfs.resolver = geo
 	}
-	if _, err := vfs.Run(context.Background(), h.sessionID); err != nil {
+	if _, err := vfs.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	h.d.Writer.Flush()
@@ -107,7 +103,7 @@ func (h *harness) build(t *testing.T, cfg Config, geo geoResolver) map[int64]ent
 	var rows []entryRow
 	if err := h.d.SQL.Select(&rows, `
 		SELECT file_id, target_path, cluster_id, status, suggestion, suggestion_source
-		FROM virtual_fs_entries WHERE session_id = ?`, h.sessionID.String()); err != nil {
+		FROM virtual_fs_entries`); err != nil {
 		t.Fatal(err)
 	}
 	byID := map[int64]entryRow{}
@@ -792,39 +788,32 @@ func TestRebuildIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestLibraryScopeAcrossSessions covers the incremental re-scan contract: a
-// master indexed by an earlier session is still proposed by a later run, and
-// the later run replaces the previous proposal set wholesale
-func TestLibraryScopeAcrossSessions(t *testing.T) {
+// TestLibraryScopeAcrossRuns covers the incremental re-scan contract: a
+// master indexed by an earlier run is still proposed by a later run, and the
+// later run replaces the previous proposal set wholesale
+func TestLibraryScopeAcrossRuns(t *testing.T) {
 	h := newHarness(t)
-	// File belongs to the harness's (old) session…
+	// File already indexed by an earlier run…
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
-	// …with a stale proposal persisted by that old session
+	// …with a stale proposal that earlier run persisted
 	if _, err := h.d.ExecContext(context.Background(), `
-		INSERT INTO virtual_fs_entries (session_id, file_id, source_path, target_path)
-		VALUES (?, ?, '/src/dump/IMG_0001.HEIC', 'stale/IMG_0001.HEIC')`,
-		h.sessionID.String(), id); err != nil {
+		INSERT INTO virtual_fs_entries (file_id, source_path, target_path)
+		VALUES (?, '/src/dump/IMG_0001.HEIC', 'stale/IMG_0001.HEIC')`,
+		id); err != nil {
 		t.Fatal(err)
 	}
 
-	// A brand-new session runs the VFS phase without having indexed anything
-	newSession := uuid.New()
-	if _, err := h.d.ExecContext(context.Background(),
-		`INSERT INTO scan_sessions (id, status, root_paths) VALUES (?, 'SCORED', '/src')`,
-		newSession.String()); err != nil {
-		t.Fatal(err)
-	}
 	vfs := &VFS{
 		db:  h.d,
 		log: logger.NewNoopLogger(),
 		cfg: DefaultConfig(),
 	}
-	count, err := vfs.Run(context.Background(), newSession)
+	count, err := vfs.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
-		t.Fatalf("Run proposed %d entries, want 1 (old-session master must be included)", count)
+		t.Fatalf("Run proposed %d entries, want 1 (earlier-run master must be included)", count)
 	}
 	h.d.Writer.Flush()
 
@@ -893,8 +882,7 @@ func TestUnknownLocationEmitsNoLocationFolder(t *testing.T) {
 
 	var withDir int
 	if err := h.d.SQL.Get(&withDir,
-		`SELECT COUNT(*) FROM virtual_fs_entries WHERE session_id = ? AND suggestion_dir IS NOT NULL`,
-		h.sessionID.String()); err != nil {
+		`SELECT COUNT(*) FROM virtual_fs_entries WHERE suggestion_dir IS NOT NULL`); err != nil {
 		t.Fatal(err)
 	}
 	if withDir != 0 {
@@ -914,7 +902,7 @@ func TestSuggestionDirTracksTheLocationLevel(t *testing.T) {
 
 	var dirs []string
 	if err := h.d.SQL.Select(&dirs,
-		`SELECT suggestion_dir FROM virtual_fs_entries WHERE session_id = ?`, h.sessionID.String()); err != nil {
+		`SELECT suggestion_dir FROM virtual_fs_entries`); err != nil {
 		t.Fatal(err)
 	}
 	want := "2024/06_June/03/Calangute"

@@ -167,8 +167,7 @@ func TestHasher(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			sessionID := dbtest.NewSession(t, d, db.StatusScanned)
-			dbtest.SeedFile(t, d, sessionID, 1, root, "photo.jpg", 13)
+			dbtest.SeedFile(t, d, 1, root, "photo.jpg", 13)
 			// Stale metadata from a previous pipeline run; the insert trigger flips
 			// scan_status to HASHED, so reset it to DISCOVERED as the scanner's
 			// change detection would after the file was modified
@@ -182,7 +181,7 @@ func TestHasher(t *testing.T) {
 			}
 
 			h := New(d, logger.NewNoopLogger(), 1)
-			count, err := h.Run(ctx, sessionID)
+			count, err := h.Run(ctx)
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -227,9 +226,8 @@ func TestHasher(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
 
-			sessionID := dbtest.NewSession(t, d, db.StatusScanned)
 			// Registry points at a file that does not exist, so hashing fails
-			dbtest.SeedFile(t, d, sessionID, 1, t.TempDir(), "gone.jpg", 13)
+			dbtest.SeedFile(t, d, 1, t.TempDir(), "gone.jpg", 13)
 			if _, err := d.ExecContext(ctx,
 				`INSERT INTO file_metadata (file_hash, file_id) VALUES ('stale-hash', 1)`); err != nil {
 				t.Fatal(err)
@@ -240,7 +238,7 @@ func TestHasher(t *testing.T) {
 			}
 
 			h := New(d, logger.NewNoopLogger(), 1)
-			if _, err := h.Run(ctx, sessionID); err != nil {
+			if _, err := h.Run(ctx); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 			d.Writer.Flush()

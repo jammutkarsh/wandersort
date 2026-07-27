@@ -15,10 +15,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/google/uuid"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 )
@@ -38,7 +36,7 @@ func TestReview(t *testing.T) {
 		// peekCmd — the cache check now happens inside it (it needs the file list to
 		// compute a signature), not synchronously in the key handler.
 		{"PressingPAlwaysDispatchesAsync", func(t *testing.T) {
-			m := newModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(sampleTree(), nil, nil, nil, nil)
 
 			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 			rm := next.(Model)
@@ -54,7 +52,7 @@ func TestReview(t *testing.T) {
 		// successful copy is remembered under its file-membership signature, not the
 		// node it happened to be peeked from.
 		{"PreviewDoneCachesBySignature", func(t *testing.T) {
-			m := newModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(sampleTree(), nil, nil, nil, nil)
 
 			next, _ := m.Update(previewDoneMsg{signature: "a.jpg\x00b.jpg", dir: "/tmp/wandersort-preview-xyz"})
 			rm := next.(Model)
@@ -70,32 +68,31 @@ func TestReview(t *testing.T) {
 		{"FilesSignatureDedupesParentAndLeafNode", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
-			sessionID := dbtest.NewSession(t, d, db.StatusScored)
 
 			for i, name := range []string{"a.jpg", "b.jpg"} {
 				fileID := int64(i + 1)
 				if _, err := d.ExecContext(ctx, `
 			INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
-				scan_session_id, file_extension, media_type, discovered_at, last_seen_at)
-			VALUES (?, '/src', ?, 1024, '2024-06-01T10:00:00.000000000Z', ?, '.jpg', 'IMAGE',
+				file_extension, media_type, discovered_at, last_seen_at)
+			VALUES (?, '/src', ?, 1024, '2024-06-01T10:00:00.000000000Z', '.jpg', 'IMAGE',
 				'2024-06-01T10:00:00.000000000Z', '2024-06-01T10:00:00.000000000Z')`,
-					fileID, name, sessionID.String()); err != nil {
+					fileID, name); err != nil {
 					t.Fatal(err)
 				}
 				target := "2017/April/08/Horizontal/Photos/" + name
 				if _, err := d.ExecContext(ctx, `
-			INSERT INTO virtual_fs_entries (session_id, file_id, source_path, target_path, status)
-			VALUES (?, ?, ?, ?, 'PROPOSED')`,
-					sessionID.String(), fileID, "/src/"+name, target); err != nil {
+			INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
+			VALUES (?, ?, ?, 'PROPOSED')`,
+					fileID, "/src/"+name, target); err != nil {
 					t.Fatal(err)
 				}
 			}
 
-			parentFiles, err := vfs.FilesUnder(ctx, sessionID, "2017/April/08", d)
+			parentFiles, err := vfs.FilesUnder(ctx, "2017/April/08", d)
 			if err != nil {
 				t.Fatal(err)
 			}
-			leafFiles, err := vfs.FilesUnder(ctx, sessionID, "2017/April/08/Horizontal/Photos", d)
+			leafFiles, err := vfs.FilesUnder(ctx, "2017/April/08/Horizontal/Photos", d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -133,7 +130,7 @@ func TestReview(t *testing.T) {
 		// typed lowercase v, which matches no keybinding) must be an obvious warning,
 		// not a message indistinguishable from routine dim status text.
 		{"MergeWithoutVisualModeIsRejectedLoudly", func(t *testing.T) {
-			m := newModel(siblingTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(siblingTree(), nil, nil, nil, nil)
 
 			m.mergeSelection()
 
@@ -144,7 +141,7 @@ func TestReview(t *testing.T) {
 		// TestMergeSingleRowIsRejected covers pressing m right after V with no
 		// cursor movement — only one row "selected", nothing to merge.
 		{"MergeSingleRowIsRejected", func(t *testing.T) {
-			m := newModel(siblingTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(siblingTree(), nil, nil, nil, nil)
 			m.visualMode = true
 			m.visualAnchor = m.cursor // no movement — selection is just the current row
 
@@ -158,7 +155,7 @@ func TestReview(t *testing.T) {
 		// still have children (Year/Month rows, not leaves) — nothing to merge since
 		// only leaves are merge candidates.
 		{"MergeSelectingOnlyStructuralRowsIsRejected", func(t *testing.T) {
-			m := newModel(siblingTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(siblingTree(), nil, nil, nil, nil)
 			// row 0 = "2024" (has children), row 1 = "June" (has children) — no leaves
 			m.visualMode = true
 			m.visualAnchor = 0
@@ -174,7 +171,7 @@ func TestReview(t *testing.T) {
 		// siblings selected with V then merged with m (their lowest common ancestor
 		// is the parent they're already under, so this is a same-parent merge).
 		{"MergeSiblingsSucceeds", func(t *testing.T) {
-			m := newModel(siblingTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(siblingTree(), nil, nil, nil, nil)
 			// rows: 0=2024, 1=June, 2=03, 3=09 — select rows 2 and 3
 			m.visualMode = true
 			m.visualAnchor = 2
@@ -214,7 +211,7 @@ func TestReview(t *testing.T) {
 		// is what the reviewer sees as "merge didn't work" even though Confirm would
 		// have collapsed the paths later.
 		{"MergeAcrossBranchesCollapsesToOneNode", func(t *testing.T) {
-			m := newModel(crossBranchTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(crossBranchTree(), nil, nil, nil, nil)
 			// flattened order: 2017, April, 20, Canon(April), August, 15, Canon(August), October, 19, Canon(October)
 			// select from April's Canon leaf through October's Canon leaf — spans
 			// several structural (non-leaf) rows in between, which must be ignored
@@ -259,7 +256,7 @@ func TestReview(t *testing.T) {
 				{ID: "2017", Name: "2017", Children: []vfs.Node{{ID: "2017/Camera", Name: "Camera", FileCount: 1}}},
 				{ID: "2018", Name: "2018", Children: []vfs.Node{{ID: "2018/Camera", Name: "Camera", FileCount: 1}}},
 			}
-			m := newModel(tree, nil, nil, uuid.Nil, nil, nil)
+			m := newModel(tree, nil, nil, nil, nil)
 			// rows: 0=2017, 1=2017/Camera, 2=2018, 3=2018/Camera
 			m.visualAnchor = 1
 			m.cursor = 3
@@ -275,7 +272,7 @@ func TestReview(t *testing.T) {
 		// the cursor absorbs its whole subtree, so all its files sit directly in it.
 		// The folder itself stays — only what's below it goes.
 		{"FlattenCollapsesEverythingBelowTheCursor", func(t *testing.T) {
-			m := newModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(groupedTree(), nil, nil, nil, nil)
 			// rows: 0=2023, 1=April, 2=Indore, 3=iPhone, 4=August, 5=Indore, 6=iPhone
 			m.cursor = 1 // April
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
@@ -313,7 +310,7 @@ func TestReview(t *testing.T) {
 		// TestFlattenWorksOnATopLevelRow covers the difference from [d]: flattening a
 		// Year keeps the Year itself, so the files have somewhere to go.
 		{"FlattenWorksOnATopLevelRow", func(t *testing.T) {
-			m := newModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(groupedTree(), nil, nil, nil, nil)
 			m.cursor = 0 // 2023
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
@@ -331,7 +328,7 @@ func TestReview(t *testing.T) {
 		}},
 		// TestFlattenLeafIsRejected covers the no-op guard.
 		{"FlattenLeafIsRejected", func(t *testing.T) {
-			m := newModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(groupedTree(), nil, nil, nil, nil)
 			m.cursor = 3 // the deepest row, nothing below it
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
@@ -347,7 +344,7 @@ func TestReview(t *testing.T) {
 		// TestDropSingleFolderLiftsItsChildren covers [d]: one folder, its children
 		// reattached to its parent rather than deleted along with it.
 		{"DropSingleFolderLiftsItsChildren", func(t *testing.T) {
-			m := newModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(groupedTree(), nil, nil, nil, nil)
 			m.cursor = 2 // April's Indore, which still has the device child
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 			rm := next.(Model)
@@ -369,7 +366,7 @@ func TestReview(t *testing.T) {
 		// TestDropTopLevelIsRejected covers the guard: a Year has no parent to lift
 		// files into, so dropping it would dump them in the library root.
 		{"DropTopLevelIsRejected", func(t *testing.T) {
-			m := newModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(groupedTree(), nil, nil, nil, nil)
 			m.cursor = 0
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
@@ -385,7 +382,7 @@ func TestReview(t *testing.T) {
 		// TestUndoRestoresTreeAfterFlatten covers [u] on a flatten — same whole-tree
 		// snapshot the merge undo uses.
 		{"UndoRestoresTreeAfterFlatten", func(t *testing.T) {
-			m := newModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(groupedTree(), nil, nil, nil, nil)
 			m.cursor = 1
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
 			rm := next.(Model)
@@ -404,7 +401,7 @@ func TestReview(t *testing.T) {
 		// merge: it must restore the whole pre-merge tree (the old per-row newName
 		// undo can't undo a reparent), and stops cleanly once the stack is empty.
 		{"UndoRestoresTreeAfterCrossBranchMerge", func(t *testing.T) {
-			m := newModel(crossBranchTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(crossBranchTree(), nil, nil, nil, nil)
 			m.visualAnchor = 3
 			m.cursor = 9
 			m.visualMode = true
@@ -441,7 +438,7 @@ func TestReview(t *testing.T) {
 		// narrow terminal the key help wraps to several lines, and the tree budget has
 		// to shrink by exactly that much or the bottom rows run off the screen.
 		{"VisibleRowsShrinksWhenHelpWraps", func(t *testing.T) {
-			wide := newModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
+			wide := newModel(sampleTree(), nil, nil, nil, nil)
 			wide.height, wide.width = 24, 200
 			narrow := wide
 			narrow.width = 40
@@ -462,7 +459,7 @@ func TestReview(t *testing.T) {
 		// [c] saves, [q] throws everything away — so [q] with pending edits must warn
 		// first, and only quit if the reviewer insists.
 		{"QuitWarnsOnceBeforeDiscardingEdits", func(t *testing.T) {
-			m := newModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(sampleTree(), nil, nil, nil, nil)
 			m.rows[1].newName = "Manali"
 
 			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
@@ -487,7 +484,7 @@ func TestReview(t *testing.T) {
 		// TestQuitWithNoEditsExitsImmediately covers the other side: nothing typed,
 		// nothing to lose, no nagging.
 		{"QuitWithNoEditsExitsImmediately", func(t *testing.T) {
-			m := newModel(sampleTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(sampleTree(), nil, nil, nil, nil)
 			if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd == nil {
 				t.Error("q with a clean tree should quit straight away")
 			}
@@ -497,7 +494,7 @@ func TestReview(t *testing.T) {
 		// fresh reviewRow values. Without reflow carrying newName across by node ID,
 		// every rename the reviewer typed on rows the edit never touched vanished.
 		{"StructuralEditKeepsPendingRenames", func(t *testing.T) {
-			m := newModel(siblingTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(siblingTree(), nil, nil, nil, nil)
 			// rows: 0=2024, 1=June, 2=03, 3=09. Rename the year, then merge the leaves.
 			nodeByID(m.rows, "2024").newName = "Two Thousand Twenty Four"
 
@@ -513,7 +510,7 @@ func TestReview(t *testing.T) {
 		}},
 		// TestUndoKeepsPendingRenames is the undo half of the same bug.
 		{"UndoKeepsPendingRenames", func(t *testing.T) {
-			m := newModel(siblingTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(siblingTree(), nil, nil, nil, nil)
 			nodeByID(m.rows, "2024").newName = "Renamed Year"
 			m.visualMode, m.visualAnchor, m.cursor = true, 2, 3
 			m.mergeSelection()
@@ -532,7 +529,7 @@ func TestReview(t *testing.T) {
 		// narrows what's already in memory. A nil db/resolver here would panic or
 		// return nothing if refreshSuggestions still queried.
 		{"RefreshSuggestionsFiltersInMemory", func(t *testing.T) {
-			m := newModel(sampleTree(), context.Background(), nil, uuid.Nil, nil, nil)
+			m := newModel(sampleTree(), context.Background(), nil, nil, nil)
 			m.geoCands = []location.Candidate{
 				{Name: "Manali", DistKM: 3},
 				{Name: "Mandi", DistKM: 40},
@@ -567,7 +564,7 @@ func TestReview(t *testing.T) {
 		// loadGeoCandidates is a no-op, so this asserts the wiring via the keystroke
 		// path not panicking and suggestions still filtering from pre-loaded labels.
 		{"RenameLoadsGeoCandidatesOnce", func(t *testing.T) {
-			m := newModel(sampleTree(), context.Background(), nil, uuid.Nil, nil, nil)
+			m := newModel(sampleTree(), context.Background(), nil, nil, nil)
 			m.labels = []string{"Manali"}
 			m.cursor = 1 // the June leaf
 
@@ -600,7 +597,7 @@ func TestReview(t *testing.T) {
 		// not three the reviewer then has to merge by hand. Children that genuinely
 		// differ (a second camera) stay separate.
 		{"MergingParentsCollapsesSameNamedChildren", func(t *testing.T) {
-			m := newModel(tripTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(tripTree(), nil, nil, nil, nil)
 			// rows: 0=2024 1=06_June 2=03 3=Goa 4=iPhone 5=04 6=Goa 7=iPhone 8=05 9=Goa 10=Canon
 			m.visualAnchor, m.cursor, m.visualMode = 2, 10, true
 
@@ -637,7 +634,7 @@ func TestReview(t *testing.T) {
 		// [V] was pressed on are that folder's contents and ride along, they are not
 		// merge candidates of their own.
 		{"MergeUsesAnchorDepth", func(t *testing.T) {
-			m := newModel(tripTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(tripTree(), nil, nil, nil, nil)
 			// anchor on 03's Goa (depth 3) through 05's Goa — merges the Goas, not the days
 			m.visualAnchor, m.cursor, m.visualMode = 3, 9, true
 
@@ -655,7 +652,7 @@ func TestReview(t *testing.T) {
 		// TestMergeRespectsPendingRenames covers name matching: children collapse on
 		// the name they will actually be written as, not the one they started with.
 		{"MergeRespectsPendingRenames", func(t *testing.T) {
-			m := newModel(tripTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(tripTree(), nil, nil, nil, nil)
 			m.rows[10].newName = "iPhone" // rename 05's Canon to match the others
 			m.visualAnchor, m.cursor, m.visualMode = 2, 10, true
 
@@ -676,7 +673,7 @@ func TestReview(t *testing.T) {
 				{ID: "2017/20", Name: "20", FileCount: 1, Suggestions: []vfs.Suggestion{{Name: "Canon EOS 700D"}}},
 				{ID: "2017/19", Name: "19", FileCount: 1, Suggestions: []vfs.Suggestion{{Name: "Canon EOS 700D"}}},
 			}}}
-			m := newModel(tree, nil, nil, uuid.Nil, nil, nil)
+			m := newModel(tree, nil, nil, nil, nil)
 			m.visualAnchor, m.cursor, m.visualMode = 1, 2, true
 
 			m.mergeSelection()
@@ -698,7 +695,7 @@ func TestReview(t *testing.T) {
 		// TestMergeKeepsAnExplicitRename is the other half: a rename the reviewer
 		// typed on the first pick *is* what the merged folder should be called.
 		{"MergeKeepsAnExplicitRename", func(t *testing.T) {
-			m := newModel(siblingTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(siblingTree(), nil, nil, nil, nil)
 			m.rows[2].newName = "Goa Trip"
 			m.visualAnchor, m.cursor, m.visualMode = 2, 3, true
 
@@ -713,7 +710,7 @@ func TestReview(t *testing.T) {
 		// structural edits in a row must each be reversible, in order, all the way to
 		// the tree the review started with.
 		{"UndoWalksBackThroughEveryEdit", func(t *testing.T) {
-			m := newModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(groupedTree(), nil, nil, nil, nil)
 			before := len(m.rows)
 
 			// three edits: drop a folder, flatten a subtree, drop another folder
@@ -758,7 +755,7 @@ func TestReview(t *testing.T) {
 		// locations under one Day each lose their splits and keep their own folder.
 		// They are not merged — that is [m]'s job.
 		{"VisualFlattenActsOnEverySelectedFolder", func(t *testing.T) {
-			m := newModel(dayWithLocationsTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(dayWithLocationsTree(), nil, nil, nil, nil)
 			// rows: 0=2024 1=06_June 2=03 3=Goa 4=iPhone 5=Vertical 6=Panaji ... 9=Margao ...
 			m.visualAnchor, m.cursor, m.visualMode = 3, 11, true
 
@@ -790,7 +787,7 @@ func TestReview(t *testing.T) {
 		// TestVisualDropActsOnEverySelectedFolder covers [V] + [d]: each selected
 		// folder goes and its children are lifted onto the parent they shared.
 		{"VisualDropActsOnEverySelectedFolder", func(t *testing.T) {
-			m := newModel(dayWithLocationsTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(dayWithLocationsTree(), nil, nil, nil, nil)
 			m.visualAnchor, m.cursor, m.visualMode = 3, 11, true
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
@@ -816,7 +813,7 @@ func TestReview(t *testing.T) {
 		// for [D]: the splits inside a selected location are its contents, not
 		// separate flatten targets, so the Day above and the rows below are untouched.
 		{"VisualFlattenIgnoresDeeperRowsInTheRange", func(t *testing.T) {
-			m := newModel(dayWithLocationsTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(dayWithLocationsTree(), nil, nil, nil, nil)
 			// anchor on Goa (depth 3), extend only into its own subtree
 			m.visualAnchor, m.cursor, m.visualMode = 3, 5, true
 
@@ -835,7 +832,7 @@ func TestReview(t *testing.T) {
 		// without scrolling through every folder's contents — and [V] plus [n] can
 		// select one level across several branches.
 		{"JumpSameDepthCrossesBranches", func(t *testing.T) {
-			m := newModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(groupedTree(), nil, nil, nil, nil)
 			// rows: 0=2023 1=April 2=Indore 3=iPhone 4=August 5=Indore 6=iPhone
 			m.cursor = 2 // April's Indore, depth 2
 
@@ -857,7 +854,7 @@ func TestReview(t *testing.T) {
 		// TestJumpSameDepthStopsAtTheEnds covers the no-wrap guard: past the last row
 		// at this level it says so instead of silently looping to the top.
 		{"JumpSameDepthStopsAtTheEnds", func(t *testing.T) {
-			m := newModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(groupedTree(), nil, nil, nil, nil)
 			m.cursor = 5 // the last depth-2 row
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
@@ -874,7 +871,7 @@ func TestReview(t *testing.T) {
 		// key: V, then n, selects a whole level across branches without arrowing
 		// through the folders in between.
 		{"JumpSameDepthExtendsAVisualSelection", func(t *testing.T) {
-			m := newModel(groupedTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(groupedTree(), nil, nil, nil, nil)
 			m.cursor = 2
 			m.visualMode, m.visualAnchor = true, 2
 
@@ -904,7 +901,7 @@ func TestReview(t *testing.T) {
 					day("16", 4), day("20", 12), day("21", 20), day("22", 3), day("25", 1),
 				}},
 			}}}
-			m := newModel(tree, nil, nil, uuid.Nil, nil, nil)
+			m := newModel(tree, nil, nil, nil, nil)
 			// rows: 0=2017 1=12_December 2=16 3=20 4=21 5=22 6=25 — merge 21 and 22
 			m.visualAnchor, m.cursor, m.visualMode = 4, 5, true
 			m.mergeSelection()
@@ -927,7 +924,7 @@ func TestReview(t *testing.T) {
 		}},
 		// TestDropKeepsNameOrder covers the same for lifted children.
 		{"DropKeepsNameOrder", func(t *testing.T) {
-			m := newModel(dayWithLocationsTree(), nil, nil, uuid.Nil, nil, nil)
+			m := newModel(dayWithLocationsTree(), nil, nil, nil, nil)
 			m.visualAnchor, m.cursor, m.visualMode = 3, 11, true
 			m.dropFolders(m.selectedRows())
 
