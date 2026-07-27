@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/scorer"
 )
 
@@ -135,7 +136,7 @@ func anchorCities(labels []userLabel) []string {
 	var anchors []string
 	seen := map[string]bool{}
 	for _, l := range labels {
-		if (l.Kind == "ANCHOR_HOME" || l.Kind == "ANCHOR_WORK") && l.Label != "" {
+		if (l.Kind == config.SavedPlaceHome || l.Kind == config.SavedPlaceWork) && l.Label != "" {
 			city, _, _ := strings.Cut(l.Label, ",")
 			if !seen[city] {
 				seen[city] = true

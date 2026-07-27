@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/location/locationtest"
@@ -258,7 +259,7 @@ func TestUserLabelSuggestion(t *testing.T) {
 func TestAnchorSuggestion(t *testing.T) {
 	h := newHarness(t)
 	if _, err := h.d.ExecContext(context.Background(),
-		`INSERT INTO user_labels (label, kind) VALUES ('Indore', 'ANCHOR_HOME')`); err != nil {
+		`INSERT INTO user_labels (label, kind) VALUES ('Indore', '`+config.SavedPlaceHome+`')`); err != nil {
 		t.Fatal(err)
 	}
 	u := h.addFile(t, "dump/DSC_0009.JPG", "IMAGE", metaWith("2024:06:20 10:00:00", 0, 0, 4000, 3000))
@@ -495,11 +496,11 @@ func TestEmptyRulesIsFlatYearMonth(t *testing.T) {
 	}
 }
 
-// addHomeAnchor inserts a confirmed ANCHOR_HOME label near the given coords.
+// addHomeAnchor inserts a confirmed SAVED_PLACE_HOME label near the given coords.
 func addHomeAnchor(t *testing.T, h *harness, name string, lat, lon float64) {
 	t.Helper()
 	if _, err := h.d.ExecContext(context.Background(),
-		`INSERT INTO user_labels (label, kind, gps_lat, gps_lon) VALUES (?, 'ANCHOR_HOME', ?, ?)`,
+		`INSERT INTO user_labels (label, kind, gps_lat, gps_lon) VALUES (?, '`+config.SavedPlaceHome+`', ?, ?)`,
 		name, lat, lon); err != nil {
 		t.Fatal(err)
 	}

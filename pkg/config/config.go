@@ -23,6 +23,11 @@ const (
 	DefaultDBFileName  = ".wandersort.db"
 	locationDBFileName = "location.db"
 	defaultLogLevel    = "info"
+
+	// SavedPlaceHome is the user_labels.kind for a confirmed home location.
+	SavedPlaceHome = "SAVED_PLACE_HOME"
+	// SavedPlaceWork is the user_labels.kind for a confirmed work location.
+	SavedPlaceWork = "SAVED_PLACE_WORK"
 )
 
 type Configuration struct {

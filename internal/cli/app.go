@@ -96,7 +96,7 @@ func (a *app) tuiEnabled(cmd *cobra.Command) bool {
 }
 
 // syncAnchors reads the globally-saved home/work towns and ensures they exist
-// as ANCHOR_HOME/ANCHOR_WORK user_labels in this library's DB. Anchors are a
+// as SAVED_PLACE_HOME/SAVED_PLACE_WORK user_labels in this library's DB. Saved places are a
 // global setting, but resolveLocations reads them per-library, so each
 // library's DB needs its own copy. Idempotent and silent once synced; empty
 // names are a no-op. A config file it can't read is a warning, not a failure —
@@ -112,8 +112,8 @@ func (a *app) syncAnchors(ctx context.Context, resolver *location.Resolver) erro
 	}
 
 	for _, anchor := range []struct{ name, kind string }{
-		{g.HomeWork.Home, "ANCHOR_HOME"},
-		{g.HomeWork.Work, "ANCHOR_WORK"},
+		{g.HomeWork.Home, config.SavedPlaceHome},
+		{g.HomeWork.Work, config.SavedPlaceWork},
 	} {
 		if anchor.name == "" {
 			continue

@@ -150,7 +150,7 @@ type masterFile struct {
 }
 
 // userLabel is a confirmed name from a previous review, read for suggestions
-// (EVENT) or to fold nearby suburbs into one anchor city (ANCHOR_HOME/WORK)
+// (EVENT) or to fold nearby suburbs into one saved place.
 type userLabel struct {
 	Label     string   `db:"label"`
 	Kind      string   `db:"kind"`

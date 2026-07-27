@@ -62,11 +62,13 @@ func TestGettersUnblockOnceReady(t *testing.T) {
 	if err != nil || path != "/bin/exiftool" {
 		t.Errorf("Exiftool() = %q, %v, want /bin/exiftool, nil", path, err)
 	}
-	if !c.LocationReady() {
-		t.Error("LocationReady() = false after locReady closed")
-	}
+	// Location() blocks until locReady closes, establishing the
+	// happens-before edge the LocationReady() check below relies on.
 	if _, err := c.Location(); err != nil {
 		t.Errorf("Location() = %v, want nil", err)
+	}
+	if !c.LocationReady() {
+		t.Error("LocationReady() = false after locReady closed")
 	}
 }
 

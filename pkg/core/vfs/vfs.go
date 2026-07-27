@@ -27,6 +27,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -177,7 +178,7 @@ func (v *VFS) resolveLocations(ctx context.Context, masters []masterFile, labels
 	// ResolveByName can round-trip them; a folder gets the bare city
 	anchorNames := make(map[string]string)
 	for _, l := range labels {
-		if (l.Kind == "ANCHOR_HOME" || l.Kind == "ANCHOR_WORK") && l.GPSLat != nil && l.GPSLon != nil {
+		if (l.Kind == config.SavedPlaceHome || l.Kind == config.SavedPlaceWork) && l.GPSLat != nil && l.GPSLon != nil {
 			anchors = append(anchors, l)
 			if _, ok := anchorNames[l.Label]; !ok {
 				city, _, _ := strings.Cut(l.Label, ",")

@@ -6,6 +6,8 @@
 
 package migrations
 
+import "github.com/jammutkarsh/wandersort/pkg/config"
+
 var schema003 = Migration{
 	Version:     3,
 	Description: "vfs_schema",
@@ -50,7 +52,7 @@ const userLabels = `
 CREATE TABLE IF NOT EXISTS user_labels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     label TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('EVENT','ANCHOR_HOME','ANCHOR_WORK')),
+    kind TEXT NOT NULL CHECK (kind IN ('EVENT','` + config.SavedPlaceHome + `','` + config.SavedPlaceWork + `')),
     time_start TEXT,
     time_end TEXT,
     gps_lat REAL,
