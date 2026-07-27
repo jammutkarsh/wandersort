@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/deps"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
@@ -65,12 +64,12 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 
 	// no digest here: the expected hash ships in the metadata file downloaded
 	// next, and verifyLocationDB checks against it once both are on disk
-	if err := deps.Download(ctx, dbPath, LocationDownloadBaseURL+"/"+LocationDBFileName, "", onProgress); err != nil {
+	if err := Download(ctx, dbPath, LocationDownloadBaseURL+"/"+LocationDBFileName, "", onProgress); err != nil {
 		return fmt.Errorf("download %s: %w", LocationDBFileName, err)
 	}
 
 	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
-	if err := deps.Download(ctx, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
+	if err := Download(ctx, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
 		log.Warn("location db: could not download metadata (non-fatal)", "file", LocationMetaFileName, "error", err)
 	}
 
@@ -96,7 +95,7 @@ func verifyLocationDB(dbPath string, locationDB *db.DB, log logger.Logger) error
 		return fmt.Errorf("unable to parse location meta: %w", err)
 	}
 
-	sum, err := deps.SHA256File(dbPath)
+	sum, err := SHA256File(dbPath)
 	if err != nil {
 		return fmt.Errorf("checksum location db: %w", err)
 	}

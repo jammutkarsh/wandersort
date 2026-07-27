@@ -12,11 +12,11 @@ import (
 	"os"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
-	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jmoiron/sqlx"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -95,16 +95,51 @@ func (a *app) tuiEnabled(cmd *cobra.Command) bool {
 	return term.IsTerminal(int(os.Stderr.Fd()))
 }
 
-// syncAnchors reads the globally-saved home/work towns and hands them to the
-// vfs phase that consumes them. A config file it can't read is a warning, not
-// a failure — anchors only sharpen the proposal, they don't gate it. resolver
-// comes from the caller (the vfs phase's own Deps.Location call), not a
-// shared field — anchor sync takes what it needs explicitly.
+// syncAnchors reads the globally-saved home/work towns and ensures they exist
+// as ANCHOR_HOME/ANCHOR_WORK user_labels in this library's DB. Anchors are a
+// global setting, but resolveLocations reads them per-library, so each
+// library's DB needs its own copy. Idempotent and silent once synced; empty
+// names are a no-op. A config file it can't read is a warning, not a failure —
+// anchors only sharpen the proposal, they don't gate it.
 func (a *app) syncAnchors(ctx context.Context, resolver *location.Resolver) error {
+	if resolver == nil {
+		return nil
+	}
 	g, err := config.LoadGlobal()
 	if err != nil {
 		a.Log.Warn("Could not read global config, skipping anchor sync", "error", err)
 		return nil
 	}
-	return vfs.SyncAnchors(ctx, a.AppDB, resolver, a.Log, g.HomeWork.Home, g.HomeWork.Work)
+
+	for _, anchor := range []struct{ name, kind string }{
+		{g.HomeWork.Home, "ANCHOR_HOME"},
+		{g.HomeWork.Work, "ANCHOR_WORK"},
+	} {
+		if anchor.name == "" {
+			continue
+		}
+		var exists int
+		if err := a.AppDB.SQL.GetContext(ctx, &exists,
+			`SELECT COUNT(*) FROM user_labels WHERE kind = ? AND label = ?`, anchor.kind, anchor.name); err != nil {
+			return fmt.Errorf("check anchor %q: %w", anchor.name, err)
+		}
+		if exists > 0 {
+			continue
+		}
+		lat, lon, err := resolver.ResolveByName(ctx, anchor.name)
+		if err != nil {
+			a.Log.Warn("Could not resolve saved anchor town", "town", anchor.name, "error", err)
+			continue
+		}
+		if !a.AppDB.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+			_, err := tx.ExecContext(ctx,
+				`INSERT INTO user_labels (label, kind, gps_lat, gps_lon) VALUES (?, ?, ?, ?)`,
+				anchor.name, anchor.kind, lat, lon)
+			return err
+		}) {
+			return fmt.Errorf("save anchor %q: writer closed", anchor.name)
+		}
+		a.Log.Info("Synced anchor for this library", logger.UserKey, true, "town", anchor.name, "kind", anchor.kind)
+	}
+	return nil
 }
