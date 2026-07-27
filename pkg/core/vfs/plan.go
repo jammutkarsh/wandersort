@@ -38,6 +38,48 @@ func Plan(ctx context.Context, masters []masterFile, labels []userLabel, cfg Con
 	return nil
 }
 
+// Sample is one synthetic file for PreviewPaths — the pre-derived form of a
+// master, so a caller with no database and no gazetteer (the config wizard)
+// can ask what folders a Config would produce.
+type Sample struct {
+	TakenAt     time.Time
+	Location    string // resolved city; "" = unknown
+	AtHomeWork  bool
+	Device      string
+	Width       int64
+	Height      int64
+	MediaType   string // classifier.MediaTypeVideo, else treated as a photo
+	FileName    string
+	DayOverride string // pre-merged day range, e.g. "02_04"
+}
+
+// PreviewPaths is the folder path each sample would land on under cfg — the
+// same dirFor the scan uses, so an example can never drift from the proposal
+// it is describing. Collapse is measured across the whole sample set, exactly
+// as it is library-wide in the real pipeline.
+func PreviewPaths(cfg Config, samples []Sample) []string {
+	masters := make([]masterFile, len(samples))
+	for i, s := range samples {
+		masters[i] = masterFile{
+			FileName:    s.FileName,
+			MediaType:   s.MediaType,
+			takenAt:     s.TakenAt,
+			location:    s.Location,
+			atHomeWork:  s.AtHomeWork,
+			device:      s.Device,
+			width:       s.Width,
+			height:      s.Height,
+			dayOverride: s.DayOverride,
+		}
+	}
+	skip := uninformativeLevels(masters, cfg)
+	paths := make([]string, len(masters))
+	for i := range masters {
+		paths[i] = dirFor(&masters[i], skip, cfg) + "/" + masters[i].FileName
+	}
+	return paths
+}
+
 // deriveAll fills the derived fields of every master from the metadata
 // persisted during hashing — exiftool already ran once per file there, so the
 // VFS phase never has to touch the files on disk again

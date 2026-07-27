@@ -77,7 +77,7 @@ func TestConfig(t *testing.T) {
 			// would otherwise be silently skipped.
 			collapseField := group.Subs[2]
 			*collapseField.BoolValue = false
-			if ex := collapseField.Example(); !strings.Contains(ex, "iPhone 13") || !strings.Contains(ex, "Vertical") || !strings.Contains(ex, "Photos") {
+			if ex := collapseField.Example(); !strings.Contains(ex, "iPhone-13") || !strings.Contains(ex, "Vertical") || !strings.Contains(ex, "Photos") {
 				t.Errorf("collapse example must show all three collapsible levels even when unticked in Rules, got %q", ex)
 			}
 			*collapseField.BoolValue = true
