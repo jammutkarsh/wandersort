@@ -37,24 +37,35 @@ const hashedFiles = `
 
 // Extractor reads EXIF from hashed files and persists it
 type Extractor struct {
-	db       *db.DB
-	log      logger.Logger
-	exiftool *exiftool.Extractor
-	workers  int
+	db      *db.DB
+	log     logger.Logger
+	pool    *exiftool.Pool
+	workers int
 }
 
 func New(db *db.DB, log logger.Logger, exiftoolPath string, workers int) *Extractor {
+	pool, err := exiftool.NewPool(exiftoolPath, workers)
+	if err != nil {
+		// An unavailable exiftool binary is not fatal: the phase still marks
+		// every file ANALYZED with empty metadata so the pipeline can proceed.
+		log.Warn("Exiftool unavailable; metadata will be empty", "error", err)
+	}
+
 	return &Extractor{
-		db:       db,
-		log:      log,
-		exiftool: exiftool.New(exiftoolPath),
-		workers:  workers,
+		db:      db,
+		log:     log,
+		pool:    pool,
+		workers: workers,
 	}
 }
 
 // Run claims every hashed file in pages and extracts its metadata in a
 // bounded worker pool. Returns how many files were persisted
 func (e *Extractor) Run(ctx context.Context) (int, error) {
+	if e.pool != nil {
+		defer e.pool.Close()
+	}
+
 	toExtract := make(chan fileRecord, 2*e.workers)
 	producerErr := make(chan error, 1)
 
@@ -160,7 +171,13 @@ func (e *Extractor) worker(ctx context.Context, toExtract <-chan fileRecord, ext
 		// A failed extraction is not a failed file: the pipeline still knows the
 		// file's hash and its folder context, so the VFS can place it. Persist
 		// the empty metadata and move on
-		meta, err := e.exiftool.Extract(ctx, file.absPath)
+		var meta classifier.CommonMetadata
+		var err error
+		if e.pool != nil {
+			meta, err = e.pool.Extract(ctx, file.absPath)
+		} else {
+			err = fmt.Errorf("exiftool not available")
+		}
 		if err != nil {
 			// A cancelled pipeline SIGKILLs the exiftool child ("signal: killed")
 			// and fails the next call with "context canceled" — that is shutdown,
