@@ -27,6 +27,7 @@ const (
 	flagPlain      = "plain"
 	flagHWDateOnly = "home-work-date-only"
 	flagMergeDays  = "merge-same-location-days"
+	flagGeek       = "geek"
 )
 
 // requireConfigured refuses to run the pipeline until `wandersort config` has
@@ -81,12 +82,22 @@ Flags take precedence over environment variables.`,
 			if warning != "" {
 				a.Log.Warn(warning, logger.UserKey, true)
 			}
+			if geek, _ := cmd.Flags().GetBool(flagGeek); geek {
+				if err := a.startProfiler(); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+			a.stopProfiler()
 			return nil
 		},
 	}
 
 	rootCmd.PersistentFlags().StringP(flagOutputPath, "o", "", "Output directory (DB and logs)")
 	rootCmd.PersistentFlags().Bool(flagPlain, false, "Disable the full-screen TUI; use plain line logging")
+	rootCmd.PersistentFlags().Bool(flagGeek, false, "Enable CPU/memory profiling (writes .prof files to output dir)")
 
 	rootCmd.AddCommand(a.newConfigCmd())
 	rootCmd.AddCommand(a.newScanCmd())

@@ -42,6 +42,9 @@ type app struct {
 	// exiftool path / location resolver readiness live, replacing what used
 	// to be raw goroutines writing directly into *app fields.
 	Deps *install.Coordinator
+	// profiler is started by --geek (PersistentPreRunE) and stopped by
+	// PersistentPostRunE. nil when profiling is off.
+	profiler *profiler
 }
 
 // newDeps builds a Coordinator wired to this app's config and log.
