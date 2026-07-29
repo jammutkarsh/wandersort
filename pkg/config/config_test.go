@@ -21,7 +21,11 @@ func TestGlobal(t *testing.T) {
 		{"EnsureGlobalConfigFileDoesNotClobber", func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 
-			path, err := EnsureGlobalConfigFile()
+			cfg, err := defaults()
+			if err != nil {
+				t.Fatalf("defaults: %v", err)
+			}
+			path, err := cfg.Exists()
 			if err != nil {
 				t.Fatalf("EnsureGlobalConfigFile: %v", err)
 			}
@@ -37,7 +41,7 @@ func TestGlobal(t *testing.T) {
 			if err := os.WriteFile(path, []byte("workers: 8\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := EnsureGlobalConfigFile(); err != nil {
+			if _, err := cfg.Exists(); err != nil {
 				t.Fatalf("EnsureGlobalConfigFile (existing): %v", err)
 			}
 			data, err = os.ReadFile(path)
@@ -51,9 +55,13 @@ func TestGlobal(t *testing.T) {
 		{"LoadGlobalOnMissingFile", func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 
-			g, err := LoadGlobal()
-			if err != nil || !reflect.DeepEqual(g, Global{}) {
-				t.Fatalf("LoadGlobal on missing file = (%+v, %v), want (zero value, nil)", g, err)
+			cfg, err := defaults()
+			if err != nil {
+				t.Fatalf("defaults: %v", err)
+			}
+			g, err := cfg.Load()
+			if err != nil || g.OutputPath != "" {
+				t.Fatalf("LoadGlobal on missing file = (%+v, %v), want (zero output-path, nil)", g, err)
 			}
 		}},
 		// TestSaveGlobalRoundTrip is the one that matters: every setting the config
@@ -62,23 +70,27 @@ func TestGlobal(t *testing.T) {
 		{"SaveGlobalRoundTrip", func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 
-			want := Global{
+			cfg, err := defaults()
+			if err != nil {
+				t.Fatalf("defaults: %v", err)
+			}
+			want := &Configuration{
 				OutputPath:            "/tmp/lib",
 				Workers:               8,
 				Rules:                 []string{"date", "location"},
 				CollapseLevels:        false,
 				HomeWorkDateOnly:      false,
 				MergeSameLocationDays: true,
-				HomeWork:              HomeWork{Home: "Delhi", Work: "Gurugram"},
+				SavedPlaces:           []string{"Delhi", "Gurugram"},
 			}
-			if err := SaveGlobal(want); err != nil {
+			if err := cfg.Save(want); err != nil {
 				t.Fatalf("SaveGlobal: %v", err)
 			}
-			got, err := LoadGlobal()
+			got, err := cfg.Load()
 			if err != nil {
 				t.Fatalf("LoadGlobal: %v", err)
 			}
-			if !reflect.DeepEqual(got, want) {
+			if !overridesEqual(got, want) {
 				t.Fatalf("round trip = %+v, want %+v", got, want)
 			}
 		}},
@@ -88,14 +100,22 @@ func TestGlobal(t *testing.T) {
 	}
 }
 
+func overridesEqual(o Overrides, c *Configuration) bool {
+	return o.OutputPath == c.OutputPath &&
+		o.Workers == c.Workers &&
+		reflect.DeepEqual(o.Rules, c.Rules) &&
+		triToBool(o.CollapseLevels) == c.CollapseLevels &&
+		triToBool(o.HomeWorkDateOnly) == c.HomeWorkDateOnly &&
+		triToBool(o.MergeSameLocationDays) == c.MergeSameLocationDays &&
+		reflect.DeepEqual(o.SavedPlaces, c.SavedPlaces)
+}
+
+func triToBool(t TriBool) bool { return t == True }
+
 // TestResolve covers the precedence chain (flag > env > file > default) —
 // the one thing worth a real test now that it's concentrated in one
 // function instead of split across viper binding and applyOverrides.
 func TestResolve(t *testing.T) {
-	strPtr := func(s string) *string { return &s }
-	intPtr := func(n int) *int { return &n }
-	boolPtr := func(b bool) *bool { return &b }
-
 	tests := []struct {
 		name string
 		fn   func(t *testing.T)
@@ -103,7 +123,7 @@ func TestResolve(t *testing.T) {
 		{"DefaultsOnlyLeavesUnconfigured", func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 
-			cfg, warning, err := Resolve(FlagOverrides{})
+			cfg, warning, err := Resolve(Overrides{})
 			if err != nil || warning != "" {
 				t.Fatalf("Resolve: err=%v warning=%q", err, warning)
 			}
@@ -116,11 +136,15 @@ func TestResolve(t *testing.T) {
 		}},
 		{"FileOverridesDefault", func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
-			if err := SaveGlobal(Global{OutputPath: "/tmp/from-file", Workers: 3}); err != nil {
+			c, err := defaults()
+			if err != nil {
+				t.Fatalf("defaults: %v", err)
+			}
+			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file", Workers: 3}); err != nil {
 				t.Fatal(err)
 			}
 
-			cfg, _, err := Resolve(FlagOverrides{})
+			cfg, _, err := Resolve(Overrides{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -133,12 +157,16 @@ func TestResolve(t *testing.T) {
 		}},
 		{"EnvOverridesFile", func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
-			if err := SaveGlobal(Global{OutputPath: "/tmp/from-file", Workers: 3}); err != nil {
+			c, err := defaults()
+			if err != nil {
+				t.Fatalf("defaults: %v", err)
+			}
+			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file", Workers: 3}); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("WORKERS", "9")
 
-			cfg, _, err := Resolve(FlagOverrides{})
+			cfg, _, err := Resolve(Overrides{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -148,12 +176,16 @@ func TestResolve(t *testing.T) {
 		}},
 		{"FlagOverridesEnvAndFile", func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
-			if err := SaveGlobal(Global{OutputPath: "/tmp/from-file", Workers: 3}); err != nil {
+			c, err := defaults()
+			if err != nil {
+				t.Fatalf("defaults: %v", err)
+			}
+			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file", Workers: 3}); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("WORKERS", "9")
 
-			cfg, _, err := Resolve(FlagOverrides{Workers: intPtr(5)})
+			cfg, _, err := Resolve(Overrides{Workers: 5})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -164,7 +196,7 @@ func TestResolve(t *testing.T) {
 		{"FlagOutputPathAloneIsConfigured", func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 
-			cfg, _, err := Resolve(FlagOverrides{OutputPath: strPtr("/tmp/from-flag")})
+			cfg, _, err := Resolve(Overrides{OutputPath: "/tmp/from-flag"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -174,10 +206,11 @@ func TestResolve(t *testing.T) {
 		}},
 		{"BadYAMLFallsBackWithWarning", func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
-			if _, err := EnsureGlobalConfigFile(); err != nil {
-				t.Fatal(err)
+			c, err := defaults()
+			if err != nil {
+				t.Fatalf("defaults: %v", err)
 			}
-			path, err := GlobalConfigPath()
+			path, err := c.Exists()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -185,7 +218,7 @@ func TestResolve(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			cfg, warning, err := Resolve(FlagOverrides{})
+			cfg, warning, err := Resolve(Overrides{})
 			if err != nil {
 				t.Fatalf("bad YAML must not be fatal, got %v", err)
 			}
@@ -201,11 +234,15 @@ func TestResolve(t *testing.T) {
 			// output-path) must not stomp CollapseLevels/HomeWorkDateOnly/
 			// MergeSameLocationDays to their Go zero value (false).
 			t.Setenv("HOME", t.TempDir())
-			if err := SaveGlobal(Global{Workers: 4}); err != nil {
+			c, err := defaults()
+			if err != nil {
+				t.Fatalf("defaults: %v", err)
+			}
+			if err := c.Save(&Configuration{Workers: 4}); err != nil {
 				t.Fatal(err)
 			}
 
-			cfg, _, err := Resolve(FlagOverrides{})
+			cfg, _, err := Resolve(Overrides{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -215,14 +252,18 @@ func TestResolve(t *testing.T) {
 		}},
 		{"FileBoolsApplyOnceConfigured", func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
-			if err := SaveGlobal(Global{
+			c, err := defaults()
+			if err != nil {
+				t.Fatalf("defaults: %v", err)
+			}
+			if err := c.Save(&Configuration{
 				OutputPath:     "/tmp/from-file",
 				CollapseLevels: false,
 			}); err != nil {
 				t.Fatal(err)
 			}
 
-			cfg, _, err := Resolve(FlagOverrides{})
+			cfg, _, err := Resolve(Overrides{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -232,11 +273,15 @@ func TestResolve(t *testing.T) {
 		}},
 		{"FlagBoolOverridesFile", func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
-			if err := SaveGlobal(Global{OutputPath: "/tmp/from-file", CollapseLevels: false}); err != nil {
+			c, err := defaults()
+			if err != nil {
+				t.Fatalf("defaults: %v", err)
+			}
+			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file", CollapseLevels: false}); err != nil {
 				t.Fatal(err)
 			}
 
-			cfg, _, err := Resolve(FlagOverrides{CollapseLevels: boolPtr(true)})
+			cfg, _, err := Resolve(Overrides{CollapseLevels: True})
 			if err != nil {
 				t.Fatal(err)
 			}

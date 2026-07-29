@@ -22,11 +22,6 @@ import (
 	"golang.org/x/term"
 )
 
-// Execute runs the wandersort CLI. It is this package's only exported symbol:
-// the app and everything hanging off it stay internal, so main.go has one way
-// in and no state to assemble. a.Config starts nil — PersistentPreRunE builds
-// it via config.Resolve before any command body runs, so nothing here reads
-// it early.
 func Execute() error {
 	a := &app{}
 	return a.newRootCmd().Execute()
@@ -36,12 +31,7 @@ type app struct {
 	Config *config.Configuration
 	Log    logger.Logger
 	AppDB  *db.DB
-	// Deps coordinates the two downloadable dependencies (exiftool, the
-	// location database) for the current command. Built once per command via
-	// newDeps; nil until then. See pkg/install — this is the one place
-	// exiftool path / location resolver readiness live, replacing what used
-	// to be raw goroutines writing directly into *app fields.
-	Deps *install.Coordinator
+	Deps   *install.Coordinator
 }
 
 // newDeps builds a Coordinator wired to this app's config and log.
@@ -130,41 +120,43 @@ func (a *app) syncAnchors(ctx context.Context, resolver *location.Resolver) erro
 	if resolver == nil {
 		return nil
 	}
-	g, err := config.LoadGlobal()
+	g, err := a.Config.Load()
 	if err != nil {
 		a.Log.Warn("Could not read global config, skipping anchor sync", "error", err)
 		return nil
 	}
 
-	for _, anchor := range []struct{ name, kind string }{
-		{g.HomeWork.Home, config.SavedPlaceHome},
-		{g.HomeWork.Work, config.SavedPlaceWork},
-	} {
-		if anchor.name == "" {
+	kinds := []string{config.SavedPlaceHome, config.SavedPlaceWork}
+	for i, name := range g.SavedPlaces {
+		if i >= len(kinds) {
+			break // only home and work are anchored
+		}
+		if name == "" {
 			continue
 		}
+		kind := kinds[i]
 		var exists int
 		if err := a.AppDB.SQL.GetContext(ctx, &exists,
-			`SELECT COUNT(*) FROM user_labels WHERE kind = ? AND label = ?`, anchor.kind, anchor.name); err != nil {
-			return fmt.Errorf("check anchor %q: %w", anchor.name, err)
+			`SELECT COUNT(*) FROM user_labels WHERE kind = ? AND label = ?`, kind, name); err != nil {
+			return fmt.Errorf("check anchor %q: %w", name, err)
 		}
 		if exists > 0 {
 			continue
 		}
-		lat, lon, err := resolver.ResolveByName(ctx, anchor.name)
+		lat, lon, err := resolver.ResolveByName(ctx, name)
 		if err != nil {
-			a.Log.Warn("Could not resolve saved anchor town", "town", anchor.name, "error", err)
+			a.Log.Warn("Could not resolve saved anchor town", "town", name, "error", err)
 			continue
 		}
 		if !a.AppDB.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 			_, err := tx.ExecContext(ctx,
 				`INSERT INTO user_labels (label, kind, gps_lat, gps_lon) VALUES (?, ?, ?, ?)`,
-				anchor.name, anchor.kind, lat, lon)
+				name, kind, lat, lon)
 			return err
 		}) {
-			return fmt.Errorf("save anchor %q: writer closed", anchor.name)
+			return fmt.Errorf("save anchor %q: writer closed", name)
 		}
-		a.Log.Info("Synced anchor for this library", logger.UserKey, true, "town", anchor.name, "kind", anchor.kind)
+		a.Log.Info("Synced anchor for this library", logger.UserKey, true, "town", name, "kind", kind)
 	}
 	return nil
 }

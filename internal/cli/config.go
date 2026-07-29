@@ -57,7 +57,7 @@ wandersort config | grep rules`,
 }
 
 func (a *app) runConfig(cmd *cobra.Command) error {
-	configPath, err := config.EnsureGlobalConfigFile()
+	configPath, err := a.Config.Exists()
 	if err != nil {
 		return fmt.Errorf("global config: %w", err)
 	}
@@ -149,7 +149,7 @@ func (a *app) runConfigTUI(ctx context.Context) error {
 // buildConfigForm builds the wizard's fields (seeded with the current effective
 // values) and a save closure that writes them to ~/.wandersort/config.yaml.
 func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
-	g, _ := config.LoadGlobal()
+	g, _ := a.Config.Load()
 
 	out := g.OutputPath
 	if out == "" {
@@ -163,8 +163,13 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 	collapse := a.Config.CollapseLevels
 	mergeDays := a.Config.MergeSameLocationDays
 	hwDateOnly := a.Config.HomeWorkDateOnly
-	home := g.HomeWork.Home
-	work := g.HomeWork.Work
+	home, work := "", ""
+	if len(g.SavedPlaces) > 0 {
+		home = g.SavedPlaces[0]
+	}
+	if len(g.SavedPlaces) > 1 {
+		work = g.SavedPlaces[1]
+	}
 
 	// townValidator rejects a near-miss the gazetteer has close candidates for
 	// (a typo), but waves through a name it doesn't know at all — see
@@ -513,7 +518,7 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 				selectedRules = append(selectedRules, opt)
 			}
 		}
-		g := config.Global{
+		g := &config.Configuration{
 			OutputPath:            paths.ExpandPath(strings.TrimSpace(out)),
 			Rules:                 selectedRules,
 			CollapseLevels:        collapse,
@@ -524,9 +529,8 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 			g.Workers = w
 		}
 		// Canonicalize towns to the exact gazetteer spelling before saving.
-		g.HomeWork.Home = canonicalTownOrTyped(home)
-		g.HomeWork.Work = canonicalTownOrTyped(work)
-		if err := config.SaveGlobal(g); err != nil {
+		g.SavedPlaces = []string{canonicalTownOrTyped(home), canonicalTownOrTyped(work)}
+		if err := a.Config.Save(g); err != nil {
 			return fmt.Errorf("save settings: %w", err)
 		}
 		return nil

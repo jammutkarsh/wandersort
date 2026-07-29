@@ -68,10 +68,13 @@ Flags take precedence over environment variables.`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := config.EnsureGlobalConfigFile(); err != nil {
-				return fmt.Errorf("global config: %w", err)
-			}
-			cfg, warning, err := config.Resolve(flagOverridesFrom(cmd))
+			cfg, warning, err := config.Resolve(config.Overrides{
+				OutputPath:            flagStr(cmd, flagOutputPath),
+				Workers:               flagInt(cmd, flagWorkers),
+				CollapseLevels:        flagBool(cmd, flagCollapse),
+				HomeWorkDateOnly:      flagBool(cmd, flagHWDateOnly),
+				MergeSameLocationDays: flagBool(cmd, flagMergeDays),
+			})
 			if err != nil {
 				return err
 			}
@@ -113,40 +116,32 @@ Where to ideally store the generated scripts:
 	return rootCmd
 }
 
-// flagOverridesFrom reads the config-affecting persistent flags off cmd into
-// a config.FlagOverrides, leaving a field nil when the flag was never passed
-// — Resolve uses nil to mean "fall through to env/file/default," which a
-// flag's own zero value (empty string, 0) can't express on its own once
-// --workers=0 or similar becomes a real (if odd) thing to type.
-func flagOverridesFrom(cmd *cobra.Command) config.FlagOverrides {
-	var overrides config.FlagOverrides
-	flags := cmd.Flags()
+// flagStr returns the string flag value, or "" when unset.
+func flagStr(cmd *cobra.Command, name string) string {
+	if !cmd.Flags().Changed(name) {
+		return ""
+	}
+	s, _ := cmd.Flags().GetString(name)
+	return s
+}
 
-	if flags.Changed(flagOutputPath) {
-		if s, err := flags.GetString(flagOutputPath); err == nil {
-			overrides.OutputPath = &s
-		}
+// flagInt returns the int flag value, or 0 when unset.
+func flagInt(cmd *cobra.Command, name string) int {
+	if !cmd.Flags().Changed(name) {
+		return 0
 	}
-	if flags.Changed(flagWorkers) {
-		if n, err := flags.GetInt(flagWorkers); err == nil {
-			overrides.Workers = &n
-		}
-	}
-	if flags.Changed(flagCollapse) {
-		if b, err := flags.GetBool(flagCollapse); err == nil {
-			overrides.CollapseLevels = &b
-		}
-	}
-	if flags.Changed(flagHWDateOnly) {
-		if b, err := flags.GetBool(flagHWDateOnly); err == nil {
-			overrides.HomeWorkDateOnly = &b
-		}
-	}
-	if flags.Changed(flagMergeDays) {
-		if b, err := flags.GetBool(flagMergeDays); err == nil {
-			overrides.MergeSameLocationDays = &b
-		}
-	}
+	n, _ := cmd.Flags().GetInt(name)
+	return n
+}
 
-	return overrides
+// flagBool returns the bool flag as a TriBool, or Unset when not passed.
+func flagBool(cmd *cobra.Command, name string) config.TriBool {
+	if !cmd.Flags().Changed(name) {
+		return config.Unset
+	}
+	b, err := cmd.Flags().GetBool(name)
+	if err != nil {
+		return config.Unset
+	}
+	return config.BoolToTri(b)
 }

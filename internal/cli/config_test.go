@@ -48,7 +48,7 @@ func TestConfig(t *testing.T) {
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
 
-			cfg, err := config.Defaults()
+			cfg, _, err := config.Resolve(config.Overrides{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,18 +123,18 @@ func TestConfig(t *testing.T) {
 			if err := brokenSave(); err != nil {
 				t.Fatalf("save (broken gazetteer): %v", err)
 			}
-			if g, _ := config.LoadGlobal(); g.HomeWork.Home != "Indore" || g.HomeWork.Work != "Indore" {
-				t.Errorf("home/work = %+v, want the typed town kept (work defaults to home)", g.HomeWork)
+			if g, _ := cfg.Load(); len(g.SavedPlaces) < 2 || g.SavedPlaces[0] != "Indore" || g.SavedPlaces[1] != "Indore" {
+				t.Errorf("home/work = %q/%q, want the typed town kept (work defaults to home)", g.SavedPlaces[0], g.SavedPlaces[1])
 			}
 
 			if err := save(); err != nil {
 				t.Fatalf("save: %v", err)
 			}
-			got, err := config.LoadGlobal()
+			got, err := cfg.Load()
 			if err != nil {
 				t.Fatalf("LoadGlobal: %v", err)
 			}
-			want := config.Global{
+			want := &config.Configuration{
 				OutputPath:       filepath.Dir(cfg.AppDBPath),
 				Workers:          3,
 				Rules:            []string{"date", "device"},
@@ -143,7 +143,11 @@ func TestConfig(t *testing.T) {
 
 				MergeSameLocationDays: cfg.MergeSameLocationDays,
 			}
-			if !reflect.DeepEqual(got, want) {
+			// YAML-tagged fields must match exactly; computed fields are not persisted.
+			if got.OutputPath != want.OutputPath || got.Workers != want.Workers || !reflect.DeepEqual(got.Rules, want.Rules) ||
+				(got.CollapseLevels == config.True) != want.CollapseLevels ||
+				(got.HomeWorkDateOnly == config.True) != want.HomeWorkDateOnly ||
+				(got.MergeSameLocationDays == config.True) != want.MergeSameLocationDays {
 				t.Fatalf("saved config = %+v, want %+v", got, want)
 			}
 		}},
@@ -164,7 +168,7 @@ func TestConfig(t *testing.T) {
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
 
-			cfg, err := config.Defaults()
+			cfg, _, err := config.Resolve(config.Overrides{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -214,8 +218,8 @@ func TestConfig(t *testing.T) {
 			if err := save(); err != nil {
 				t.Fatalf("save: %v", err)
 			}
-			if g, _ := config.LoadGlobal(); g.HomeWork.Home != "Indore, Madhya Pradesh, India" {
-				t.Errorf("saved home town = %q, want the canonical gazetteer spelling", g.HomeWork.Home)
+			if g, _ := cfg.Load(); len(g.SavedPlaces) == 0 || g.SavedPlaces[0] != "Indore, Madhya Pradesh, India" {
+				t.Errorf("saved home town = %q, want the canonical gazetteer spelling", g.SavedPlaces[0])
 			}
 		}},
 		// TestBadYAMLWarnsAndFallsBackToDefaults covers the escape hatch: a config
@@ -234,7 +238,7 @@ func TestConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, warning, err := config.Resolve(config.FlagOverrides{})
+			_, warning, err := config.Resolve(config.Overrides{})
 			if err != nil {
 				t.Fatalf("bad YAML must not be a fatal error, got %v", err)
 			}
@@ -256,7 +260,7 @@ func TestConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			cfg, warning, err := config.Resolve(config.FlagOverrides{})
+			cfg, warning, err := config.Resolve(config.Overrides{})
 			if err != nil || warning != "" {
 				t.Fatalf("valid config: err=%v warning=%q", err, warning)
 			}
@@ -291,10 +295,14 @@ func TestConfig(t *testing.T) {
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
 
-			if _, err := config.EnsureGlobalConfigFile(); err != nil {
+			cfg, _, err := config.Resolve(config.Overrides{})
+			if err != nil {
 				t.Fatal(err)
 			}
-			cfg, _, err := config.Resolve(config.FlagOverrides{})
+			if _, err := cfg.Exists(); err != nil {
+				t.Fatal(err)
+			}
+			cfg, _, err = config.Resolve(config.Overrides{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -302,10 +310,10 @@ func TestConfig(t *testing.T) {
 				t.Error("an empty config.yaml must not count as configured")
 			}
 
-			if err := config.SaveGlobal(config.Global{OutputPath: filepath.Join(home, "out")}); err != nil {
+			if err := cfg.Save(&config.Configuration{OutputPath: filepath.Join(home, "out")}); err != nil {
 				t.Fatal(err)
 			}
-			cfg, _, err = config.Resolve(config.FlagOverrides{})
+			cfg, _, err = config.Resolve(config.Overrides{})
 			if err != nil {
 				t.Fatal(err)
 			}
