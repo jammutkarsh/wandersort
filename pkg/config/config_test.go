@@ -66,7 +66,7 @@ func TestGlobal(t *testing.T) {
 		}},
 		// TestSaveGlobalRoundTrip is the one that matters: every setting the config
 		// wizard collects has to survive the file, including the false bools (which
-		// must be written, not omitted as "unset") and the home/work names.
+		// must be written, not omitted as "unset") and the saved-place names.
 		{"SaveGlobalRoundTrip", func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 
@@ -79,7 +79,7 @@ func TestGlobal(t *testing.T) {
 				Workers:               8,
 				Rules:                 []string{"date", "location"},
 				CollapseLevels:        false,
-				HomeWorkDateOnly:      false,
+				SavedPlacesDateOnly:   false,
 				MergeSameLocationDays: true,
 				SavedPlaces:           []string{"Delhi", "Gurugram"},
 			}
@@ -105,7 +105,7 @@ func overridesEqual(o Overrides, c *Configuration) bool {
 		o.Workers == c.Workers &&
 		reflect.DeepEqual(o.Rules, c.Rules) &&
 		triToBool(o.CollapseLevels) == c.CollapseLevels &&
-		triToBool(o.HomeWorkDateOnly) == c.HomeWorkDateOnly &&
+		triToBool(o.SavedPlacesDateOnly) == c.SavedPlacesDateOnly &&
 		triToBool(o.MergeSameLocationDays) == c.MergeSameLocationDays &&
 		reflect.DeepEqual(o.SavedPlaces, c.SavedPlaces)
 }
@@ -130,7 +130,7 @@ func TestResolve(t *testing.T) {
 			if cfg.Configured {
 				t.Error("no flag/env/file set output-path — Configured must be false")
 			}
-			if !cfg.CollapseLevels || !cfg.HomeWorkDateOnly || !cfg.MergeSameLocationDays {
+			if !cfg.CollapseLevels || !cfg.SavedPlacesDateOnly || !cfg.MergeSameLocationDays {
 				t.Errorf("unconfigured bools must keep their hardcoded defaults, got %+v", cfg)
 			}
 		}},
@@ -231,7 +231,7 @@ func TestResolve(t *testing.T) {
 		}},
 		{"UnconfiguredFileDoesNotForceBoolsFalse", func(t *testing.T) {
 			// A file with only workers set (never through the wizard, so no
-			// output-path) must not stomp CollapseLevels/HomeWorkDateOnly/
+			// output-path) must not stomp CollapseLevels/SavedPlacesDateOnly/
 			// MergeSameLocationDays to their Go zero value (false).
 			t.Setenv("HOME", t.TempDir())
 			c, err := defaults()
@@ -246,7 +246,7 @@ func TestResolve(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !cfg.CollapseLevels || !cfg.HomeWorkDateOnly || !cfg.MergeSameLocationDays {
+			if !cfg.CollapseLevels || !cfg.SavedPlacesDateOnly || !cfg.MergeSameLocationDays {
 				t.Errorf("bools must keep their defaults when output-path was never set, got %+v", cfg)
 			}
 		}},

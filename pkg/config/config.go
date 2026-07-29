@@ -18,17 +18,17 @@ import (
 )
 
 const (
-	defaultLibrary  = "WandersortLibrary"
+	defaultLibrary     = "WandersortLibrary"
 	defaultLogFileName = ".wandersort.log"
 	defaultDBFileName  = ".wandersort.db"
 	locationDBFileName = "location.db"
 	defaultLogLevel    = "info"
 	configFileName     = "config.yaml"
 
-	// SavedPlaceHome is the user_labels.kind for a confirmed home location.
-	SavedPlaceHome = "SAVED_PLACE_HOME"
-	// SavedPlaceWork is the user_labels.kind for a confirmed work location.
-	SavedPlaceWork = "SAVED_PLACE_WORK"
+	// SavedPlace is the user_labels.kind for a confirmed anchor location.
+	// SavedPlaces is positional: index 0 is home, 1 is work, everything
+	// else is another frequently-stayed-at place — all anchored the same way.
+	SavedPlace = "SAVED_PLACE"
 )
 
 type TriBool int
@@ -54,7 +54,7 @@ type Configuration struct {
 	Workers               int      `yaml:"workers,omitempty"`
 	Rules                 []string `yaml:"rules,omitempty"`
 	CollapseLevels        bool     `yaml:"collapse-levels"`
-	HomeWorkDateOnly      bool     `yaml:"home-work-date-only"`
+	SavedPlacesDateOnly   bool     `yaml:"saved-places-date-only"`
 	MergeSameLocationDays bool     `yaml:"merge-same-location-days"`
 	SavedPlaces           []string `yaml:"saved-places,omitempty"`
 
@@ -73,7 +73,7 @@ type Overrides struct {
 	Workers               int      `yaml:"workers,omitempty"`
 	Rules                 []string `yaml:"rules,omitempty"`
 	CollapseLevels        TriBool  `yaml:"collapse-levels,omitempty"`
-	HomeWorkDateOnly      TriBool  `yaml:"home-work-date-only,omitempty"`
+	SavedPlacesDateOnly   TriBool  `yaml:"saved-places-date-only,omitempty"`
 	MergeSameLocationDays TriBool  `yaml:"merge-same-location-days,omitempty"`
 	SavedPlaces           []string `yaml:"saved-places,omitempty"`
 }
@@ -139,7 +139,7 @@ func defaults() (*Configuration, error) {
 		Workers:               runtime.NumCPU(),
 		ExecutablePath:        executablesDirectory,
 		CollapseLevels:        true,
-		HomeWorkDateOnly:      true,
+		SavedPlacesDateOnly:   true,
 		MergeSameLocationDays: true,
 	}, nil
 }
@@ -174,11 +174,11 @@ func Resolve(o Overrides) (cfg *Configuration, warning string, err error) {
 	// zero value (False), which would stomp defaults to false.
 	if global.OutputPath == "" {
 		global.CollapseLevels = Unset
-		global.HomeWorkDateOnly = Unset
+		global.SavedPlacesDateOnly = Unset
 		global.MergeSameLocationDays = Unset
 	}
 	cfg.CollapseLevels = resolveBool(cfg.CollapseLevels, o.CollapseLevels, envBool("COLLAPSE_LEVELS"), global.CollapseLevels)
-	cfg.HomeWorkDateOnly = resolveBool(cfg.HomeWorkDateOnly, o.HomeWorkDateOnly, envBool("HOME_WORK_DATE_ONLY"), global.HomeWorkDateOnly)
+	cfg.SavedPlacesDateOnly = resolveBool(cfg.SavedPlacesDateOnly, o.SavedPlacesDateOnly, envBool("SAVED_PLACES_DATE_ONLY"), global.SavedPlacesDateOnly)
 	cfg.MergeSameLocationDays = resolveBool(cfg.MergeSameLocationDays, o.MergeSameLocationDays, envBool("MERGE_SAME_LOCATION_DAYS"), global.MergeSameLocationDays)
 
 	if outputPath != "" {

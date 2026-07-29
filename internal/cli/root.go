@@ -25,7 +25,7 @@ const (
 	flagPrint      = "print"
 	flagCollapse   = "collapse-levels"
 	flagPlain      = "plain"
-	flagHWDateOnly = "home-work-date-only"
+	flagSPDateOnly = "saved-places-date-only"
 	flagMergeDays  = "merge-same-location-days"
 )
 
@@ -72,7 +72,7 @@ Flags take precedence over environment variables.`,
 				OutputPath:            flagStr(cmd, flagOutputPath),
 				Workers:               flagInt(cmd, flagWorkers),
 				CollapseLevels:        flagBool(cmd, flagCollapse),
-				HomeWorkDateOnly:      flagBool(cmd, flagHWDateOnly),
+				SavedPlacesDateOnly:   flagBool(cmd, flagSPDateOnly),
 				MergeSameLocationDays: flagBool(cmd, flagMergeDays),
 			})
 			if err != nil {

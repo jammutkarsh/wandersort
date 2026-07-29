@@ -71,19 +71,19 @@ func TestPlanCollapseLevelsDropsUniformDeviceOnly(t *testing.T) {
 	}
 }
 
-func TestPlanHomeWorkDateOnlySuppressesLocationSegment(t *testing.T) {
+func TestPlanSavedPlacesDateOnlySuppressesLocationSegment(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation}
-	cfg.HomeWorkDateOnly = true
+	cfg.SavedPlacesDateOnly = true
 	cfg.CollapseLevels = false
 
 	masters := runPlan(t, []masterFile{
-		{FileDir: "/src", FileName: "home.jpg", DBDateTaken: new("2024:08:02 10:00:00"), location: "Indore", atHomeWork: true},
-		{FileDir: "/src", FileName: "trip.jpg", DBDateTaken: new("2024:08:02 10:00:00"), location: "Goa", atHomeWork: false},
+		{FileDir: "/src", FileName: "home.jpg", DBDateTaken: new("2024:08:02 10:00:00"), location: "Indore", atSavedPlace: true},
+		{FileDir: "/src", FileName: "trip.jpg", DBDateTaken: new("2024:08:02 10:00:00"), location: "Goa", atSavedPlace: false},
 	}, cfg)
 
 	if want := "2024/08_August/02/home.jpg"; masters[0].targetPath != want {
-		t.Errorf("home/work file: got %q, want %q (location folder should be suppressed)", masters[0].targetPath, want)
+		t.Errorf("saved-place file: got %q, want %q (location folder should be suppressed)", masters[0].targetPath, want)
 	}
 	if want := "2024/08_August/02/Goa/trip.jpg"; masters[1].targetPath != want {
 		t.Errorf("trip file: got %q, want %q (location folder should render)", masters[1].targetPath, want)

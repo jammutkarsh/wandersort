@@ -250,7 +250,7 @@ func TestUserLabelSuggestion(t *testing.T) {
 }
 
 // TestAnchorSuggestion covers a fully unresolved cluster (no GPS at all)
-// falling back to a *confirmed* home/work anchor for its suggestion.
+// falling back to a *confirmed* saved-place anchor for its suggestion.
 // anchorCities deliberately no longer falls back to "the library's most
 // frequent city" with no confirmed anchor — see the anchorCities doc comment
 // for why (a real reported bug: an unrelated DSLR photo with no GPS anywhere
@@ -258,7 +258,7 @@ func TestUserLabelSuggestion(t *testing.T) {
 func TestAnchorSuggestion(t *testing.T) {
 	h := newHarness(t)
 	if _, err := h.d.ExecContext(context.Background(),
-		`INSERT INTO user_labels (label, kind) VALUES ('Indore', '`+config.SavedPlaceHome+`')`); err != nil {
+		`INSERT INTO user_labels (label, kind) VALUES ('Indore', '`+config.SavedPlace+`')`); err != nil {
 		t.Fatal(err)
 	}
 	u := h.addFile(t, "dump/DSC_0009.JPG", "IMAGE", metaWith("2024:06:20 10:00:00", 0, 0, 4000, 3000))
@@ -498,16 +498,16 @@ func TestEmptyRulesIsFlatYearMonth(t *testing.T) {
 func addHomeAnchor(t *testing.T, h *harness, name string, lat, lon float64) {
 	t.Helper()
 	if _, err := h.d.ExecContext(context.Background(),
-		`INSERT INTO user_labels (label, kind, gps_lat, gps_lon) VALUES (?, '`+config.SavedPlaceHome+`', ?, ?)`,
+		`INSERT INTO user_labels (label, kind, gps_lat, gps_lon) VALUES (?, '`+config.SavedPlace+`', ?, ?)`,
 		name, lat, lon); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// TestHomeWorkDateOnly is the default behaviour: a photo taken at a confirmed
-// home/work place gets NO location level — it's grouped by date only, since
+// TestSavedPlacesDateOnly is the default behaviour: a photo taken at a confirmed
+// saved place gets NO location level — it's grouped by date only, since
 // there's no point sorting your everyday home photos into a town folder.
-func TestHomeWorkDateOnly(t *testing.T) {
+func TestSavedPlacesDateOnly(t *testing.T) {
 	h := newHarness(t)
 	// 28.58,77.33 is real Noida, ~14km (well within location.MaxDistSquared's
 	// ~50km) from the Delhi anchor below
@@ -515,30 +515,30 @@ func TestHomeWorkDateOnly(t *testing.T) {
 	geo := installtest.Resolver(t)
 	addHomeAnchor(t, h, "Delhi", 28.65195, 77.23149)
 
-	cfg := DefaultConfig() // HomeWorkDateOnly defaults true
+	cfg := DefaultConfig() // SavedPlacesDateOnly defaults true
 	cfg.Rules = []string{RuleLocation, RuleOrientation, RuleMedia}
 	rows := h.build(t, cfg, geo)
 
 	want := "2024/06_June/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
-		t.Errorf("target = %q, want %q (home/work photo should be date-only, no location level)", rows[id].TargetPath, want)
+		t.Errorf("target = %q, want %q (saved-place photo should be date-only, no location level)", rows[id].TargetPath, want)
 	}
 }
 
-// TestHomeWorkDateOnlySpilloverStaysSuppressed covers a reported bug: a
+// TestSavedPlacesDateOnlySpilloverStaysSuppressed covers a reported bug: a
 // GPS-less file clustered with GPS-tagged home photos (an indoor shot with no
 // fix, taken minutes after ones that resolved to the home anchor) inherited
 // the anchor's location string via clusterAndSuggest's spillover but not the
-// atHomeWork flag, so it alone leaked a location folder HomeWorkDateOnly was
+// atSavedPlace flag, so it alone leaked a location folder SavedPlacesDateOnly was
 // supposed to suppress for the whole cluster.
-func TestHomeWorkDateOnlySpilloverStaysSuppressed(t *testing.T) {
+func TestSavedPlacesDateOnlySpilloverStaysSuppressed(t *testing.T) {
 	h := newHarness(t)
 	withGPS := h.addFile(t, "d/h1.HEIC", "IMAGE", metaWith("2024:12:01 10:00:00", 22.7196, 75.8577, 3024, 4032))
 	noGPS := h.addFile(t, "d/h2.HEIC", "IMAGE", metaWith("2024:12:01 10:05:00", 0, 0, 3024, 4032))
 	geo := installtest.Resolver(t)
 	addHomeAnchor(t, h, "Indore", 22.7196, 75.8577)
 
-	cfg := DefaultConfig() // HomeWorkDateOnly defaults true
+	cfg := DefaultConfig() // SavedPlacesDateOnly defaults true
 	cfg.Rules = []string{RuleDate, RuleLocation}
 	rows := h.build(t, cfg, geo)
 
@@ -550,9 +550,9 @@ func TestHomeWorkDateOnlySpilloverStaysSuppressed(t *testing.T) {
 	}
 }
 
-// TestAnchorFoldsNearbySuburb covers the legacy opt-out (HomeWorkDateOnly=false):
+// TestAnchorFoldsNearbySuburb covers the legacy opt-out (SavedPlacesDateOnly=false):
 // a directly-resolved GPS location within location.MaxDistSquared of a confirmed
-// home/work label is replaced by that place's name, folding a metro's suburbs
+// saved-place label is replaced by that place's name, folding a metro's suburbs
 // into one folder instead of fragmenting by neighbourhood.
 func TestAnchorFoldsNearbySuburb(t *testing.T) {
 	h := newHarness(t)
@@ -563,7 +563,7 @@ func TestAnchorFoldsNearbySuburb(t *testing.T) {
 	addHomeAnchor(t, h, "Delhi", 28.65195, 77.23149)
 
 	cfg := DefaultConfig()
-	cfg.HomeWorkDateOnly = false // opt back into the suburb-fold behaviour
+	cfg.SavedPlacesDateOnly = false // opt back into the suburb-fold behaviour
 	cfg.Rules = []string{RuleLocation, RuleOrientation, RuleMedia}
 	rows := h.build(t, cfg, geo)
 
@@ -602,12 +602,12 @@ func TestMergeSameLocationDays(t *testing.T) {
 	}
 }
 
-// TestMergeSameLocationDaysFoldsHomeWorkDateOnly covers the reported bug:
-// HomeWorkDateOnly leaves atHomeWork photos with no location at all, so
+// TestMergeSameLocationDaysFoldsSavedPlacesDateOnly covers the reported bug:
+// SavedPlacesDateOnly leaves atSavedPlace photos with no location at all, so
 // mergeSameLocationDays's location=="" exclusion used to skip them outright —
 // six consecutive home days rendered as six separate day folders instead of
 // one range, even though they're all the same place same as a trip is.
-func TestMergeSameLocationDaysFoldsHomeWorkDateOnly(t *testing.T) {
+func TestMergeSameLocationDaysFoldsSavedPlacesDateOnly(t *testing.T) {
 	h := newHarness(t)
 	ids := make([]int64, 0, 6)
 	for d := 1; d <= 6; d++ {
@@ -619,7 +619,7 @@ func TestMergeSameLocationDaysFoldsHomeWorkDateOnly(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation}
-	// HomeWorkDateOnly defaults true — the reported config
+	// SavedPlacesDateOnly defaults true — the reported config
 	rows := h.build(t, cfg, geo)
 
 	for _, id := range ids {

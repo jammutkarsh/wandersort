@@ -42,15 +42,15 @@ func Plan(ctx context.Context, masters []masterFile, labels []userLabel, cfg Con
 // master, so a caller with no database and no gazetteer (the config wizard)
 // can ask what folders a Config would produce.
 type Sample struct {
-	TakenAt     time.Time
-	Location    string // resolved city; "" = unknown
-	AtHomeWork  bool
-	Device      string
-	Width       int64
-	Height      int64
-	MediaType   string // classifier.MediaTypeVideo, else treated as a photo
-	FileName    string
-	DayOverride string // pre-merged day range, e.g. "02_04"
+	TakenAt      time.Time
+	Location     string // resolved city; "" = unknown
+	AtSavedPlace bool
+	Device       string
+	Width        int64
+	Height       int64
+	MediaType    string // classifier.MediaTypeVideo, else treated as a photo
+	FileName     string
+	DayOverride  string // pre-merged day range, e.g. "02_04"
 }
 
 // PreviewPaths is the folder path each sample would land on under cfg — the
@@ -61,15 +61,15 @@ func PreviewPaths(cfg Config, samples []Sample) []string {
 	masters := make([]masterFile, len(samples))
 	for i, s := range samples {
 		masters[i] = masterFile{
-			FileName:    s.FileName,
-			MediaType:   s.MediaType,
-			takenAt:     s.TakenAt,
-			location:    s.Location,
-			atHomeWork:  s.AtHomeWork,
-			device:      s.Device,
-			width:       s.Width,
-			height:      s.Height,
-			dayOverride: s.DayOverride,
+			FileName:     s.FileName,
+			MediaType:    s.MediaType,
+			takenAt:      s.TakenAt,
+			location:     s.Location,
+			atSavedPlace: s.AtSavedPlace,
+			device:       s.Device,
+			width:        s.Width,
+			height:       s.Height,
+			dayOverride:  s.DayOverride,
 		}
 	}
 	skip := uninformativeLevels(masters, cfg)
@@ -113,14 +113,14 @@ func deriveAll(masters []masterFile) {
 }
 
 // resolveLocations reverse-geocodes every GPS-tagged master, then folds the
-// result into a confirmed home/work anchor within location.MaxDistSquared —
+// result into a confirmed saved-place anchor within location.MaxDistSquared —
 // otherwise a home city's own suburbs each get their own folder. This always
-// computes the real place, home/work included: whether a home/work file's
-// location folder actually renders is a HomeWorkDateOnly decision made later,
+// computes the real place, saved places included: whether a saved-place file's
+// location folder actually renders is a SavedPlacesDateOnly decision made later,
 // in segmentFor. Deriving first and suppressing at render time (rather than
 // blanking m.location here) keeps every later phase — clustering, the day-range
 // merge — working off real data instead of each having to know about
-// HomeWorkDateOnly on its own behalf.
+// SavedPlacesDateOnly on its own behalf.
 func resolveLocations(ctx context.Context, masters []masterFile, labels []userLabel, geo *location.Resolver, log logger.Logger) {
 	if geo == nil {
 		return
@@ -130,7 +130,7 @@ func resolveLocations(ctx context.Context, masters []masterFile, labels []userLa
 	// ResolveByName can round-trip them; a folder gets the bare city
 	anchorNames := make(map[string]string)
 	for _, l := range labels {
-		if (l.Kind == config.SavedPlaceHome || l.Kind == config.SavedPlaceWork) && l.GPSLat != nil && l.GPSLon != nil {
+		if l.Kind == config.SavedPlace && l.GPSLat != nil && l.GPSLon != nil {
 			anchors = append(anchors, l)
 			if _, ok := anchorNames[l.Label]; !ok {
 				city, _, _ := strings.Cut(l.Label, ",")
@@ -155,8 +155,8 @@ func resolveLocations(ctx context.Context, masters []masterFile, labels []userLa
 		for _, a := range anchors {
 			dLat, dLon := m.lat-*a.GPSLat, m.lon-*a.GPSLon
 			if dLat*dLat+dLon*dLon <= location.MaxDistSquared {
-				m.location = anchorNames[a.Label] // fold suburb into the confirmed home/work town
-				m.atHomeWork = true
+				m.location = anchorNames[a.Label] // fold suburb into the confirmed saved-place town
+				m.atSavedPlace = true
 				break
 			}
 		}
@@ -186,8 +186,8 @@ func applyNameCase(masters []masterFile, cfg Config) {
 // range in the review TUI.
 //
 // This keys on m.location, which resolveLocations sets to the real place for
-// home/work files too (HomeWorkDateOnly only hides the *folder*, in
-// segmentFor — see its comment). So home/work days merge exactly like a trip's
+// saved-place files too (SavedPlacesDateOnly only hides the *folder*, in
+// segmentFor — see its comment). So saved-place days merge exactly like a trip's
 // do, with no special-casing needed here.
 func mergeSameLocationDays(masters []masterFile, cfg Config) {
 	if !cfg.MergeSameLocationDays {
@@ -454,10 +454,10 @@ func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 func segmentFor(m *masterFile, level string, cfg Config) string {
 	switch level {
 	case RuleLocation:
-		// HomeWorkDateOnly: an everyday place gets no location folder, just
+		// SavedPlacesDateOnly: an everyday place gets no location folder, just
 		// the (possibly merged) date range — m.location itself stays real,
 		// it's only the folder that's suppressed.
-		if m.atHomeWork && cfg.HomeWorkDateOnly {
+		if m.atSavedPlace && cfg.SavedPlacesDateOnly {
 			return ""
 		}
 		// ladder: resolved city → dated event segment → nothing. No device or

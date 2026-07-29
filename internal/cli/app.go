@@ -110,12 +110,14 @@ func (a *app) tuiEnabled(cmd *cobra.Command) bool {
 	return term.IsTerminal(int(os.Stderr.Fd()))
 }
 
-// syncAnchors reads the globally-saved home/work towns and ensures they exist
-// as SAVED_PLACE_HOME/SAVED_PLACE_WORK user_labels in this library's DB. Saved places are a
-// global setting, but resolveLocations reads them per-library, so each
-// library's DB needs its own copy. Idempotent and silent once synced; empty
-// names are a no-op. A config file it can't read is a warning, not a failure —
-// anchors only sharpen the proposal, they don't gate it.
+// syncAnchors reads the globally-saved anchor towns (index 0 home, 1 work,
+// everything after another frequently-stayed-at place — all anchored the
+// same way) and ensures they exist as SAVED_PLACE user_labels in this
+// library's DB. Saved places are a global setting, but resolveLocations reads
+// them per-library, so each library's DB needs its own copy. Idempotent and
+// silent once synced; empty names are a no-op. A config file it can't read is
+// a warning, not a failure — anchors only sharpen the proposal, they don't
+// gate it.
 func (a *app) syncAnchors(ctx context.Context, resolver *location.Resolver) error {
 	if resolver == nil {
 		return nil
@@ -126,15 +128,11 @@ func (a *app) syncAnchors(ctx context.Context, resolver *location.Resolver) erro
 		return nil
 	}
 
-	kinds := []string{config.SavedPlaceHome, config.SavedPlaceWork}
-	for i, name := range g.SavedPlaces {
-		if i >= len(kinds) {
-			break // only home and work are anchored
-		}
+	for _, name := range g.SavedPlaces {
 		if name == "" {
 			continue
 		}
-		kind := kinds[i]
+		kind := config.SavedPlace
 		var exists int
 		if err := a.AppDB.SQL.GetContext(ctx, &exists,
 			`SELECT COUNT(*) FROM user_labels WHERE kind = ? AND label = ?`, kind, name); err != nil {

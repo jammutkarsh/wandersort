@@ -35,7 +35,7 @@ func (a *app) newConfigCmd() *cobra.Command {
 		Use:   "config",
 		Short: "Configure WanderSort",
 		Long: `Opens a full-screen wizard for every global setting — output folder,
-workers, folder rules, and your home/work towns. They apply to every
+workers, folder rules, and your saved-place towns. They apply to every
 scan unless overridden by a flag or environment variable, and are saved
 to ~/.wandersort/config.yaml.
 
@@ -97,7 +97,7 @@ var errConfigCancelled = errors.New("config cancelled")
 var errGazetteerPending = errors.New("location database is still downloading")
 
 // runConfigTUI runs the settings wizard as one alt-screen program. The
-// location database (needed only to validate the home/work towns) downloads in
+// location database (needed only to validate the saved-place towns) downloads in
 // the background while the user answers everything above it — there is no
 // install screen here; dependencies are scan's job.
 func (a *app) runConfigTUI(ctx context.Context) error {
@@ -162,7 +162,7 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 	}
 	collapse := a.Config.CollapseLevels
 	mergeDays := a.Config.MergeSameLocationDays
-	hwDateOnly := a.Config.HomeWorkDateOnly
+	spDateOnly := a.Config.SavedPlacesDateOnly
 	home, work := "", ""
 	if len(g.SavedPlaces) > 0 {
 		home = g.SavedPlaces[0]
@@ -263,7 +263,7 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 		return out
 	}
 
-	// suggestTown live-searches the gazetteer as the user types, so home/work
+	// suggestTown live-searches the gazetteer as the user types, so saved-place
 	// only ever get names the location DB can resolve later. Silent while the
 	// database is still downloading.
 	suggestTown := func(typed string) []string {
@@ -321,7 +321,7 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 		}
 		return rules
 	}
-	// homeTown is what the home/work examples name; a stand-in until the user
+	// homeTown is what the saved-place examples name; a stand-in until the user
 	// has typed a town, so the example is never blank. `home` is saved fully
 	// qualified ("Indore, Madhya Pradesh, India") so it round-trips through
 	// ResolveByName, but a folder can't hold a comma and the state/country
@@ -346,7 +346,7 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 	}
 
 	// Always demonstrates all three collapsible levels even when Rules has none
-	// ticked: this step sits under Home & work, so the user may not have
+	// ticked: this step sits under Saved places, so the user may not have
 	// visited Rules yet, and "nothing to collapse" teaches them nothing.
 	// Two branches, not one — collapsing is about the *repetition* of a
 	// one-value level under every folder, which a single path can't show.
@@ -415,7 +415,7 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 		rulesField,
 		{
 			Kind:        tui.FieldGroup,
-			Title:       "Home & work",
+			Title:       "Saved places",
 			Description: "The everyday places you shoot from, and how their photos are foldered.",
 			// The town fields need the gazetteer, so this is the one step that
 			// waits for the background download. Everything above it is
@@ -445,22 +445,22 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 				},
 				{
 					Kind:  tui.FieldConfirm,
-					Title: "Group home/work photos by date only?",
+					Title: "Group saved-place photos by date only?",
 					Describe: func() string {
-						d := "Everyday shots from home/work aren't trips — a city folder there mostly repeats itself."
-						if hwDateOnly {
+						d := "Everyday shots from a saved place aren't trips — a city folder there mostly repeats itself."
+						if spDateOnly {
 							return d + " On: no city folder for these."
 						}
 						return d + " Off: nearby suburbs still fold into " + homeTown() + "."
 					},
-					BoolValue: &hwDateOnly,
+					BoolValue: &spDateOnly,
 					Example: func() string {
 						cfg := vfs.DefaultConfig()
 						cfg.Rules = previewRules(vfs.RuleDate, vfs.RuleLocation)
 						cfg.CollapseLevels = collapse
-						cfg.HomeWorkDateOnly = hwDateOnly
+						cfg.SavedPlacesDateOnly = spDateOnly
 						sample := vfs.Sample{
-							TakenAt: exampleDay(12), Location: homeTown(), AtHomeWork: true, Device: "iPhone 13",
+							TakenAt: exampleDay(12), Location: homeTown(), AtSavedPlace: true, Device: "iPhone 13",
 							Width: 1170, Height: 2532, MediaType: classifier.MediaTypeImage, FileName: "IMG_1234.jpg",
 						}
 						return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{sample})...)
@@ -522,7 +522,7 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 			OutputPath:            paths.ExpandPath(strings.TrimSpace(out)),
 			Rules:                 selectedRules,
 			CollapseLevels:        collapse,
-			HomeWorkDateOnly:      hwDateOnly,
+			SavedPlacesDateOnly:   spDateOnly,
 			MergeSameLocationDays: mergeDays,
 		}
 		if w, err := strconv.Atoi(strings.TrimSpace(workers)); err == nil {

@@ -59,16 +59,16 @@ func TestConfig(t *testing.T) {
 
 			fields, save := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, errGazetteerPending })
 
-			// The two folder questions belong to the home/work step, after the towns:
+			// The two folder questions belong to the saved-place step, after the towns:
 			// their examples read off the town typed one field earlier.
-			group := fieldByTitle(t, fields, "Home & work")
+			group := fieldByTitle(t, fields, "Saved places")
 			var subTitles []string
 			for _, sub := range group.Subs {
 				subTitles = append(subTitles, sub.Title)
 			}
-			wantSubs := []string{"Home town", "Work town", "Collapse uninformative levels?", "Group home/work photos by date only?", "Merge consecutive same-location days?"}
+			wantSubs := []string{"Home town", "Work town", "Collapse uninformative levels?", "Group saved-place photos by date only?", "Merge consecutive same-location days?"}
 			if !reflect.DeepEqual(subTitles, wantSubs) {
-				t.Errorf("home/work step = %v, want %v", subTitles, wantSubs)
+				t.Errorf("saved-place step = %v, want %v", subTitles, wantSubs)
 			}
 
 			// Collapse always demonstrates all three collapsible levels, regardless
@@ -89,7 +89,7 @@ func TestConfig(t *testing.T) {
 			// The step holds while the database downloads — the wizard says so instead
 			// of failing a validation the user can't fix.
 			if group.Await == nil || group.Await() == "" {
-				t.Error("home/work step must wait while the location database downloads")
+				t.Error("saved-place step must wait while the location database downloads")
 			}
 
 			// Examples live outside the description, and only the active choice's.
@@ -115,7 +115,7 @@ func TestConfig(t *testing.T) {
 			// trap the user on the field — nor drop the town they already had.
 			broken := errors.New("location db: database is locked")
 			brokenFields, brokenSave := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, broken })
-			brokenGroup := fieldByTitle(t, brokenFields, "Home & work")
+			brokenGroup := fieldByTitle(t, brokenFields, "Saved places")
 			*brokenGroup.Subs[0].Value = "Indore"
 			if err := brokenGroup.Subs[0].Validator("Indore"); err != nil {
 				t.Errorf("unusable gazetteer must let a town through, got %v", err)
@@ -124,7 +124,7 @@ func TestConfig(t *testing.T) {
 				t.Fatalf("save (broken gazetteer): %v", err)
 			}
 			if g, _ := cfg.Load(); len(g.SavedPlaces) < 2 || g.SavedPlaces[0] != "Indore" || g.SavedPlaces[1] != "Indore" {
-				t.Errorf("home/work = %q/%q, want the typed town kept (work defaults to home)", g.SavedPlaces[0], g.SavedPlaces[1])
+				t.Errorf("saved-place = %q/%q, want the typed town kept (work defaults to home)", g.SavedPlaces[0], g.SavedPlaces[1])
 			}
 
 			if err := save(); err != nil {
@@ -135,18 +135,18 @@ func TestConfig(t *testing.T) {
 				t.Fatalf("LoadGlobal: %v", err)
 			}
 			want := &config.Configuration{
-				OutputPath:       filepath.Dir(cfg.AppDBPath),
-				Workers:          3,
-				Rules:            []string{"date", "device"},
-				CollapseLevels:   false,
-				HomeWorkDateOnly: false, // the example checks above left it off
+				OutputPath:          filepath.Dir(cfg.AppDBPath),
+				Workers:             3,
+				Rules:               []string{"date", "device"},
+				CollapseLevels:      false,
+				SavedPlacesDateOnly: false, // the example checks above left it off
 
 				MergeSameLocationDays: cfg.MergeSameLocationDays,
 			}
 			// YAML-tagged fields must match exactly; computed fields are not persisted.
 			if got.OutputPath != want.OutputPath || got.Workers != want.Workers || !reflect.DeepEqual(got.Rules, want.Rules) ||
 				(got.CollapseLevels == config.True) != want.CollapseLevels ||
-				(got.HomeWorkDateOnly == config.True) != want.HomeWorkDateOnly ||
+				(got.SavedPlacesDateOnly == config.True) != want.SavedPlacesDateOnly ||
 				(got.MergeSameLocationDays == config.True) != want.MergeSameLocationDays {
 				t.Fatalf("saved config = %+v, want %+v", got, want)
 			}
@@ -175,7 +175,7 @@ func TestConfig(t *testing.T) {
 			a := &app{Config: cfg}
 
 			fields, save := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return resolver, nil })
-			group := fieldByTitle(t, fields, "Home & work")
+			group := fieldByTitle(t, fields, "Saved places")
 			homeField := group.Subs[0]
 
 			// A partial real city name must surface a real gazetteer entry — the

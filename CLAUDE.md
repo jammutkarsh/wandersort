@@ -77,8 +77,8 @@ one scan ever runs against it at a time (see "Conventions" below):
     whole-file marshal, since the wizard always submits every setting and the
     file has no comments to preserve. On success it prints exactly
     `config saved in <path>`. Step order is **output path, workers, rules,
-    collapse, then one Home & work step** whose sub-fields are home town, work
-    town, "group home/work photos by date only?" and "merge consecutive
+    collapse, then one Saved places step** whose sub-fields are home town, work
+    town, "group saved-place photos by date only?" and "merge consecutive
     same-location days?" — both folder questions live *after* the towns
     because their examples name the town the user just typed.
     **Every example is computed, not canned**: `examplePath(day, town,
@@ -118,7 +118,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     `FormModel.Update` keeps the one from the byte reports — and ignores a
     `Finished` with no prior bytes, which is the only message an
     already-on-disk database sends, so it never gets mentioned at all.
-    The Home & work step is the only one that needs the database, so it holds
+    The Saved places step is the only one that needs the database, so it holds
     on `tui.Field.Await` (showing why) until `gazetteer()` stops returning
     `errGazetteerPending`; everything above it is answerable meanwhile.
     `Coordinator`'s internal channel is the happens-before edge making the
@@ -170,7 +170,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     **`scan` refuses to run before `wandersort config` has** — see
     `requireConfigured` in `root.go`. The config file every command creates is
     empty, so an unconfigured first scan silently builds its entire folder
-    proposal (output path, rules, home/work anchors) from defaults, and the
+    proposal (output path, rules, saved-place anchors) from defaults, and the
     user then redoes the whole thing. The gate is absolute: `-o` and env vars
     don't satisfy it, because the anchors and rules aren't reachable that way.
     `--paths/-p` is repeatable + comma-friendly
@@ -179,16 +179,16 @@ one scan ever runs against it at a time (see "Conventions" below):
     `wandersort config`. The plain path (`--plain`/non-TTY) keeps the simple
     order: blocking `Deps.Start` + `Deps.Exiftool`/`Deps.Location`, then
     `syncAnchors`, then the pipeline with `workflow.ReadyDeps`.
-  - **There is no `anchor.go`.** The read side of home/work anchors is
-    `app.syncAnchors` (reads the global config) delegating to
-    `vfs.SyncAnchors` (resolves each name via `ResolveByName` — a guaranteed
-    exact hit, since the wizard's `canonicalTown` validator only saves
-    gazetteer spellings — and inserts the `ANCHOR_HOME`/`ANCHOR_WORK`
-    `user_labels` row if this library lacks one). It lives in `core/vfs`
-    because `resolveLocations` is the only thing that reads those rows: the
-    phase that consumes an anchor owns writing it. The write side is the
-    `config` wizard (`config.SaveGlobal`), and its canonical-spelling helpers
-    `exactMatch`/`canonicalNameOf` sit in `config.go` next to their only caller.
+  - **There is no `anchor.go`.** `app.syncAnchors` (in `app.go`) reads the
+    global config's `SavedPlaces` — positional: index 0 home, 1 work,
+    everything after another frequently-stayed-at place, all anchored the same
+    way — resolves each name via `ResolveByName` (a guaranteed exact hit,
+    since the wizard's `canonicalTown` validator only saves gazetteer
+    spellings) and inserts a `SAVED_PLACE`-kind `user_labels` row for it if
+    this library lacks one. `resolveLocations` (`core/vfs`) is the only thing
+    that reads those rows. The write side is the `config` wizard
+    (`config.Save`), and its canonical-spelling helpers `exactMatch`/
+    `canonicalNameOf` sit in `config.go` next to their only caller.
   - `review.go` — `review` cmd: cobra wiring only (db-exists check, output
     lock, the `--rebuild` guard via `approvedCount`, `vfs.BuildTree`), then
     hands off to `internal/review`. There is no session lookup before
@@ -409,7 +409,7 @@ Config precedence: **flag > env > config file > default**, entirely inside
 `config.Resolve` (`pkg/config/config.go`) — the single place all four layers
 meet. `internal/cli/root.go`'s `flagOverridesFrom` builds the flag layer from
 cobra's `cmd.Flags()` (only for the settings `Resolve` knows about:
-`output-path`, `workers`, `collapse-levels`, `home-work-date-only`,
+`output-path`, `workers`, `collapse-levels`, `saved-places-date-only`,
 `merge-same-location-days` — checking `.Changed` so an unset flag reads as
 `nil`, not its zero value); `Resolve` reads the env layer itself via
 `os.Getenv` (`OUTPUT_PATH`, `WORKERS`, …) and the file layer via
@@ -427,13 +427,12 @@ created **empty** the first time *any* command runs
 just the settings, written whole by `SaveGlobal` (a plain struct marshal; the
 old YAML-node surgery existed only to preserve comments). `output-path` is
 the marker that the file has been through the wizard (`Configuration.Configured`,
-set by `Resolve`) — `rules`, the three toggle bools, and
-`home-work.home`/`home-work.work` are only read from the file once
-`output-path` is present, since a `bool` field can't otherwise tell "key
-absent" from "explicit false" the way `Resolve`'s flag/env layers can (a nil
-pointer vs. a real value). `home-work.*` has no flag or env of its own —
-`Resolve` doesn't touch it at all; `app.syncAnchors` reads it straight via
-`config.LoadGlobal`.
+set by `Resolve`) — `rules`, the three toggle bools, and `saved-places` are
+only read from the file once `output-path` is present, since a `bool` field
+can't otherwise tell "key absent" from "explicit false" the way `Resolve`'s
+flag/env layers can (a nil pointer vs. a real value). `saved-places` has no
+flag or env of its own — `Resolve` doesn't touch it at all; `app.syncAnchors`
+reads it straight via `config.Load`.
 
 ## Core pipeline (`pkg/core/`)
 
@@ -631,7 +630,7 @@ pointer vs. a real value). `home-work.*` has no flag or env of its own —
   step on a background download, `DownloadMsg` for the progress row, and
   **numbered** option lists: `1)`/`2)` next to every choice, since an
   arrow-only list gives the eye nothing to aim at. A `FieldGroup` holds fields
-  of *any* kind, which is what makes the home/work step one screen with two
+  of *any* kind, which is what makes the Saved places step one screen with two
   inputs and two yes/no questions), and shared chrome (`Banner`/`Footer`/`KeyHint`/`Screen`).
   Design rules live in `pkg/tui/README.md` — new screens compose from this
   kit, never invent colours/markers. The pipeline feeds it through the logger

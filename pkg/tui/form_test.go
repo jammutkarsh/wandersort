@@ -170,7 +170,7 @@ func TestForm(t *testing.T) {
 			pending := true
 			fields := []*Field{{
 				Kind:  FieldGroup,
-				Title: "Home & work",
+				Title: "Saved places",
 				Await: func() string {
 					if pending {
 						return "Waiting for the location database"

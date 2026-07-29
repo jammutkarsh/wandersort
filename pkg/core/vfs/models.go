@@ -52,11 +52,11 @@ type Config struct {
 	// path passes through without ever distinguishing anything. Date and
 	// location are never dropped. See uninformativeLevels.
 	CollapseLevels bool
-	// HomeWorkDateOnly suppresses the location level for photos taken at a
-	// confirmed home/work place: those everyday photos are grouped by date
-	// only, not by location (see resolveLocations). When false, a home/work
-	// place instead folds nearby suburbs into that town's own folder.
-	HomeWorkDateOnly bool
+	// SavedPlacesDateOnly suppresses the location level for photos taken at a
+	// confirmed saved place: those everyday photos are grouped by date
+	// only, not by location (see resolveLocations). When false, a saved place
+	// instead folds nearby suburbs into that town's own folder.
+	SavedPlacesDateOnly bool
 	// MergeSameLocationDays collapses consecutive day folders that share the
 	// same location into one dated range folder (Aug/02/Goa + 03/Goa + 04/Goa
 	// → Aug/02_04/Goa). Only applies when a date level sits above location.
@@ -71,7 +71,7 @@ func DefaultConfig() Config {
 		ClusterGap:            defaultClusterGap,
 		NameCase:              CaseTitle,
 		CollapseLevels:        true,
-		HomeWorkDateOnly:      true,
+		SavedPlacesDateOnly:   true,
 		MergeSameLocationDays: true,
 	}
 }
@@ -94,7 +94,7 @@ func ConfigFor(appCfg *config.Configuration) Config {
 		return cfg
 	}
 	cfg.CollapseLevels = appCfg.CollapseLevels
-	cfg.HomeWorkDateOnly = appCfg.HomeWorkDateOnly
+	cfg.SavedPlacesDateOnly = appCfg.SavedPlacesDateOnly
 	cfg.MergeSameLocationDays = appCfg.MergeSameLocationDays
 	switch {
 	case len(appCfg.Rules) == 1 && appCfg.Rules[0] == RuleNone:
@@ -135,7 +135,7 @@ type masterFile struct {
 	lat, lon         float64
 	device           string
 	location         string // resolved city; "" when unknown
-	atHomeWork       bool   // GPS at a confirmed home/work place; suppresses the location level (HomeWorkDateOnly)
+	atSavedPlace     bool   // GPS at a confirmed saved-place place; suppresses the location level (SavedPlacesDateOnly)
 	clusterID        string // set when the location decision came from cluster logic
 	eventSegment     string // dated segment for unresolved clusters, e.g. "03-05"
 	dayOverride      string // date-level range label from mergeSameLocationDays, e.g. "02_04"

@@ -27,7 +27,7 @@ var ErrNoLocation = errors.New("locationResolver: location not found")
 
 // MaxDistSquared rejects a nearest-neighbour match beyond ~50 km, as squared
 // Euclidean distance in degree-space (sqrt(0.2025) = 0.45°). Exported so
-// vfs.resolveLocations folds a city into a home/work anchor at the same reach
+// vfs.resolveLocations folds a city into a saved-place anchor at the same reach
 // instead of picking its own number.
 const MaxDistSquared = 0.2025
 

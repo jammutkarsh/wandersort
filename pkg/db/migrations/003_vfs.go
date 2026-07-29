@@ -46,13 +46,13 @@ CREATE INDEX IF NOT EXISTS idx_vfs_status ON virtual_fs_entries(status);
 `
 
 // user_labels remembers confirmed folder names (events) and anchor locations
-// (home/work). Written by the review flow, read by the VFS phase to rank
+// (saved-place). Written by the review flow, read by the VFS phase to rank
 // suggestions on later scans.
 const userLabels = `
 CREATE TABLE IF NOT EXISTS user_labels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     label TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('EVENT','` + config.SavedPlaceHome + `','` + config.SavedPlaceWork + `')),
+    kind TEXT NOT NULL CHECK (kind IN ('EVENT','` + config.SavedPlace + `')),
     time_start TEXT,
     time_end TEXT,
     gps_lat REAL,
