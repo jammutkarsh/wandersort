@@ -4,9 +4,14 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package lock is wandersort's PID-based file locking: generic acquire/reclaim
-// mechanics plus the domain-specific filenames and styled "already running"
-// message for scan/serve coordination.
+// Package lock is wandersort's file locking: generic acquire mechanics plus
+// the domain-specific filenames and styled "already running" message for
+// scan/review coordination. Locking is a real OS advisory lock (flock on
+// Unix, LockFileEx on Windows — tryFlock, in lock_unix.go/lock_windows.go),
+// not a hand-rolled PID file: the kernel releases it the instant this
+// process's file descriptor closes, crash or SIGKILL included, so there is
+// no staleness check to get wrong and no leftover lock file that ever needs
+// deleting by hand.
 package lock
 
 import (
@@ -17,7 +22,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/tui"
@@ -29,70 +33,66 @@ const (
 
 	// pollInterval is the starting wait between re-checks of a held lock;
 	// pollMaxInterval caps the exponential backoff applied on each retry.
+	// Polling, rather than one OS-blocking wait, is what lets AcquireInstall's
+	// blocking mode still honour ctx cancellation — a blocking flock syscall
+	// can't be interrupted once it starts.
 	pollInterval    = 200 * time.Millisecond
 	pollMaxInterval = 2 * time.Second
 )
 
-// ErrHeld reports that a live process currently owns the lock.
+// ErrHeld reports that another process currently owns the lock.
 var ErrHeld = errors.New("lock held by another process")
 
-// Lock is an exclusive PID-based lock on a file within a directory.
+// Lock is an exclusive OS advisory lock on a file within a directory.
 type Lock struct {
-	path string
-	pid  int
+	file *os.File
 }
 
-// Unlock removes the lock file, but only if it still records this process's
-// PID — if another process reclaimed the path first (see tryLock), removing
-// it here would release a lock we no longer hold. Safe to call multiple
-// times or on nil.
+// Unlock releases the lock by closing the underlying file descriptor — the
+// OS releases the lock itself at that point. Safe to call multiple times or
+// on nil.
 func (l *Lock) Unlock() {
-	if l == nil || l.path == "" {
+	if l == nil || l.file == nil {
 		return
 	}
-	if pid, err := readLockPID(l.path); err != nil || pid != l.pid {
-		l.path = ""
-		return
-	}
-	os.Remove(l.path)
-	l.path = ""
+	l.file.Close()
+	l.file = nil
 }
 
-// AcquireOutput takes the exclusive output-dir lock used by scan and serve.
+// AcquireOutput takes the exclusive output-dir lock used by scan and review.
 // It renders a helpful message when another live wandersort process holds it.
 func AcquireOutput(dir string) (*Lock, error) {
 	lockPath := filepath.Join(dir, OutputFileName)
 	l, err := acquire(context.Background(), dir, OutputFileName, false)
 	if errors.Is(err, ErrHeld) {
 		pid, _ := readLockPID(lockPath)
-		return nil, alreadyRunningError(lockPath, pid)
+		return nil, alreadyRunningError(pid)
 	}
 	return l, err
 }
 
-// AcquireInstall takes the install-coordination lock shared by scan, serve,
-// and review, so only one of them downloads dependencies at a time.
-// When block is true it waits for an in-progress install to finish
-// (EnsureDependencies); when false it returns ErrHeld at once so the caller
-// can step aside (the non-blocking path).
+// AcquireInstall takes the install-coordination lock shared by scan, review,
+// and the config wizard, so only one of them downloads dependencies at a
+// time. When block is true it waits for an in-progress install to finish;
+// when false it returns ErrHeld at once so the caller can step aside (the
+// non-blocking path).
 func AcquireInstall(ctx context.Context, dir string, block bool) (*Lock, error) {
 	return acquire(ctx, dir, InstallFileName, block)
 }
 
 // alreadyRunningError renders the user-facing message for a held output-dir lock.
-func alreadyRunningError(lockPath string, pid int) error {
+func alreadyRunningError(pid int) error {
 	msg := tui.Bad.Render(fmt.Sprintf("Another wandersort process is already running (PID %d).", pid)) + "\n\n" +
-		tui.FaintTxt.Render("Only one scan or server can use the same output directory at a time.") + "\n" +
-		tui.FaintTxt.Render("Stop the other process first, or if it already exited, remove the lock file:") + "\n" +
-		tui.FaintTxt.Render("  rm "+lockPath)
+		tui.FaintTxt.Render("Only one scan or review can use the same output directory at a time.") + "\n" +
+		tui.FaintTxt.Render("Stop the other process, then try again.")
 
 	return fmt.Errorf("%s", msg)
 }
 
-// acquire creates dir/name atomically via O_EXCL and records the caller's PID.
-// It returns ErrHeld if a live process already owns the lock; a stale lock
-// (dead PID) is reclaimed. When block is true it waits for the lock to free,
-// polling until ctx is cancelled; when false it returns ErrHeld at once.
+// acquire opens (creating if needed) dir/name and takes an OS advisory lock
+// on it. When block is true it retries a non-blocking attempt until it
+// succeeds or ctx is cancelled, backing off between tries; when false it
+// returns ErrHeld at once.
 func acquire(ctx context.Context, dir, name string, block bool) (*Lock, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create lock directory %s: %w", dir, err)
@@ -122,7 +122,8 @@ func acquire(ctx context.Context, dir, name string, block bool) (*Lock, error) {
 	}
 }
 
-// readLockPID returns the PID recorded in the lock file at path.
+// readLockPID returns the PID recorded in the lock file at path, for
+// alreadyRunningError's message only — display, not the locking mechanism.
 func readLockPID(path string) (int, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -131,63 +132,30 @@ func readLockPID(path string) (int, error) {
 	return strconv.Atoi(strings.TrimSpace(string(data)))
 }
 
-// tryLock attempts a single exclusive create, reclaiming a stale (dead PID)
-// lock. The create is attempted first and unconditionally: on the common
-// path (no existing lock) this is a single atomic O_EXCL syscall with no
-// intervening remove, so there is no window in which a concurrent holder's
-// freshly-created lock can be deleted. Only when create fails because a
-// lock file is already there do we inspect its PID, and only remove it if
-// that owner is confirmed dead.
+// tryLock opens (creating if needed) lockPath and attempts a single
+// non-blocking OS advisory lock on it (tryFlock). On success it stamps the
+// file with this process's PID — for alreadyRunningError's message only,
+// whatever the file already contained is irrelevant to whether the lock is
+// actually held — and returns a Lock holding the open file.
 func tryLock(lockPath string) (*Lock, error) {
-	if l, err := createLock(lockPath); err == nil {
-		return l, nil
-	} else if !os.IsExist(err) {
-		return nil, fmt.Errorf("create lock file %s: %w", lockPath, err)
-	}
-
-	pid, err := readLockPID(lockPath)
-	if err == nil && processExists(pid) {
-		return nil, ErrHeld
-	}
-	os.Remove(lockPath) // stale: owner is dead (or file was unreadable)
-
-	l, err := createLock(lockPath)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		if os.IsExist(err) {
-			return nil, ErrHeld // lost the reclaim race to another process
-		}
-		return nil, fmt.Errorf("create lock file %s: %w", lockPath, err)
-	}
-	return l, nil
-}
-
-// createLock exclusively creates lockPath and writes the caller's PID into
-// it. Returns an os.IsExist error if the path is already taken.
-func createLock(lockPath string) (*Lock, error) {
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open lock file %s: %w", lockPath, err)
 	}
 
-	pid := os.Getpid()
-	if _, err := fmt.Fprintf(f, "%d\n", pid); err != nil {
+	if err := tryFlock(f); err != nil {
 		f.Close()
-		os.Remove(lockPath)
-		return nil, fmt.Errorf("write lock file: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(lockPath)
-		return nil, fmt.Errorf("close lock file: %w", err)
+		if errors.Is(err, ErrHeld) {
+			return nil, ErrHeld
+		}
+		return nil, fmt.Errorf("lock file %s: %w", lockPath, err)
 	}
 
-	return &Lock{path: lockPath, pid: pid}, nil
-}
-
-func processExists(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
+	if err := f.Truncate(0); err == nil {
+		if _, err := f.Seek(0, 0); err == nil {
+			fmt.Fprintf(f, "%d\n", os.Getpid())
+		}
 	}
-	// Signal 0 checks existence without sending a real signal (Unix)
-	return process.Signal(syscall.Signal(0)) == nil
+
+	return &Lock{file: f}, nil
 }
