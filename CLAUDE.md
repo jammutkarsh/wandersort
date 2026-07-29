@@ -167,13 +167,11 @@ one scan ever runs against it at a time (see "Conventions" below):
     pipeline to hide behind — and each command asks only for what it needs:
     `review --rebuild` never runs the exif phase, so it starts the location
     database alone).
-    **`scan` refuses to run before `wandersort config` has** — see
-    `requireConfigured` in `root.go`. The config file every command creates is
-    empty, so an unconfigured first scan silently builds its entire folder
-    proposal (output path, rules, saved-place anchors) from defaults, and the
-    user then redoes the whole thing. The gate is absolute: `-o` and env vars
-    don't satisfy it, because the anchors and rules aren't reachable that way.
-    `--paths/-p` is repeatable + comma-friendly
+    **`scan` never requires `wandersort config` to have run first** — an
+    unconfigured first scan just builds its folder proposal (output path,
+    rules, saved-place anchors) from defaults. Running `wandersort config`
+    later and then `wandersort review --rebuild` re-proposes the hierarchy
+    from the new settings without a re-scan. `--paths/-p` is repeatable + comma-friendly
     (`StringSlice`); `config.yaml`'s `rules` key (see below) controls the VFS
     folder depth for this scan's proposal — no CLI flag, set it via
     `wandersort config`. The plain path (`--plain`/non-TTY) keeps the simple
@@ -388,12 +386,20 @@ Back in `internal/cli/`:
     into `app.go` and `config.go`/`core/vfs` respectively. Everything else that
     used to live here moved
     out to its own package so a future TUI entry point can reuse it:
-    - `pkg/lock/` — all wandersort file locking: generic PID/O_EXCL
-      acquire/reclaim mechanics (`acquire`, `Lock`, `ErrHeld`) plus the two
-      domain wrappers — `AcquireOutput` (one scan per output dir, styled
-      "already running" message) and `AcquireInstall` (install coordination
-      across scan/review — see `pkg/install` below, the one caller) — and the
-      lock filenames (`OutputFileName`, `InstallFileName`). `Coordinator`
+    - `pkg/lock/` — all wandersort file locking: generic acquire mechanics
+      (`acquire`, `Lock`, `ErrHeld`) plus the two domain wrappers —
+      `AcquireOutput` (one scan per output dir, styled "already running"
+      message) and `AcquireInstall` (install coordination across
+      scan/review — see `pkg/install` below, the one caller) — and the lock
+      filenames (`OutputFileName`, `InstallFileName`). The lock itself is a
+      real OS advisory lock (`tryFlock` — `unix.Flock` in `lock_unix.go`,
+      `windows.LockFileEx` in `lock_windows.go`, same per-platform-file split
+      as `pkg/volume`), not a hand-rolled PID file: the kernel releases it
+      the instant the holding process's file descriptor closes, crash or
+      SIGKILL included, so there is no dead-PID staleness check and no
+      leftover lock file that ever needs deleting by hand — the PID still
+      written into the file is for `alreadyRunningError`'s message only.
+      `Coordinator`
       tries the install lock non-blocking first so it can log a
       `UserKey`-tagged "waiting for another process…" line before falling
       back to the blocking acquire — without that, a scan waiting behind an
@@ -820,8 +826,8 @@ go build ./... # quick compile check
 ## Open cleanup notes (not yet done)
 
 - **Concurrency wall:** `lock.AcquireOutput` (`pkg/lock/`) takes an
-  exclusive PID lock on the output dir, so only one scan runs against a dir
-  at a time — that lock is the entire wall, there is no other run-identity
+  exclusive OS advisory lock on the output dir, so only one scan runs against
+  a dir at a time — that lock is the entire wall, there is no other run-identity
   mechanism backing it up. Running scans concurrently against one output dir
   would need a real per-run isolation mechanism (there was one, keyed by a
   now-removed `sessionID`, built for the since-removed `serve` API's
