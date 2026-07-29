@@ -32,26 +32,32 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Durati
 		gap = defaultClusterGap
 	}
 
-	order := make([]int, 0, len(masters))
-	for i := range masters {
-		order = append(order, i)
-	}
-	sort.SliceStable(order, func(a, b int) bool {
-		return masters[order[a]].takenAt.Before(masters[order[b]].takenAt)
+	sort.SliceStable(masters, func(a, b int) bool {
+		return masters[a].takenAt.Before(masters[b].takenAt)
 	})
 
 	var clusters []cluster
-	for _, idx := range order {
-		t := masters[idx].takenAt
+	for i := range masters {
+		t := masters[i].takenAt
 		if len(clusters) == 0 || t.Sub(clusters[len(clusters)-1].end) > gap {
 			clusters = append(clusters, cluster{start: t, end: t})
 		}
 		c := &clusters[len(clusters)-1]
-		c.members = append(c.members, idx)
+		c.members = append(c.members, i)
 		c.end = t
 	}
 
-	anchors := anchorCities(labels)
+	var anchors []string
+	seen := map[string]bool{}
+	for _, l := range labels {
+		if l.Kind == config.SavedPlace && l.Label != "" {
+			city, _, _ := strings.Cut(l.Label, ",")
+			if !seen[city] {
+				seen[city] = true
+				anchors = append(anchors, city)
+			}
+		}
+	}
 
 	clusterNum := 0
 	for ci := range clusters {
@@ -123,28 +129,6 @@ func majorityCity(masters []masterFile, members []int) (city string, atSavedPlac
 		}
 	}
 	return best, home[best]
-}
-
-// anchorCities returns confirmed saved-place labels in confirmation order, bare
-// city only — labels are saved fully qualified ("Indore, Madhya Pradesh,
-// India") so ResolveByName can round-trip them, but the state/country exists
-// to disambiguate the picker, not to become a folder name.
-// Deliberately no "most frequent city in the library" fallback: that named a
-// place with no relationship to the cluster. A confirmed anchor is a user
-// assertion; a frequency count is a guess.
-func anchorCities(labels []userLabel) []string {
-	var anchors []string
-	seen := map[string]bool{}
-	for _, l := range labels {
-		if l.Kind == config.SavedPlace && l.Label != "" {
-			city, _, _ := strings.Cut(l.Label, ",")
-			if !seen[city] {
-				seen[city] = true
-				anchors = append(anchors, city)
-			}
-		}
-	}
-	return anchors
 }
 
 // suggestFor ranks a name suggestion for a fully unresolved cluster:

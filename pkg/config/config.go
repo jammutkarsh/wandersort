@@ -24,12 +24,12 @@ const (
 	locationDBFileName = "location.db"
 	defaultLogLevel    = "info"
 	configFileName     = "config.yaml"
-
-	// SavedPlace is the user_labels.kind for a confirmed anchor location.
-	// SavedPlaces is positional: index 0 is home, 1 is work, everything
-	// else is another frequently-stayed-at place — all anchored the same way.
-	SavedPlace = "SAVED_PLACE"
 )
+
+// SavedPlace is the user_labels.kind for a confirmed anchor location.
+// SavedPlaces is positional: index 0 is home, 1 is work, everything
+// else is another frequently-stayed-at place — all anchored the same way.
+const SavedPlace = "SAVED_PLACE"
 
 type TriBool int
 
@@ -45,6 +45,17 @@ func BoolToTri(b bool) TriBool {
 		return True
 	}
 	return False
+}
+
+// UnmarshalYAML lets a plain true/false in config.yaml populate a
+// TriBool; a field left out of the file never calls this, so it stays Unset.
+func (t *TriBool) UnmarshalYAML(value *yaml.Node) error {
+	var b bool
+	if err := value.Decode(&b); err != nil {
+		return err
+	}
+	*t = BoolToTri(b)
+	return nil
 }
 
 type Configuration struct {
