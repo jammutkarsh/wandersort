@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Minimal WiX v4 source for an (unsigned) wandersort .msi.
+     Build (on Windows, after `dotnet tool install --global wix`):
+       wix build build\wandersort.wxs -arch x64 ^
+         -d Version=%NUM% -d BinPath=wandersort.exe -o wandersort-%NUM%-x64.msi
+     UpgradeCode is fixed so upgrades replace prior installs — do not change it. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="wandersort"
+           Manufacturer="jammutkarsh"
+           Version="$(var.Version)"
+           UpgradeCode="215D2E72-F4B5-4B19-AF0F-BE0B89DBA8F8"
+           Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of wandersort is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLDIR" Name="wandersort">
+        <Component Id="MainExe" Guid="*">
+          <File Id="wandersortExe" Source="$(var.BinPath)" Name="wandersort.exe" KeyPath="yes" />
+          <!-- Add install dir to the system PATH. -->
+          <Environment Id="UpdatePath" Name="PATH" Value="[INSTALLDIR]"
+                       Permanent="no" Part="last" Action="set" System="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="wandersort" Level="1">
+      <ComponentRef Id="MainExe" />
+    </Feature>
+  </Package>
+</Wix>

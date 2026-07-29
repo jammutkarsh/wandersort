@@ -64,7 +64,53 @@ WanderSort is a single, self-contained command-line binary.
 
 ### Install
 
-Build from source (requires Go 1.26+):
+Pick whichever fits your platform — all install the same static binary.
+
+**macOS**
+
+```bash
+# Homebrew (recommended)
+brew install jammutkarsh/tap/wandersort
+
+# or the install script
+curl -fsSL https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.sh | sh
+```
+
+Or download the `.pkg` from the [latest release](https://github.com/jammutkarsh/wandersort/releases/latest).
+It is currently **unsigned**, so Gatekeeper will block it: right-click → **Open**,
+or run `sudo xattr -dr com.apple.quarantine /usr/local/bin/wandersort` after install.
+
+**Windows**
+
+```powershell
+# Scoop (recommended)
+scoop bucket add jammutkarsh https://github.com/jammutkarsh/scoop-bucket
+scoop install wandersort
+
+# or the install script
+irm https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.ps1 | iex
+```
+
+Or download the `.msi` from the [latest release](https://github.com/jammutkarsh/wandersort/releases/latest).
+It is currently **unsigned**, so SmartScreen will warn: click **More info → Run anyway**.
+
+**Linux**
+
+```bash
+# install script (detects arch, installs to /usr/local/bin)
+curl -fsSL https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.sh | sh
+```
+
+`.deb`, `.rpm`, and `.apk` packages are also attached to each
+[release](https://github.com/jammutkarsh/wandersort/releases/latest).
+
+**Any platform with Go 1.26+**
+
+```bash
+go install github.com/jammutkarsh/wandersort@latest
+```
+
+**From source**
 
 ```bash
 git clone https://github.com/jammutkarsh/wandersort.git

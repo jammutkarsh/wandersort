@@ -43,8 +43,9 @@ func requireConfigured(a *app) error {
 
 func (a *app) newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "wandersort",
-		Short: "Organize your media library and find duplicates",
+		Use:     "wandersort",
+		Version: a.Version,
+		Short:   "Organize your media library and find duplicates",
 		Long: `WanderSort is a local-first media organizer. Point it at your photo and
 video directories and it scans them, fingerprints every file to find
 duplicates, and scores copies to pick the best one to keep.
