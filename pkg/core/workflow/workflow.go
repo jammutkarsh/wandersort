@@ -261,6 +261,15 @@ func (wf *Workflow) run(phase workflowPhase) (int, string, *string, bool) {
 
 	wf.db.Writer.Flush() // make this phase's writes visible to the next one
 
+	// Checkpoint after every phase, not just at the end: each phase writes a
+	// batch (file_registry, file_metadata, virtual_fs_entries, ...), and a
+	// small WAL keeps the next phase's own reads/writes cheaper than letting
+	// it grow across the whole run. Not fatal — a failed checkpoint just
+	// means the next one (or Close, on a run that ends early) has more to do.
+	if cpErr := wf.db.Checkpoint(); cpErr != nil {
+		wf.log.Warn("Database checkpoint failed", "phase", string(phase.kind), "error", cpErr)
+	}
+
 	// one line per phase: what it did and how long it took
 	msg := fmt.Sprintf("%s phase took %s", phase.kind, elapsed.Round(time.Millisecond))
 	if phase.summary != nil {

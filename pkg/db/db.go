@@ -93,19 +93,29 @@ func New(ctx context.Context, dbPath string, dbType DBType, log logger.Logger) (
 func (d *DB) Close() error {
 	if d.Writer != nil {
 		d.Writer.Close()
-
-		if _, err := d.SQL.Exec("PRAGMA optimize"); err != nil {
-			return fmt.Errorf("pragma optimize: %w", err)
-		}
-		// WAL mode doesn't fold -wal/-shm back into the main file just because
-		// the connection closes — force a full checkpoint so a clean shutdown
-		// doesn't leave them behind.
-		if _, err := d.SQL.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-			return fmt.Errorf("wal checkpoint: %w", err)
-		}
 	}
-
 	return d.SQL.Close()
+}
+
+// Checkpoint rebuilds query-planner stats (PRAGMA optimize) and flushes the
+// WAL back into the main file (wal_checkpoint TRUNCATE) — both real I/O/CPU
+// work proportional to how much was just written. The workflow calls this
+// after every phase (each writes a batch, so a small WAL keeps the next
+// phase's reads/writes cheap instead of growing across the whole run), not
+// from Close(): Close() runs on every quit, including a cancel with nothing
+// left to flush, and paying this cost there turned "I don't want to review,
+// just let me out" into a multi-second wait.
+func (d *DB) Checkpoint() error {
+	if _, err := d.SQL.Exec("PRAGMA optimize"); err != nil {
+		return fmt.Errorf("pragma optimize: %w", err)
+	}
+	// WAL mode doesn't fold -wal/-shm back into the main file just because
+	// the connection closes — force a full checkpoint so a clean shutdown
+	// doesn't leave them behind.
+	if _, err := d.SQL.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		return fmt.Errorf("wal checkpoint: %w", err)
+	}
+	return nil
 }
 
 // openAppDB opens the application SQLite database, applies pragma tuning,
