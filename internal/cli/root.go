@@ -7,8 +7,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/spf13/cobra"
@@ -29,18 +27,6 @@ const (
 	flagMergeDays  = "merge-same-location-days"
 )
 
-// requireConfigured refuses to run the pipeline until `wandersort config` has
-// been through once, or the caller has explicitly said where to work via
-// --output-path/OUTPUT_PATH — flag > env > config file precedence applies
-// here same as everywhere else (see config.Resolve), so an explicit
-// --output-path is as good as having run the wizard for this invocation.
-func requireConfigured(a *app) error {
-	if a.Config.Configured {
-		return nil
-	}
-	return fmt.Errorf("not configured yet — run 'wandersort config' first (or pass --output-path)")
-}
-
 func (a *app) newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "wandersort",
@@ -49,9 +35,10 @@ func (a *app) newRootCmd() *cobra.Command {
 video directories and it scans them, fingerprints every file to find
 duplicates, and scores copies to pick the best one to keep.
 
-Start with 'wandersort config' — the settings wizard, and a prerequisite for
-scanning. Then 'wandersort scan' processes your libraries, installing anything
-it needs on first use.`,
+'wandersort scan' works on defaults right away. Run 'wandersort config' — the
+settings wizard — any time to set your output folder, folder rules, and
+saved places; 'wandersort review --rebuild' re-proposes the folder structure
+from the new settings without a re-scan.`,
 		Example: `# Change the global settings
 wandersort config
 

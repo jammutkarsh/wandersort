@@ -35,8 +35,9 @@ duplicates so you can keep only the best copy.
 Requires --paths (-p) to specify which directories to scan. The scan runs in
 the foreground and reports progress until it finishes.
 
-Run 'wandersort config' once before the first scan — the proposed folder
-structure is built from those settings.`,
+Runs on defaults if you haven't run 'wandersort config' yet. Run it later and
+'wandersort review --rebuild' to re-propose the folder structure from your
+settings without re-scanning.`,
 		Example: `# Scan a single directory
 wandersort scan --paths ~/Pictures
 
@@ -47,9 +48,6 @@ wandersort scan -p ~/Pictures,/Volumes/SD
 # Use 8 workers and a custom output directory
 wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := requireConfigured(a); err != nil {
-				return err
-			}
 			paths, _ := cmd.Flags().GetStringSlice(flagPaths)
 			return a.runScan(cmd, paths)
 		},

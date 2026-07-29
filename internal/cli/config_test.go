@@ -287,40 +287,6 @@ func TestConfig(t *testing.T) {
 				t.Errorf("treeExample:\n%s\nwant:\n%s", got, want)
 			}
 		}},
-		// TestScanNeedsConfigFirst covers the gate on scan: the empty
-		// config.yaml every command creates must not count as configured, or the
-		// first scan builds its whole proposal from defaults.
-		{"ScanNeedsConfigFirst", func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("USERPROFILE", home)
-
-			cfg, _, err := config.Resolve(config.Overrides{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := cfg.Exists(); err != nil {
-				t.Fatal(err)
-			}
-			cfg, _, err = config.Resolve(config.Overrides{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := requireConfigured(&app{Config: cfg}); err == nil {
-				t.Error("an empty config.yaml must not count as configured")
-			}
-
-			if err := cfg.Save(&config.Configuration{OutputPath: filepath.Join(home, "out")}); err != nil {
-				t.Fatal(err)
-			}
-			cfg, _, err = config.Resolve(config.Overrides{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := requireConfigured(&app{Config: cfg}); err != nil {
-				t.Errorf("after the wizard saved: %v", err)
-			}
-		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
