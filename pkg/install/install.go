@@ -232,8 +232,10 @@ const (
 	// a single new byte arriving. A network switch (e.g. wifi to a different
 	// AP, or wifi to ethernet) can leave the underlying TCP connection dead
 	// without the OS or the server ever telling us, so io.Copy would
-	// otherwise block forever instead of erroring out to a retry.
-	downloadStallTimeout = 20 * time.Second
+	// otherwise block forever instead of erroring out to a retry. The whole
+	// pipeline finishes in about a minute end to end, so a stalled download
+	// eating even a few seconds of that is worth noticing fast.
+	downloadStallTimeout = 1 * time.Second
 )
 
 // nonRetryable marks a download failure retrying can't fix — a bad URL
@@ -276,7 +278,7 @@ func downloadFile(ctx context.Context, log logger.Logger, dest, url, wantSHA256 
 				"url", url, "attempt", attempt, "of", downloadMaxAttempts, "error", err)
 		}
 		select {
-		case <-time.After(time.Duration(attempt) * 2 * time.Second):
+		case <-time.After(time.Duration(attempt) * time.Second):
 		case <-ctx.Done():
 			return ctx.Err()
 		}
