@@ -110,12 +110,12 @@ func (a *app) runConfigTUI(ctx context.Context) error {
 	// while still downloading, otherwise whatever a.Deps.Location() resolved to
 	// (never blocks, since LocationReady() already gates it) — this is the one
 	// place the form reads the resolver, no field on app to race against.
-	var coord *install.Coordinator
+	var coordinator *install.Coordinator
 	gazetteer := func() (*location.Resolver, error) {
-		if !coord.LocationReady() {
+		if !coordinator.LocationReady() {
 			return nil, errGazetteerPending
 		}
-		return coord.Location()
+		return coordinator.Location()
 	}
 
 	fields, save := a.buildConfigForm(ctx, gazetteer)
@@ -125,11 +125,11 @@ func (a *app) runConfigTUI(ctx context.Context) error {
 	// the form's own progress row (tui.DownloadMsg) — no install screen, and
 	// nothing at all on screen when it's already on disk, since a no-op install
 	// reports no bytes and only ever sends the Finished message.
-	coord = a.newDeps(func(_ string, done, total int64) {
+	coordinator = a.newDeps(func(_ string, done, total int64) {
 		prog.Send(tui.DownloadMsg{Label: "Location database", Done: done, Total: total})
 	})
-	a.Deps = coord
-	coord.StartLocationOnly(ctx, func(error) {
+	a.Deps = coordinator
+	coordinator.StartLocationOnly(ctx, func(error) {
 		prog.Send(tui.DownloadMsg{Finished: true})
 	})
 
@@ -217,19 +217,13 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 	var outSuggestions []string
 	for _, c := range []string{
 		filepath.Join(homeDir, "Pictures", "WanderSort"),
-		filepath.Join(homeDir, "WanderSortLibrary"),
+		filepath.Join(homeDir, "WandersortLibrary"),
 	} {
 		if st, err := os.Stat(filepath.Dir(c)); err == nil && st.IsDir() {
 			outSuggestions = append(outSuggestions, paths.RelativeToHome(c))
 		}
 	}
-	// suggestOut completes like a shell: list directories matching the typed
-	// prefix. Blank input falls back to the canned platform locations. Results
-	// render home-relative (~/Pictures, not /Users/x/Pictures) — ExpandPath
-	// undoes it before the value is used for anything. Capped well past the
-	// 5-row form window (tui.maxFormSuggestions) — the form scrolls the list,
-	// so a directory with a dozen matching children shouldn't be pruned before
-	// the user ever gets a chance to scroll to it.
+	// suggestOut completes like a shell: list directories matching the typed prefix.
 	const maxOutSuggestions = 25
 	suggestOut := func(typed string) []string {
 		typed = paths.ExpandPath(strings.TrimSpace(typed))
@@ -263,9 +257,6 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 		return out
 	}
 
-	// suggestTown live-searches the gazetteer as the user types, so saved-place
-	// only ever get names the location DB can resolve later. Silent while the
-	// database is still downloading.
 	suggestTown := func(typed string) []string {
 		typed = strings.TrimSpace(typed)
 		resolver, err := gazetteer()
@@ -294,102 +285,8 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 			"  date = day    location = city    device = camera\n" +
 			"  orientation = portrait/landscape    media = photo/video",
 	}
-	// exampleDay is the fixed date every wizard example uses — 2024-08 gives a
-	// real Year/Month pair without meaning anything beyond "a month ago".
-	exampleDay := func(d int) time.Time { return time.Date(2024, time.August, d, 12, 0, 0, 0, time.UTC) }
-	// selectedRules returns every Rules option currently ticked, in canonical
-	// order — what the Rules field's own example demonstrates.
-	selectedRules := func() []string {
-		var out []string
-		for _, r := range rulesField.Options {
-			if rulesField.Selected[r] {
-				out = append(out, r)
-			}
-		}
-		return out
-	}
-	// previewRules is lead (e.g. Date, Location — always shown regardless of
-	// whether the user ticked them) plus the trailing collapsible levels the
-	// user *has* ticked — every example below the Rules field itself wants to
-	// demonstrate its own question regardless of what Rules holds.
-	previewRules := func(lead ...string) []string {
-		rules := append([]string{}, lead...)
-		for _, r := range []string{vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia} {
-			if rulesField.Selected[r] {
-				rules = append(rules, r)
-			}
-		}
-		return rules
-	}
-	// homeTown is what the saved-place examples name; a stand-in until the user
-	// has typed a town, so the example is never blank. `home` is saved fully
-	// qualified ("Indore, Madhya Pradesh, India") so it round-trips through
-	// ResolveByName, but a folder can't hold a comma and the state/country
-	// only exists to disambiguate the picker — bare city here, same as the
-	// anchor fold in vfs.resolveLocations.
-	homeTown := func() string {
-		if t := strings.TrimSpace(home); t != "" {
-			city, _, _ := strings.Cut(t, ",")
-			return city
-		}
-		return "Indore"
-	}
-	rulesField.Example = func() string {
-		cfg := vfs.DefaultConfig()
-		cfg.Rules = selectedRules()
-		cfg.CollapseLevels = false // always show every level, to demonstrate the order itself
-		sample := vfs.Sample{
-			TakenAt: exampleDay(2), Location: "Goa", Device: "iPhone 13",
-			Width: 1170, Height: 2532, MediaType: classifier.MediaTypeImage, FileName: "IMG_1234.jpg",
-		}
-		return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{sample})...)
-	}
-
-	// Always demonstrates all three collapsible levels even when Rules has none
-	// ticked: this step sits under Saved places, so the user may not have
-	// visited Rules yet, and "nothing to collapse" teaches them nothing.
-	// Two branches, not one — collapsing is about the *repetition* of a
-	// one-value level under every folder, which a single path can't show.
-	collapseExample := func() string {
-		cfg := vfs.DefaultConfig()
-		var lead []string
-		if rulesField.Selected[vfs.RuleDate] {
-			lead = append(lead, vfs.RuleDate)
-		}
-		if rulesField.Selected[vfs.RuleLocation] {
-			lead = append(lead, vfs.RuleLocation)
-		}
-		cfg.Rules = append(lead, vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia)
-		cfg.CollapseLevels = collapse
-
-		day := func(d int) vfs.Sample {
-			return vfs.Sample{
-				TakenAt: exampleDay(d), Location: homeTown(), Device: "iPhone 13",
-				Width: 1170, Height: 2532, MediaType: classifier.MediaTypeImage,
-			}
-		}
-		day12, day13a, day13b := day(12), day(13), day(13)
-		day12.FileName, day13a.FileName, day13b.FileName = "IMG_1234.jpg", "IMG_1250.jpg", "IMG_1251.jpg"
-		if !collapse {
-			// Second branch uses a different device and orientation than the
-			// first — real, so it also shows what does *not* collapse: two
-			// devices and two orientations mean neither level is one value
-			// library-wide, only Photos is.
-			day13a.Device, day13a.Width, day13a.Height = "Canon EOS 700D", 6000, 4000
-			day13b.Device, day13b.Width, day13b.Height = "Canon EOS 700D", 6000, 4000
-		}
-		return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{day12, day13a, day13b})...)
-	}
-	// What the example *means*, as the question's own description — the example
-	// column is too narrow to hold a sentence without truncating it.
-	collapseDescribe := func() string {
-		d := "Drop a device/orientation/media folder that would hold every single " +
-			"file in the library — one value means the level says nothing."
-		if collapse {
-			return d + " On: those folders are left out below."
-		}
-		return d + " Off: they stay, repeating under every folder even though they never vary."
-	}
+	ex := newConfigExamples(rulesField, &collapse, &mergeDays, &spDateOnly, &home)
+	rulesField.Example = ex.Rules
 
 	fields := []*tui.Field{
 		{
@@ -417,10 +314,7 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 			Kind:        tui.FieldGroup,
 			Title:       "Saved places",
 			Description: "The everyday places you shoot from, and how their photos are foldered.",
-			// The town fields need the gazetteer, so this is the one step that
-			// waits for the background download. Everything above it is
-			// answerable meanwhile, which is the point of not having an install
-			// screen.
+			// Await blocks the form until the location database finishes downloading.
 			Await: func() string {
 				if _, err := gazetteer(); errors.Is(err, errGazetteerPending) {
 					return "Waiting for the location database to finish downloading…"
@@ -439,67 +333,23 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 				{
 					Kind:      tui.FieldConfirm,
 					Title:     "Collapse uninformative levels?",
-					Describe:  collapseDescribe,
+					Describe:  ex.CollapseDescribe,
 					BoolValue: &collapse,
-					Example:   collapseExample,
+					Example:   ex.Collapse,
 				},
 				{
-					Kind:  tui.FieldConfirm,
-					Title: "Group saved-place photos by date only?",
-					Describe: func() string {
-						d := "Everyday shots from a saved place aren't trips — a city folder there mostly repeats itself."
-						if spDateOnly {
-							return d + " On: no city folder for these."
-						}
-						return d + " Off: nearby suburbs still fold into " + homeTown() + "."
-					},
+					Kind:      tui.FieldConfirm,
+					Title:     "Group saved-place photos by date only?",
+					Describe:  ex.DateOnlyDescribe,
 					BoolValue: &spDateOnly,
-					Example: func() string {
-						cfg := vfs.DefaultConfig()
-						cfg.Rules = previewRules(vfs.RuleDate, vfs.RuleLocation)
-						cfg.CollapseLevels = collapse
-						cfg.SavedPlacesDateOnly = spDateOnly
-						sample := vfs.Sample{
-							TakenAt: exampleDay(12), Location: homeTown(), AtSavedPlace: true, Device: "iPhone 13",
-							Width: 1170, Height: 2532, MediaType: classifier.MediaTypeImage, FileName: "IMG_1234.jpg",
-						}
-						return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{sample})...)
-					},
+					Example:   ex.DateOnly,
 				},
 				{
-					Kind:  tui.FieldConfirm,
-					Title: "Merge consecutive same-location days?",
-					Describe: func() string {
-						d := "A multi-day trip in one place becomes one folder instead of one per day. " +
-							"You can still split or merge days later in review."
-						if mergeDays {
-							return d + " On: consecutive same-location days merge."
-						}
-						return d + " Off: each day keeps its own folder."
-					},
+					Kind:      tui.FieldConfirm,
+					Title:     "Merge consecutive same-location days?",
+					Describe:  ex.MergeDaysDescribe,
 					BoolValue: &mergeDays,
-					Example: func() string {
-						cfg := vfs.DefaultConfig()
-						cfg.Rules = previewRules(vfs.RuleDate, vfs.RuleLocation)
-						cfg.CollapseLevels = collapse
-						trip := func(d int, dayOverride, file string) vfs.Sample {
-							return vfs.Sample{
-								TakenAt: exampleDay(d), Location: "Greece", DayOverride: dayOverride,
-								Device: "iPhone 13", Width: 1170, Height: 2532,
-								MediaType: classifier.MediaTypeImage, FileName: file,
-							}
-						}
-						if mergeDays {
-							return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{trip(2, "02_04", "IMG_1234.jpg")})...)
-						}
-						// three sibling day branches under one month — exactly the
-						// shape a "no" produces in review
-						return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{
-							trip(2, "", "IMG_1234.jpg"),
-							trip(3, "", "IMG_1250.jpg"),
-							trip(4, "", "IMG_1251.jpg"),
-						})...)
-					},
+					Example:   ex.MergeDays,
 				},
 			},
 		},
@@ -538,11 +388,169 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 	return fields, save
 }
 
+// configExamples renders the wizard's live tree previews and their paired description text.
+type configExamples struct {
+	rulesField *tui.Field
+	collapse   *bool
+	mergeDays  *bool
+	dateOnly   *bool
+	home       *string
+}
+
+func newConfigExamples(rulesField *tui.Field, collapse, mergeDays, dateOnly *bool, home *string) *configExamples {
+	return &configExamples{rulesField, collapse, mergeDays, dateOnly, home}
+}
+
+// exampleDay is the fixed date every wizard example uses — 2024-08 gives a
+// real Year/Month pair without meaning anything beyond "a month ago".
+func exampleDay(d int) time.Time { return time.Date(2024, time.August, d, 12, 0, 0, 0, time.UTC) }
+
+// selectedRules returns every Rules option currently ticked, in canonical
+// order — what the Rules field's own example demonstrates.
+func (e *configExamples) selectedRules() []string {
+	var out []string
+	for _, r := range e.rulesField.Options {
+		if e.rulesField.Selected[r] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// previewRules is lead (e.g. Date, Location — always shown regardless of
+// whether the user ticked them) plus the trailing collapsible levels the
+// user *has* ticked — every example below the Rules field itself wants to
+// demonstrate its own question regardless of what Rules holds.
+func (e *configExamples) previewRules(lead ...string) []string {
+	rules := append([]string{}, lead...)
+	for _, r := range []string{vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia} {
+		if e.rulesField.Selected[r] {
+			rules = append(rules, r)
+		}
+	}
+	return rules
+}
+
+// homeTown is what the saved-place examples name; a stand-in until the user
+// has typed a town, so the example is never blank.
+func (e *configExamples) homeTown() string {
+	if t := strings.TrimSpace(*e.home); t != "" {
+		city, _, _ := strings.Cut(t, ",")
+		return city
+	}
+	return "Indore"
+}
+
+// Rules is the Rules field's own example.
+func (e *configExamples) Rules() string {
+	cfg := vfs.DefaultConfig()
+	cfg.Rules = e.selectedRules()
+	cfg.CollapseLevels = false // always show every level, to demonstrate the order itself
+	sample := vfs.Sample{
+		TakenAt: exampleDay(2), Location: "Goa", Device: "iPhone 13",
+		Width: 1170, Height: 2532, MediaType: classifier.MediaTypeImage, FileName: "IMG_1234.jpg",
+	}
+	return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{sample})...)
+}
+
+// Collapse always demonstrates all three collapsible levels even when Rules has none ticked
+func (e *configExamples) Collapse() string {
+	cfg := vfs.DefaultConfig()
+	var lead []string
+	if e.rulesField.Selected[vfs.RuleDate] {
+		lead = append(lead, vfs.RuleDate)
+	}
+	if e.rulesField.Selected[vfs.RuleLocation] {
+		lead = append(lead, vfs.RuleLocation)
+	}
+	cfg.Rules = append(lead, vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia)
+	cfg.CollapseLevels = *e.collapse
+
+	day := func(d int) vfs.Sample {
+		return vfs.Sample{
+			TakenAt: exampleDay(d), Location: e.homeTown(), Device: "iPhone 13",
+			Width: 1170, Height: 2532, MediaType: classifier.MediaTypeImage,
+		}
+	}
+	day12, day13a, day13b := day(12), day(13), day(13)
+	day12.FileName, day13a.FileName, day13b.FileName = "IMG_1234.jpg", "IMG_1250.jpg", "IMG_1251.jpg"
+	if !*e.collapse {
+		// Second branch uses a different device and orientation than the
+		// first — real, so it also shows what does *not* collapse: two
+		// devices and two orientations mean neither level is one value
+		// library-wide, only Photos is.
+		day13a.Device, day13a.Width, day13a.Height = "Canon EOS 700D", 6000, 4000
+		day13b.Device, day13b.Width, day13b.Height = "Canon EOS 700D", 6000, 4000
+	}
+	return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{day12, day13a, day13b})...)
+}
+
+// CollapseDescribe is what Collapse *means*, as the question's own
+// description — the example column is too narrow to hold a sentence without
+// truncating it.
+func (e *configExamples) CollapseDescribe() string {
+	d := "Drop a device/orientation/media folder that would hold every single " +
+		"file in the library — one value means the level says nothing."
+	if *e.collapse {
+		return d + " On: those folders are left out below."
+	}
+	return d + " Off: they stay, repeating under every folder even though they never vary."
+}
+
+func (e *configExamples) DateOnlyDescribe() string {
+	d := "Everyday shots from a saved place aren't trips — a city folder there mostly repeats itself."
+	if *e.dateOnly {
+		return d + " On: no city folder for these."
+	}
+	return d + " Off: nearby suburbs still fold into " + e.homeTown() + "."
+}
+
+func (e *configExamples) DateOnly() string {
+	cfg := vfs.DefaultConfig()
+	cfg.Rules = e.previewRules(vfs.RuleDate, vfs.RuleLocation)
+	cfg.CollapseLevels = *e.collapse
+	cfg.SavedPlacesDateOnly = *e.dateOnly
+	sample := vfs.Sample{
+		TakenAt: exampleDay(12), Location: e.homeTown(), AtSavedPlace: true, Device: "iPhone 13",
+		Width: 1170, Height: 2532, MediaType: classifier.MediaTypeImage, FileName: "IMG_1234.jpg",
+	}
+	return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{sample})...)
+}
+
+func (e *configExamples) MergeDaysDescribe() string {
+	d := "A multi-day trip in one place becomes one folder instead of one per day. " +
+		"You can still split or merge days later in review."
+	if *e.mergeDays {
+		return d + " On: consecutive same-location days merge."
+	}
+	return d + " Off: each day keeps its own folder."
+}
+
+func (e *configExamples) MergeDays() string {
+	cfg := vfs.DefaultConfig()
+	cfg.Rules = e.previewRules(vfs.RuleDate, vfs.RuleLocation)
+	cfg.CollapseLevels = *e.collapse
+	trip := func(d int, dayOverride, file string) vfs.Sample {
+		return vfs.Sample{
+			TakenAt: exampleDay(d), Location: "Greece", DayOverride: dayOverride,
+			Device: "iPhone 13", Width: 1170, Height: 2532,
+			MediaType: classifier.MediaTypeImage, FileName: file,
+		}
+	}
+	if *e.mergeDays {
+		return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{trip(2, "02_04", "IMG_1234.jpg")})...)
+	}
+	// three sibling day branches under one month — exactly the
+	// shape a "no" produces in review
+	return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{
+		trip(2, "", "IMG_1234.jpg"),
+		trip(3, "", "IMG_1250.jpg"),
+		trip(4, "", "IMG_1251.jpg"),
+	})...)
+}
+
 // treeExample renders slash paths as the same guided tree the review screen
-// draws, shared prefixes folded together — a wizard example should look like
-// the thing the setting shapes, not like a shell path. note, if any, renders
-// as its own final line — appended to the deepest tree line it was the first
-// thing the side panel truncated.
+// draws, shared prefixes folded together
 func treeExample(note string, paths ...string) string {
 	type node struct {
 		name string
@@ -614,13 +622,6 @@ func toMap(items []string) map[string]bool {
 }
 
 // canonicalTown returns the gazetteer's exact spelling of a typed town name.
-// A name the gazetteer has never heard of is accepted as typed — a village
-// missing from the database is the user's problem to spell, not a wall — but a
-// near-miss with real candidates still errors ("did you mean"), since that's a
-// typo, not a gap. Blank input, or a nil resolver (not ready yet), is an error
-// (callers treat both as "skip" before calling for the canonical form).
-// Takes the resolver explicitly rather than reading a shared field — the
-// caller already knows it's ready (see the gazetteer closures in buildConfigForm).
 func canonicalTown(ctx context.Context, resolver *location.Resolver, typed string) (string, error) {
 	typed = strings.TrimSpace(typed)
 	if typed == "" || resolver == nil {
@@ -637,11 +638,7 @@ func canonicalTown(ctx context.Context, resolver *location.Resolver, typed strin
 }
 
 // exactMatch returns the gazetteer's own spelling when one of matches is a
-// case-insensitive match for typed, e.g. so a user who already typed the
-// right name gets the canonical form without extra steps (see canonicalTown).
-// The town picker lists full names ("Indore, Madhya Pradesh, India"), so all
-// three forms match — and whichever matched is saved as the full name, the
-// only form that names one row for certain (see location.ResolveByName).
+// case-insensitive match for typed
 func exactMatch(matches []location.PlaceMatch, typed string) (string, bool) {
 	typed = strings.TrimSpace(typed)
 	for _, m := range matches {
