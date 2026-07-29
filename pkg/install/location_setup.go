@@ -64,12 +64,12 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 
 	// no digest here: the expected hash ships in the metadata file downloaded
 	// next, and verifyLocationDB checks against it once both are on disk
-	if err := downloadFile(ctx, dbPath, LocationDownloadBaseURL+"/"+LocationDBFileName, "", onProgress); err != nil {
+	if err := downloadFile(ctx, log, dbPath, LocationDownloadBaseURL+"/"+LocationDBFileName, "", onProgress); err != nil {
 		return fmt.Errorf("download %s: %w", LocationDBFileName, err)
 	}
 
 	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
-	if err := downloadFile(ctx, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
+	if err := downloadFile(ctx, log, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
 		log.Warn("location db: could not download metadata (non-fatal)", "file", LocationMetaFileName, "error", err)
 	}
 

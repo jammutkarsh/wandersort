@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 )
 
@@ -83,7 +84,7 @@ func TestDownloadVerifiesChecksum(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dest := filepath.Join(t.TempDir(), "payload.bin")
 
-			err := downloadFile(context.Background(), dest, srv.URL, tt.want, nil)
+			err := downloadFile(context.Background(), nil, dest, srv.URL, tt.want, nil)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Download error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -103,5 +104,68 @@ func TestDownloadVerifiesChecksum(t *testing.T) {
 				t.Errorf("dest = %q, want %q", got, body)
 			}
 		})
+	}
+}
+
+// TestDownloadRetriesOnTransportFailure covers the reported bug: switching
+// networks mid-download drops the connection without a proper HTTP response,
+// and the download must retry rather than fail (or hang) permanently.
+// Hijacking and closing the connection with no response written is what a
+// dropped connection looks like to the client — a transport error, not a bad
+// status code, so it must not hit the nonRetryable path.
+func TestDownloadRetriesOnTransportFailure(t *testing.T) {
+	body := []byte("wandersort dependency payload")
+	var attempts atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if attempts.Add(1) == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn.Close() // simulate a dropped connection on the first attempt
+			return
+		}
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "payload.bin")
+	if err := downloadFile(context.Background(), nil, dest, srv.URL, "", nil); err != nil {
+		t.Fatalf("downloadFile() = %v, want nil after retrying past the dropped connection", err)
+	}
+	if got := attempts.Load(); got < 2 {
+		t.Errorf("server saw %d request(s), want at least 2 (a retry after the drop)", got)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil || string(got) != string(body) {
+		t.Errorf("dest = %q, %v, want %q, nil", got, err, body)
+	}
+}
+
+// TestDownloadCleansStaleTempFiles covers the leftover-.dl-* report: a
+// process killed mid-download (SIGKILL, panic) never runs the defer that
+// cleans up its temp file. The next download into the same directory must
+// sweep it, even though the random suffix means the exact name differs
+// every time.
+func TestDownloadCleansStaleTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, ".dl-leftover-12345")
+	if err := os.WriteFile(stale, []byte("orphaned"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte("wandersort dependency payload")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(dir, "payload.bin")
+	if err := downloadFile(context.Background(), nil, dest, srv.URL, "", nil); err != nil {
+		t.Fatalf("downloadFile() = %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale temp file still exists after download, want it swept")
 	}
 }

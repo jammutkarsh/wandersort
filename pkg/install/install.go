@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
@@ -45,8 +46,7 @@ type Options struct {
 	ExecutablePath string // directory exiftool installs into
 	LocationDBPath string // path to the location database file
 	Log            logger.Logger
-	// OnProgress receives download byte progress, phase "exiftool" or
-	// "location". Not called for a dependency already on disk.
+
 	OnProgress func(phase string, done, total int64)
 }
 
@@ -223,9 +223,34 @@ func (c *Coordinator) awaitLog(ch <-chan struct{}, why string) {
 	<-ch
 }
 
-// downloadFile fetches url and writes the body to dest atomically (via a temp file
-// in the same directory) so a partial or tampered download never leaves a bad
-// file at dest.
+const (
+	// downloadMaxAttempts bounds retries on a transport failure (dropped or
+	// stalled connection, DNS hiccup) — not on a bad response, see
+	// nonRetryable below.
+	downloadMaxAttempts = 4
+	// downloadStallTimeout aborts an attempt that has gone this long without
+	// a single new byte arriving. A network switch (e.g. wifi to a different
+	// AP, or wifi to ethernet) can leave the underlying TCP connection dead
+	// without the OS or the server ever telling us, so io.Copy would
+	// otherwise block forever instead of erroring out to a retry.
+	downloadStallTimeout = 20 * time.Second
+)
+
+// nonRetryable marks a download failure retrying can't fix — a bad URL
+// (status code) or a checksum mismatch will fail the exact same way every
+// time, so downloadFile gives up after the first attempt instead of wasting
+// downloadMaxAttempts-1 retries and their backoff delays on it.
+type nonRetryable struct{ err error }
+
+func (n *nonRetryable) Error() string { return n.err.Error() }
+func (n *nonRetryable) Unwrap() error { return n.err }
+
+// downloadFile fetches url and writes the body to dest atomically (via a temp
+// file in the same directory) so a partial or tampered download never leaves
+// a bad file at dest. Retries on a transport failure (see downloadMaxAttempts),
+// starting the download over from byte zero each time; log (may be nil) gets
+// a UserKey line on each retry so a stalled download reads as "retrying", not
+// as a frozen progress bar.
 //
 // onProgress (may be nil) is invoked as bytes arrive with (bytesSoFar,
 // totalBytes); total is -1 when the server sends no Content-Length. It runs on
@@ -233,11 +258,64 @@ func (c *Coordinator) awaitLog(ch <-chan struct{}, why string) {
 //
 // wantSHA256 (may be empty) is the expected hex digest. A mismatch removes dest
 // and returns an error.
-func downloadFile(ctx context.Context, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func downloadFile(ctx context.Context, log logger.Logger, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
+	cleanStaleDownloads(filepath.Dir(dest))
+
+	var err error
+	for attempt := 1; attempt <= downloadMaxAttempts; attempt++ {
+		err = downloadAttempt(ctx, dest, url, wantSHA256, onProgress)
+		if err == nil {
+			return nil
+		}
+		var nr *nonRetryable
+		if errors.As(err, &nr) || ctx.Err() != nil || attempt == downloadMaxAttempts {
+			return err
+		}
+		if log != nil {
+			log.Warn("Download failed, retrying", logger.UserKey, true,
+				"url", url, "attempt", attempt, "of", downloadMaxAttempts, "error", err)
+		}
+		select {
+		case <-time.After(time.Duration(attempt) * 2 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
+}
+
+// cleanStaleDownloads removes any .dl-* temp file left behind in dir by a
+// process that was killed (not exited normally) mid-download — a graceful
+// exit already cleans its own up via defer, but SIGKILL/panic doesn't run
+// that. The random suffix os.CreateTemp picks means the exact name varies
+// per run, so this globs the fixed prefix rather than tracking one name.
+// Best effort: a leftover here is disk clutter, not a correctness problem
+// the next download depends on.
+func cleanStaleDownloads(dir string) {
+	matches, err := filepath.Glob(filepath.Join(dir, ".dl-*"))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		os.Remove(m)
+	}
+}
+
+// downloadAttempt is one try at downloadFile's job. It cancels its own
+// request if downloadStallTimeout passes with no progress, turning a dead
+// connection into a prompt, retryable error instead of an indefinite hang.
+func downloadAttempt(ctx context.Context, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("create request %s: %w", url, err)
 	}
+
+	stall := time.AfterFunc(downloadStallTimeout, cancel)
+	defer stall.Stop()
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", url, err)
@@ -245,7 +323,7 @@ func downloadFile(ctx context.Context, dest, url, wantSHA256 string, onProgress 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: unexpected status %s", url, resp.Status)
+		return &nonRetryable{fmt.Errorf("GET %s: unexpected status %s", url, resp.Status)}
 	}
 
 	// Write to a temp file in the same directory so os.Rename is atomic
@@ -259,10 +337,12 @@ func downloadFile(ctx context.Context, dest, url, wantSHA256 string, onProgress 
 		os.Remove(tmpName) // no-op if Rename succeeded
 	}()
 
-	var src io.Reader = resp.Body
-	if onProgress != nil {
-		src = &progressReader{r: resp.Body, total: resp.ContentLength, onProgress: onProgress}
-	}
+	src := &progressReader{r: resp.Body, total: resp.ContentLength, onProgress: func(done, total int64) {
+		stall.Reset(downloadStallTimeout)
+		if onProgress != nil {
+			onProgress(done, total)
+		}
+	}}
 	if _, err := io.Copy(tmp, src); err != nil {
 		return fmt.Errorf("write %s: %w", dest, err)
 	}
@@ -282,7 +362,7 @@ func downloadFile(ctx context.Context, dest, url, wantSHA256 string, onProgress 
 		}
 		if sum != wantSHA256 {
 			os.Remove(dest)
-			return fmt.Errorf("checksum mismatch for %s: got %s, want %s", filepath.Base(dest), sum, wantSHA256)
+			return &nonRetryable{fmt.Errorf("checksum mismatch for %s: got %s, want %s", filepath.Base(dest), sum, wantSHA256)}
 		}
 	}
 
