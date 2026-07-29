@@ -835,3 +835,19 @@ go build ./... # quick compile check
   see the package note above) is a different thing from `exiftool.releaseMeta`
   — the latter (the binary's checksum manifest, `exiftool.json`) is already a
   typed struct. Don't conflate the two if asked to "type the exiftool JSON."
+
+## Agent skills
+
+### Issue tracker
+
+Issues/specs tracked as markdown files under `.scratch/<feature>/`. See
+`docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five canonical roles used as-is. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at repo root. See
+`docs/agents/domain.md`.
