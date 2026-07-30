@@ -20,11 +20,11 @@ type nameSuggestion struct {
 	detail string // right-hand hint, e.g. "~12km" or "used before"
 }
 
-// folderName turns a picked display name (search results and the rename
-// dropdown keep the comma — "Seoni, Himachal Pradesh" is how a reviewer tells
-// two same-named places apart) into what actually becomes the folder: no
-// space, no comma, same rule Confirm enforces on every node name.
+// folderName turns a picked display name into the actual folder name — same
+// sanitizing rule Confirm enforces on every node name.
 func folderName(display string) string {
+	// dropdown/search keep the comma ("Seoni, Himachal Pradesh") so a reviewer
+	// can tell same-named places apart; SanitizeSegment strips it back out
 	return vfs.SanitizeSegment(display)
 }
 

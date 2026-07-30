@@ -19,11 +19,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
-// screen embeds the review TUI as an app-shell screen so scan can swap
-// straight into it in the same full-screen program. Unlike standalone review
-// (runReview), it finalizes in-program: on save it runs vfs.Confirm itself,
-// then hands control back to the shell (Switch(nil) quits the program). The
-// caller reads confirmed/finalErr afterwards to print the outcome.
+// screen embeds the review TUI as an app-shell screen so scan can swap into
+// it in the same full-screen program. Unlike Run, it finalizes in-program: on
+// save it runs vfs.Confirm itself, then hands back to the shell via Switch(nil).
 type screen struct {
 	inner     Model
 	ctx       context.Context

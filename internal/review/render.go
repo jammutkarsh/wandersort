@@ -51,11 +51,8 @@ func (m Model) header() string {
 			tui.FaintTxt.Render(fmt.Sprintf("%d folders  %d files", len(m.rows), files)), m.width)
 }
 
-// rowView renders one tree line: guide + name on the left, file count aligned
-// at the right edge (the kit's right column), with the pending rename and any
-// unaccepted suggestion shown inline. The cursor row and every row of a [V]
-// range carry the highlight background — the same way the config wizard marks
-// the option under the cursor.
+// rowView renders one tree line: guide + name, file count right-aligned,
+// pending rename and any unaccepted suggestion shown inline.
 func (m Model) rowView(i int, inRange bool) string {
 	r := m.rows[i]
 
@@ -70,6 +67,8 @@ func (m Model) rowView(i int, inRange bool) string {
 	count := fmt.Sprintf("%d files", r.node.FileCount)
 
 	if inRange || i == m.cursor {
+		// cursor row and every row of a [V] range get the highlight background,
+		// same as the config wizard marks the option under the cursor.
 		// plain, no per-segment colour: an ANSI reset inside the line would cut
 		// the background highlight short partway through
 		if i == m.cursor {

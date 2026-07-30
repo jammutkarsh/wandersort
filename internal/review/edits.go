@@ -32,11 +32,9 @@ func (m *Model) snapshot(edit string) {
 	}
 }
 
-// applyEdit runs one structural tree edit: snapshot, apply, roll the snapshot
-// back if the edit was refused, then reflow and report. edit returns the new
-// tree and the status line for a success. Reports whether the edit landed, so
-// a caller with follow-up work (merge, which re-focuses the surviving node)
-// knows to do it.
+// applyEdit runs one structural tree edit: snapshot, apply, reflow, report.
+// Returns whether the edit landed, so a caller with follow-up work (merge
+// re-focusing the surviving node) knows whether to do it.
 func (m *Model) applyEdit(name string, edit func([]vfs.Node) ([]vfs.Node, string, error)) bool {
 	m.snapshot(name)
 	newTree, status, err := edit(m.tree)
@@ -53,10 +51,8 @@ func (m *Model) applyEdit(name string, edit func([]vfs.Node) ([]vfs.Node, string
 }
 
 // mergeSelection folds the selected folders into one node under their lowest
-// common ancestor, with the summed file count. See selectedRows for what
-// counts as selected. The actual reshaping is vfs.MergeNodes' — this only
-// resolves the row selection into IDs and applies the result back onto the
-// row/undo/status state a tree edit knows nothing about.
+// common ancestor. It only resolves the row selection into IDs — vfs.MergeNodes
+// does the actual reshaping.
 func (m *Model) mergeSelection() {
 	if !m.visualMode {
 		m.statusMsg, m.statusIsErr = "press V to select folders, then m to merge", true
@@ -127,9 +123,7 @@ func (m *Model) pendingNames() map[string]string {
 }
 
 // dropFolders removes each selected folder and lifts its children onto its
-// parent — dropping "Apple iPhone 13" then "Indore" under 2023/April leaves
-// April holding the files, one group-by level shallower. vfs.DropNodes does
-// the actual reshaping; see mergeSelection's comment for the split.
+// parent, one group-by level shallower. vfs.DropNodes does the reshaping.
 func (m *Model) dropFolders(targets []*reviewRow) {
 	ids := make([]string, len(targets))
 	for i, r := range targets {
@@ -149,20 +143,16 @@ func (m *Model) dropFolders(targets []*reviewRow) {
 	})
 }
 
-// flattenFolders collapses everything below each selected folder into it, the
-// folder itself staying put: `2023/April/Indore/Apple iPhone 13` flattened at
-// April becomes `2023/April` holding all ten files. Works on a top-level row,
-// unlike [d], since the Year survives to hold them.
-//
-// Over a [V] range the folders stay separate — folding them together is [m]'s
-// job. FileCount is unchanged; it already counted the subtree. vfs.FlattenNodes
-// does the actual reshaping; see mergeSelection's comment for the split.
+// flattenFolders collapses everything below each selected folder into it,
+// the folder itself staying put. vfs.FlattenNodes does the reshaping.
 func (m *Model) flattenFolders(targets []*reviewRow) {
 	ids := make([]string, len(targets))
 	for i, r := range targets {
 		ids[i] = r.node.ID
 	}
 
+	// over a [V] range the folders stay separate — folding them together is
+	// [m]'s job, not this one
 	m.applyEdit("flatten", func(tree []vfs.Node) ([]vfs.Node, string, error) {
 		newTree, absorbed, names, err := vfs.FlattenNodes(tree, ids)
 		if err != nil {

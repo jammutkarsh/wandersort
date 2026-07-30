@@ -103,14 +103,9 @@ func (a *app) runScanPlain(paths []string) error {
 	return nil
 }
 
-// runScanTUI is the full-screen path. The scan starts immediately — there is
-// no install screen. Missing dependencies download in the background (byte
-// progress renders as a row on the scan screen) and each pipeline phase waits
-// only for its own dependency (workflow.Deps): exif on exiftool, vfs on the
-// location database, scan/hash on nothing. On a first-ever run the file walk
-// and hashing overlap the downloads instead of sitting behind them.
-// The pipeline logs through a TUI logger whose Sink forwards every user/stream
-// Event into the program; on a clean scan the user can drop straight into review.
+// runScanTUI is the full-screen path: the scan starts immediately, with
+// missing dependencies downloading in the background instead of behind an
+// install screen.
 func (a *app) runScanTUI(paths []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -136,6 +131,8 @@ func (a *app) runScanTUI(paths []string) error {
 	a.Log = tuiLog
 	defer func() { a.Log = origLog }()
 
+	// each phase gates only on its own dependency (exif on exiftool, vfs on the
+	// location DB), so a first-ever run's walk/hash overlap the downloads
 	wf := workflow.NewWorkflow(ctx, a.AppDB, tuiLog, a.Config, a.workflowDeps(ctx))
 	first := tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {

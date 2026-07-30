@@ -110,24 +110,22 @@ func (a *app) tuiEnabled(cmd *cobra.Command) bool {
 	return term.IsTerminal(int(os.Stderr.Fd()))
 }
 
-// syncAnchors reads the globally-saved anchor towns (index 0 home, 1 work,
-// everything after another frequently-stayed-at place — all anchored the
-// same way) and ensures they exist as SAVED_PLACE user_labels in this
-// library's DB. Saved places are a global setting, but resolveLocations reads
-// them per-library, so each library's DB needs its own copy. Idempotent and
-// silent once synced; empty names are a no-op. A config file it can't read is
-// a warning, not a failure — anchors only sharpen the proposal, they don't
-// gate it.
+// syncAnchors ensures the globally-saved anchor towns exist as SAVED_PLACE
+// user_labels in this library's DB — a global setting, but resolveLocations
+// reads it per-library, so each library needs its own copy.
 func (a *app) syncAnchors(ctx context.Context, resolver *location.Resolver) error {
 	if resolver == nil {
 		return nil
 	}
 	g, err := a.Config.Load()
 	if err != nil {
+		// anchors only sharpen the proposal, they don't gate it
 		a.Log.Warn("Could not read global config, skipping anchor sync", "error", err)
 		return nil
 	}
 
+	// index 0 home, 1 work, everything after another frequently-stayed-at
+	// place — all anchored the same way
 	for _, name := range g.SavedPlaces {
 		if name == "" {
 			continue
@@ -139,7 +137,7 @@ func (a *app) syncAnchors(ctx context.Context, resolver *location.Resolver) erro
 			return fmt.Errorf("check anchor %q: %w", name, err)
 		}
 		if exists > 0 {
-			continue
+			continue // already synced, idempotent
 		}
 		lat, lon, err := resolver.ResolveByName(ctx, name)
 		if err != nil {
