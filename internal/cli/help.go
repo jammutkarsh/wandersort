@@ -71,12 +71,10 @@ func setCustomHelp(cmd *cobra.Command) {
 	})
 }
 
-// section writes a blank line, a styled header, then body.
 func section(b *strings.Builder, title, body string) {
 	fmt.Fprintf(b, "\n%s\n%s\n", tui.Title.Render(title), body)
 }
 
-// indent prefixes every line with two spaces.
 func indent(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {

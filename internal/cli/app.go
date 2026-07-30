@@ -44,10 +44,8 @@ func (a *app) newDeps(onProgress func(phase string, done, total int64)) *install
 	})
 }
 
-// workflowDeps gates each pipeline phase on its own dependency and syncs
-// anchors at the earliest point the resolver exists — the same wiring for the
-// plain and the full-screen path. a.Deps must already be built (newDeps) and
-// started (Start) before the returned Deps' closures are called.
+// workflowDeps gates each pipeline phase on its own dependency and syncs anchors
+// as soon as the resolver exists. Requires a.Deps already built and started.
 func (a *app) workflowDeps() workflow.Deps {
 	return workflow.Deps{
 		Exiftool: func() (string, error) {
@@ -89,10 +87,6 @@ func (a *app) closeDBs() {
 	}
 }
 
-// isTuiEnabled decides whether a command renders the full-screen TUI or falls
-// back to plain line logging. Plain when --plain is set or stderr isn't a
-// terminal (piped/redirected). The TUI draws to stderr, matching the review
-// TUI, so stdout stays clean for piping.
 func (a *app) isTuiEnabled(cmd *cobra.Command) bool {
 	if plain, _ := cmd.Flags().GetBool(flagPlain); plain {
 		return false

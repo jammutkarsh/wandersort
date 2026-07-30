@@ -155,9 +155,7 @@ func approvedCount(ctx context.Context, database *db.DB) (int, error) {
 }
 
 // newReviewScreen builds the review screen over the current proposal, reusing
-// the already-open DB and the scan's own Deps (no lock/DB re-init — the
-// caller still holds the output lock; a.Deps was set by runScanTUI and its
-// location download has already resolved by the time vfs ran).
+// the scan's already-open DB and Deps — no lock/DB re-init needed.
 func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	tree, err := vfs.BuildTree(ctx, a.AppDB)
 	if err != nil {
@@ -166,7 +164,9 @@ func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	if len(tree) == 0 {
 		return nil, fmt.Errorf("no proposal to review")
 	}
-	// Rename autocomplete degrades gracefully without a resolver.
+	// Doesn't block: a.Deps was started by runScanTUI and vfs already ran, so
+	// the location download has resolved by now. Autocomplete just degrades
+	// gracefully without a resolver if it somehow hasn't.
 	resolver, err := a.Deps.Location()
 	if err != nil {
 		a.Log.Warn("Location resolver unavailable, rename suggestions disabled", "error", err)

@@ -121,14 +121,12 @@ func (a *app) runScanTUI(paths []string) error {
 	defer a.closeDBs()
 	defer l.Unlock()
 
-	// TUI logger: user/stream Events flow to the program; the JSON file log still
-	// captures everything. The forwarding goroutine outlives Run() and is left to
-	// exit with the process — the send never deadlocks because it always drains.
-	// a.Log is swapped so dependency-install milestones land in the TUI too.
+	// Events flow to the program; forwarding goroutine outlives Run() and exits
+	// with the process — the send never deadlocks since the program always drains it.
 	events := make(chan logger.Event, 4096)
 	tuiLog := logger.NewTUI(a.Config.LogLevel, a.Config.LogFile, func(e logger.Event) { events <- e })
 	origLog := a.Log
-	a.Log = tuiLog
+	a.Log = tuiLog // swapped so dependency-install milestones land in the TUI too
 	defer func() { a.Log = origLog }()
 
 	// each phase gates only on its own dependency (exif on exiftool, vfs on the

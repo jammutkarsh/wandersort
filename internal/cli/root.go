@@ -103,7 +103,6 @@ Where to ideally store the generated scripts:
 	return rootCmd
 }
 
-// flagStr returns the string flag value, or "" when unset.
 func flagStr(cmd *cobra.Command, name string) string {
 	if !cmd.Flags().Changed(name) {
 		return ""
@@ -112,7 +111,6 @@ func flagStr(cmd *cobra.Command, name string) string {
 	return s
 }
 
-// flagInt returns the int flag value, or 0 when unset.
 func flagInt(cmd *cobra.Command, name string) int {
 	if !cmd.Flags().Changed(name) {
 		return 0

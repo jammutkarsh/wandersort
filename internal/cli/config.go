@@ -96,20 +96,16 @@ var errConfigCancelled = errors.New("config cancelled")
 // banner shows how far along it is.
 var errGazetteerPending = errors.New("location database is still downloading")
 
-// runConfigTUI runs the settings wizard as one alt-screen program. The
-// location database (needed only to validate the saved-place towns) downloads in
-// the background while the user answers everything above it — there is no
-// install screen here; dependencies are scan's job.
+// runConfigTUI runs the settings wizard as one alt-screen program, downloading
+// the location database in the background — no install screen here, that's scan's job.
 func (a *app) runConfigTUI(ctx context.Context) error {
 	// Console logging off for the run: the alt-screen owns the terminal and
 	// the background download's log lines would draw over it. The file log
 	// still captures everything.
 	a.Log = logger.NewTUI(a.Config.LogLevel, a.Config.LogFile, func(logger.Event) {})
 
-	// gazetteer is a non-blocking peek at the location resolver: errGazetteerPending
-	// while still downloading, otherwise whatever a.Deps.Location() resolved to
-	// (never blocks, since LocationReady() already gates it) — this is the one
-	// place the form reads the resolver, no field on app to race against.
+	// Non-blocking peek: errGazetteerPending while still downloading, otherwise
+	// the resolved value — LocationReady() already gates Location() from blocking.
 	var coordinator *install.Coordinator
 	gazetteer := func() (*location.Resolver, error) {
 		if !coordinator.LocationReady() {
@@ -121,10 +117,8 @@ func (a *app) runConfigTUI(ctx context.Context) error {
 	fields, save := a.buildConfigForm(ctx, gazetteer)
 	prog := tea.NewProgram(tui.NewFormModel(fields, save), tea.WithAltScreen(), tea.WithOutput(os.Stderr))
 
-	// Download the location database while the form is answered, reporting into
-	// the form's own progress row (tui.DownloadMsg) — no install screen, and
-	// nothing at all on screen when it's already on disk, since a no-op install
-	// reports no bytes and only ever sends the Finished message.
+	// Reports into the form's own progress row; a no-op install (already on disk)
+	// reports no bytes and just sends Finished, so nothing shows on screen for it.
 	coordinator = a.newDeps(func(_ string, done, total int64) {
 		prog.Send(tui.DownloadMsg{Label: "Location database", Done: done, Total: total})
 	})
@@ -171,10 +165,8 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 		work = g.SavedPlaces[1]
 	}
 
-	// townValidator rejects a near-miss the gazetteer has close candidates for
-	// (a typo), but waves through a name it doesn't know at all — see
-	// canonicalTown. A gazetteer that never opened at all waves the town
-	// through too — a broken dependency must not trap the user on this field.
+	// Rejects a typo (close candidates exist) but waves through an unknown name
+	// or a gazetteer that never opened — a broken dependency can't trap this field.
 	townValidator := func(s string) error {
 		if strings.TrimSpace(s) == "" {
 			return nil // blank = skip
@@ -417,10 +409,8 @@ func (e *configExamples) selectedRules() []string {
 	return out
 }
 
-// previewRules is lead (e.g. Date, Location — always shown regardless of
-// whether the user ticked them) plus the trailing collapsible levels the
-// user *has* ticked — every example below the Rules field itself wants to
-// demonstrate its own question regardless of what Rules holds.
+// previewRules is lead (always shown) plus the collapsible levels the user
+// has ticked — each example demonstrates its own question, not the live Rules value.
 func (e *configExamples) previewRules(lead ...string) []string {
 	rules := append([]string{}, lead...)
 	for _, r := range []string{vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia} {
@@ -475,10 +465,8 @@ func (e *configExamples) Collapse() string {
 	day12, day13a, day13b := day(12), day(13), day(13)
 	day12.FileName, day13a.FileName, day13b.FileName = "IMG_1234.jpg", "IMG_1250.jpg", "IMG_1251.jpg"
 	if !*e.collapse {
-		// Second branch uses a different device and orientation than the
-		// first — real, so it also shows what does *not* collapse: two
-		// devices and two orientations mean neither level is one value
-		// library-wide, only Photos is.
+		// Second branch differs in device/orientation, showing what does NOT
+		// collapse: neither level is one value library-wide, only Photos is.
 		day13a.Device, day13a.Width, day13a.Height = "Canon EOS 700D", 6000, 4000
 		day13b.Device, day13b.Width, day13b.Height = "Canon EOS 700D", 6000, 4000
 	}
@@ -602,10 +590,8 @@ func treeExample(note string, paths ...string) string {
 	return b.String()
 }
 
-// bundleExts are macOS package directories that report IsDir() true but hold
-// an app/plugin, not something a person would pick as an output folder.
-// ponytail: extension list, not a bundle-detection API — add here if a report
-// names another one (.framework, .kext, ...).
+// bundleExts are macOS package dirs that report IsDir() true but aren't a folder a person would pick.
+// ponytail: extension list, not a bundle-detection API — add here if a report names another one.
 var bundleExts = map[string]bool{".app": true}
 
 func isBundleDir(name string) bool {

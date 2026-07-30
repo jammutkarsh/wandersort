@@ -67,10 +67,7 @@ func (m Model) rowView(i int, inRange bool) string {
 	count := fmt.Sprintf("%d files", r.node.FileCount)
 
 	if inRange || i == m.cursor {
-		// cursor row and every row of a [V] range get the highlight background,
-		// same as the config wizard marks the option under the cursor.
-		// plain, no per-segment colour: an ANSI reset inside the line would cut
-		// the background highlight short partway through
+		// Plain, no per-segment colour — a nested ANSI reset would cut the highlight short.
 		if i == m.cursor {
 			cursor = "❯ "
 		}
