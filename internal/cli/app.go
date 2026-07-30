@@ -48,7 +48,7 @@ func (a *app) newDeps(onProgress func(phase string, done, total int64)) *install
 // anchors at the earliest point the resolver exists — the same wiring for the
 // plain and the full-screen path. a.Deps must already be built (newDeps) and
 // started (Start) before the returned Deps' closures are called.
-func (a *app) workflowDeps(ctx context.Context) workflow.Deps {
+func (a *app) workflowDeps() workflow.Deps {
 	return workflow.Deps{
 		Exiftool: func() (string, error) {
 			return a.Deps.AwaitExiftool()

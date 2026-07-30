@@ -87,7 +87,7 @@ func (a *app) runScanPlain(paths []string) error {
 	a.Deps.Start(ctx)
 	defer a.closeDBs()
 
-	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, a.workflowDeps(ctx))
+	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, a.workflowDeps())
 
 	scanPaths, err := wf.RunScan(paths)
 	if err != nil {
@@ -133,7 +133,7 @@ func (a *app) runScanTUI(paths []string) error {
 
 	// each phase gates only on its own dependency (exif on exiftool, vfs on the
 	// location DB), so a first-ever run's walk/hash overlap the downloads
-	wf := workflow.NewWorkflow(ctx, a.AppDB, tuiLog, a.Config, a.workflowDeps(ctx))
+	wf := workflow.NewWorkflow(ctx, a.AppDB, tuiLog, a.Config, a.workflowDeps())
 	first := tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {
 			_, err := wf.RunScan(paths)

@@ -51,7 +51,7 @@ type Workflow struct {
 	scanner *scanner.Scanner
 	hasher  *hasher.Hasher
 	scorer  *scorer.Scorer
-	vfs  vfs.Config
+	vfs     vfs.Config
 }
 
 type workflowPhase struct {
@@ -105,7 +105,7 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 		hasher:    hasher.New(db, log, cfg.Workers),
 		scorer:    scorer.New(db, log),
 		workers:   cfg.Workers,
-		vfs:    vfsCfg,
+		vfs:       vfsCfg,
 		log:       log,
 		path:      path.New(),
 		outputDir: filepath.Dir(cfg.AppDBPath),

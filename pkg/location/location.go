@@ -49,9 +49,9 @@ type cacheKey struct {
 }
 
 type Resolver struct {
-	db   *db.DB
+	db    *db.DB
 	cache sync.Map
-	log  logger.Logger
+	log   logger.Logger
 	// Anchors are saved places resolved to GPS coordinates. Nil until
 	// BuildAnchors is called.
 	Anchors []Anchor
@@ -336,8 +336,9 @@ func (r *Resolver) cityClaimed(city string) bool {
 //
 // Hyderabad alone → "Hyderabad"
 // Hyderabad, India + Hyderabad, Pakistan with different states
-//   → "Hyderabad - Telangana", "Hyderabad - Sindh" (sep=" - ")
-//   → "Hyderabad, Telangana", "Hyderabad, Sindh" (sep=", ")
+//
+//	→ "Hyderabad - Telangana", "Hyderabad - Sindh" (sep=" - ")
+//	→ "Hyderabad, Telangana", "Hyderabad, Sindh" (sep=", ")
 func disambiguate(city, state, country string, nameCount, countryCount, inCountryCount int, anchorClaims bool, sep string) string {
 	if nameCount <= 1 && !anchorClaims {
 		return city
@@ -413,8 +414,8 @@ func stripDiacritics(s string) string {
 
 // Anchor is a saved place resolved to GPS coordinates.
 type Anchor struct {
-	Name       string  // "Hyderabad, Telangana, India" (full, for ResolveByName)
-	FolderName string  // "Hyderabad" or "Hyderabad - India" when another anchor shares the city
+	Name       string // "Hyderabad, Telangana, India" (full, for ResolveByName)
+	FolderName string // "Hyderabad" or "Hyderabad - India" when another anchor shares the city
 	Lat        float64
 	Lon        float64
 }
