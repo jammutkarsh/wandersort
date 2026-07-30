@@ -10,11 +10,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
-	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 )
 
 // cluster groups masters whose capture times sit within the configured gap of
@@ -27,7 +26,7 @@ type cluster struct {
 // clusterAndSuggest handles files with no location of their own: time-gap
 // clustering, GPS spillover within a cluster, then a ranked name suggestion for
 // whatever is still unresolved.
-func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Duration) {
+func clusterAndSuggest(masters []masterFile, labels []userLabel, anchors []location.Anchor, gap time.Duration) {
 	if gap <= 0 {
 		gap = defaultClusterGap
 	}
@@ -47,15 +46,12 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Durati
 		c.end = t
 	}
 
-	var anchors []string
+	anchorCities := make([]string, 0, len(anchors))
 	seen := map[string]bool{}
-	for _, l := range labels {
-		if l.Kind == config.SavedPlace && l.Label != "" {
-			city, _, _ := strings.Cut(l.Label, ",")
-			if !seen[city] {
-				seen[city] = true
-				anchors = append(anchors, city)
-			}
+	for _, a := range anchors {
+		if !seen[a.FolderName] {
+			seen[a.FolderName] = true
+			anchorCities = append(anchorCities, a.FolderName)
 		}
 	}
 
@@ -97,7 +93,7 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, gap time.Durati
 		// No member here is atSavedPlace — that always carries a real location
 		// now, which would have made city non-empty above.
 		seg := eventSegment(c.start, c.end)
-		sug, src := suggestFor(masters, c, labels, anchors)
+		sug, src := suggestFor(masters, c, labels, anchorCities)
 		for _, i := range c.members {
 			masters[i].clusterID = id
 			masters[i].eventSegment = seg

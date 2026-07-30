@@ -97,7 +97,7 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 func (v *VFS) loadLabels(ctx context.Context) ([]userLabel, error) {
 	var labels []userLabel
 	if err := v.db.SQL.SelectContext(ctx, &labels,
-		`SELECT label, kind, time_start, time_end, gps_lat, gps_lon FROM user_labels`); err != nil {
+		`SELECT label, kind, time_start, time_end, gps_lat, gps_lon FROM user_labels WHERE kind = 'EVENT'`); err != nil {
 		return nil, fmt.Errorf("query user labels: %w", err)
 	}
 	return labels, nil

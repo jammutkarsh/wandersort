@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 )
 
 // Rules names for Config.Rules — the configurable levels below <YEAR>/<MONTH>
@@ -52,6 +53,10 @@ type Config struct {
 	// → Aug/02_04/Goa). Only applies when a date level sits above location.
 	// See mergeSameLocationDays.
 	MergeSameLocationDays bool
+	// Anchors are saved places resolved to GPS coordinates, built from
+	// config.yaml by the caller (workflow or review --rebuild). Nil when
+	// no saved places are configured or the resolver isn't ready.
+	Anchors []location.Anchor
 }
 
 func DefaultConfig() Config {
@@ -137,8 +142,7 @@ type masterFile struct {
 	suggestionDir string
 }
 
-// userLabel is a confirmed name from a previous review, read for suggestions
-// (EVENT) or to fold nearby suburbs into one saved place.
+// userLabel is a confirmed name from a previous review, read for suggestions.
 type userLabel struct {
 	Label     string   `db:"label"`
 	Kind      string   `db:"kind"`

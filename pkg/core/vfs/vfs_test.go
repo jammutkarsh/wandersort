@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
-	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
@@ -257,13 +256,11 @@ func TestUserLabelSuggestion(t *testing.T) {
 // nearby was "suggested" whatever city happened to dominate the library).
 func TestAnchorSuggestion(t *testing.T) {
 	h := newHarness(t)
-	if _, err := h.d.ExecContext(context.Background(),
-		`INSERT INTO user_labels (label, kind) VALUES ('Indore', '`+config.SavedPlace+`')`); err != nil {
-		t.Fatal(err)
-	}
 	u := h.addFile(t, "dump/DSC_0009.JPG", "IMAGE", metaWith("2024:06:20 10:00:00", 0, 0, 4000, 3000))
 
-	rows := h.build(t, DefaultConfig(), nil)
+	cfg := DefaultConfig()
+	addHomeAnchor(&cfg, "Indore", 0, 0)
+	rows := h.build(t, cfg, nil)
 	if rows[u].Suggestion == nil || *rows[u].Suggestion != "Indore" {
 		t.Errorf("suggestion = %v, want 'Indore'", rows[u].Suggestion)
 	}
@@ -494,14 +491,9 @@ func TestEmptyRulesIsFlatYearMonth(t *testing.T) {
 	}
 }
 
-// addHomeAnchor inserts a confirmed SAVED_PLACE_HOME label near the given coords.
-func addHomeAnchor(t *testing.T, h *harness, name string, lat, lon float64) {
-	t.Helper()
-	if _, err := h.d.ExecContext(context.Background(),
-		`INSERT INTO user_labels (label, kind, gps_lat, gps_lon) VALUES (?, '`+config.SavedPlace+`', ?, ?)`,
-		name, lat, lon); err != nil {
-		t.Fatal(err)
-	}
+// addHomeAnchor sets a saved-place anchor on cfg for the given coords.
+func addHomeAnchor(cfg *Config, name string, lat, lon float64) {
+	cfg.Anchors = append(cfg.Anchors, location.Anchor{Name: name, FolderName: name, Lat: lat, Lon: lon})
 }
 
 // TestSavedPlacesDateOnly is the default behaviour: a photo taken at a confirmed
@@ -513,9 +505,9 @@ func TestSavedPlacesDateOnly(t *testing.T) {
 	// ~50km) from the Delhi anchor below
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 28.58, 77.33, 3024, 4032))
 	geo := installtest.Resolver(t)
-	addHomeAnchor(t, h, "Delhi", 28.65195, 77.23149)
 
 	cfg := DefaultConfig() // SavedPlacesDateOnly defaults true
+	addHomeAnchor(&cfg, "Delhi", 28.65195, 77.23149)
 	cfg.Rules = []string{RuleLocation, RuleOrientation, RuleMedia}
 	rows := h.build(t, cfg, geo)
 
@@ -536,9 +528,9 @@ func TestSavedPlacesDateOnlySpilloverStaysSuppressed(t *testing.T) {
 	withGPS := h.addFile(t, "d/h1.HEIC", "IMAGE", metaWith("2024:12:01 10:00:00", 22.7196, 75.8577, 3024, 4032))
 	noGPS := h.addFile(t, "d/h2.HEIC", "IMAGE", metaWith("2024:12:01 10:05:00", 0, 0, 3024, 4032))
 	geo := installtest.Resolver(t)
-	addHomeAnchor(t, h, "Indore", 22.7196, 75.8577)
 
 	cfg := DefaultConfig() // SavedPlacesDateOnly defaults true
+	addHomeAnchor(&cfg, "Indore", 22.7196, 75.8577)
 	cfg.Rules = []string{RuleDate, RuleLocation}
 	rows := h.build(t, cfg, geo)
 
@@ -560,9 +552,9 @@ func TestAnchorFoldsNearbySuburb(t *testing.T) {
 	// ~50km) from the Delhi anchor below
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 28.58, 77.33, 3024, 4032))
 	geo := installtest.Resolver(t)
-	addHomeAnchor(t, h, "Delhi", 28.65195, 77.23149)
 
 	cfg := DefaultConfig()
+	addHomeAnchor(&cfg, "Delhi", 28.65195, 77.23149)
 	cfg.SavedPlacesDateOnly = false // opt back into the suburb-fold behaviour
 	cfg.Rules = []string{RuleLocation, RuleOrientation, RuleMedia}
 	rows := h.build(t, cfg, geo)
@@ -615,9 +607,9 @@ func TestMergeSameLocationDaysFoldsSavedPlacesDateOnly(t *testing.T) {
 			metaWith(fmt.Sprintf("2024:12:%02d 10:00:00", d), 22.7196, 75.8577, 3024, 4032)))
 	}
 	geo := installtest.Resolver(t)
-	addHomeAnchor(t, h, "Indore", 22.7196, 75.8577)
 
 	cfg := DefaultConfig()
+	addHomeAnchor(&cfg, "Indore", 22.7196, 75.8577)
 	cfg.Rules = []string{RuleDate, RuleLocation}
 	// SavedPlacesDateOnly defaults true — the reported config
 	rows := h.build(t, cfg, geo)

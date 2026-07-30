@@ -18,7 +18,6 @@ import (
 	"unicode"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
-	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -27,8 +26,8 @@ import (
 // no database and no files: everything it needs is in masters, labels and cfg.
 func Plan(ctx context.Context, masters []masterFile, labels []userLabel, cfg Config, geo *location.Resolver, log logger.Logger) error {
 	deriveAll(masters)
-	resolveLocations(ctx, masters, labels, geo, log)
-	clusterAndSuggest(masters, labels, cfg.ClusterGap)
+	resolveLocations(ctx, masters, cfg.Anchors, geo, log)
+	clusterAndSuggest(masters, labels, cfg.Anchors, cfg.ClusterGap)
 	applyNameCase(masters)
 	mergeSameLocationDays(masters, cfg)
 	buildTargets(masters, cfg)
@@ -115,22 +114,9 @@ func deriveAll(masters []masterFile) {
 // resolveLocations reverse-geocodes every GPS-tagged master, then folds the
 // result into a nearby confirmed saved-place anchor so a home city's own
 // suburbs don't each get their own folder.
-func resolveLocations(ctx context.Context, masters []masterFile, labels []userLabel, geo *location.Resolver, log logger.Logger) {
+func resolveLocations(ctx context.Context, masters []masterFile, anchors []location.Anchor, geo *location.Resolver, log logger.Logger) {
 	if geo == nil {
 		return
-	}
-	var anchors []userLabel
-	// anchors are saved fully qualified ("Indore, Madhya Pradesh, India") so
-	// ResolveByName can round-trip them; a folder gets the bare city
-	anchorNames := make(map[string]string)
-	for _, l := range labels {
-		if l.Kind == config.SavedPlace && l.GPSLat != nil && l.GPSLon != nil {
-			anchors = append(anchors, l)
-			if _, ok := anchorNames[l.Label]; !ok {
-				city, _, _ := strings.Cut(l.Label, ",")
-				anchorNames[l.Label] = city
-			}
-		}
 	}
 	for i := range masters {
 		if ctx.Err() != nil {
@@ -145,14 +131,11 @@ func resolveLocations(ctx context.Context, masters []masterFile, labels []userLa
 			log.Debug("No location for coordinates", "lat", m.lat, "lon", m.lon, "error", err)
 			continue
 		}
-		// always the real place, saved-place included — segmentFor is what
-		// suppresses the folder later, so clustering and the day-range merge
-		// keep working off real data without knowing about that setting
 		m.location = city
 		for _, a := range anchors {
-			dLat, dLon := m.lat-*a.GPSLat, m.lon-*a.GPSLon
+			dLat, dLon := m.lat-a.Lat, m.lon-a.Lon
 			if dLat*dLat+dLon*dLon <= location.MaxDistSquared {
-				m.location = anchorNames[a.Label] // fold suburb into the confirmed saved-place town
+				m.location = a.FolderName
 				m.atSavedPlace = true
 				break
 			}
