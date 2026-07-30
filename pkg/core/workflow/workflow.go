@@ -37,10 +37,12 @@ type Deps struct {
 // Workflow orchestrates the phases of one scan session. Scanning and hashing
 // run in bounded batches to keep memory stable on very large roots.
 type Workflow struct {
-	ctx  context.Context
-	db   *db.DB
-	log  logger.Logger
-	deps Deps
+	ctx     context.Context
+	db      *db.DB
+	log     logger.Logger
+	deps    Deps
+	appCfg  *config.Configuration
+	workers int
 
 	/* Utilities */
 	path      *path.Resolver
@@ -49,8 +51,7 @@ type Workflow struct {
 	scanner *scanner.Scanner
 	hasher  *hasher.Hasher
 	scorer  *scorer.Scorer
-	workers int
-	vfsCfg  vfs.Config
+	vfs  vfs.Config
 }
 
 type workflowPhase struct {
@@ -99,11 +100,12 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 		ctx:       ctx,
 		db:        db,
 		deps:      deps,
+		appCfg:    cfg,
 		scanner:   scanner.New(db, log, cfg.Workers),
 		hasher:    hasher.New(db, log, cfg.Workers),
 		scorer:    scorer.New(db, log),
 		workers:   cfg.Workers,
-		vfsCfg:    vfsCfg,
+		vfs:    vfsCfg,
 		log:       log,
 		path:      path.New(),
 		outputDir: filepath.Dir(cfg.AppDBPath),
@@ -212,13 +214,14 @@ func (wf *Workflow) workflowPhases(paths []string) []workflowPhase {
 		{
 			kind: workflowPhaseVFS,
 			run: func() (int, error) {
-				// the location DB is the big download; being the last phase gives
-				// it the whole pipeline to finish behind
 				resolver, err := wf.deps.Location()
 				if err != nil {
 					return 0, fmt.Errorf("location resolver: %w", err)
 				}
-				return vfs.New(wf.db, resolver, wf.log, wf.vfsCfg).Run(wf.ctx)
+				g, _ := wf.appCfg.Load()
+				resolver.BuildAnchors(wf.ctx, g.SavedPlaces)
+				wf.vfs.Anchors = resolver.Anchors
+				return vfs.New(wf.db, resolver, wf.log, wf.vfs).Run(wf.ctx)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Proposed destinations for %d files", count) },
 		},
