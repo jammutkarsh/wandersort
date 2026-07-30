@@ -49,9 +49,12 @@ type cacheKey struct {
 }
 
 type Resolver struct {
-	db    *db.DB
+	db   *db.DB
 	cache sync.Map
-	log   logger.Logger
+	log  logger.Logger
+	// Anchors are saved places resolved to GPS coordinates. Nil until
+	// BuildAnchors is called.
+	Anchors []Anchor
 }
 
 // NewResolver wraps an already-open, already-verified location database.
@@ -172,7 +175,7 @@ func (r *Resolver) Candidates(ctx context.Context, lat, lon, deltaDegrees float6
 		plain := stripDiacritics(city)
 		out = append(out, Candidate{
 			Name:        plain,
-			DisplayName: disambiguate(plain, state, country, nameCnt, countryCnt, inCountryCnt),
+			DisplayName: disambiguate(plain, state, country, nameCnt, countryCnt, inCountryCnt, r.cityClaimed(plain), ", "),
 			FullName:    fullName(plain, state, country),
 			DistKM:      math.Sqrt(distSq) * kmPerDegree,
 			hasMarks:    plain != city,
@@ -303,7 +306,7 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 		}
 		out = append(out, PlaceMatch{
 			Name:        plain,
-			DisplayName: disambiguate(plain, state, country, nameCnt, countryCnt, inCountryCnt),
+			DisplayName: disambiguate(plain, state, country, nameCnt, countryCnt, inCountryCnt, r.cityClaimed(plain), ", "),
 			FullName:    fullName(plain, state, country),
 			Lat:         lat, Lon: lon,
 		})
@@ -314,23 +317,41 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 	return out, rows.Err()
 }
 
-// disambiguate returns the smallest qualifier telling same-named cities apart
-// (unique -> "Springfield", repeats in-country -> "+state", abroad -> "+country").
-// Two same-named same-state rows stay identical rather than gain a third qualifier.
-func disambiguate(city, state, country string, nameCount, countryCount, inCountryCount int) string {
-	if nameCount <= 1 {
+// cityClaimed reports whether any anchor already takes this bare city name —
+// the anchor gets the unqualified form, so gazetteer results must qualify.
+func (r *Resolver) cityClaimed(city string) bool {
+	for _, a := range r.Anchors {
+		c, _, _ := strings.Cut(a.Name, ",")
+		if strings.EqualFold(c, city) {
+			return true
+		}
+	}
+	return false
+}
+
+// disambiguate returns the smallest qualifier telling same-named cities apart.
+// When unique and no anchor claims the bare name, returns just the city.
+// On collision, appends the smallest distinguishing qualifier (state, then
+// country). sep is " - " for folder names, ", " for display.
+//
+// Hyderabad alone → "Hyderabad"
+// Hyderabad, India + Hyderabad, Pakistan with different states
+//   → "Hyderabad - Telangana", "Hyderabad - Sindh" (sep=" - ")
+//   → "Hyderabad, Telangana", "Hyderabad, Sindh" (sep=", ")
+func disambiguate(city, state, country string, nameCount, countryCount, inCountryCount int, anchorClaims bool, sep string) string {
+	if nameCount <= 1 && !anchorClaims {
 		return city
 	}
 	// state even when the name also occurs abroad — no other Springfield in
 	// Illinois exists to collide with, and a state is what a reader recognizes
 	if inCountryCount > 1 && state != "" {
-		return city + ", " + stripDiacritics(state)
+		return city + sep + stripDiacritics(state)
 	}
 	if countryCount > 1 && country != "" {
-		return city + ", " + stripDiacritics(country)
+		return city + sep + stripDiacritics(country)
 	}
 	if state != "" {
-		return city + ", " + stripDiacritics(state)
+		return city + sep + stripDiacritics(state)
 	}
 	return city
 }
@@ -388,4 +409,63 @@ func stripDiacritics(s string) string {
 		b.WriteRune(r)
 	}
 	return norm.NFC.String(b.String())
+}
+
+// Anchor is a saved place resolved to GPS coordinates.
+type Anchor struct {
+	Name       string  // "Hyderabad, Telangana, India" (full, for ResolveByName)
+	FolderName string  // "Hyderabad" or "Hyderabad - India" when another anchor shares the city
+	Lat        float64
+	Lon        float64
+}
+
+// BuildAnchors resolves saved-place names and stores them in r.Anchors.
+// Names that fail to resolve are skipped with a warning. FolderName is
+// disambiguated when two anchors share the same city: the smallest qualifier
+// that tells them apart (state, then country) is appended.
+func (r *Resolver) BuildAnchors(ctx context.Context, savedPlaces []string) {
+	if r == nil {
+		return
+	}
+	for _, name := range savedPlaces {
+		lat, lon, err := r.ResolveByName(ctx, name)
+		if err != nil {
+			r.log.Warn("Could not resolve saved anchor town", "town", name, "error", err)
+			continue
+		}
+		r.Anchors = append(r.Anchors, Anchor{Name: name, Lat: lat, Lon: lon})
+	}
+	// disambiguate FolderName using the same logic as disambiguate():
+	// group anchors by bare city, compute collision counts per anchor, then
+	// qualify with state or country only when needed.
+	type entry struct{ city, state, country string }
+	entries := make([]entry, len(r.Anchors))
+	for i, a := range r.Anchors {
+		city, qualifiers := splitQualified(a.Name)
+		var state, country string
+		if len(qualifiers) > 0 {
+			state = qualifiers[0]
+		}
+		if len(qualifiers) > 1 {
+			country = qualifiers[1]
+		}
+		entries[i] = entry{city, state, country}
+	}
+	// per-city: total count, distinct countries, count per country
+	cityCount := map[string]int{}
+	cityCountries := map[string]map[string]int{}
+	for _, e := range entries {
+		cityCount[e.city]++
+		if cityCountries[e.city] == nil {
+			cityCountries[e.city] = map[string]int{}
+		}
+		cityCountries[e.city][e.country]++
+	}
+	for i := range r.Anchors {
+		e := entries[i]
+		nameCnt := cityCount[e.city]
+		countryCnt := len(cityCountries[e.city])
+		inCountryCnt := cityCountries[e.city][e.country]
+		r.Anchors[i].FolderName = disambiguate(e.city, e.state, e.country, nameCnt, countryCnt, inCountryCnt, false, " - ")
+	}
 }
