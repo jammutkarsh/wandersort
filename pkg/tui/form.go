@@ -4,7 +4,6 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package tui provides custom bubbletea form components replacing huh.
 package tui
 
 import (
@@ -40,7 +39,6 @@ type suggestResultMsg struct {
 	results []string
 }
 
-// FieldKind defines the type of form field.
 type FieldKind int
 
 const (
@@ -54,7 +52,6 @@ const (
 // above the footer, so an unbounded list pushes the step stack off screen.
 const maxFormSuggestions = 5
 
-// Field represents a single form field.
 type Field struct {
 	Kind        FieldKind
 	Title       string
@@ -86,12 +83,9 @@ type Field struct {
 	Error     string
 }
 
-// DownloadMsg reports the progress of a download running behind the form (the
-// location database, fetched while the user answers everything above the town
-// fields). The form draws it as one row above the footer — the same block the
-// examples pin to — and keeps a dim "done" line once Finished arrives, so the
-// download doesn't silently vanish mid-glance. A dependency already on disk
-// never reports, so nothing renders at all.
+// DownloadMsg reports progress of a download running behind the form (the
+// location database, fetched while the user answers the fields above the
+// town step). A dependency already on disk never reports, so nothing renders.
 type DownloadMsg struct {
 	Label       string
 	Done, Total int64
@@ -118,7 +112,6 @@ type FormModel struct {
 	dlSeen bool // a DownloadMsg arrived; nothing renders before the first one
 }
 
-// NewFormModel creates a form with the given fields.
 func NewFormModel(fields []*Field, onSubmit func() error) FormModel {
 	ti := textinput.New()
 	ti.Focus()
@@ -183,12 +176,10 @@ func (m *FormModel) fillSuggestion(i int) {
 	m.refreshSuggestions()
 }
 
-// Init implements tea.Model.
 func (m FormModel) Init() tea.Cmd {
 	return textinput.Blink
 }
 
-// Update implements tea.Model.
 func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -358,7 +349,6 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// refreshSuggestions recomputes the completion list for the active input.
 func (m *FormModel) refreshSuggestions() {
 	m.sugg = nil
 	m.suggCursor = -1
@@ -403,11 +393,9 @@ func (m FormModel) View() string {
 	return Screen(body, footer, m.h)
 }
 
-// formBodyMaxW caps the field stack's width when the side panel is showing —
-// wide enough that no description line folds, and everything past it belongs
-// to the example box. examplePanelMinW is the box's floor on a barely-wide
-// terminal; examplePanelMinTermW is the narrowest terminal that gets the side
-// panel at all — below it the example renders above the footer (exampleBlock).
+// formBodyMaxW caps the field stack's width when the side panel is showing.
+// examplePanelMinW is the panel's floor width; examplePanelMinTermW is the
+// narrowest terminal that gets a side panel at all (else exampleBlock).
 const (
 	formBodyMaxW         = 76
 	examplePanelMinW     = 46
@@ -470,14 +458,11 @@ func (m FormModel) examplePanel() string {
 	return Box.Width(m.panelW() - 2).Render(b.String())
 }
 
-// downloadRow renders the background download above the footer: a labelled bar
-// while it runs, a dim done line after — a bar that vanishes the moment it
-// fills reads as something going wrong. Nothing renders before the first
-// report, so an already-installed dependency is never mentioned. It's the
-// whole reason the form doesn't need an install screen — the download is
-// visible without owning the screen.
+// downloadRow renders the background download above the footer — a labelled
+// bar while running, a dim done line after — which is the whole reason the
+// form doesn't need a separate install screen.
 func (m FormModel) downloadRow() string {
-	if !m.dlSeen {
+	if !m.dlSeen { // nothing reported yet — an already-installed dependency stays silent
 		return ""
 	}
 	if m.dlMsg.Finished {
@@ -494,9 +479,8 @@ func (m FormModel) downloadRow() string {
 
 // exampleBlock renders the active field's example — what the option under the
 // cursor actually produces — pinned above the footer, the same place the scan
-// screen puts its warnings. Keeping it out of the description is what lets the
-// description explain the question once while the example shows only the
-// choice being considered, instead of listing every option's outcome at once.
+// screen puts its warnings. Kept out of Describe so the description explains
+// the question once, not every option's outcome at once.
 func (m FormModel) exampleBlock() string {
 	f := m.active()
 	if f == nil || f.Example == nil {
@@ -644,10 +628,8 @@ func (m FormModel) expandedField(f *Field, i int) string {
 }
 
 // subView renders one member of a FieldGroup: the focused one gets its full
-// control (and description, since a group's members ask their own questions),
-// the rest collapse to a `Title: answer` line. Each sub is numbered within its
-// group (1), 2), ...) — a step's own list of questions deserves the same
-// scannable numbering the top-level step list gets.
+// control and description, the rest collapse to a `Title: answer` line. Each
+// sub is numbered within its group, same as the top-level step list.
 func (m FormModel) subView(sub *Field, idx int, focused bool) string {
 	num := fmt.Sprintf("%d) ", idx+1)
 	if !focused {
@@ -858,18 +840,16 @@ func (m FormModel) jumpTo(n int) (tea.Model, tea.Cmd) {
 	return m, textinput.Blink
 }
 
-// saveAndExit commits the active input (if any) and submits the form right
-// away, without requiring every step to be visited — the escape hatch for a
-// user who opened the wizard just to change one setting. A held step (the
-// background download) or a failing validator on the field being typed into
-// still blocks, same as moveNext.
+// saveAndExit commits the active input and submits the form right away,
+// without requiring every step to be visited — the escape hatch for a user
+// who opened the wizard just to change one setting.
 func (m FormModel) saveAndExit() (tea.Model, tea.Cmd) {
-	if m.awaitReason() != "" {
+	if m.awaitReason() != "" { // a held step (background download) still blocks, same as moveNext
 		return m, nil
 	}
 	if f := m.active(); f != nil && f.Kind == FieldInput {
 		if f.Validator != nil {
-			if err := f.Validator(m.ti.Value()); err != nil {
+			if err := f.Validator(m.ti.Value()); err != nil { // a failing validator on the field being typed still blocks
 				f.Error = err.Error()
 				return m, nil
 			}
@@ -908,17 +888,14 @@ func (m FormModel) movePrev() (tea.Model, tea.Cmd) {
 	return m, textinput.Blink
 }
 
-// IsAborted returns true if the user cancelled the form.
 func (m FormModel) IsAborted() bool {
 	return m.aborted
 }
 
-// Error returns any error that occurred during submission.
 func (m FormModel) Error() error {
 	return m.err
 }
 
-// ConfirmModel is a simple yes/no dialog.
 type ConfirmModel struct {
 	Title       string
 	Description string
@@ -927,7 +904,6 @@ type ConfirmModel struct {
 	aborted     bool
 }
 
-// NewConfirmModel creates a confirmation dialog.
 func NewConfirmModel(title, description string, value *bool) ConfirmModel {
 	return ConfirmModel{
 		Title:       title,
@@ -936,12 +912,10 @@ func NewConfirmModel(title, description string, value *bool) ConfirmModel {
 	}
 }
 
-// Init implements tea.Model.
 func (m ConfirmModel) Init() tea.Cmd {
 	return nil
 }
 
-// Update implements tea.Model.
 func (m ConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -976,7 +950,6 @@ func (m ConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View implements tea.Model.
 func (m ConfirmModel) View() string {
 	title := Title.Render(m.Title)
 	if m.Description != "" {
@@ -996,7 +969,6 @@ func (m ConfirmModel) View() string {
 	return Screen(body, footer, m.h)
 }
 
-// IsAborted returns true if the user cancelled the dialog.
 func (m ConfirmModel) IsAborted() bool {
 	return m.aborted
 }

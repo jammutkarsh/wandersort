@@ -79,12 +79,10 @@ func (sl *StageList) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-// SetWidth resizes the progress bar to the terminal.
 func (sl *StageList) SetWidth(w int) {
 	sl.sb.bar.Width = clamp(w-30, 20, 60)
 }
 
-// Start marks a stage running with its live label.
 func (sl *StageList) Start(key, label string) {
 	if s := sl.get(key); s != nil {
 		s.state = stateRunning
@@ -131,10 +129,9 @@ func (sl *StageList) AddTail(line string) {
 	}
 }
 
-// FinishRemaining settles every unfinished stage after the pipeline returns:
-// on failure the running stage turns red; on success everything left flips to
-// done, labelled defaultLabel if it never reported (e.g. an already-cached
-// dependency).
+// FinishRemaining settles every unfinished stage once the pipeline returns:
+// failure reddens the running stage, success flips the rest to done (labelled
+// defaultLabel if a stage never reported, e.g. an already-cached dependency).
 func (sl *StageList) FinishRemaining(failed bool, defaultLabel string) {
 	for _, s := range sl.stages {
 		switch {

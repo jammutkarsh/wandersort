@@ -25,7 +25,6 @@ type Shell struct {
 	w, h int
 }
 
-// NewShell wraps the first screen.
 func NewShell(first tea.Model) Shell { return Shell{cur: first} }
 
 func (s Shell) Init() tea.Cmd { return s.cur.Init() }

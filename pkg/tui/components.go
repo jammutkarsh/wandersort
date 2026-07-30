@@ -85,12 +85,11 @@ func KeyHint(key, action string) string {
 }
 
 // Screen frames a full-height view: body at the top, footer pinned to the
-// bottom of the terminal, so short content (a two-line install list, a handful
-// of stage rows) doesn't leave the footer floating mid-screen with dead space
-// below it. h<=0 (before the first size msg) falls back to plain stacking.
+// bottom of the terminal, so short content (a handful of stage rows) doesn't
+// leave the footer floating mid-screen with dead space below it.
 func Screen(body, footer string, h int) string {
 	body = strings.TrimRight(body, "\n")
-	if h <= 0 {
+	if h <= 0 { // before the first size msg — fall back to plain stacking
 		if footer == "" {
 			return body
 		}

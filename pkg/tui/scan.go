@@ -333,7 +333,6 @@ func (m ScanModel) viewDownloads() string {
 	return b.String()
 }
 
-// humanBytes renders a byte count as a compact human string (KB/MB).
 func humanBytes(n int64) string {
 	switch {
 	case n >= 1<<20:

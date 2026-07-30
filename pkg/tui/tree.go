@@ -8,10 +8,9 @@ package tui
 
 import "strings"
 
-// Guides returns the box-drawing prefix for each row of a depth-ordered tree
-// ("│  ├─ "), so a screen renders a hierarchy without re-deriving which rows
-// are last children. depths[i] is row i's depth; depth 0 rows stand alone with
-// no prefix, matching the review tree's roots.
+// Guides returns the box-drawing prefix ("│  ├─ ") for each row of a
+// depth-ordered tree, so a screen renders a hierarchy without re-deriving
+// which rows are last children.
 func Guides(depths []int) []string {
 	// A row is a last child when no later row has the same depth before one
 	// of smaller depth appears — rows deeper than it are its own descendants
@@ -34,7 +33,7 @@ func Guides(depths []int) []string {
 	var ancestorLast []bool
 	for i, d := range depths {
 		if d == 0 {
-			out[i] = ""
+			out[i] = "" // roots stand alone with no prefix
 			ancestorLast = ancestorLast[:0]
 			continue
 		}
