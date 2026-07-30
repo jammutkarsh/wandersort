@@ -22,7 +22,6 @@ type FileClassifier struct {
 	ignoredDirs       map[string]bool
 }
 
-// NewFileClassifier creates a new classifier with predefined rules
 func NewFileClassifier() *FileClassifier {
 	return &FileClassifier{
 		imageExtensions: map[string]bool{
@@ -62,8 +61,7 @@ func NewFileClassifier() *FileClassifier {
 	}
 }
 
-// ClassifyName classifies a file name and reports if it should be ignored
-// This combines ignore and media checks so callers can make a single decision
+// ClassifyName combines ignore and media checks so callers make one decision.
 func (fc *FileClassifier) ClassifyName(name string) (mediaType string, shouldProcess bool, shouldIgnore bool) {
 	if fc.ignoredFiles[name] {
 		return MediaTypeUnknown, false, true
@@ -85,7 +83,6 @@ func (fc *FileClassifier) ClassifyName(name string) (mediaType string, shouldPro
 	}
 }
 
-// ShouldIgnoreDir checks if a directory should be skipped entirely
 func (fc *FileClassifier) ShouldIgnoreDir(name string) bool {
 	return fc.ignoredDirs[name]
 }

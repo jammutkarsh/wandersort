@@ -78,7 +78,6 @@ type DB struct {
 	Writer *BulkWriter
 }
 
-// New opens the database at dbPath according to dbType and returns a *DB
 func New(ctx context.Context, dbPath string, dbType DBType, log logger.Logger) (*DB, error) {
 	switch dbType {
 	case AppDB:
@@ -206,36 +205,29 @@ func openLocationDB(dbPath string, log logger.Logger) (*DB, error) {
 }
 
 // Optimize reclaims SQLite disk space (incremental_vacuum) and releases
-// internal memory (shrink_memory). Call after large delete operations
+// internal memory (shrink_memory). Call after large delete operations.
 func (db *DB) Optimize(ctx context.Context) error {
-	// reclaim space safely after large delete operations
 	if _, err := db.SQL.ExecContext(ctx, "PRAGMA incremental_vacuum"); err != nil {
 		return fmt.Errorf("incremental vacuum failed: %w", err)
 	}
-	// free as much SQLite internal memory as possible
-	// Useful after massive batch operations
 	if _, err := db.SQL.ExecContext(ctx, "PRAGMA shrink_memory"); err != nil {
 		return fmt.Errorf("shrink memory failed: %w", err)
 	}
 	return nil
 }
 
-// BeginTx starts a new transaction
 func (db *DB) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sqlx.Tx, error) {
 	return db.SQL.BeginTxx(ctx, opts)
 }
 
-// ExecContext executes a query without returning any rows
 func (db *DB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	return db.SQL.ExecContext(ctx, query, args...)
 }
 
-// QueryContext executes a query that returns rows
 func (db *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	return db.SQL.QueryContext(ctx, query, args...)
 }
 
-// QueryRowContext executes a query that is expected to return at most one row
 func (db *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	return db.SQL.QueryRowContext(ctx, query, args...)
 }

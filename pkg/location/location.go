@@ -25,23 +25,19 @@ import (
 
 var ErrNoLocation = errors.New("locationResolver: location not found")
 
-// MaxDistSquared rejects a nearest-neighbour match beyond ~50 km, as squared
-// Euclidean distance in degree-space (sqrt(0.2025) = 0.45°). Exported so
-// vfs.resolveLocations folds a city into a saved-place anchor at the same reach
-// instead of picking its own number.
+// MaxDistSquared rejects a match beyond ~50km (squared degree-space distance).
+// Exported: vfs.resolveLocations reuses it for the anchor-fold radius.
 const MaxDistSquared = 0.2025
 
 // gpsRoundingFactor rounds coordinates to 4 decimal places (≈ 11 m)
 const gpsRoundingFactor = 10000
 
-// Bounding-box half-widths queryNearest tries, in order: a tight pass that
-// covers most intra-city lookups, then a wide one for rural or coastal photos.
-// farSearchDegrees is sqrt(MaxDistSquared) — the widest box must match the
-// acceptance radius, or a valid match the wide pass finds is thrown away by a
-// tighter threshold.
+// Bounding-box half-widths queryNearest tries in order: tight first, then wide.
 const (
 	NearSearchDegrees = 0.09 // ≈ 10 km
-	farSearchDegrees  = 0.45 // ≈ 50 km
+	// farSearchDegrees is sqrt(MaxDistSquared) — must match the acceptance
+	// radius or a valid wide-pass match gets thrown away by a tighter threshold.
+	farSearchDegrees = 0.45 // ≈ 50 km
 )
 
 type cacheKey struct {

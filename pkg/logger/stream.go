@@ -11,26 +11,22 @@ import (
 	"log/slog"
 )
 
-// StreamKey marks a high-volume, per-item log line meant to keep a TUI user
-// engaged — e.g. the scanner tagging each file it walks. Set it truthy
-// (log.Debug("scanning", logger.StreamKey, true, "file", path)) and the line
-// streams into the TUI's live feed and the JSON file log, but is kept OUT of
-// the plain console (unlike UserKey milestones, which show everywhere).
+// StreamKey marks a high-volume per-item line (e.g. one per scanned file) for
+// the TUI's live feed. Streams into the TUI + JSON log, hidden on the plain
+// console — unlike UserKey milestones, which show everywhere.
 const StreamKey = "stream"
 
-// PhaseKey / EventKey tag a pipeline phase transition so a TUI can route it to
-// the right stage row without matching on message prose. PhaseKey is the phase
-// name ("scan"/"hash"/"score"/"vfs"); EventKey is "start" or "done". Both are
-// stripped from the plain console (like sessionId) — they exist for the TUI.
+// PhaseKey/EventKey tag a pipeline phase transition ("scan"/"hash"/…,
+// "start"/"done") so a TUI can route it without matching on message prose.
+// Both stripped from the plain console.
 const (
 	PhaseKey = "phase"
 	EventKey = "event"
 )
 
-// ElapsedKey carries a phase's own elapsed-time measurement on its "done"
-// event, separate from the message text (which embeds it for the plain
-// console). The TUI right-aligns it Docker-style and strips the duplicate
-// from the message. Hidden on the plain console like PhaseKey/EventKey.
+// ElapsedKey carries a phase's elapsed time on its "done" event, separate
+// from the message (which embeds it for the plain console). TUI right-aligns
+// it and strips the duplicate.
 const ElapsedKey = "elapsed"
 
 // Event is one log record delivered to a TUI Sink. UserFacing and Stream are
@@ -48,10 +44,9 @@ type Event struct {
 // for long (forward to a buffered channel / tea.Program.Send).
 type Sink func(Event)
 
-// teaHandler is the third fan-out handler used in TUI mode: it turns each
-// record into an Event and hands it to the Sink. It forwards only the lines a
-// user should see — UserKey milestones, StreamKey feed lines, and warnings/
-// errors — unless the level is debug, in which case it forwards everything.
+// teaHandler is the TUI fan-out handler: turns a record into an Event and
+// forwards only UserKey/StreamKey lines and warnings/errors (everything, if
+// debug level).
 type teaHandler struct {
 	sink     Sink
 	minLevel slog.Level

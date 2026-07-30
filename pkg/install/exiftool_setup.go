@@ -256,7 +256,6 @@ func checkVersion(path string, log logger.Logger) (bool, error) {
 		return false, fmt.Errorf("parse version %s: %w", ver, err)
 	}
 
-	// Parse required version
 	reqParts := strings.SplitN(exiftoolVersion, ".", 2)
 	reqMajor, _ := strconv.Atoi(reqParts[0])
 	reqMinor, _ := strconv.Atoi(reqParts[1])

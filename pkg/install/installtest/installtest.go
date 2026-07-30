@@ -4,13 +4,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package installtest opens the real location.db for tests, downloading it
-// first if this machine doesn't have it yet — the same install path
-// (install.OpenLocationResolver) the app itself uses, so a test exercising a
-// Resolver exercises the app's exact setup, not a hand-fabricated fixture.
-// Lives under pkg/install, not pkg/location, because pkg/install is the one
-// place that knows a downloadable dependency's version, download location,
-// and readiness — pkg/location itself never downloads anything.
+// Package installtest opens the real location.db for tests via
+// install.OpenLocationResolver — the app's exact setup path, not a
+// hand-fabricated fixture. Lives under pkg/install since that's the one
+// package that knows a downloadable dependency's version/location/readiness.
 package installtest
 
 import (
@@ -25,12 +22,7 @@ import (
 )
 
 // Resolver returns a Resolver backed by the real gazetteer at
-// ~/.wandersort/location.db, downloading it first if this machine doesn't
-// have it yet (once per machine, not once per test run — the same path the
-// app itself uses). location.db opens `mode=ro`, so a concurrent wandersort
-// process never blocks this; the only reason to open fails is a download
-// that couldn't happen (offline), which is what this skips on — not a
-// failure of the code under test.
+// ~/.wandersort/location.db, downloading it once per machine if missing.
 func Resolver(t testing.TB) *location.Resolver {
 	t.Helper()
 	home, err := os.UserHomeDir()
@@ -39,6 +31,8 @@ func Resolver(t testing.TB) *location.Resolver {
 	}
 	dbPath := filepath.Join(home, ".wandersort", install.LocationDBFileName)
 
+	// a failed open here means the download couldn't happen (offline) — skip
+	// rather than fail, since that's not a defect in the code under test
 	resolver, locationDB, err := install.OpenLocationResolver(context.Background(), logger.NewNoopLogger(), dbPath, nil)
 	if err != nil {
 		t.Skipf("location.db unavailable (offline?): %v", err)

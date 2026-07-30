@@ -19,17 +19,14 @@ import (
 )
 
 const (
-	// writerBufferSize is the channel buffer for incoming write operations
 	writerBufferSize = 10000
 	// writerBatchSize triggers a flush when the pending batch reaches this many ops
 	writerBatchSize = 5000
 	// writerFlushInterval ensures periodic flushes even if batch size isn't reached
-	writerFlushInterval = 100 * time.Millisecond
-	// batchExecutionTimeout is the context deadline for executing a single batch
+	writerFlushInterval   = 100 * time.Millisecond
 	batchExecutionTimeout = 5 * time.Second
 )
 
-// DBOperation represents a single database mutation
 type DBOperation func(ctx context.Context, tx *sqlx.Tx) error
 
 // flushReq is sent by Flush() to signal the background goroutine to drain
@@ -52,7 +49,6 @@ type BulkWriter struct {
 	closed        atomic.Bool
 }
 
-// NewBulkWriter creates a new bulk writer
 func NewBulkWriter(sqlDB *sqlx.DB, log logger.Logger) *BulkWriter {
 	bw := &BulkWriter{
 		sqlDB:         sqlDB,

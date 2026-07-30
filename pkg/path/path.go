@@ -23,7 +23,6 @@ func New() *Resolver {
 	return &Resolver{HomeDir: home}
 }
 
-// IsDirectory checks if a path string points to a directory
 func (r *Resolver) IsDirectory(path string) (bool, error) {
 	if p, err := r.RealPath(path); err != nil {
 		return false, err
@@ -120,14 +119,10 @@ func ReduceRoots(r *Resolver, paths []string) ([]string, error) {
 	for p := range canonicalSet {
 		canonicalPaths = append(canonicalPaths, p)
 	}
-	// Paths will be lexicographically sorted, so any child path follows its parent
-	// This makes the single-pass prune in the next step possible
 	sort.Strings(canonicalPaths)
 
-	// Single-pass prune: O(N)
-	// After lex sort, any descendant of an accepted root immediately follows
-	// it (or follows another descendant of it). Comparing against only the
-	// last accepted root is therefore sufficient
+	// O(N) prune: after lex sort, any descendant of an accepted root immediately
+	// follows it, so comparing against only the last accepted root suffices.
 	effectivePaths := make([]string, 0, len(canonicalPaths))
 	for _, candidate := range canonicalPaths {
 		if len(effectivePaths) == 0 || !isChildPath(effectivePaths[len(effectivePaths)-1], candidate) {

@@ -31,9 +31,8 @@ type Migration struct {
 var schemas = []Migration{schema001, schema002, schema003}
 
 // Run applies, in version order, any migrations not yet recorded in the
-// database. Each version is tracked individually, so a lower-numbered
-// migration added after a higher one has run is still applied. It creates the
-// schema_migrations tracking table on first run
+// schema_migrations table (created here on first run). Each version is
+// tracked individually, so a lower-numbered migration added later still runs.
 func Run(db *sqlx.DB) (int, error) {
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (

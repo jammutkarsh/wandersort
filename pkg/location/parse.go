@@ -13,9 +13,7 @@ import (
 )
 
 const (
-	// minutesPerDegree is the number of minutes in one degree
 	minutesPerDegree = 60
-	// secondsPerDegree is the number of seconds in one degree
 	secondsPerDegree = 3600
 )
 
@@ -75,8 +73,6 @@ func parseDMS(dms string) (float64, error) {
 		}
 	}
 	degrees, minutes, seconds := vals[0], vals[1], vals[2]
-
-	// Convert DMS to decimal degrees: 1° = 60′ = 3600″
 	decimalDegrees := degrees + minutes/minutesPerDegree + seconds/secondsPerDegree
 	return sign * decimalDegrees, nil
 }

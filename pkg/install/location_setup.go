@@ -42,10 +42,8 @@ type locationMeta struct {
 }
 
 // downloadLocationDB fetches the location database and its metadata if they
-// do not already exist. onProgress (may be nil) reports (bytesDownloaded,
-// totalBytes) while fetching the database, for a TUI progress bar — the
-// per-byte counts stay out of the file log, which only records the
-// start/done milestones.
+// don't already exist. onProgress (may be nil) reports byte progress for a
+// TUI bar; the file log only records start/done milestones.
 func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) error {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return fmt.Errorf("create dir %q: %w", dbPath, err)
@@ -76,11 +74,9 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 	return nil
 }
 
-// verifyLocationDB checks a downloaded location database against its
-// published metadata: a byte-for-byte checksum, then a row count on the one
-// table location.Resolver's queries depend on. Not UserKey-tagged: this runs
-// on every command that opens the resolver, and an integrity check is not a
-// milestone. Failures are still hard errors.
+// verifyLocationDB checksums a downloaded database against its published
+// metadata, then checks the row count on the table Resolver's queries depend
+// on. Not UserKey-tagged: runs on every command, not just installs.
 func verifyLocationDB(dbPath string, locationDB *db.DB, log logger.Logger) error {
 	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
 	data, err := os.ReadFile(metaPath)
