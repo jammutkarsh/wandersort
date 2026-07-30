@@ -83,14 +83,9 @@ type ScanModel struct {
 	reviewErr  error // building the review screen failed
 	gotoReview bool  // user chose review and there was no in-program ReviewNext
 
-	// reviewModel/reviewFetching prefetch the review screen (vfs.BuildTree +
-	// DB read) the moment the vfs phase's writes are flushed — the organize
-	// phase itself only proposes destinations (virtual_fs_entries rows); it
-	// never builds the review TUI's tree, so this is the earliest that read
-	// can start. It overlaps session finalize/space-check instead of waiting
-	// for "y", so by the time the reviewer can react the screen is usually
-	// already built. A "n" quit while it's still in flight just discards the
-	// result — nothing to undo, nothing was written.
+	// reviewModel/reviewFetching prefetch the review screen (vfs.BuildTree)
+	// as soon as the vfs phase flushes, ahead of "y", so it's usually ready
+	// by the time the reviewer reacts. A "n" quit mid-fetch discards nothing.
 	reviewModel    tea.Model
 	reviewFetching bool
 }

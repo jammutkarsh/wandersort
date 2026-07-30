@@ -4,12 +4,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package tui is WanderSort's terminal design system: one adaptive truecolor
-// palette, reusable bubbletea/lipgloss components (Docker-style stage list,
-// footer, banner), custom form components, and the app-shell that swaps
-// between screens. Everything visual lives here — full-screen TUI and plain
-// line output alike — so every command reads as one product. See README.md
-// in this package for the design rules.
+// Package tui is WanderSort's terminal design system: palette, reusable
+// bubbletea/lipgloss components, and the app-shell that swaps screens.
+// See README.md in this package for the design rules.
 package tui
 
 import (

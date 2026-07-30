@@ -16,11 +16,8 @@ import (
 )
 
 // StageList is the Docker-buildkit-style step stack shared by every pipeline
-// screen (scan, setup install). Each stage renders as one ` => [i/N] Name`
-// header row with the elapsed time right-aligned at the terminal edge; the
-// running stage nests ` => => ` sub-rows under it — a progress bar when the
-// stage reports counts, then a live tail of the items it is processing.
-// Finished stages collapse to their one-line summary.
+// screen: ` => [i/N] Name` rows, elapsed time right-aligned, the running
+// stage nesting a progress bar and live item tail under it.
 type StageList struct {
 	stages    []*Stage
 	idx       map[string]int

@@ -19,10 +19,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
-// This file is the location-database half of "the one place a dependency's
-// version, download location, and install layout are known" — pkg/location
-// only ever queries an already-open, already-verified *db.DB; it has no idea
-// where that file came from or what checksum it's supposed to have.
+// This file is the location-database half of pkg/install's job: pkg/location
+// only ever queries an already-open, already-verified *db.DB.
 
 const (
 	// LocationDownloadBaseURL is the download URL for the locationDB asset.
@@ -117,13 +115,10 @@ func verifyLocationDB(dbPath string, locationDB *db.DB, log logger.Logger) error
 	return nil
 }
 
-// OpenLocationResolver downloads the location database if missing, verifies
-// it against its published metadata, and returns a ready location.Resolver
-// plus the underlying *db.DB (the caller owns closing it). This is the
-// single download-open-verify path — application code (pkg/install.Coordinator)
-// and tests (pkg/install/installtest) both go through it, so a test
-// exercising a Resolver exercises the exact same setup the app performs, not
-// a hand-rolled approximation of it.
+// OpenLocationResolver downloads (if missing), verifies, and opens the
+// location database, returning a ready Resolver plus the *db.DB (caller
+// owns closing it). The single download-open-verify path — installtest
+// exercises this exact function, not a hand-rolled approximation.
 func OpenLocationResolver(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) (*location.Resolver, *db.DB, error) {
 	if err := downloadLocationDB(ctx, log, dbPath, onProgress); err != nil {
 		return nil, nil, fmt.Errorf("location db: %w", err)

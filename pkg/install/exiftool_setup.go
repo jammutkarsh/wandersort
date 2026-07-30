@@ -26,10 +26,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
-// This file is the exiftool half of "the one place a dependency's version,
-// download location, and install layout are known" — pkg/exiftool only runs
-// the already-installed binary and parses its output; it has no idea where
-// that binary came from or what version it needs to be.
+// This file is the exiftool half of pkg/install's job: pkg/exiftool only
+// runs the already-installed binary and parses its output.
 
 const (
 	exiftoolVersion = "13.59"
@@ -89,13 +87,9 @@ func exiftoolBin() string {
 	return "exiftool"
 }
 
-// setupExiftool checks exiftool is available, either on $PATH or in
-// WanderSort's own install directory. If the found version is below the
-// requirement, it downloads and installs a bundled copy into binDir.
-// onProgress (may be nil) is called with (bytesDownloaded, totalBytes) while
-// fetching the bundled archive, so a TUI can show a real progress bar without
-// the per-byte counts polluting the file log (which only sees the download's
-// start/done milestones).
+// setupExiftool checks $PATH and WanderSort's own install directory; if the
+// found version is below the requirement, downloads a bundled copy into
+// binDir. onProgress (may be nil) reports download bytes for a TUI bar.
 func setupExiftool(ctx context.Context, log logger.Logger, binDir string, onProgress func(done, total int64)) (string, error) {
 	if path, err := findExiftool(log, binDir); err == nil {
 		return path, nil

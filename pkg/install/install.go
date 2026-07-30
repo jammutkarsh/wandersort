@@ -4,24 +4,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package install is the one place wandersort's two downloadable
-// dependencies — the exiftool binary and the location gazetteer — are
-// versioned, located, downloaded, verified, and coordinated for every
-// command that needs them (scan, review, the config wizard). pkg/exiftool
-// and pkg/location only ever run the already-installed binary or query an
-// already-open, already-verified database; neither knows what version it
-// needs, where it downloads from, or what its on-disk layout looks like —
-// that's entirely this package's job (exiftool_setup.go, location_setup.go).
-//
-// Before this package existed, each command also hand-rolled its own
-// goroutine, channel pair, and progress callback, mutating a handful of
-// *app fields a background goroutine wrote and a pipeline goroutine read,
-// with the happens-before edge documented in a comment rather than enforced
-// by a type. A Coordinator owns the install order (exiftool first, the small
-// download; the gazetteer behind it, since only the last pipeline phase
-// needs it), the shared install lock, the download progress fan-out, and
-// readiness — callers only ever see blocking or non-blocking getters, never
-// a raw channel.
+// Package install versions, downloads, verifies, and coordinates
+// wandersort's two downloadable dependencies (exiftool, location gazetteer)
+// for every command that needs them. pkg/exiftool and pkg/location only run
+// the already-installed binary / query the already-open DB — this package
+// owns all version/URL/layout knowledge instead.
 package install
 
 import (
@@ -75,12 +62,8 @@ func New(opts Options) *Coordinator {
 	}
 }
 
-// Start installs exiftool then the location database, in that order, under
-// the install lock, and returns immediately — the goroutine runs in the
-// background so a caller (a scan's own file walk and hashing) can proceed
-// concurrently. Each dependency's readiness is exposed independently
-// (Exiftool/AwaitExiftool vs Location/AwaitLocation), so a pipeline phase
-// gating only on exiftool never waits on the location database too.
+// Start installs exiftool then the location database and returns
+// immediately; the goroutine runs so scan/hash can proceed concurrently.
 func (c *Coordinator) Start(ctx context.Context) {
 	go func() {
 		l, err := c.acquireLock(ctx)
@@ -92,6 +75,8 @@ func (c *Coordinator) Start(ctx context.Context) {
 		}
 		defer l.Unlock()
 
+		// exiftool first: it's the small download the earlier exif phase
+		// waits on; the location DB has the whole pipeline to hide behind.
 		c.exifPath, c.exifErr = setupExiftool(ctx, c.opts.Log, c.opts.ExecutablePath, c.progressFor("exiftool"))
 		if c.exifErr != nil {
 			c.exifErr = fmt.Errorf("exiftool: %w", c.exifErr)
@@ -107,10 +92,9 @@ func (c *Coordinator) Start(ctx context.Context) {
 	}()
 }
 
-// StartLocationOnly installs just the location database, under the same
-// install lock — for a caller (the config wizard) with no use for exiftool.
-// onReady, if not nil, is called once the location database has resolved
-// (success or failure).
+// StartLocationOnly installs just the location database — for a caller (the
+// config wizard) with no use for exiftool. onReady, if not nil, runs once
+// the database has resolved, success or failure.
 func (c *Coordinator) StartLocationOnly(ctx context.Context, onReady func(error)) {
 	close(c.exifReady) // nothing waits on exiftool through this Coordinator
 	go func() {
@@ -228,13 +212,9 @@ const (
 	// stalled connection, DNS hiccup) — not on a bad response, see
 	// nonRetryable below.
 	downloadMaxAttempts = 4
-	// downloadStallTimeout aborts an attempt that has gone this long without
-	// a single new byte arriving. A network switch (e.g. wifi to a different
-	// AP, or wifi to ethernet) can leave the underlying TCP connection dead
-	// without the OS or the server ever telling us, so io.Copy would
-	// otherwise block forever instead of erroring out to a retry. The whole
-	// pipeline finishes in about a minute end to end, so a stalled download
-	// eating even a few seconds of that is worth noticing fast.
+	// downloadStallTimeout aborts an attempt with no new bytes in this long —
+	// a dead TCP connection (e.g. wifi→ethernet switch) never tells us
+	// itself, so io.Copy would otherwise hang forever instead of retrying.
 	downloadStallTimeout = 1 * time.Second
 )
 
@@ -247,19 +227,9 @@ type nonRetryable struct{ err error }
 func (n *nonRetryable) Error() string { return n.err.Error() }
 func (n *nonRetryable) Unwrap() error { return n.err }
 
-// downloadFile fetches url and writes the body to dest atomically (via a temp
-// file in the same directory) so a partial or tampered download never leaves
-// a bad file at dest. Retries on a transport failure (see downloadMaxAttempts),
-// starting the download over from byte zero each time; log (may be nil) gets
-// a UserKey line on each retry so a stalled download reads as "retrying", not
-// as a frozen progress bar.
-//
-// onProgress (may be nil) is invoked as bytes arrive with (bytesSoFar,
-// totalBytes); total is -1 when the server sends no Content-Length. It runs on
-// the download goroutine and must not block.
-//
-// wantSHA256 (may be empty) is the expected hex digest. A mismatch removes dest
-// and returns an error.
+// downloadFile fetches url to dest atomically, verifying wantSHA256 if set,
+// and retries on transport failure (downloadMaxAttempts). onProgress and
+// wantSHA256 may be nil/empty.
 func downloadFile(ctx context.Context, log logger.Logger, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
 	cleanStaleDownloads(filepath.Dir(dest))
 
@@ -269,6 +239,8 @@ func downloadFile(ctx context.Context, log logger.Logger, dest, url, wantSHA256 
 		if err == nil {
 			return nil
 		}
+		// A bad status/checksum fails identically every time; only a
+		// transport failure is worth spending a retry on.
 		var nr *nonRetryable
 		if errors.As(err, &nr) || ctx.Err() != nil || attempt == downloadMaxAttempts {
 			return err
@@ -286,13 +258,9 @@ func downloadFile(ctx context.Context, log logger.Logger, dest, url, wantSHA256 
 	return err
 }
 
-// cleanStaleDownloads removes any .dl-* temp file left behind in dir by a
-// process that was killed (not exited normally) mid-download — a graceful
-// exit already cleans its own up via defer, but SIGKILL/panic doesn't run
-// that. The random suffix os.CreateTemp picks means the exact name varies
-// per run, so this globs the fixed prefix rather than tracking one name.
-// Best effort: a leftover here is disk clutter, not a correctness problem
-// the next download depends on.
+// cleanStaleDownloads removes .dl-* temp files a killed process (SIGKILL,
+// panic) left behind — a graceful exit already cleans its own up via defer.
+// Best effort: a leftover is disk clutter, not a correctness problem.
 func cleanStaleDownloads(dir string) {
 	matches, err := filepath.Glob(filepath.Join(dir, ".dl-*"))
 	if err != nil {
