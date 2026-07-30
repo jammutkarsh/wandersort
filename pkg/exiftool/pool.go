@@ -20,17 +20,15 @@ type Pool struct {
 	workers chan *Extractor
 }
 
-// NewPool starts size exiftool workers concurrently and returns a pool that
-// hands them out one at a time. Starting them one at a time would pay every
-// process's own startup cost (exiftool is a Perl script) back to back; doing
-// it concurrently bounds the wait by the slowest one instead of the sum.
-// Returns an error if any worker fails to start; any workers that did start
-// are closed before returning.
+// NewPool starts size exiftool workers and returns a pool handing them out
+// one at a time. On any start failure, workers that did start are closed.
 func NewPool(exiftoolPath string, size int) (*Pool, error) {
 	started := make([]*Extractor, size)
 	errs := make([]error, size)
 	var wg sync.WaitGroup
 	for i := range size {
+		// concurrent start bounds the wait by the slowest process (exiftool
+		// is a Perl script with real startup cost), not the sum of all N
 		wg.Go(func() {
 			started[i], errs[i] = New(exiftoolPath)
 		})
@@ -70,10 +68,9 @@ func (p *Pool) Extract(ctx context.Context, path string) (classifier.CommonMetad
 	}
 }
 
-// Close shuts down every worker concurrently. Call once, after all in-flight
-// Extract() calls have returned — the whole point of closing right when the
-// metadata phase finishes is that it's prompt; waiting on each process's
-// cmd.Wait() one at a time turned "done" into a slow tail.
+// Close shuts down every worker concurrently (not one at a time, which
+// turned "done" into a slow tail of cmd.Wait() calls). Call once, after all
+// in-flight Extract() calls have returned.
 func (p *Pool) Close() error {
 	close(p.workers)
 	var wg sync.WaitGroup

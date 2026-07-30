@@ -4,14 +4,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package lock is wandersort's file locking: generic acquire mechanics plus
-// the domain-specific filenames and styled "already running" message for
-// scan/review coordination. Locking is a real OS advisory lock (flock on
-// Unix, LockFileEx on Windows — tryFlock, in lock_unix.go/lock_windows.go),
-// not a hand-rolled PID file: the kernel releases it the instant this
-// process's file descriptor closes, crash or SIGKILL included, so there is
-// no staleness check to get wrong and no leftover lock file that ever needs
-// deleting by hand.
+// Package lock is wandersort's file locking for scan/review coordination:
+// acquire mechanics plus domain filenames and the "already running" message.
+// A real OS advisory lock (tryFlock), not a PID file — see tryLock.
 package lock
 
 import (
@@ -31,11 +26,8 @@ const (
 	OutputFileName  = ".wandersort.lock"
 	InstallFileName = ".wandersort-install.lock"
 
-	// pollInterval is the starting wait between re-checks of a held lock;
-	// pollMaxInterval caps the exponential backoff applied on each retry.
-	// Polling, rather than one OS-blocking wait, is what lets AcquireInstall's
-	// blocking mode still honour ctx cancellation — a blocking flock syscall
-	// can't be interrupted once it starts.
+	// Polling (not one OS-blocking wait) is what lets blocking acquire still
+	// honour ctx cancellation — a blocking flock syscall can't be interrupted.
 	pollInterval    = 200 * time.Millisecond
 	pollMaxInterval = 2 * time.Second
 )
@@ -72,10 +64,8 @@ func AcquireOutput(dir string) (*Lock, error) {
 }
 
 // AcquireInstall takes the install-coordination lock shared by scan, review,
-// and the config wizard, so only one of them downloads dependencies at a
-// time. When block is true it waits for an in-progress install to finish;
-// when false it returns ErrHeld at once so the caller can step aside (the
-// non-blocking path).
+// and the config wizard, so only one downloads dependencies at a time.
+// block=true waits for an in-progress install; false returns ErrHeld at once.
 func AcquireInstall(ctx context.Context, dir string, block bool) (*Lock, error) {
 	return acquire(ctx, dir, InstallFileName, block)
 }
@@ -132,11 +122,8 @@ func readLockPID(path string) (int, error) {
 	return strconv.Atoi(strings.TrimSpace(string(data)))
 }
 
-// tryLock opens (creating if needed) lockPath and attempts a single
-// non-blocking OS advisory lock on it (tryFlock). On success it stamps the
-// file with this process's PID — for alreadyRunningError's message only,
-// whatever the file already contained is irrelevant to whether the lock is
-// actually held — and returns a Lock holding the open file.
+// tryLock attempts one non-blocking OS advisory lock on lockPath and, on
+// success, stamps it with this process's PID for alreadyRunningError only.
 func tryLock(lockPath string) (*Lock, error) {
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {

@@ -314,16 +314,9 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 	return out, rows.Err()
 }
 
-// disambiguate returns the smallest qualifier that tells same-named cities
-// apart:
-//
-//	unique name                  -> "Springfield"
-//	several in this country      -> "Springfield, Illinois"  (state)
-//	one here, more abroad        -> "Springfield, Australia" (country)
-//
-// Two entries with the same name in the same state stay identical: the
-// gazetteer has genuine near-duplicates, and a third qualifier would lengthen
-// every folder to fix one of them.
+// disambiguate returns the smallest qualifier telling same-named cities apart
+// (unique -> "Springfield", repeats in-country -> "+state", abroad -> "+country").
+// Two same-named same-state rows stay identical rather than gain a third qualifier.
 func disambiguate(city, state, country string, nameCount, countryCount, inCountryCount int) string {
 	if nameCount <= 1 {
 		return city

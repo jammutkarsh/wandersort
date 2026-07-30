@@ -90,6 +90,8 @@ func New(ctx context.Context, dbPath string, dbType DBType, log logger.Logger) (
 	}
 }
 
+// Close doesn't Checkpoint: it runs on every quit, including a bare cancel
+// with nothing to flush, and that cost turned "let me out" into a stall.
 func (d *DB) Close() error {
 	if d.Writer != nil {
 		d.Writer.Close()
@@ -97,14 +99,9 @@ func (d *DB) Close() error {
 	return d.SQL.Close()
 }
 
-// Checkpoint rebuilds query-planner stats (PRAGMA optimize) and flushes the
-// WAL back into the main file (wal_checkpoint TRUNCATE) — both real I/O/CPU
-// work proportional to how much was just written. The workflow calls this
-// after every phase (each writes a batch, so a small WAL keeps the next
-// phase's reads/writes cheap instead of growing across the whole run), not
-// from Close(): Close() runs on every quit, including a cancel with nothing
-// left to flush, and paying this cost there turned "I don't want to review,
-// just let me out" into a multi-second wait.
+// Checkpoint rebuilds planner stats and flushes the WAL into the main file.
+// Called after every workflow phase, keeping each phase's WAL small instead
+// of letting it grow across the whole run.
 func (d *DB) Checkpoint() error {
 	if _, err := d.SQL.Exec("PRAGMA optimize"); err != nil {
 		return fmt.Errorf("pragma optimize: %w", err)
