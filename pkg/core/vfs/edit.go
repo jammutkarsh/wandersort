@@ -12,12 +12,9 @@ import (
 	"strings"
 )
 
-// This file holds the review tree's reshaping rules — merge, drop, flatten —
-// operating on plain []Node with no knowledge of a TUI, so they're testable
-// by stating a tree and asserting the result (internal/review's Model wires
-// keypresses to these calls and owns its own cursor/undo/status state).
-// Every function mutates its tree argument in place; a caller wanting undo
-// must CloneTree before calling. Each fails before any mutation happens.
+// This file holds the review tree's reshaping rules (merge/drop/flatten) as
+// plain []Node functions with no TUI knowledge, testable by stating a tree
+// and asserting the result. Each mutates in place — CloneTree first for undo.
 
 // SortTree restores name order after a structural edit — BuildTree emits
 // sorted levels, but a splice (merge, drop, flatten) appends, and a folder
@@ -137,10 +134,9 @@ func mergeInto(dst *Node, src Node, pending map[string]string) {
 	}
 }
 
-// commonPathPrefix returns the longest shared leading run of "/"-separated
-// segments between two node IDs (which are literally their proposed
-// directory paths) — i.e. their lowest common ancestor's ID. "" means no
-// shared ancestor at all (e.g. different years).
+// commonPathPrefix returns the longest shared leading "/"-segment run between
+// two node IDs (their proposed directory paths) — their LCA's ID. "" means
+// no shared ancestor.
 func commonPathPrefix(a, b string) string {
 	as := strings.Split(a, "/")
 	bs := strings.Split(b, "/")

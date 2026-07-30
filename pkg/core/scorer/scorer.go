@@ -57,10 +57,9 @@ func New(db *db.DB, log logger.Logger) *Scorer {
 func (s *Scorer) Run(ctx context.Context) (int, error) {
 	s.log.Info("Scoring duplicates")
 
-	// Re-promote solo files stuck at is_master = 0: when a re-scan sweeps every
-	// other member of a duplicate group, the demoted survivor is no longer in
-	// any COUNT(*) > 1 group below, so nothing else would ever elect it again.
-	// Soft-deleted files don't count as group members anywhere in this phase
+	// Re-promote solo survivors: once a re-scan sweeps every other group member,
+	// the demoted one drops out of every COUNT(*) > 1 group below, so nothing
+	// else would ever elect it again.
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE file_metadata SET is_master = 1
 		WHERE is_master = 0

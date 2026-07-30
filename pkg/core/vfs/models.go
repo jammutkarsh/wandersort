@@ -38,20 +38,13 @@ type Config struct {
 	Rules      []string      // ordered levels below <YEAR>/<MONTH>; see Rules* constants
 	Fallback   string        // last-resort path segment when nothing can be derived
 	ClusterGap time.Duration // capture-time gap that starts a new event cluster
-	// CollapseLevels drops a device/orientation/media level that resolves to
-	// the same folder name for the whole library — it would be a folder every
-	// path passes through without ever distinguishing anything. Date and
-	// location are never dropped. See uninformativeLevels.
+	// Drops a device/orientation/media level with one library-wide value.
+	// Date/location never drop. See uninformativeLevels.
 	CollapseLevels bool
-	// SavedPlacesDateOnly suppresses the location level for photos taken at a
-	// confirmed saved place: those everyday photos are grouped by date
-	// only, not by location (see resolveLocations). When false, a saved place
-	// instead folds nearby suburbs into that town's own folder.
+	// Groups saved-place photos by date only, no location folder. See resolveLocations.
 	SavedPlacesDateOnly bool
-	// MergeSameLocationDays collapses consecutive day folders that share the
-	// same location into one dated range folder (Aug/02/Goa + 03/Goa + 04/Goa
-	// → Aug/02_04/Goa). Only applies when a date level sits above location.
-	// See mergeSameLocationDays.
+	// Collapses consecutive same-location days into one range folder
+	// (Aug/02+03+04/Goa → Aug/02_04/Goa). See mergeSameLocationDays.
 	MergeSameLocationDays bool
 	// Anchors are saved places resolved to GPS coordinates, built from
 	// config.yaml by the caller (workflow or review --rebuild). Nil when
@@ -75,10 +68,8 @@ func DefaultConfig() Config {
 // interprets it.
 const RuleNone = "none"
 
-// ConfigFor is DefaultConfig with the user's settings applied. Takes the
-// whole *config.Configuration so a new vfs-relevant setting doesn't churn
-// the signature — the one place vfs imports pkg/config, so config can
-// never import vfs back.
+// ConfigFor is DefaultConfig with the user's settings applied — the one
+// place vfs imports pkg/config, so config can never import vfs back.
 func ConfigFor(appCfg *config.Configuration) Config {
 	cfg := DefaultConfig()
 	if appCfg == nil {
@@ -135,10 +126,8 @@ type masterFile struct {
 	suggestion       string
 	suggestionSource string
 	targetPath       string
-	// suggestionDir is the directory the suggestion belongs to — the node a
-	// reviewer renames. Recorded by dirFor when it emits the location level, so
-	// the review tree never has to guess which depth that is (it moves with the
-	// Rules order, and there may be no location level at all).
+	// the node a reviewer renames, recorded by dirFor when it emits the
+	// location level so the review tree never has to guess the depth
 	suggestionDir string
 }
 

@@ -52,10 +52,9 @@ type Sample struct {
 	DayOverride  string // pre-merged day range, e.g. "02_04"
 }
 
-// PreviewPaths is the folder path each sample would land on under cfg — the
-// same dirFor the scan uses, so an example can never drift from the proposal
-// it is describing. Collapse is measured across the whole sample set, exactly
-// as it is library-wide in the real pipeline.
+// PreviewPaths uses the same dirFor the real pipeline does, so an example
+// can never drift from the proposal it describes. Collapse is measured
+// across the whole sample set, matching the library-wide rule below.
 func PreviewPaths(cfg Config, samples []Sample) []string {
 	masters := make([]masterFile, len(samples))
 	for i, s := range samples {
@@ -86,10 +85,9 @@ func deriveAll(masters []masterFile) {
 	for i := range masters {
 		m := &masters[i]
 
-		// CreationDate (iOS videos) is the only candidate carrying a timezone
-		// offset; the rest are naive local wall-clock. Applying the real offset
-		// would shift a video hours away from photos of the same moment, so
-		// stripOffset lines its digits back up with theirs.
+		// CreationDate (iOS video) carries a timezone offset; applying it as-is
+		// would shift the video away from same-moment photos, which are all
+		// naive local wall-clock, so stripOffset drops the offset first.
 		m.takenAt = firstTime(deref(m.DBDateTaken), stripOffset(deref(m.DBCreationDate)), deref(m.DBCreateDate), m.ModifiedAt)
 		if m.DBWidth != nil {
 			m.width = *m.DBWidth
@@ -156,17 +154,14 @@ func applyNameCase(masters []masterFile) {
 }
 
 // mergeSameLocationDays collapses runs of consecutive same-location days into
-// one dated range: 2024/08/{02,03,04}/Goa becomes 2024/08/02_04/Goa. A Pune day
-// interleaved at 03 keeps its own folder, and the reviewer can still split a
-// range in the review TUI.
+// one dated range: 2024/08/{02,03,04}/Goa becomes 2024/08/02_04/Goa. A Pune
+// day interleaved at 03 keeps its own folder; the review TUI can still split one.
 func mergeSameLocationDays(masters []masterFile, cfg Config) {
 	if !cfg.MergeSameLocationDays {
 		return
 	}
-	// keys on m.location, the real place even for saved-place files (see
-	// resolveLocations), so saved-place days merge like any trip's with no
-	// special-casing here. Date must exist to hold the range label; when
-	// Location is a configured Rule it must sit at or above Date, or the
+	// m.location holds the real place even for saved-place files, so no special
+	// casing is needed here. Location must sit at/above Date in Rules, or the
 	// range folder wouldn't contain the location folder it's meant to.
 	di, li := slices.Index(cfg.Rules, RuleDate), slices.Index(cfg.Rules, RuleLocation)
 	if di < 0 || (li >= 0 && di > li) {
@@ -265,10 +260,9 @@ func buildTargets(masters []masterFile, cfg Config) {
 	}
 }
 
-// variantPrefixes maps an iPhone filename role marker to its canonical form,
-// so a companion file is recognised as the same capture as its original:
-// IMG_E1783 (edited copy) and IMG_O1783 (original-state sidecar with no
-// paired image) both fold to IMG_1783.
+// variantPrefixes folds an iPhone filename role marker to its canonical
+// form, so a companion file is recognised as the same capture as its
+// original: IMG_E1783 (edited) and IMG_O1783 (sidecar) both fold to IMG_1783.
 var variantPrefixes = []struct{ variant, canonical string }{
 	{"IMG_E", "IMG_"},
 	{"IMG_O", "IMG_"},
@@ -293,10 +287,9 @@ func (m *masterFile) hasExifTime() bool {
 	return deref(m.DBDateTaken) != "" || deref(m.DBCreationDate) != "" || deref(m.DBCreateDate) != ""
 }
 
-// captureDirs finds files that are one capture split across extensions — an
-// iPhone edit/sidecar bundle (IMG_1783.AAE + IMG_1783.HEIC + IMG_E1783.HEIC)
-// or a RAW+JPG pair — and returns the directory they should all share, keyed
-// by master index.
+// captureDirs finds files that are one capture split across extensions (an
+// iPhone edit/sidecar bundle, or a RAW+JPG pair) and returns the directory
+// they should all share, keyed by master index.
 func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int]string {
 	type group struct{ members []int }
 	groups := map[string]*group{}
@@ -322,11 +315,10 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 		if len(g.members) < 2 {
 			continue
 		}
-		// a group only forms when every real-EXIF-timestamped member agrees to
-		// the second — a bare stem match isn't enough since camera filename
-		// counters get reused across unrelated shoots. A sidecar has no EXIF
-		// timestamp to agree or disagree with, so it doesn't vote; it rides
-		// along on whatever its timestamped siblings agree on.
+		// A group only forms when every EXIF-timestamped member agrees to the
+		// second — a bare stem match isn't enough, since camera filename counters
+		// get reused across unrelated shoots. A sidecar has no EXIF time to vote
+		// with, so it rides along on whatever its siblings agree on.
 		var agreed time.Time
 		conflict := false
 		for _, i := range g.members {
@@ -346,10 +338,9 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 			continue // can't safely anchor this group — leave members independent
 		}
 
-		// representative: a resolved location beats none (a RAW file missing
-		// GPS its JPG sibling has must not drag the group into the
-		// location-less fallback), then the canonical (non-variant) filename,
-		// then insertion order
+		// representative: resolved location beats none (a GPS-less RAW must not
+		// drag the group into the fallback its JPG sibling would avoid), then
+		// canonical filename, then insertion order
 		leader, bestScore := g.members[0], -1
 		for _, i := range g.members {
 			score := 0
@@ -460,10 +451,9 @@ func segmentFor(m *masterFile, level string, cfg Config) string {
 	return ""
 }
 
-// collapsibleLevels are the levels worth dropping when they carry no
-// information. Date and location never collapse even on one library-wide
-// value: they are how a person recognizes a folder, and [m] in the review TUI
-// is the deliberate way to fold days together.
+// collapsibleLevels are worth dropping when they carry no information. Date
+// and location never collapse — they're how a person recognizes a folder;
+// [m] in the review TUI is the deliberate way to fold days together.
 var collapsibleLevels = map[string]bool{
 	RuleDevice:      true,
 	RuleOrientation: true,
@@ -557,9 +547,8 @@ func deref(s *string) string {
 }
 
 // caseWhitelist are words whose casing is already correct — title-casing
-// "iPhone" word-by-word would give "Iphone", losing the recognizable name.
-// Matched case-insensitively; extend as more turn up in any derived name
-// (device, location, suggestion).
+// "iPhone" word-by-word would give "Iphone". Matched case-insensitively;
+// extend as more turn up in any derived name.
 var caseWhitelist = map[string]string{
 	"iphone": "iPhone",
 }
@@ -617,10 +606,8 @@ func deviceName(mk, model string) string {
 
 // SanitizeSegment makes a derived value safe to use as a single path segment.
 func SanitizeSegment(seg string) string {
-	// spaces and commas are routine in a geocoded place name ("Seoni,
-	// Himachal Pradesh") or title-cased device name ("Samsung Galaxy S23");
-	// the comma is fine anywhere a person is *choosing* a name (search
-	// results, the rename dropdown), just not in the name once picked
+	// commas are fine in a name a person is *choosing* (geocode results, the
+	// rename dropdown) — just not once picked, so strip them here.
 	seg = strings.Map(func(r rune) rune {
 		switch r {
 		case '/', '\\', ':', 0, ' ', ',', '\t', '\n':

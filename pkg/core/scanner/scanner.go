@@ -29,10 +29,8 @@ import (
 // unreadable subtree, short enough that the index doesn't hoard ghosts
 const deletedRetention = 30 * 24 * time.Hour
 
-// Scanner handles file discovery and registry population
-// It is stateless with respect to individual scan runs; all mutable state
-// lives in scanState, which is created fresh for every call to runScan
-// This makes concurrent scans safe without any locking on Scanner itself
+// Scanner is stateless across runs — mutable state lives in per-call
+// locals, so concurrent scans need no locking on Scanner itself.
 type Scanner struct {
 	db         *db.DB
 	classifier *classifier.FileClassifier
@@ -59,10 +57,8 @@ func New(db *db.DB, log logger.Logger, workers int) *Scanner {
 func (s *Scanner) Run(ctx context.Context, paths []string) (int, error) {
 	s.log.Info("Scanner Phase: Processing all paths", "pathCount", len(paths))
 
-	// Captured before any walking starts: storeScan stamps last_seen_at with
-	// the write-time now() for every file it touches this run, which is
-	// always strictly after this cutoff. sweep uses it to tell "not re-seen
-	// this run" from "re-seen" without needing any session identity.
+	// storeScan stamps last_seen_at after this; sweep uses the gap to tell
+	// "not re-seen this run" without needing any session identity.
 	scanStartedAt := time.Now()
 
 	type scanResult struct {
@@ -154,19 +150,16 @@ func (s *Scanner) Run(ctx context.Context, paths []string) (int, error) {
 	return totalFiles, firstScanErr
 }
 
-// scan executes a scan for a single directory root and returns a channel of
-// discovered files plus a single-shot channel carrying the walk's final error.
-// It's meant to be called by worker goroutines asynchronously; the error
-// channel resolves once the discovery channel is drained
+// scan walks absRoot and returns a discovery channel plus a single-shot
+// error channel that resolves once the discovery channel is drained.
 func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string) (<-chan FileDiscovery, <-chan error) {
 	s.log.Info("Scanning path", "path", absRoot)
-	// Channel for discovered files
 	fileDiscoveryChannel := make(chan FileDiscovery, 2*s.workers)
 	scanResultsChannel := make(chan FileDiscovery, 2*s.workers)
 	walkErr := make(chan error, 1)
 
-	// Start a goroutine to walk the directory and send discoveries to the channel
-	// We use a separate channel for walking results to decouple file discovery from database writes
+	// Separate channels decouple the walk from the DB write, so a slow
+	// writer never blocks directory traversal.
 
 	// Producer
 	go func() {
@@ -245,10 +238,7 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 			MediaType:  mediaType,
 		}
 
-		// Per-file feed line: streamed into the TUI to show progress, kept in the
-		// file log for debugging, never printed on the plain console (StreamKey).
-		// Info, not Debug — the TUI handler filters by level, so a Debug line
-		// only reaches the feed under --debug.
+		// StreamKey: feeds the TUI progress line, stripped from the plain console.
 		s.log.Info("Scanning", logger.StreamKey, true, "file", s.path.RelativeToHome(p))
 
 		// Send to processing channel
@@ -266,20 +256,15 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 	return nil
 }
 
-// sweep soft-deletes rows for files under root that this scan did not
-// re-see. storeScan's upsert sets last_seen_at to the write-time now() for
-// every live file it touches, always after scanStartedAt — so any live row
-// under root whose last_seen_at is still older than that cutoff was deleted
-// or moved on disk. Rows only get stamped, never removed here — purgeExpired
-// hard-deletes them after the retention window, so a transient failure
-// (unreadable subtree, one bad upsert) heals on the next clean scan.
-// Runs only for roots whose walk finished cleanly
+// sweep soft-deletes rows under root not re-seen this scan (last_seen_at
+// still older than scanStartedAt). Only called for roots whose walk
+// finished cleanly; purgeExpired hard-deletes the swept rows later, so a
+// transient failure elsewhere heals on the next clean scan.
 func (s *Scanner) sweep(ctx context.Context, scanStartedAt time.Time, root string) error {
-	// Prefix match as an index range on (file_dir, file_name):
-	// [root+sep, root+succ(sep)) covers every path under root without a full
-	// table scan, and needs no LIKE escaping for roots containing % or _.
-	// Trim a trailing separator first: for the filesystem root the range
-	// would otherwise be ["//", "/0"), which no file_dir ever falls into
+	// Range match on (file_dir, file_name) avoids a full table scan and
+	// needs no LIKE escaping for roots containing % or _. Trim the
+	// trailing separator first, or the filesystem root's range becomes
+	// ["//", "/0"), which no file_dir ever falls into.
 	trimmed := strings.TrimSuffix(root, string(filepath.Separator))
 	prefix := trimmed + string(filepath.Separator)
 	prefixEnd := trimmed + string(filepath.Separator+1)
@@ -358,12 +343,9 @@ func (s *Scanner) store(ctx context.Context, discoveries <-chan FileDiscovery, s
 	}
 }
 
-// storeScan builds the DB callback consumed by BulkWriter.Write
-//
-// The callback shape is fixed by db.DBOperation (func(ctx, tx) error), so we
-// cannot return fileID directly to the caller of Write at enqueue time
-// Instead, we compute it during execution and mutate the local file copy
-// before sending it downstream
+// storeScan builds the DB callback consumed by BulkWriter.Write. The
+// db.DBOperation shape (func(ctx, tx) error) has no return value, so fileID
+// is written into the local file copy and sent downstream during execution.
 func (s *Scanner) storeScan(ctx context.Context, dbWritesWG *sync.WaitGroup, storedFiles chan<- FileDiscovery, file FileDiscovery) db.DBOperation {
 	const query = `
 		INSERT INTO file_registry (

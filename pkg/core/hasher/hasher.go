@@ -168,11 +168,7 @@ func (h *Hasher) hasher(ctx context.Context, cancel context.CancelFunc, toHash <
 					})
 					continue
 				}
-				// Per-file feed line for the TUI (StreamKey: feed + file log, never
-				// the plain console). Logged at Info — the TUI handler filters by
-				// level, so a Debug line would vanish outside --debug and the bar
-				// would never move. It carries the running count so the bar
-				// advances one file at a time.
+				// StreamKey: feeds the TUI progress bar, stripped from the plain console.
 				h.log.Info("Hashing", logger.StreamKey, true,
 					"file", filepath.Base(file.absPath), "hashed", hashedN.Add(1), "total", total)
 
@@ -226,10 +222,9 @@ func (h *Hasher) store(ctx context.Context, cancel context.CancelFunc, files <-c
 		}
 
 		ok := h.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
-			// A re-hashed file (size/mtime change reset it to DISCOVERED) still
-			// has its old metadata row; a plain INSERT would either violate
-			// UNIQUE(file_hash, file_id) or leave a stale duplicate in the
-			// scorer's hash grouping. Fresh files make this a no-op
+			// A re-hashed file still has its old metadata row; a plain INSERT
+			// would violate UNIQUE(file_hash, file_id) or leave a stale
+			// duplicate. No-op for fresh files.
 			if _, err := tx.ExecContext(ctx,
 				`DELETE FROM file_metadata WHERE file_id = ?`, file.id); err != nil {
 				return err

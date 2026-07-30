@@ -83,7 +83,6 @@ var phaseMessageByKind = map[workflowPhaseKind]string{
 	workflowPhaseVFS:   "Proposing an organized folder structure…",
 }
 
-// NewWorkflow creates a new workflow instance
 func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.Configuration, deps Deps) *Workflow {
 	vfsCfg := vfs.ConfigFor(cfg)
 	// all three come from flag/env/config.yaml, so showing the resolved values
@@ -174,7 +173,6 @@ func (wf *Workflow) runSession(paths []string) (finalStatus string, finalErr *st
 	return
 }
 
-// workflowPhases builds the ordered list of pipeline phases for a run
 func (wf *Workflow) workflowPhases(paths []string) []workflowPhase {
 	return []workflowPhase{
 		{
@@ -257,11 +255,9 @@ func (wf *Workflow) run(phase workflowPhase) (int, string, *string, bool) {
 
 	wf.db.Writer.Flush() // make this phase's writes visible to the next one
 
-	// Checkpoint after every phase, not just at the end: each phase writes a
-	// batch (file_registry, file_metadata, virtual_fs_entries, ...), and a
-	// small WAL keeps the next phase's own reads/writes cheaper than letting
-	// it grow across the whole run. Not fatal — a failed checkpoint just
-	// means the next one (or Close, on a run that ends early) has more to do.
+	// Checkpoint after every phase, not just at the end: a small WAL keeps the
+	// next phase's reads/writes cheaper. Not fatal — a failed one just leaves
+	// more for the next checkpoint (or Close) to do.
 	if cpErr := wf.db.Checkpoint(); cpErr != nil {
 		wf.log.Warn("Database checkpoint failed", "phase", string(phase.kind), "error", cpErr)
 	}

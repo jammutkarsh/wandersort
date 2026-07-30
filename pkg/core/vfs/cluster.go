@@ -75,13 +75,11 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, anchors []locat
 
 		// spillover: one located member names the whole event. A GPS-less file
 		// clustered with saved-place photos inherits atSavedPlace too — it's
-		// almost certainly the same everyday place (an indoor shot with no
-		// fix), not a location folder SavedPlacesDateOnly is meant to suppress
-		// for its neighbours but not for it.
+		// almost certainly the same everyday place (an indoor shot with no fix).
 		if city != "" {
 			for _, i := range unlocated {
 				masters[i].location = city
-				masters[i].atSavedPlace = cityIsSavedPlace
+				masters[i].atSavedPlace = cityIsSavedPlace // SavedPlacesDateOnly must suppress its folder here too, not just for its located neighbours
 				masters[i].clusterID = id
 				masters[i].suggestion = city
 				masters[i].suggestionSource = SuggestionSpillover
@@ -103,10 +101,9 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, anchors []locat
 	}
 }
 
-// majorityCity returns the most common directly-resolved city among members
-// (or "" when none of them has one), plus whether any member holding that
-// city got it via atSavedPlace — a location string alone can't tell a folded
-// saved-place name from a plain resolved one, so this checks the field instead.
+// majorityCity returns the most common resolved city among members, plus
+// whether it got there via atSavedPlace — location alone can't tell a
+// folded saved-place name from a plain resolved one.
 func majorityCity(masters []masterFile, members []int) (city string, atSavedPlace bool) {
 	counts := map[string]int{}
 	home := map[string]bool{}

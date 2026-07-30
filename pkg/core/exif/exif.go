@@ -4,10 +4,9 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package exif is the metadata phase: it runs exiftool over every file the
-// hash phase registered and fills in the EXIF columns of that file's
-// file_metadata row. It never touches the hash — the two phases claim their
-// own rows and report their own progress.
+// Package exif runs exiftool over every hashed file and fills in its
+// file_metadata EXIF columns. Never touches the hash — each phase claims
+// its own rows.
 package exif
 
 import (
@@ -188,10 +187,7 @@ func (e *Extractor) worker(ctx context.Context, toExtract <-chan fileRecord, ext
 			e.log.Warn("Failed to extract exif data", "fileId", file.id, "path", file.absPath, "error", err)
 		}
 
-		// Per-file feed line for the TUI (StreamKey: feed + file log, never the
-		// plain console). Logged at Info — the TUI handler filters by level, so
-		// a Debug line would never reach the bar. It carries the running count
-		// so the bar advances one file at a time.
+		// StreamKey: feeds the TUI progress bar, stripped from the plain console.
 		e.log.Info("Reading metadata", logger.StreamKey, true,
 			"file", filepath.Base(file.absPath), "extracted", extracted.Add(1), "total", total)
 

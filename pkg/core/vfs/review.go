@@ -6,11 +6,9 @@
 
 package vfs
 
-// review.go is the reconcile core behind `wandersort review`: it exposes the
-// PROPOSED rows as a directory-only tree, applies edits back onto
-// virtual_fs_entries, and remembers renamed locations in user_labels. Nodes
-// are matched by an immutable ID (the proposed dir path at build time), never
-// by diffing two trees.
+// review.go is the reconcile core behind `wandersort review`: exposes PROPOSED
+// rows as a directory tree, applies edits back onto virtual_fs_entries, and
+// records renamed locations. Nodes match by immutable ID, never by tree diff.
 
 import (
 	"context"
@@ -52,25 +50,21 @@ type Node struct {
 	Samples     []string     `json:"samples,omitempty"`
 	Suggestions []Suggestion `json:"suggestions,omitempty"`
 	Children    []Node       `json:"children"`
-	// Lat/Lon are one exemplar GPS coordinate for this node (only ever set on
-	// the location-depth node, from the first GPS-tagged file that landed
-	// there) — lets a review surface re-query the location resolver for ranked
-	// alternatives when the reviewer wants to correct a wrong name.
+	// One exemplar GPS coordinate (location-depth node only), so the review UI
+	// can re-query the resolver for ranked rename alternatives.
 	Lat *float64 `json:"lat,omitempty"`
 	Lon *float64 `json:"lon,omitempty"`
-	// MergedIDs are the IDs of nodes a review-time merge folded into this one.
-	// They no longer appear anywhere in the tree (the reviewer sees one folder,
-	// which is the whole point of merging), but their files still live under
-	// those old paths in the DB, so Confirm must remap them here too.
+	// IDs of nodes a review-time merge folded into this one — gone from the
+	// tree, but their files still live under those old paths, so Confirm
+	// must remap them here too.
 	MergedIDs []string `json:"mergedIds,omitempty"`
 }
 
 const maxSamples = 3
 
-// BuildTree reads the still-reviewable entries (PROPOSED/APPROVED — executed
-// or failed rows are past reviewing) and returns the proposed directory tree
-// (folder names only, no files). An empty result means there is no proposal —
-// the caller decides whether that is a 404.
+// BuildTree reads the still-reviewable entries (executed/failed rows are past
+// reviewing) and returns the proposed directory tree, folders only. An empty
+// result means no proposal exists — the caller decides if that's a 404.
 func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 	var rows []struct {
 		TargetPath       string   `db:"target_path"`
@@ -120,12 +114,9 @@ func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 				cur.Samples = append(cur.Samples, r.SourcePath)
 			}
 		}
-		// the location/event suggestion attaches to the exact folder the VFS
-		// build recorded it against — not a guessed depth, which moved with the
-		// Rules order and smeared every file's suggestion onto one shared
-		// Device/Day node. No suggestion_dir (no location level in this
-		// proposal, or rows written before the column existed) means no
-		// suggestion node, rather than a misplaced one.
+		// The suggestion attaches to the exact folder the VFS build recorded it
+		// against, not a guessed depth — a guessed depth moved with Rules order
+		// and smeared suggestions onto the wrong shared node.
 		if r.SuggestionDir == nil || *r.SuggestionDir == "" {
 			continue
 		}
@@ -137,10 +128,8 @@ func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 		if loc.Lat == nil && r.GPSLat != nil && r.GPSLon != nil {
 			loc.Lat, loc.Lon = r.GPSLat, r.GPSLon
 		}
-		// a suggestion identical to the folder's current name is noise — it
-		// offers the reviewer the name they're already looking at (a source
-		// folder named after the camera, say, next to a folder of the same
-		// name)
+		// identical-to-current-name is noise: it offers the reviewer the name
+		// they're already looking at
 		if r.Suggestion != nil && *r.Suggestion != "" && *r.Suggestion != loc.Name {
 			src := ""
 			if r.SuggestionSource != nil {
@@ -213,11 +202,9 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 		}
 	}
 
-	// walk the submitted tree: old-path (node ID) → new-path (edited ancestors).
-	// Two nodes renamed to the same path is a deliberate merge (e.g. two
-	// unresolved date clusters turning out to be the same place), not an
-	// error — remap tolerates many old IDs collapsing onto one new path, and
-	// the per-file UPDATE loop below doesn't care how many did.
+	// old-path (node ID) → new-path. Two nodes renamed to the same path is a
+	// deliberate merge, not an error — remap tolerates many old IDs
+	// collapsing onto one new path.
 	type labelWrite struct {
 		oldDirs []string // every merged node contributing to this label, so spanFor covers all of them
 		name    string
@@ -292,11 +279,9 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 		if len(entries) == 0 {
 			return fmt.Errorf("%w: proposal was replaced by a newer scan", ErrNoProposal)
 		}
-		// Collapsing several dirs onto one can land two different files on the
-		// same basename (distinct masters, reused camera counter). buildTargets'
-		// own uniqueness guarantee only held for the layout it generated, so
-		// re-establish it here: rows that aren't moving claim their path first,
-		// then moved rows take the next free _N suffix.
+		// Collapsing dirs can land two files on the same basename; buildTargets'
+		// uniqueness guarantee only held for its own layout, so re-establish it:
+		// unmoved rows claim their path first, moved rows take the next _N.
 		taken := map[string]bool{}
 		type move struct {
 			id      int64
