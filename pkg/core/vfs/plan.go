@@ -29,7 +29,7 @@ func Plan(ctx context.Context, masters []masterFile, labels []userLabel, cfg Con
 	deriveAll(masters)
 	resolveLocations(ctx, masters, labels, geo, log)
 	clusterAndSuggest(masters, labels, cfg.ClusterGap)
-	applyNameCase(masters, cfg)
+	applyNameCase(masters)
 	mergeSameLocationDays(masters, cfg)
 	buildTargets(masters, cfg)
 	if ctx.Err() != nil { // don't leave a half-built proposal for persist to write
@@ -163,20 +163,15 @@ func resolveLocations(ctx context.Context, masters []masterFile, labels []userLa
 	}
 }
 
-// applyNameCase normalises derived names once, after every naming decision.
-// Filenames and user-confirmed labels are left alone — re-casing a name the
-// user typed would do more harm than good. Device names always go through
-// caseDevice regardless of cfg.NameCase: a device folder is a vendor
-// string ("samsung", "SAMSUNG Galaxy S23"), not prose, so there's no reading
-// under which "as typed by whichever firmware wrote the EXIF tag" is a
-// choice worth exposing — Title-With-Hyphen is applied unconditionally.
-func applyNameCase(masters []masterFile, cfg Config) {
+// applyNameCase title-cases derived location, suggestion, and device names
+// after every naming decision. Filenames and user-confirmed labels are left alone.
+func applyNameCase(masters []masterFile) {
 	for i := range masters {
-		masters[i].location = caseName(masters[i].location, cfg.NameCase)
+		masters[i].location = caseName(masters[i].location)
 		if masters[i].suggestionSource != SuggestionUserLabel {
-			masters[i].suggestion = caseName(masters[i].suggestion, cfg.NameCase)
+			masters[i].suggestion = caseName(masters[i].suggestion)
 		}
-		masters[i].device = caseDevice(masters[i].device)
+		masters[i].device = caseName(masters[i].device)
 	}
 }
 
@@ -593,58 +588,50 @@ func deref(s *string) string {
 	return *s
 }
 
-// caseName applies the configured case style to a derived name. Title case
-// uppercases the first letter of every word and lowercases the rest.
-func caseName(name, style string) string {
-	switch style {
-	case CaseLower:
-		return strings.ToLower(name)
-	case CaseUpper:
-		return strings.ToUpper(name)
-	case CaseAsIs:
-		return name
-	default: // CaseTitle
-		var b strings.Builder
-		b.Grow(len(name))
-		startOfWord := true
-		for _, r := range name {
-			switch {
-			case r == ' ' || r == '_' || r == '-':
-				startOfWord = true
-				b.WriteRune(r)
-			case startOfWord:
-				startOfWord = false
-				b.WriteRune(unicode.ToUpper(r))
-			default:
-				b.WriteRune(unicode.ToLower(r))
-			}
-		}
-		return b.String()
-	}
-}
-
-// deviceCaseExceptions are device-name words a vendor already writes
-// correctly cased in its own marketing — title-casing "iPhone" word-by-word
-// would give "Iphone", losing the recognizable brand name. Matched
-// case-insensitively per word; extend as more of these turn up.
-var deviceCaseExceptions = map[string]string{
+// caseWhitelist are words whose casing is already correct — title-casing
+// "iPhone" word-by-word would give "Iphone", losing the recognizable name.
+// Matched case-insensitively; extend as more turn up in any derived name
+// (device, location, suggestion).
+var caseWhitelist = map[string]string{
 	"iphone": "iPhone",
 }
 
-// caseDevice title-cases a device name word by word ("samsung galaxy s23" ->
-// "Samsung Galaxy S23"), keeping deviceCaseExceptions words as-is. The
-// hyphen join happens later, in SanitizeSegment, same as every other
-// space-separated segment.
-func caseDevice(name string) string {
-	words := strings.Fields(name)
-	for i, w := range words {
-		if exact, ok := deviceCaseExceptions[strings.ToLower(w)]; ok {
-			words[i] = exact
+// isWordDelim reports whether r separates words in a derived name.
+func isWordDelim(r rune) bool {
+	return r == ' ' || r == '_' || r == '-'
+}
+
+// caseName title-cases a derived name, preserving words in caseWhitelist.
+func caseName(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	start := 0
+	for i, r := range name {
+		if !isWordDelim(r) {
 			continue
 		}
-		words[i] = caseName(w, CaseTitle)
+		b.WriteString(titleWord(name[start:i]))
+		b.WriteRune(r)
+		start = i + 1
 	}
-	return strings.Join(words, " ")
+	b.WriteString(titleWord(name[start:]))
+	return b.String()
+}
+
+// titleWord title-cases a single word unless it matches caseWhitelist.
+func titleWord(w string) string {
+	if exact, ok := caseWhitelist[strings.ToLower(w)]; ok {
+		return exact
+	}
+	if w == "" {
+		return ""
+	}
+	runes := []rune(w)
+	runes[0] = unicode.ToUpper(runes[0])
+	for i := 1; i < len(runes); i++ {
+		runes[i] = unicode.ToLower(runes[i])
+	}
+	return string(runes)
 }
 
 // deviceName joins Make and Model, avoiding duplication when the model

@@ -29,15 +29,6 @@ const (
 	SuggestionSourceFolder = "SOURCE_FOLDER"
 )
 
-// Case styles for derived folder names (locations, suggestions).
-// Device names and filenames are never re-cased
-const (
-	CaseTitle = "title" // "goa beach" → "Goa Beach"
-	CaseLower = "lower" // "Goa Beach" → "goa beach"
-	CaseUpper = "upper" // "Goa Beach" → "GOA BEACH"
-	CaseAsIs  = "asis"  // keep whatever the source provided
-)
-
 // defaultClusterGap is the capture-time gap that starts a new event cluster
 const defaultClusterGap = 12 * time.Hour
 
@@ -46,7 +37,6 @@ type Config struct {
 	Rules      []string      // ordered levels below <YEAR>/<MONTH>; see Rules* constants
 	Fallback   string        // last-resort path segment when nothing can be derived
 	ClusterGap time.Duration // capture-time gap that starts a new event cluster
-	NameCase   string        // case style for derived names; see Case* constants
 	// CollapseLevels drops a device/orientation/media level that resolves to
 	// the same folder name for the whole library — it would be a folder every
 	// path passes through without ever distinguishing anything. Date and
@@ -69,7 +59,6 @@ func DefaultConfig() Config {
 		Rules:                 []string{RuleDate, RuleLocation},
 		Fallback:              "Unsorted",
 		ClusterGap:            defaultClusterGap,
-		NameCase:              CaseTitle,
 		CollapseLevels:        true,
 		SavedPlacesDateOnly:   true,
 		MergeSameLocationDays: true,

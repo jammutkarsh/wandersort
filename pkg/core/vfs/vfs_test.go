@@ -231,7 +231,7 @@ func TestUnresolvedEventSegmentAndGapSplit(t *testing.T) {
 func TestUserLabelSuggestion(t *testing.T) {
 	h := newHarness(t)
 	h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
-	// label casing is user-chosen and must survive NameCase normalisation
+	// label casing is user-chosen and must survive title-casing
 	if _, err := h.d.ExecContext(context.Background(), `
 		INSERT INTO user_labels (label, kind, time_start, time_end)
 		VALUES ('Manali TRIP', 'EVENT', '2024-06-02T00:00:00Z', '2024-06-06T00:00:00Z')`); err != nil {
@@ -650,32 +650,6 @@ func TestBuildManyFiles(t *testing.T) {
 		if rows[id].TargetPath == "" {
 			t.Errorf("file %d has empty target", id)
 		}
-	}
-}
-
-// TestNameCase covers caseName directly rather than through the full
-// build pipeline: the real gazetteer always hands back clean Title Case
-// names (e.g. "Calangute", "Nagar, Himachal Pradesh"), so there is no real
-// DisplayName that would exercise the CaseAsIs-vs-CaseTitle distinction the
-// way a hand-fabricated "goa BEACH" could — the input has to stay synthetic
-// to prove the normalisation logic itself, independent of what the resolver
-// happens to return.
-func TestNameCase(t *testing.T) {
-	cases := []struct {
-		style string
-		want  string
-	}{
-		{CaseTitle, "Goa Beach"},
-		{CaseLower, "goa beach"},
-		{CaseUpper, "GOA BEACH"},
-		{CaseAsIs, "goa BEACH"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.style, func(t *testing.T) {
-			if got := caseName("goa BEACH", tc.style); got != tc.want {
-				t.Errorf("caseName(%q, %s) = %q, want %q", "goa BEACH", tc.style, got, tc.want)
-			}
-		})
 	}
 }
 

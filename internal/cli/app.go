@@ -22,16 +22,16 @@ import (
 	"golang.org/x/term"
 )
 
-func Execute() error {
-	a := &app{}
-	return a.newRootCmd().Execute()
-}
-
 type app struct {
 	Config *config.Configuration
 	Log    logger.Logger
 	AppDB  *db.DB
 	Deps   *install.Coordinator
+}
+
+func Execute() error {
+	a := &app{}
+	return a.newRootCmd().Execute()
 }
 
 // newDeps builds a Coordinator wired to this app's config and log.

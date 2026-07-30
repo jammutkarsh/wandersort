@@ -45,14 +45,9 @@ type Workflow struct {
 	deps Deps
 
 	/* Utilities */
-	path *path.Resolver
-	// outputDir is where the organized library (and the DB) lives; used for
-	// the free-space preflight after each scan
+	path      *path.Resolver
 	outputDir string
 
-	/* Pipeline components, run in this order. exif and vfs are built lazily in
-	their phase closures — their dependencies may still be downloading when the
-	workflow is constructed (see Deps). */
 	scanner *scanner.Scanner
 	hasher  *hasher.Hasher
 	scorer  *scorer.Scorer
