@@ -70,13 +70,10 @@ func DefaultConfig() Config {
 // interprets it.
 const RuleNone = "none"
 
-// ConfigFor is DefaultConfig with the user's settings applied: empty Rules
-// keeps the defaults, RuleNone means a flat Year/Month. Every caller goes
-// through here, so the sentinel is interpreted one way only.
-//
-// Takes the whole *config.Configuration so a new vfs-relevant setting doesn't
-// churn the signature. This is the one place vfs imports pkg/config, which is
-// why config can never import vfs — the CLI validates Rules* tokens instead.
+// ConfigFor is DefaultConfig with the user's settings applied. Takes the
+// whole *config.Configuration so a new vfs-relevant setting doesn't churn
+// the signature — the one place vfs imports pkg/config, so config can
+// never import vfs back.
 func ConfigFor(appCfg *config.Configuration) Config {
 	cfg := DefaultConfig()
 	if appCfg == nil {
@@ -86,6 +83,8 @@ func ConfigFor(appCfg *config.Configuration) Config {
 	cfg.SavedPlacesDateOnly = appCfg.SavedPlacesDateOnly
 	cfg.MergeSameLocationDays = appCfg.MergeSameLocationDays
 	switch {
+	// empty Rules keeps the defaults; RuleNone is interpreted only here, so
+	// every caller sees the sentinel resolved the same way
 	case len(appCfg.Rules) == 1 && appCfg.Rules[0] == RuleNone:
 		cfg.Rules = nil
 	case len(appCfg.Rules) > 0:

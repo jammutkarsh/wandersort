@@ -17,8 +17,7 @@ import (
 
 // CheckOutputSpace warns, once, when the output volume cannot hold the whole
 // library. Best-effort: an unreadable size or volume is a warning, never a
-// failure. Exported because `review` runs it too — the last look before a plan
-// is approved is where "the disk is too small" is still actionable.
+// failure. Exported because `review` runs it too.
 func CheckOutputSpace(ctx context.Context, database *db.DB, log logger.Logger, outputDir string) {
 	var librarySize int64
 	if err := database.SQL.GetContext(ctx, &librarySize,

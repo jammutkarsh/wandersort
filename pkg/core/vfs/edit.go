@@ -13,20 +13,11 @@ import (
 )
 
 // This file holds the review tree's reshaping rules — merge, drop, flatten —
-// and the tree-walking helpers they share with Confirm's MergedIDs handling.
-// They operate on plain []Node/*Node with no knowledge of a TUI: a caller
-// (internal/review's Model) resolves a keypress and a row selection into a
-// []Node.ID list, calls one of these, and applies the result back onto its
-// own cursor/undo/status state. That split is what lets a tree edit be tested
-// by stating a tree and asserting the result, without going through
-// tea.KeyMsg.
-//
-// Every function here mutates its tree argument in place (via pointers
-// obtained through FindNode) and also returns it, so a caller must snapshot
-// (CloneTree) before calling if it wants an undo step — same as Confirm's
-// MergedIDs invariant, this package owns the whole thing, not just half.
-// Each fails only before any mutation happens, so an error return always
-// leaves the input tree untouched.
+// operating on plain []Node with no knowledge of a TUI, so they're testable
+// by stating a tree and asserting the result (internal/review's Model wires
+// keypresses to these calls and owns its own cursor/undo/status state).
+// Every function mutates its tree argument in place; a caller wanting undo
+// must CloneTree before calling. Each fails before any mutation happens.
 
 // SortTree restores name order after a structural edit — BuildTree emits
 // sorted levels, but a splice (merge, drop, flatten) appends, and a folder
@@ -200,16 +191,11 @@ func pruneEmptied(nodes []Node, leafIDs map[string]bool) []Node {
 }
 
 // MergeNodes folds every node in ids into one, under their lowest common
-// ancestor by path, and returns the tree with that edit applied plus the
-// surviving node's ID, its name (the first id's own name, or the pending
-// rename on it — never a suggestion, which is an offer nobody accepted), and
-// the ancestor's name for the caller's status line.
-//
-// ids must name at least two nodes; a caller with a single-row selection
-// should reject that itself rather than rely on this error. Assumes no id in
-// ids is an ancestor of another — a caller like the review TUI's
-// same-depth-only selection already guarantees that.
+// ancestor by path. Returns the surviving node's ID, its name, and the
+// ancestor's name for the caller's status line.
 func MergeNodes(tree []Node, ids []string, pending map[string]string) (newTree []Node, mergedID, name, ancestorName string, err error) {
+	// Assumes no id in ids is an ancestor of another — the review TUI's
+	// same-depth-only selection already guarantees that.
 	if len(ids) < 2 {
 		return tree, "", "", "", fmt.Errorf("select at least two folders at the same level to merge")
 	}
@@ -245,6 +231,8 @@ func MergeNodes(tree []Node, ids []string, pending map[string]string) (newTree [
 	leafIDs := map[string]bool{}
 	collectLeafIDs(tree, leafIDs)
 
+	// the first id's own name or its pending rename — never a suggestion,
+	// which is an offer nobody accepted
 	target := finalName(picks[0].value, pending)
 
 	// absorb the rest; mergeInto collapses same-named children recursively, so
@@ -267,14 +255,8 @@ func MergeNodes(tree []Node, ids []string, pending map[string]string) (newTree [
 	return tree, merged.ID, target, lca.Name, nil
 }
 
-// DropNodes removes each node in ids, lifting its children onto its parent —
-// dropping "Apple iPhone 13" then "Indore" under 2023/April leaves April
-// holding the files, one group-by level shallower. Files sitting directly in
-// a dropped node remap onto the parent via MergedIDs.
-//
-// Fails, tree unchanged, if any id names a top-level node — its files would
-// land in the library root. Returns the dropped nodes' names, in ids order.
-// Assumes no id in ids is an ancestor of another.
+// DropNodes removes each node in ids, lifting its children onto its parent,
+// one group-by level shallower. Returns the dropped nodes' names, in order.
 func DropNodes(tree []Node, ids []string) (newTree []Node, names []string, err error) {
 	type drop struct {
 		parentID string
@@ -284,6 +266,8 @@ func DropNodes(tree []Node, ids []string) (newTree []Node, names []string, err e
 	for _, id := range ids {
 		parent := parentOf(tree, id)
 		if parent == nil {
+			// a top-level node has no parent to lift its children onto — its
+			// files would land in the library root ([D] flattens it instead)
 			return tree, nil, fmt.Errorf("can't drop a top-level folder — its files would land in the library root ([D] flattens it instead)")
 		}
 		n := FindNode(tree, id)
@@ -303,7 +287,7 @@ func DropNodes(tree []Node, ids []string) (newTree []Node, names []string, err e
 		}
 		removeChildByID(parent, d.node.ID)
 		parent.Children = append(parent.Children, d.node.Children...)
-		// files sitting directly in the dropped folder remap onto the parent
+		// files sitting directly in the dropped node remap onto the parent
 		parent.MergedIDs = append(parent.MergedIDs, append([]string{d.node.ID}, d.node.MergedIDs...)...)
 		names = append(names, d.node.Name)
 	}
@@ -311,18 +295,13 @@ func DropNodes(tree []Node, ids []string) (newTree []Node, names []string, err e
 	return tree, names, nil
 }
 
-// FlattenNodes collapses everything below each node in ids directly into it:
-// `2023/April/Indore/Apple iPhone 13` flattened at April becomes
-// `2023/April` holding all ten files. FileCount is unchanged (it already
-// counts the subtree); every former descendant remaps onto the node via
-// MergedIDs.
-//
-// ids with no children are skipped; if none remain, returns an error and the
-// tree unchanged. Returns the flattened nodes' names, in ids order. Assumes
-// no id in ids is an ancestor of another.
+// FlattenNodes collapses everything below each node in ids directly into it
+// (`2023/April/Indore/Apple iPhone 13` flattened at April becomes
+// `2023/April` holding all ten files). Returns the flattened nodes' names.
 func FlattenNodes(tree []Node, ids []string) (newTree []Node, absorbed int, names []string, err error) {
 	var targets []string
 	for _, id := range ids {
+		// childless ids are skipped rather than erroring individually
 		if n := FindNode(tree, id); n != nil && len(n.Children) > 0 {
 			targets = append(targets, id)
 		}
@@ -347,7 +326,7 @@ func FlattenNodes(tree []Node, ids []string) (newTree []Node, absorbed int, name
 			}
 		}
 		absorb(node.Children)
-		node.Children = nil
+		node.Children = nil // FileCount is unchanged — it already counted the subtree
 		names = append(names, node.Name)
 	}
 

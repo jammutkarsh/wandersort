@@ -26,11 +26,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
-// Deps supplies the two downloadable dependencies, blocking until each exists.
-// This is what lets a first-ever scan start walking files while the downloads
-// are still running: scan/hash need nothing, only the exif phase calls
-// Exiftool() and only the vfs phase calls Location(), so each phase stalls
-// exactly as long as its own dependency — usually not at all.
+// Deps supplies the two downloadable dependencies, blocking until each
+// exists — only the exif and vfs phases call these, so scan/hash can start
+// while the downloads are still running.
 type Deps struct {
 	Exiftool func() (string, error)             // path to the exiftool binary
 	Location func() (*location.Resolver, error) // open gazetteer resolver

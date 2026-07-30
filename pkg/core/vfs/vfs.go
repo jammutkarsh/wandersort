@@ -4,13 +4,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package vfs is phase 4 of the pipeline. It proposes a destination folder
-// hierarchy for every master file in the library — regardless of which scan
-// session indexed it — without touching anything on disk, persisting the
-// proposal as PROPOSED rows in virtual_fs_entries. Each run replaces the
-// previous proposal wholesale, so the same set of source files always yields
-// the same proposal. The review flow (issue #8) approves or corrects it; a
-// future Execute phase performs the actual copy/move.
+// Package vfs is the pipeline's final phase: it proposes a destination folder
+// hierarchy for every master file in the library, persisted as PROPOSED rows
+// in virtual_fs_entries, without touching anything on disk. The review flow
+// approves or corrects it; a future Execute phase performs the copy/move.
 package vfs
 
 import (

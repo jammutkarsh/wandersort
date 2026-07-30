@@ -6,15 +6,11 @@
 
 package vfs
 
-// review.go is issue #8's reconcile core behind `wandersort review`. It reads
-// the PROPOSED rows the VFS build wrote and exposes them as a directory-only
-// tree; it applies the user's edits back onto virtual_fs_entries and
-// remembers renamed location names in user_labels so future scans suggest
-// them automatically.
-//
-// Nodes are matched by an immutable ID (the proposed directory path at build
-// time), never by diffing two trees — the reviewer edits Name fields and the
-// TUI hands back the same tree, IDs untouched.
+// review.go is the reconcile core behind `wandersort review`: it exposes the
+// PROPOSED rows as a directory-only tree, applies edits back onto
+// virtual_fs_entries, and remembers renamed locations in user_labels. Nodes
+// are matched by an immutable ID (the proposed dir path at build time), never
+// by diffing two trees.
 
 import (
 	"context"
@@ -198,11 +194,8 @@ func FilesUnder(ctx context.Context, nodeID string, database *db.DB) ([]string, 
 }
 
 // Confirm applies the (possibly edited) tree back onto the proposal's
-// entries: it rewrites target_path for every renamed directory, flips
-// PROPOSED rows to APPROVED, and records renamed location nodes in
-// user_labels so later scans suggest the corrected name. Nodes are matched by
-// ID; unknown IDs and unsafe names are rejected. The write is synchronous: a
-// nil return means the changes are committed.
+// entries, flips PROPOSED rows to APPROVED, and records renamed location
+// nodes in user_labels. The write is synchronous: a nil return means committed.
 func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 	var targets []string
 	if err := database.SQL.SelectContext(ctx, &targets,

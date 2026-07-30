@@ -113,14 +113,8 @@ func deriveAll(masters []masterFile) {
 }
 
 // resolveLocations reverse-geocodes every GPS-tagged master, then folds the
-// result into a confirmed saved-place anchor within location.MaxDistSquared —
-// otherwise a home city's own suburbs each get their own folder. This always
-// computes the real place, saved places included: whether a saved-place file's
-// location folder actually renders is a SavedPlacesDateOnly decision made later,
-// in segmentFor. Deriving first and suppressing at render time (rather than
-// blanking m.location here) keeps every later phase — clustering, the day-range
-// merge — working off real data instead of each having to know about
-// SavedPlacesDateOnly on its own behalf.
+// result into a nearby confirmed saved-place anchor so a home city's own
+// suburbs don't each get their own folder.
 func resolveLocations(ctx context.Context, masters []masterFile, labels []userLabel, geo *location.Resolver, log logger.Logger) {
 	if geo == nil {
 		return
@@ -151,6 +145,9 @@ func resolveLocations(ctx context.Context, masters []masterFile, labels []userLa
 			log.Debug("No location for coordinates", "lat", m.lat, "lon", m.lon, "error", err)
 			continue
 		}
+		// always the real place, saved-place included — segmentFor is what
+		// suppresses the folder later, so clustering and the day-range merge
+		// keep working off real data without knowing about that setting
 		m.location = city
 		for _, a := range anchors {
 			dLat, dLon := m.lat-*a.GPSLat, m.lon-*a.GPSLon
@@ -179,19 +176,15 @@ func applyNameCase(masters []masterFile) {
 // one dated range: 2024/08/{02,03,04}/Goa becomes 2024/08/02_04/Goa. A Pune day
 // interleaved at 03 keeps its own folder, and the reviewer can still split a
 // range in the review TUI.
-//
-// This keys on m.location, which resolveLocations sets to the real place for
-// saved-place files too (SavedPlacesDateOnly only hides the *folder*, in
-// segmentFor — see its comment). So saved-place days merge exactly like a trip's
-// do, with no special-casing needed here.
 func mergeSameLocationDays(masters []masterFile, cfg Config) {
 	if !cfg.MergeSameLocationDays {
 		return
 	}
-	// Date must exist to hold the range label. Location doesn't have to be a
-	// configured Rule — files can still share a real (if unrendered) place —
-	// but when it is, Date has to sit at or above it, or the range folder
-	// wouldn't contain the location folder it's meant to.
+	// keys on m.location, the real place even for saved-place files (see
+	// resolveLocations), so saved-place days merge like any trip's with no
+	// special-casing here. Date must exist to hold the range label; when
+	// Location is a configured Rule it must sit at or above Date, or the
+	// range folder wouldn't contain the location folder it's meant to.
 	di, li := slices.Index(cfg.Rules, RuleDate), slices.Index(cfg.Rules, RuleLocation)
 	if di < 0 || (li >= 0 && di > li) {
 		return
@@ -255,20 +248,15 @@ func mergeSameLocationDays(masters []masterFile, cfg Config) {
 	}
 }
 
-// buildTargets derives every master's destination independently — a file's
-// own time and location decide its directory — except for a best-effort
-// capture group (see captureDirs): a sidecar or RAW+JPG pair sharing a
-// filename stem and an agreeing EXIF timestamp is forced into one shared
-// directory, since a sidecar has no EXIF of its own and would otherwise
-// scatter by file mtime. Camera filename counters get reused across
-// unrelated shoots, so a bare stem match is never enough on its own — that's
-// what the timestamp agreement guards against. A real Live Photo pair still
-// lands together because its members genuinely share GPS and timestamp.
+// buildTargets derives every master's destination independently, except for
+// a best-effort capture group (see captureDirs) that forces a sidecar/RAW+JPG
+// bundle into one shared directory.
 func buildTargets(masters []masterFile, cfg Config) {
 	skip := uninformativeLevels(masters, cfg)
 	groupDirs := captureDirs(masters, skip, cfg)
 	taken := map[string]bool{}
 	for i := range masters {
+		// captureDirs wins when it named a shared directory for this file's group
 		dir, ok := groupDirs[i]
 		if !ok {
 			dir = dirFor(&masters[i], skip, cfg)
@@ -326,25 +314,17 @@ func (m *masterFile) hasExifTime() bool {
 // iPhone edit/sidecar bundle (IMG_1783.AAE + IMG_1783.HEIC + IMG_E1783.HEIC)
 // or a RAW+JPG pair — and returns the directory they should all share, keyed
 // by master index.
-//
-// The candidate key is same source directory + same captureStem. A group
-// only forms when every member that has a real EXIF timestamp agrees to the
-// second: camera filename counters get reused across unrelated shoots (the
-// reason the old unconditional stem-pairing was removed), and two people's
-// overlapping series landing in the same folder (e.g. AirDrop) must not get
-// merged just because a counter happens to collide. A sidecar has no EXIF
-// timestamp of its own to agree or disagree with, so it doesn't vote — it
-// rides along on whatever its real-timestamped siblings agree on. Video is
-// excluded entirely: a Live Photo's .MOV already lands next to its .HEIC
-// because they share the same GPS/timestamp (see buildTargets), and forcing
-// it into the group's dir could push it across the Photos/Videos split.
 func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int]string {
 	type group struct{ members []int }
 	groups := map[string]*group{}
 	for i := range masters {
+		// a Live Photo's .MOV already lands next to its .HEIC via shared
+		// GPS/timestamp (buildTargets); forcing it into the group dir here
+		// could push it across the Photos/Videos split instead
 		if masters[i].MediaType == classifier.MediaTypeVideo {
 			continue
 		}
+		// candidate key: same source directory + same captureStem
 		key := masters[i].FileDir + "|" + captureStem(masters[i].FileName)
 		g := groups[key]
 		if g == nil {
@@ -359,6 +339,11 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 		if len(g.members) < 2 {
 			continue
 		}
+		// a group only forms when every real-EXIF-timestamped member agrees to
+		// the second — a bare stem match isn't enough since camera filename
+		// counters get reused across unrelated shoots. A sidecar has no EXIF
+		// timestamp to agree or disagree with, so it doesn't vote; it rides
+		// along on whatever its timestamped siblings agree on.
 		var agreed time.Time
 		conflict := false
 		for _, i := range g.members {
@@ -505,13 +490,13 @@ var collapsibleLevels = map[string]bool{
 // uninformativeLevels finds collapsible levels resolving to at most one folder
 // name library-wide — "…/Goa/iPhone/Vertical/Photos/" is four folders deep to
 // reach one when every file is a vertical iPhone photo.
-//
-// Measured library-wide, not per-branch: a level kept under one Day and dropped
-// under the next gives the tree a different depth depending on where you stand.
 func uninformativeLevels(masters []masterFile, cfg Config) map[string]bool {
 	if !cfg.CollapseLevels {
 		return nil
 	}
+	// measured library-wide, not per-branch: a level kept under one Day and
+	// dropped under the next would give the tree a different depth depending
+	// on where you stand
 	seen := map[string]map[string]bool{}
 	for _, level := range cfg.Rules {
 		if collapsibleLevels[level] {
@@ -648,12 +633,11 @@ func deviceName(mk, model string) string {
 }
 
 // SanitizeSegment makes a derived value safe to use as a single path segment.
-// Spaces and commas — routine in a geocoded place name ("Seoni, Himachal
-// Pradesh") or a title-cased device name ("Samsung Galaxy S23") — become
-// '-', since folder names never carry either; the comma is still fine
-// anywhere a person is *choosing* a name (search results, the rename
-// dropdown), just not in the name once picked.
 func SanitizeSegment(seg string) string {
+	// spaces and commas are routine in a geocoded place name ("Seoni,
+	// Himachal Pradesh") or title-cased device name ("Samsung Galaxy S23");
+	// the comma is fine anywhere a person is *choosing* a name (search
+	// results, the rename dropdown), just not in the name once picked
 	seg = strings.Map(func(r rune) rune {
 		switch r {
 		case '/', '\\', ':', 0, ' ', ',', '\t', '\n':
