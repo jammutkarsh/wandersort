@@ -60,7 +60,7 @@ wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
 }
 
 func (a *app) runScan(cmd *cobra.Command, paths []string) error {
-	if a.tuiEnabled(cmd) {
+	if a.isTuiEnabled(cmd) {
 		return a.runScanTUI(paths)
 	}
 	return a.runScanPlain(paths)

@@ -93,6 +93,9 @@ func (a *app) runReview(cmd *cobra.Command) error {
 			return fmt.Errorf("dependencies: %w", err)
 		}
 		cfg := vfs.ConfigFor(a.Config)
+		g, _ := a.Config.Load()
+		resolver.BuildAnchors(ctx, g.SavedPlaces)
+		cfg.Anchors = resolver.Anchors
 		a.Log.Info("Rebuilding folder proposal", "rules", cfg.Rules, logger.UserKey, true)
 		if _, err := vfs.New(a.AppDB, resolver, a.Log, cfg).Run(ctx); err != nil {
 			return fmt.Errorf("rebuild proposal: %w", err)

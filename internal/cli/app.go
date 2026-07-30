@@ -17,7 +17,6 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jmoiron/sqlx"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -55,16 +54,7 @@ func (a *app) workflowDeps(ctx context.Context) workflow.Deps {
 			return a.Deps.AwaitExiftool()
 		},
 		Location: func() (*location.Resolver, error) {
-			resolver, err := a.Deps.AwaitLocation()
-			if err != nil {
-				return nil, err
-			}
-			// anchors need the resolver, so this is the earliest they can sync;
-			// vfs is also the only phase that reads them
-			if err := a.syncAnchors(ctx, resolver); err != nil {
-				return nil, fmt.Errorf("anchors: %w", err)
-			}
-			return resolver, nil
+			return a.Deps.AwaitLocation()
 		},
 	}
 }
@@ -82,9 +72,9 @@ func (a *app) initAppDB(ctx context.Context) error {
 }
 
 func (a *app) closeDBs() {
-	a.Log.Info("Closing databases")
 	// A failed Close can leave the WAL/SHM files locked (locking_mode=EXCLUSIVE),
 	// preventing the next scan from starting — always log the cause.
+	a.Log.Info("Closing databases")
 	if a.AppDB != nil {
 		if err := a.AppDB.Close(); err != nil {
 			a.Log.Error("failed to close app database", "error", err)
@@ -99,60 +89,13 @@ func (a *app) closeDBs() {
 	}
 }
 
-// tuiEnabled decides whether a command renders the full-screen TUI or falls
+// isTuiEnabled decides whether a command renders the full-screen TUI or falls
 // back to plain line logging. Plain when --plain is set or stderr isn't a
 // terminal (piped/redirected). The TUI draws to stderr, matching the review
 // TUI, so stdout stays clean for piping.
-func (a *app) tuiEnabled(cmd *cobra.Command) bool {
+func (a *app) isTuiEnabled(cmd *cobra.Command) bool {
 	if plain, _ := cmd.Flags().GetBool(flagPlain); plain {
 		return false
 	}
 	return term.IsTerminal(int(os.Stderr.Fd()))
-}
-
-// syncAnchors ensures the globally-saved anchor towns exist as SAVED_PLACE
-// user_labels in this library's DB — a global setting, but resolveLocations
-// reads it per-library, so each library needs its own copy.
-func (a *app) syncAnchors(ctx context.Context, resolver *location.Resolver) error {
-	if resolver == nil {
-		return nil
-	}
-	g, err := a.Config.Load()
-	if err != nil {
-		// anchors only sharpen the proposal, they don't gate it
-		a.Log.Warn("Could not read global config, skipping anchor sync", "error", err)
-		return nil
-	}
-
-	// index 0 home, 1 work, everything after another frequently-stayed-at
-	// place — all anchored the same way
-	for _, name := range g.SavedPlaces {
-		if name == "" {
-			continue
-		}
-		kind := config.SavedPlace
-		var exists int
-		if err := a.AppDB.SQL.GetContext(ctx, &exists,
-			`SELECT COUNT(*) FROM user_labels WHERE kind = ? AND label = ?`, kind, name); err != nil {
-			return fmt.Errorf("check anchor %q: %w", name, err)
-		}
-		if exists > 0 {
-			continue // already synced, idempotent
-		}
-		lat, lon, err := resolver.ResolveByName(ctx, name)
-		if err != nil {
-			a.Log.Warn("Could not resolve saved anchor town", "town", name, "error", err)
-			continue
-		}
-		if !a.AppDB.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
-			_, err := tx.ExecContext(ctx,
-				`INSERT INTO user_labels (label, kind, gps_lat, gps_lon) VALUES (?, ?, ?, ?)`,
-				name, kind, lat, lon)
-			return err
-		}) {
-			return fmt.Errorf("save anchor %q: writer closed", name)
-		}
-		a.Log.Info("Synced anchor for this library", logger.UserKey, true, "town", name, "kind", kind)
-	}
-	return nil
 }

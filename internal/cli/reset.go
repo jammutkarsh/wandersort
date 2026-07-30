@@ -81,7 +81,7 @@ func (a *app) runReset(cmd *cobra.Command) error {
 // confirmReset asks before the irreversible wipe: a themed dialog in the
 // full-screen TUI, or a plain y/N prompt when --plain / non-interactive.
 func (a *app) confirmReset(cmd *cobra.Command) bool {
-	if !a.tuiEnabled(cmd) {
+	if !a.isTuiEnabled(cmd) {
 		fmt.Fprint(os.Stderr, tui.Attn.Render("Delete all wandersort data?")+" (y/N): ")
 		reader := bufio.NewReader(os.Stdin)
 		input, _ := reader.ReadString('\n')
