@@ -90,6 +90,41 @@ func TestLookupCachesHits(t *testing.T) {
 	}
 }
 
+// TestLookupNamesTheRealPoint pins that the cache grid is a key, not a
+// relocation: Lookup must name the city nearest the coordinates it was given,
+// not the one nearest the rounded square's centre. Both coordinates below sit
+// far enough into a square that the two disagree — naming the centre calls the
+// first "Lambeth" and the second "Chinatown, New York".
+func TestLookupNamesTheRealPoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		lat, lon float64
+	}{
+		{"London near a grid edge", 51.5034, -0.1238},
+		{"Lower Manhattan near a grid edge", 40.7168, -74.0020},
+	}
+	ctx := context.Background()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := installtest.Resolver(t)
+			nearest, err := r.Candidates(ctx, tt.lat, tt.lon, location.NearSearchDegrees, 1)
+			if err != nil {
+				t.Fatalf("Candidates: %v", err)
+			}
+			if len(nearest) == 0 {
+				t.Fatalf("no candidate at %.4f,%.4f", tt.lat, tt.lon)
+			}
+			got, err := r.Lookup(ctx, tt.lat, tt.lon)
+			if err != nil {
+				t.Fatalf("Lookup: %v", err)
+			}
+			if got != nearest[0].DisplayName {
+				t.Errorf("Lookup = %q, want %q (the nearest city to the real point)", got, nearest[0].DisplayName)
+			}
+		})
+	}
+}
+
 // benchCoords mixes dense metros (where the bounding box returns the full
 // candidateFetchLimit) with sparser towns, since the row count is what the
 // name-count query scales with.
