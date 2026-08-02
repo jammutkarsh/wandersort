@@ -248,11 +248,17 @@ one scan ever runs against it at a time (see "Conventions" below):
   rows out of order), `m` **folds every row in the range at the anchor row's
   depth into one node under their lowest common ancestor**
   (`vfs.MergeNodes`, via `commonPathPrefix` + `FindNode`/`removeChildByID` —
-  a real tree-splice, not just a rename), named after the first one's
-  **own** name — or the rename the reviewer typed on it, never its
-  suggestion (an offer nobody accepted; broadcasting one put a name on the
-  merged folder that came from no visible choice) — with the summed
-  `FileCount`. **Anchor depth is the
+  a real tree-splice, not just a rename), named after **the row `V` was
+  pressed on** — its own name, or the rename the reviewer typed on it, never
+  its suggestion (an offer nobody accepted; broadcasting one put a name on
+  the merged folder that came from no visible choice) — with the summed
+  `FileCount`. `mergeSelection` pulls the anchor's ID to the front of the
+  slice it hands `vfs.MergeNodes` (which always keeps `ids[0]`) precisely so
+  this holds regardless of which direction the range was extended in:
+  `selectedRows()` normalizes low/high to tree order for iteration, so
+  extending *upward* from the anchor would otherwise silently hand naming to
+  whichever row ended up topmost instead of the one actually pressed. **Anchor
+  depth is the
   selection rule** — rows deeper than the row `V` was pressed on are that
   folder's own contents and ride along; shallower ones are scaffolding
   spanned to reach the next branch. One rule covers both shapes: leaves from
@@ -689,7 +695,10 @@ reads it straight via `config.Load`.
   versioning, and verifying it is entirely `pkg/install`'s job
   (`install.OpenLocationResolver`; see below). `NewResolver` just wraps an
   opened `*db.DB` — a query-only constructor, not a setup path. `Lookup`
-  (single best match, cached/singleflighted) and `Candidates` (ranked list for
+  (single best match, cached on a ~1.1km grid — the *cache key* is rounded, the
+  query itself runs on the real coordinates; there is **no** singleflight, so a
+  cold cache lets concurrent `resolveLocations` workers duplicate a query)
+  and `Candidates` (ranked list for
   the review TUI's rename picker) share one query and one rule: a plain-spelled
   geonames entry ("Banjar") always ranks ahead of a diacritic one ("Banjār")
   at roughly the same distance, via `stripDiacritics`, not just whichever the
@@ -703,18 +712,24 @@ reads it straight via `config.Load`.
   `Candidate`/`PlaceMatch` carry both:
 
   - `FullName` (`fullName`) — city, state and country spelled out,
-    `Indore, Madhya Pradesh, India`. **Every list a person picks from shows
-    this**: the `config` town suggestions and the review rename picker. Six
-    rows reading `Springfield` are not a choice, and the state/country are the
-    only thing that tells them apart. Whatever the user picks is what gets
-    saved/named — WYSIWYG. `SearchByName` also **dedupes on it**: the geonames
-    database holds two `Banjar, West Java, Indonesia` a few hundred metres apart, and
-    listing the same string twice is no more pickable than listing `Banjar`
-    twice.
+    `Indore, Madhya Pradesh, India`. **The `config` town picker shows this**:
+    six rows reading `Springfield` are not a choice, and the state/country are
+    the only thing that tells them apart there. Whatever the user picks is
+    what gets saved — WYSIWYG. `SearchByName` also **dedupes on it**: the
+    geonames database holds two `Banjar, West Java, Indonesia` a few hundred
+    metres apart, and listing the same string twice is no more pickable than
+    listing `Banjar` twice.
   - `DisplayName` (`disambiguate`) — the *smallest qualifier that makes this
     entry unique*, used where nobody chose anything: the folder `Lookup` names
-    automatically. Spelling every folder out to three parts would put
-    `Indore, Madhya Pradesh, India` on a library that only ever saw one Indore.
+    automatically, **and the review TUI's rename autocomplete**
+    (`internal/review/autocomplete.go`). Spelling every folder out to three
+    parts would put `Indore, Madhya Pradesh, India` on a library that only
+    ever saw one Indore — a real reported bug: the rename dropdown used to
+    offer `FullName` unconditionally, so a `Bhopal` with exactly one geonames
+    row still autocompleted to `Bhopal, Madhya Pradesh, India`. The rename
+    picker is a folder name in progress, not a disambiguation list — it
+    should only ever add a qualifier when the DB genuinely has a same-named
+    collision, same as `Lookup`.
 
   The ladder behind `DisplayName` is computed from three correlated counts
   (`nameCountsSQL`: rows with this name, distinct countries, rows with this
