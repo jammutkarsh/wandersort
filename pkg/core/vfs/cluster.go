@@ -101,14 +101,15 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, anchors []locat
 }
 
 // sortKey is one master reduced to what the sort actually compares: the
-// capture instant, plus the original index. 16 bytes against masterFile's 408,
-// so a 100k library sorts inside L2 instead of chasing 41 MB of struct.
-// The int32 idx caps this at 2^31 masters, which is 875 GB of masterFile —
-// loadMasters exhausts memory long before the field could truncate.
+// capture instant, plus the original index. 24 bytes against masterFile's 408,
+// so a 100k library sorts inside L2 instead of chasing 41 MB of struct. idx is
+// a plain int — it indexes masters, so it holds whatever a slice can, and this
+// imposes no limit of its own. nsec is int32 because a nanosecond-within-second
+// is 0..999999999 by definition, not because anything is being capped.
 type sortKey struct {
 	sec  int64
+	idx  int
 	nsec int32
-	idx  int32
 }
 
 // sortByCaptureTime orders masters oldest-first, stably. It sorts compact keys
@@ -123,7 +124,7 @@ func sortByCaptureTime(masters []masterFile) {
 		// gives — none of these times carry a monotonic reading, they all come
 		// from time.Parse — and unlike UnixNano it doesn't overflow on the zero
 		// time an undated file has.
-		keys[i] = sortKey{t.Unix(), int32(t.Nanosecond()), int32(i)}
+		keys[i] = sortKey{sec: t.Unix(), idx: i, nsec: int32(t.Nanosecond())}
 	}
 	// carrying idx in the key makes an unstable sort stable, which is what lets
 	// this use the faster SortFunc
@@ -141,22 +142,22 @@ func sortByCaptureTime(masters []masterFile) {
 	// the outer loop skips what a cycle already placed. The scratch-slice
 	// version of this had to zero 41 MB at 100k before writing a byte to it.
 	for k := range keys {
-		if keys[k].idx == int32(k) {
+		if keys[k].idx == k {
 			continue
 		}
 		held := masters[k] // the one element a cycle can't move into place directly
 		cur := k
 		for {
-			src := int(keys[cur].idx)
+			src := keys[cur].idx
 			if src == k { // cycle closed — its last slot wants what we lifted out
 				break
 			}
 			masters[cur] = masters[src]
-			keys[cur].idx = int32(cur)
+			keys[cur].idx = cur
 			cur = src
 		}
 		masters[cur] = held
-		keys[cur].idx = int32(cur)
+		keys[cur].idx = cur
 	}
 }
 
