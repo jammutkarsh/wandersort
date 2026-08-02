@@ -29,8 +29,12 @@ var ErrNoLocation = errors.New("locationResolver: location not found")
 // Exported: vfs.resolveLocations reuses it for the anchor-fold radius.
 const MaxDistSquared = 0.2025
 
-// gpsRoundingFactor rounds coordinates to 4 decimal places (≈ 11 m)
-const gpsRoundingFactor = 10000
+// gpsRoundingFactor rounds coordinates to 2 decimal places (≈ 1.1 km) for the
+// Lookup cache key. The grid only has to be small against the acceptance radius
+// (MaxDistSquared, ~50 km) to name the same city, and it decides how often a
+// walk around town pays for a fresh query: an 11 m grid billed one every eleven
+// metres.
+const gpsRoundingFactor = 100
 
 // Bounding-box half-widths queryNearest tries in order: tight first, then wide.
 const (
@@ -63,18 +67,29 @@ func NewResolver(locationDB *db.DB, log logger.Logger) *Resolver {
 // Lookup returns the name of the nearest populated place for the given
 // decimal-degree coordinates
 func (r *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error) {
-	// round to ~11 m so photos from one spot share a cache key despite GPS jitter
+	// round so photos taken around one place share a cache key despite GPS jitter
 	key := cacheKey{
 		lat: math.Round(lat*gpsRoundingFactor) / gpsRoundingFactor,
 		lon: math.Round(lon*gpsRoundingFactor) / gpsRoundingFactor,
 	}
 
 	if val, ok := r.cache.Load(key); ok {
-		return val.(string), nil
+		if city := val.(string); city != "" {
+			return city, nil
+		}
+		return "", ErrNoLocation
 	}
 
 	city, err := r.queryNearest(ctx, key.lat, key.lon)
-	if err != nil {
+	switch {
+	// remember that nothing is near this square too — a library shot far from
+	// any populated place would otherwise re-run both passes for every file.
+	// Only ErrNoLocation: a cancelled context or a failed query says nothing
+	// about the coordinates and must stay retryable.
+	case errors.Is(err, ErrNoLocation):
+		r.cache.Store(key, "")
+		return "", err
+	case err != nil:
 		return "", err
 	}
 	r.cache.Store(key, city)
@@ -120,14 +135,6 @@ const candidateFetchLimit = 32
 // page made entirely of rows that don't survive it.
 const searchOverfetchFactor = 8
 
-// nameCountsSQL counts, for each row: cities sharing this name, the countries
-// they span, and how many sit in this row's own country. disambiguate turns
-// the three into the smallest unique qualifier. All hit idx_geonames_cities_city.
-const nameCountsSQL = `
-    	(SELECT COUNT(*)                        FROM geonames_cities g2 WHERE g2.city = gc.city COLLATE NOCASE),
-    	(SELECT COUNT(DISTINCT g2.country_code) FROM geonames_cities g2 WHERE g2.city = gc.city COLLATE NOCASE),
-    	(SELECT COUNT(*)                        FROM geonames_cities g2 WHERE g2.city = gc.city COLLATE NOCASE AND g2.country_code = gc.country_code)`
-
 // candidateQuery is shared by Candidates and queryNearest.
 var candidateQuery = `
 	WITH params AS (
@@ -136,12 +143,91 @@ var candidateQuery = `
 	SELECT gc.city,
     	(gc.latitude  - p.lat) * (gc.latitude  - p.lat) +
     	(gc.longitude - p.lon) * (gc.longitude - p.lon) AS dist,
-    	COALESCE(gc.state, ''), COALESCE(gc.country, ''),` + nameCountsSQL + `
+    	COALESCE(gc.state, ''), COALESCE(gc.country, ''), COALESCE(gc.country_code, '')
 	FROM   geonames_cities gc, params p
 	WHERE  gc.latitude  BETWEEN p.lat - p.delta AND p.lat + p.delta
 	AND    gc.longitude BETWEEN p.lon - p.delta AND p.lon + p.delta
 	ORDER  BY dist
 	LIMIT  ?`
+
+// nameCounts is what disambiguate needs about one city name: how many geonames
+// rows carry it, how many countries those span, and how many sit in each.
+type nameCounts struct {
+	total     int
+	countries int
+	inCountry map[string]int
+}
+
+// countNames answers those three questions for a handful of city names in one
+// indexed GROUP BY. It used to be three correlated subqueries embedded in the
+// row query, which ran them for every row fetched — 32 rows × 3 to disambiguate
+// the one name queryNearest keeps. Asking only for the names a caller actually
+// gets back took a Paris lookup from ~144ms to ~6ms.
+func (r *Resolver) countNames(ctx context.Context, cities []string) (map[string]nameCounts, error) {
+	want := make([]any, 0, len(cities))
+	seen := map[string]bool{}
+	for _, c := range cities {
+		if k := nocaseKey(c); !seen[k] {
+			seen[k] = true
+			want = append(want, c)
+		}
+	}
+	out := map[string]nameCounts{}
+	if len(want) == 0 {
+		return out, nil
+	}
+
+	query := `SELECT gc.city, COALESCE(gc.country_code, ''), COUNT(*)
+		FROM geonames_cities gc
+		WHERE gc.city COLLATE NOCASE IN (?` + strings.Repeat(",?", len(want)-1) + `)
+		GROUP BY gc.city COLLATE NOCASE, gc.country_code`
+	rows, err := r.db.QueryContext(ctx, query, want...)
+	if err != nil {
+		return nil, fmt.Errorf("locationResolver: name counts: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var city, code string
+		var n int
+		if err := rows.Scan(&city, &code, &n); err != nil {
+			return nil, fmt.Errorf("locationResolver: scan name counts: %w", err)
+		}
+		c := out[nocaseKey(city)]
+		if c.inCountry == nil {
+			c.inCountry = map[string]int{}
+		}
+		// every row carrying the name counts toward the total, but only a real
+		// country code is a country — matching COUNT(DISTINCT country_code),
+		// which ignores NULLs
+		c.total += n
+		if code != "" {
+			c.countries++
+			c.inCountry[code] += n
+		}
+		out[nocaseKey(city)] = c
+	}
+	return out, rows.Err()
+}
+
+// nocaseKey folds a city name the way SQLite's NOCASE collation does — ASCII
+// letters only. strings.ToLower would also fold "Ā" to "ā", merging two groups
+// the GROUP BY kept apart.
+func nocaseKey(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, s)
+}
+
+// naming turns one row's counts into the two names a caller may want.
+func (r *Resolver) naming(counts map[string]nameCounts, city, plain, state, country, code string) (display, full string) {
+	c := counts[nocaseKey(city)]
+	return disambiguate(plain, state, country, c.total, c.countries, c.inCountry[code], r.cityClaimed(plain), ", "),
+		fullName(plain, state, country)
+}
 
 // kmPerDegree is a rough degree-to-km conversion for the DistKM estimate shown
 // to the user; the search itself stays in degree-space (see MaxDistSquared)
@@ -157,38 +243,64 @@ func (r *Resolver) Candidates(ctx context.Context, lat, lon, deltaDegrees float6
 	}
 	defer rows.Close()
 
-	var out []Candidate
+	// raw rows first: ranking needs only the distance and the spelling, so the
+	// name counts are deferred until the list has been cut down to what the
+	// caller asked for (see countNames)
+	type row struct {
+		city, state, country, code string
+		distKM                     float64
+		hasMarks                   bool
+	}
+	var raw []row
 	for rows.Next() {
-		var city, state, country string
+		var city, state, country, code string
 		var distSq float64
-		var nameCnt, countryCnt, inCountryCnt int
-		if err := rows.Scan(&city, &distSq, &state, &country, &nameCnt, &countryCnt, &inCountryCnt); err != nil {
+		if err := rows.Scan(&city, &distSq, &state, &country, &code); err != nil {
 			return nil, fmt.Errorf("locationResolver: scan: %w", err)
 		}
 		if distSq > MaxDistSquared {
 			continue
 		}
-		plain := stripDiacritics(city)
-		out = append(out, Candidate{
-			Name:        plain,
-			DisplayName: disambiguate(plain, state, country, nameCnt, countryCnt, inCountryCnt, r.cityClaimed(plain), ", "),
-			FullName:    fullName(plain, state, country),
-			DistKM:      math.Sqrt(distSq) * kmPerDegree,
-			hasMarks:    plain != city,
+		raw = append(raw, row{
+			city: city, state: state, country: country, code: code,
+			distKM:   math.Sqrt(distSq) * kmPerDegree,
+			hasMarks: stripDiacritics(city) != city,
 		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].hasMarks != out[j].hasMarks {
-			return !out[i].hasMarks // plain-spelled entries sort first
+	sort.SliceStable(raw, func(i, j int) bool {
+		if raw[i].hasMarks != raw[j].hasMarks {
+			return !raw[i].hasMarks // plain-spelled entries sort first
 		}
-		return out[i].DistKM < out[j].DistKM
+		return raw[i].distKM < raw[j].distKM
 	})
-	if len(out) > limit {
-		out = out[:limit]
+	if len(raw) > limit {
+		raw = raw[:limit]
+	}
+
+	cities := make([]string, len(raw))
+	for i, c := range raw {
+		cities[i] = c.city
+	}
+	counts, err := r.countNames(ctx, cities)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]Candidate, 0, len(raw))
+	for _, c := range raw {
+		plain := stripDiacritics(c.city)
+		display, full := r.naming(counts, c.city, plain, c.state, c.country, c.code)
+		out = append(out, Candidate{
+			Name:        plain,
+			DisplayName: display,
+			FullName:    full,
+			DistKM:      c.distKM,
+			hasMarks:    c.hasMarks,
+		})
 	}
 	return out, nil
 }
@@ -270,7 +382,7 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 	fetch := limit * searchOverfetchFactor
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT gc.city, gc.latitude, gc.longitude,
-		        COALESCE(gc.state, ''), COALESCE(gc.country, ''),`+nameCountsSQL+`
+		        COALESCE(gc.state, ''), COALESCE(gc.country, ''), COALESCE(gc.country_code, '')
 		 FROM geonames_cities gc
 		 WHERE gc.city LIKE ? || '%' COLLATE NOCASE
 		 ORDER BY gc.city LIMIT ?`,
@@ -280,13 +392,18 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 	}
 	defer rows.Close()
 
-	var out []PlaceMatch
+	// same deferral as Candidates: filter and cut to limit on the row data
+	// alone, then count names once for the survivors
+	type row struct {
+		city, plain, state, country, code string
+		lat, lon                          float64
+	}
+	var raw []row
 	seen := map[string]bool{}
 	for rows.Next() {
-		var name, state, country string
+		var name, state, country, code string
 		var lat, lon float64
-		var nameCnt, countryCnt, inCountryCnt int
-		if err := rows.Scan(&name, &lat, &lon, &state, &country, &nameCnt, &countryCnt, &inCountryCnt); err != nil {
+		if err := rows.Scan(&name, &lat, &lon, &state, &country, &code); err != nil {
 			return nil, fmt.Errorf("locationResolver: scan: %w", err)
 		}
 		if !matchesQualifiers(state, country, qualifiers) {
@@ -300,17 +417,35 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 		} else {
 			seen[full] = true
 		}
+		raw = append(raw, row{city: name, plain: plain, state: state, country: country, code: code, lat: lat, lon: lon})
+		if len(raw) == limit {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	cities := make([]string, len(raw))
+	for i, c := range raw {
+		cities[i] = c.city
+	}
+	counts, err := r.countNames(ctx, cities)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]PlaceMatch, 0, len(raw))
+	for _, c := range raw {
+		display, full := r.naming(counts, c.city, c.plain, c.state, c.country, c.code)
 		out = append(out, PlaceMatch{
-			Name:        plain,
-			DisplayName: disambiguate(plain, state, country, nameCnt, countryCnt, inCountryCnt, r.cityClaimed(plain), ", "),
-			FullName:    fullName(plain, state, country),
-			Lat:         lat, Lon: lon,
+			Name:        c.plain,
+			DisplayName: display,
+			FullName:    full,
+			Lat:         c.lat, Lon: c.lon,
 		})
 	}
-	if len(out) > limit {
-		out = out[:limit]
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // cityClaimed reports whether any anchor already takes this bare city name —
@@ -420,10 +555,15 @@ type Anchor struct {
 // Names that fail to resolve are skipped with a warning. FolderName is
 // disambiguated when two anchors share the same city: the smallest qualifier
 // that tells them apart (state, then country) is appended.
+// It replaces any previous set rather than appending to it, so calling it twice
+// in one process (a second scan, a rebuilt proposal) doesn't leave every anchor
+// duplicated. Call it before a vfs run and never during one: Candidates reads
+// r.Anchors through cityClaimed, and vfs resolves locations concurrently.
 func (r *Resolver) BuildAnchors(ctx context.Context, savedPlaces []string) {
 	if r == nil {
 		return
 	}
+	r.Anchors = nil
 	for _, name := range savedPlaces {
 		lat, lon, err := r.ResolveByName(ctx, name)
 		if err != nil {
