@@ -8,9 +8,13 @@ package vfs
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jammutkarsh/wandersort/pkg/classifier"
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -184,6 +188,155 @@ func TestSortByCaptureTimePermutation(t *testing.T) {
 	for n, c := range seen {
 		if c != 1 {
 			t.Errorf("%q appears %d times, want exactly 1", n, c)
+		}
+	}
+}
+
+// fanoutFixture is a library shaped to hit every branch the parallel passes
+// touch: target-path collisions, captureDirs groups, screenshots, undated
+// files, GPS-less files that need clustering, and enough volume to span
+// several of forEachMaster's 512-index runs.
+func fanoutFixture() []masterFile {
+	var masters []masterFile
+	add := func(m masterFile) {
+		m.FileID = int64(len(masters) + 1)
+		masters = append(masters, m)
+	}
+	for i := range 2000 {
+		day := i%28 + 1
+		dto := fmt.Sprintf("2024:%02d:%02d %02d:%02d:00", i%12+1, day, i%24, i%60)
+		m := masterFile{
+			FileDir:     fmt.Sprintf("/src/trip%d", i%13),
+			FileName:    fmt.Sprintf("IMG_%04d.HEIC", i%700), // %700 forces real collisions
+			MediaType:   classifier.MediaTypeImage,
+			DBDateTaken: &dto,
+			DBWidth:     new(int64(3024)),
+			DBHeight:    new(int64(4032)),
+			DBMake:      new("Apple"),
+			DBModel:     new("iPhone 15 Pro"),
+		}
+		switch i % 11 {
+		case 0:
+			m.location = []string{"Goa", "Indore", "Pune"}[i%3]
+		case 1:
+			m.IsScreenshot = true
+		case 2:
+			m.DBDateTaken = nil // undated: falls to the Unsorted shard
+		case 3:
+			m.MediaType = classifier.MediaTypeVideo
+		}
+		add(m)
+	}
+	// same name, same everything derivable, different source folders: these all
+	// land on one directory, so the sequential taken loop has to hand out _2.._6
+	// by arrival order. The case-only variant covers its ToLower key.
+	dup := "2024:07:04 12:00:00"
+	for i, dir := range []string{"/a", "/b", "/c", "/d", "/e", "/f"} {
+		name := "DUP.HEIC"
+		if i == 3 {
+			name = "dup.heic"
+		}
+		add(masterFile{
+			FileDir: dir, FileName: name, MediaType: classifier.MediaTypeImage,
+			DBDateTaken: &dup, location: "Goa",
+			DBWidth: new(int64(3024)), DBHeight: new(int64(4032)),
+			DBMake: new("Apple"), DBModel: new("iPhone 15 Pro"),
+		})
+	}
+
+	// a captureDirs group: same dir + captureStem, agreeing EXIF time, so
+	// every member takes the leader's directory and skips dirFor entirely
+	grp := "2024:06:01 09:30:00"
+	for _, n := range []string{"IMG_9001.HEIC", "IMG_E9001.JPG", "IMG_O9001.JPG"} {
+		add(masterFile{
+			FileDir: "/src/group", FileName: n, MediaType: classifier.MediaTypeImage,
+			DBDateTaken: &grp, location: "Goa",
+			DBWidth: new(int64(4032)), DBHeight: new(int64(3024)),
+		})
+	}
+	return masters
+}
+
+// derived is everything Plan writes onto a master, so a mismatch anywhere in
+// the build surfaces rather than only a differing target path.
+func derived(m *masterFile) string {
+	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%s|%v",
+		m.FileID, m.targetPath, m.suggestionDir, m.suggestion, m.suggestionSource,
+		m.clusterID, m.location, m.eventSegment, m.atSavedPlace)
+}
+
+// TestPlanFanoutMatchesSequential pins the invariant the whole package now
+// leans on: deriveAll, applyNameCase and buildTargets' directory pass run on
+// cfg.Workers goroutines, and none of that may change a single byte of the
+// proposal. Also runs the parallel build twice, so a nondeterministic pass
+// (map iteration leaking into a name) fails rather than flaking in the field.
+func TestPlanFanoutMatchesSequential(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation, RuleDevice, RuleOrientation, RuleMedia}
+
+	run := func(workers int) []string {
+		c := cfg
+		c.Workers = workers
+		masters := fanoutFixture()
+		if err := Plan(context.Background(), masters, nil, c, nil, logger.NewNoopLogger()); err != nil {
+			t.Fatalf("Plan(workers=%d): %v", workers, err)
+		}
+		out := make([]string, len(masters))
+		for i := range masters {
+			out[i] = derived(&masters[i])
+		}
+		return out
+	}
+
+	seq := run(1)
+	for _, workers := range []int{2, 8, 8, 32} {
+		got := run(workers)
+		if len(got) != len(seq) {
+			t.Fatalf("workers=%d: %d masters, want %d", workers, len(got), len(seq))
+		}
+		for i := range seq {
+			if got[i] != seq[i] {
+				t.Fatalf("workers=%d, position %d:\n parallel: %s\n sequential: %s", workers, i, got[i], seq[i])
+			}
+		}
+	}
+
+	// the fixture must actually reach the branches this is meant to cover
+	var collisions int
+	for _, s := range seq {
+		if strings.Contains(s, "_2.HEIC") {
+			collisions++
+		}
+	}
+	if collisions == 0 {
+		t.Error("fixture produced no collision suffixes — the sequential taken loop is untested")
+	}
+}
+
+// TestPlanDegenerateInputs covers the shapes the fan-out has no files to chew
+// on, plus cancellation: forEachMaster still starts its workers for an empty
+// slice, and buildTargets' directory pass can bail mid-way leaving holes in
+// dirs, which Plan must report rather than hand on to persist.
+func TestPlanDegenerateInputs(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation, RuleDevice}
+	log := logger.NewNoopLogger()
+
+	for _, workers := range []int{0, 1, 8} {
+		c := cfg
+		c.Workers = workers
+		for _, n := range []int{0, 1, 2} {
+			if err := Plan(context.Background(), fanoutFixture()[:n], nil, c, nil, log); err != nil {
+				t.Fatalf("workers=%d n=%d: %v", workers, n, err)
+			}
+		}
+		sortByCaptureTime(nil)
+		sortByCaptureTime([]masterFile{{}})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := Plan(ctx, fanoutFixture(), nil, c, nil, log); err == nil {
+			t.Errorf("workers=%d: cancelled Plan returned nil, so a partial proposal would reach persist", workers)
 		}
 	}
 }

@@ -80,10 +80,11 @@ func PreviewPaths(cfg Config, samples []Sample) []string {
 }
 
 // forEachMaster runs fn over every master, on cfg.Workers goroutines when
-// there is more than one. Only for passes that write to their own master and
-// read nothing shared — index-disjoint writes need no synchronisation, and the
-// slice order is untouched either way, so fanning out changes nothing but wall
-// time. workers <= 1 runs the plain loop.
+// there is more than one. Only for passes whose writes are index-disjoint —
+// to fn's own master, or to slot i of a side slice the caller owns — and which
+// read nothing shared but immutable data. Those need no synchronisation, and
+// the slice order is untouched either way, so fanning out changes nothing but
+// wall time. workers <= 1 runs the plain loop.
 func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn func(i int, m *masterFile)) {
 	if workers <= 1 {
 		for i := range masters {
@@ -101,7 +102,7 @@ func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn fu
 	// stretch (resolveLocations hitting uncached coordinates) still spreads.
 	const runSize = 512
 	type run struct {
-		base    int // index of run[0] in masters, for callers that need it
+		base    int // index this run's first master sits at, for callers that need it
 		masters []masterFile
 	}
 	runs := make(chan run, workers)

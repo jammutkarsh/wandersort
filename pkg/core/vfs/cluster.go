@@ -103,6 +103,8 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, anchors []locat
 // sortKey is one master reduced to what the sort actually compares: the
 // capture instant, plus the original index. 16 bytes against masterFile's 408,
 // so a 100k library sorts inside L2 instead of chasing 41 MB of struct.
+// The int32 idx caps this at 2^31 masters, which is 875 GB of masterFile —
+// loadMasters exhausts memory long before the field could truncate.
 type sortKey struct {
 	sec  int64
 	nsec int32
