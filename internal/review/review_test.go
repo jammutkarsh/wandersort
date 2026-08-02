@@ -204,6 +204,34 @@ func TestReview(t *testing.T) {
 				t.Errorf("undo stack = %d deep, want 1 step recorded", len(m.undo))
 			}
 		}},
+		// TestMergeSurvivorIsTheAnchorNotTheTopmostRow covers the reported bug:
+		// V pressed on the lower row, then the cursor moved UP to extend the
+		// selection. selectedRows() normalizes lo/hi to tree order for iteration,
+		// but the anchor — not whichever row ends up topmost — must still name
+		// the merged folder.
+		{"MergeSurvivorIsTheAnchorNotTheTopmostRow", func(t *testing.T) {
+			m := newModel(siblingTree(), nil, nil, nil, nil)
+			// rows: 0=2024, 1=June, 2=03, 3=09 — press V on 09, extend UP to 03
+			m.visualAnchor = 3
+			m.cursor = 2
+			m.visualMode = true
+
+			m.mergeSelection()
+
+			if m.statusIsErr {
+				t.Fatalf("expected success, got error status: %q", m.statusMsg)
+			}
+			if r03 := nodeByID(m.rows, "2024/June/03"); r03 != nil {
+				t.Error("03 should be folded into 09 (the anchor), not still its own row")
+			}
+			r09 := nodeByID(m.rows, "2024/June/09")
+			if r09 == nil || r09.node.Name != "09" || r09.newName != "" {
+				t.Fatalf("want the anchor row still named %q with no pending rename, got %+v", "09", r09)
+			}
+			if got := r09.node.MergedIDs; len(got) != 1 || got[0] != "2024/June/03" {
+				t.Errorf("MergedIDs = %v, want [2024/June/03]", got)
+			}
+		}},
 		// TestMergeAcrossBranchesCollapsesToOneNode covers the real reported case:
 		// merging the same camera's leaves out of three different Month/Day branches
 		// must leave exactly ONE folder under the Year holding all the files — not

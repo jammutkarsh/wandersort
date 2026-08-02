@@ -59,14 +59,21 @@ func (m *Model) mergeSelection() {
 		return
 	}
 	sel := m.selectedRows()
+	anchorID := m.rows[m.visualAnchor].node.ID
 	m.visualMode = false
 	if len(sel) < 2 {
 		m.statusMsg, m.statusIsErr = "select at least two folders at the same level to merge", true
 		return
 	}
-	ids := make([]string, len(sel))
-	for i, r := range sel {
-		ids[i] = r.node.ID
+	// the row [V] was pressed on names the merged folder, whichever direction
+	// the selection was extended in — selectedRows normalizes to tree order,
+	// so the anchor has to be pulled back to the front here
+	ids := make([]string, 0, len(sel))
+	ids = append(ids, anchorID)
+	for _, r := range sel {
+		if r.node.ID != anchorID {
+			ids = append(ids, r.node.ID)
+		}
 	}
 
 	var mergedID, target string
