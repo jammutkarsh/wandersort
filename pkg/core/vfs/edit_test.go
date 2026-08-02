@@ -61,8 +61,10 @@ func TestMergeNodesSiblingsSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergeNodes: %v", err)
 	}
-	if mergedID != "2024/June/03" || name != "03" || ancestor != "June" {
-		t.Fatalf("mergedID=%q name=%q ancestor=%q, want 2024/June/03, 03, June", mergedID, name, ancestor)
+	// both are plain unrenamed Date folders, so the merge proposes the day
+	// range they span rather than keeping just the first pick's own name
+	if mergedID != "2024/June/03" || name != "03_09" || ancestor != "June" {
+		t.Fatalf("mergedID=%q name=%q ancestor=%q, want 2024/June/03, 03_09, June", mergedID, name, ancestor)
 	}
 	june := FindNode(newTree, "2024/June")
 	if june == nil || len(june.Children) != 1 {
@@ -74,6 +76,55 @@ func TestMergeNodesSiblingsSucceeds(t *testing.T) {
 	}
 	if len(merged.MergedIDs) != 1 || merged.MergedIDs[0] != "2024/June/09" {
 		t.Errorf("MergedIDs = %v, want [2024/June/09] so Confirm remaps its files too", merged.MergedIDs)
+	}
+}
+
+// TestMergeNodesCombinesDayRanges covers the reported case: merging several
+// already-merged day ranges under one Month must propose the day range they
+// jointly span ("01_02".."24_26" -> "01_26"), not just keep the first one's
+// own name.
+func TestMergeNodesCombinesDayRanges(t *testing.T) {
+	names := []string{"01_02", "03", "04_08", "11_16", "18_22", "23", "24_26"}
+	tree := []Node{{ID: "2024", Name: "2024", Children: []Node{
+		{ID: "2024/June", Name: "June"},
+	}}}
+	ids := make([]string, len(names))
+	for i, n := range names {
+		id := "2024/June/" + n
+		tree[0].Children[0].Children = append(tree[0].Children[0].Children, Node{ID: id, Name: n, FileCount: 1})
+		ids[i] = id
+	}
+
+	newTree, mergedID, name, _, err := MergeNodes(tree, ids, nil)
+	if err != nil {
+		t.Fatalf("MergeNodes: %v", err)
+	}
+	if name != "01_26" {
+		t.Errorf("name = %q, want the combined day range %q", name, "01_26")
+	}
+	// baked directly into the node, not left for a caller's pending-rename map
+	// to surface — see the [u]-undo bug this guards against in edit.go
+	if survivor := FindNode(newTree, mergedID); survivor == nil || survivor.Name != "01_26" {
+		t.Errorf("survivor.Name = %+v, want the combined range written onto the node itself", survivor)
+	}
+}
+
+// TestMergeNodesSkipsDayRangeOutsideDateFolders covers the guard: a
+// same-depth selection that isn't day-shaped (or mixes a renamed folder in)
+// must fall back to ordinary first-pick naming, not misread an unrelated
+// two-digit folder name as a day.
+func TestMergeNodesSkipsDayRangeOutsideDateFolders(t *testing.T) {
+	tree := []Node{{ID: "root", Name: "root", Children: []Node{
+		{ID: "root/03", Name: "03", FileCount: 1},
+		{ID: "root/Goa", Name: "Goa", FileCount: 1},
+	}}}
+
+	_, _, name, _, err := MergeNodes(tree, []string{"root/03", "root/Goa"}, nil)
+	if err != nil {
+		t.Fatalf("MergeNodes: %v", err)
+	}
+	if name != "03" {
+		t.Errorf("name = %q, want the first pick's own name %q (not day-shaped as a pair)", name, "03")
 	}
 }
 

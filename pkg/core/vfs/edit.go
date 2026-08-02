@@ -9,6 +9,7 @@ package vfs
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -186,6 +187,70 @@ func pruneEmptied(nodes []Node, leafIDs map[string]bool) []Node {
 	return out
 }
 
+// parseDayRange reads a Date-level folder name back into the day(s) it spans
+// — "03" (a single day, dirFor's plain time.Format("02")) or "01_02"
+// (mergeSameLocationDays' merged run, "%02d_%02d"). Anything else, ok is
+// false: this is a narrow match on those two exact shapes, not a general
+// number parser.
+func parseDayRange(name string) (lo, hi int, ok bool) {
+	a, b, found := strings.Cut(name, "_")
+	if !found {
+		b = a
+	}
+	if len(a) != 2 || len(b) != 2 {
+		return 0, 0, false
+	}
+	lo, errA := strconv.Atoi(a)
+	hi, errB := strconv.Atoi(b)
+	if errA != nil || errB != nil || lo < 1 || lo > 31 || hi < 1 || hi > 31 {
+		return 0, 0, false
+	}
+	return lo, hi, true
+}
+
+// formatDayRange is mergeSameLocationDays' own format string, mirrored here
+// so a merged Date folder's name matches what the pipeline would have
+// proposed had it seen these days as one run to begin with.
+func formatDayRange(lo, hi int) string {
+	if lo == hi {
+		return fmt.Sprintf("%02d", lo)
+	}
+	return fmt.Sprintf("%02d_%02d", lo, hi)
+}
+
+// combinedDayRange spans every pick's day range, if every pick is a plain
+// Date-level folder ("03", "01_02") and none carries a typed rename — a
+// rename is the reviewer overriding the proposal, and merge never clobbers
+// that (see finalName). Anything that isn't day-shaped (a location, device,
+// or already-renamed folder at this depth) bails the whole thing out: this
+// only fires when the selection is unambiguously a date merge.
+func combinedDayRange(picks []mergePick, pending map[string]string) (lo, hi int, ok bool) {
+	for i, p := range picks {
+		if _, renamed := pending[p.id]; renamed {
+			return 0, 0, false
+		}
+		d1, d2, valid := parseDayRange(p.value.Name)
+		if !valid {
+			return 0, 0, false
+		}
+		if i == 0 || d1 < lo {
+			lo = d1
+		}
+		if i == 0 || d2 > hi {
+			hi = d2
+		}
+	}
+	return lo, hi, true
+}
+
+// mergePick is one selected row resolved to its node, its parent (for the
+// splice), and the raw value the merge absorbs.
+type mergePick struct {
+	id     string
+	parent *Node
+	value  Node
+}
+
 // MergeNodes folds every node in ids into one, under their lowest common
 // ancestor by path. Returns the surviving node's ID, its name, and the
 // ancestor's name for the caller's status line.
@@ -196,18 +261,13 @@ func MergeNodes(tree []Node, ids []string, pending map[string]string) (newTree [
 		return tree, "", "", "", fmt.Errorf("select at least two folders at the same level to merge")
 	}
 
-	type pick struct {
-		id     string
-		parent *Node
-		value  Node
-	}
-	picks := make([]pick, 0, len(ids))
+	picks := make([]mergePick, 0, len(ids))
 	for _, id := range ids {
 		n := FindNode(tree, id)
 		if n == nil {
 			return tree, "", "", "", fmt.Errorf("internal error locating merge target %q", id)
 		}
-		picks = append(picks, pick{id: id, parent: parentOf(tree, id), value: *n})
+		picks = append(picks, mergePick{id: id, parent: parentOf(tree, id), value: *n})
 	}
 
 	lcaID := picks[0].id
@@ -231,11 +291,31 @@ func MergeNodes(tree []Node, ids []string, pending map[string]string) (newTree [
 	// which is an offer nobody accepted
 	target := finalName(picks[0].value, pending)
 
+	// unless every pick is a plain, unrenamed Date folder — merging days
+	// proposes the day range they actually span, the same name the pipeline
+	// would have proposed had it seen them as one run from the start
+	dayCombined := false
+	if lo, hi, ok := combinedDayRange(picks, pending); ok {
+		target = formatDayRange(lo, hi)
+		dayCombined = true
+	}
+
 	// absorb the rest; mergeInto collapses same-named children recursively, so
 	// three Goa days give one Goa holding one merged device folder
 	merged := picks[0].value
 	for _, p := range picks[1:] {
 		mergeInto(&merged, p.value, pending)
+	}
+	// the day-range name is the merge's own deterministic output, not a
+	// choice the reviewer made — write it straight onto the node instead of
+	// leaving it to the caller's pending-rename map (row.newName is keyed by
+	// ID, and the survivor keeps its original ID, so on [u] undo the reverted
+	// unmerged node — same ID, back to its own separate row — would inherit
+	// this name as a leftover "pending rename" nobody asked for). A real
+	// rename the reviewer typed still goes through pending/finalName above,
+	// same as ever.
+	if dayCombined {
+		merged.Name = target
 	}
 
 	// splice: the picks leave the tree entirely and reappear as one child of

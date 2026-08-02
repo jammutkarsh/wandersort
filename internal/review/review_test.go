@@ -183,10 +183,13 @@ func TestReview(t *testing.T) {
 				t.Fatalf("expected success, got error status: %q", m.statusMsg)
 			}
 			r03 := nodeByID(m.rows, "2024/June/03")
-			// the merged folder keeps the first pick's own name, so there is nothing
-			// to rename it to — newName stays empty rather than restating "03"
-			if r03 == nil || r03.node.Name != "03" || r03.newName != "" {
-				t.Fatalf("want the surviving node still named %q with no pending rename, got %+v", "03", r03)
+			// both are plain unrenamed Date folders, so the merge proposes the day
+			// range they span ("03_09") — written straight onto the node, not as a
+			// pending rename: it's the merge's own output, not something the
+			// reviewer typed, and [u] must revert it cleanly (see MergeNodes'
+			// dayCombined handling in edit.go)
+			if r03 == nil || r03.node.Name != "03_09" || r03.newName != "" {
+				t.Fatalf("want the surviving node named %q with no pending rename, got %+v", "03_09", r03)
 			}
 			if r09 := nodeByID(m.rows, "2024/June/09"); r09 != nil {
 				t.Error("09 should be folded into 03, not still its own row")
@@ -204,14 +207,50 @@ func TestReview(t *testing.T) {
 				t.Errorf("undo stack = %d deep, want 1 step recorded", len(m.undo))
 			}
 		}},
+		// TestUndoAfterDayRangeMergeLeavesNoStrayRename covers the reported bug:
+		// merging Date folders wrote the combined range through row.newName (an
+		// ID-keyed pending-rename map), and MergeNodes keeps the survivor's
+		// original ID — so after [u] reverted the tree, the now-separate-again
+		// "03" row inherited "03_09" as a leftover pending rename it never asked
+		// for, rendering as a confusing "03 → 03_09" even though the merge had
+		// just been undone. The combine must be baked into the tree snapshot
+		// itself (Node.Name), not left in a side map undo doesn't know to clear.
+		{"UndoAfterDayRangeMergeLeavesNoStrayRename", func(t *testing.T) {
+			m := newModel(siblingTree(), nil, nil, nil, nil)
+			m.visualAnchor, m.cursor, m.visualMode = 2, 3, true
+			m.mergeSelection()
+			if m.statusIsErr {
+				t.Fatalf("merge failed: %q", m.statusMsg)
+			}
+
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+			rm := next.(Model)
+
+			r03 := nodeByID(rm.rows, "2024/June/03")
+			if r03 == nil || r03.node.Name != "03" || r03.newName != "" {
+				t.Errorf("after undo want 03 back on its own with no pending rename, got %+v", r03)
+			}
+			if r09 := nodeByID(rm.rows, "2024/June/09"); r09 == nil || r09.node.Name != "09" || r09.newName != "" {
+				t.Errorf("after undo want 09 back as its own row with no pending rename, got %+v", r09)
+			}
+		}},
 		// TestMergeSurvivorIsTheAnchorNotTheTopmostRow covers the reported bug:
 		// V pressed on the lower row, then the cursor moved UP to extend the
 		// selection. selectedRows() normalizes lo/hi to tree order for iteration,
 		// but the anchor — not whichever row ends up topmost — must still name
-		// the merged folder.
+		// the merged folder. Uses non-date sibling names ("Goa"/"Mumbai") rather
+		// than siblingTree's "03"/"09": the day-range combine is order-independent
+		// (min/max), so it can't tell "anchor" apart from "topmost" — this needs a
+		// case the combine doesn't touch.
 		{"MergeSurvivorIsTheAnchorNotTheTopmostRow", func(t *testing.T) {
-			m := newModel(siblingTree(), nil, nil, nil, nil)
-			// rows: 0=2024, 1=June, 2=03, 3=09 — press V on 09, extend UP to 03
+			tree := []vfs.Node{{ID: "2024", Name: "2024", Children: []vfs.Node{
+				{ID: "2024/June", Name: "June", Children: []vfs.Node{
+					{ID: "2024/June/Goa", Name: "Goa", FileCount: 1},
+					{ID: "2024/June/Mumbai", Name: "Mumbai", FileCount: 1},
+				}},
+			}}}
+			m := newModel(tree, nil, nil, nil, nil)
+			// rows: 0=2024, 1=June, 2=Goa, 3=Mumbai — press V on Mumbai, extend UP to Goa
 			m.visualAnchor = 3
 			m.cursor = 2
 			m.visualMode = true
@@ -221,15 +260,15 @@ func TestReview(t *testing.T) {
 			if m.statusIsErr {
 				t.Fatalf("expected success, got error status: %q", m.statusMsg)
 			}
-			if r03 := nodeByID(m.rows, "2024/June/03"); r03 != nil {
-				t.Error("03 should be folded into 09 (the anchor), not still its own row")
+			if rGoa := nodeByID(m.rows, "2024/June/Goa"); rGoa != nil {
+				t.Error("Goa should be folded into Mumbai (the anchor), not still its own row")
 			}
-			r09 := nodeByID(m.rows, "2024/June/09")
-			if r09 == nil || r09.node.Name != "09" || r09.newName != "" {
-				t.Fatalf("want the anchor row still named %q with no pending rename, got %+v", "09", r09)
+			rMumbai := nodeByID(m.rows, "2024/June/Mumbai")
+			if rMumbai == nil || rMumbai.node.Name != "Mumbai" || rMumbai.newName != "" {
+				t.Fatalf("want the anchor row still named %q with no pending rename, got %+v", "Mumbai", rMumbai)
 			}
-			if got := r09.node.MergedIDs; len(got) != 1 || got[0] != "2024/June/03" {
-				t.Errorf("MergedIDs = %v, want [2024/June/03]", got)
+			if got := rMumbai.node.MergedIDs; len(got) != 1 || got[0] != "2024/June/Goa" {
+				t.Errorf("MergedIDs = %v, want [2024/June/Goa]", got)
 			}
 		}},
 		// TestMergeAcrossBranchesCollapsesToOneNode covers the real reported case:
@@ -692,14 +731,16 @@ func TestReview(t *testing.T) {
 			}
 		}},
 		// TestMergeNeverBroadcastsASuggestion covers the reported surprise: merging
-		// folders produced a name nobody chose ("Canon EOS 700D → 19"), because the
-		// merged name fell back to a suggestion. A suggestion is an offer the reviewer
-		// hasn't accepted — the merge must use the first pick's own name, or the
-		// rename they actually typed on it.
+		// folders produced a name nobody chose ("Canon EOS 700D → Mumbai"), because
+		// the merged name fell back to a suggestion. A suggestion is an offer the
+		// reviewer hasn't accepted — the merge must use the first pick's own name,
+		// or the rename they actually typed on it. Non-date names, so the day-range
+		// combine (a different feature — see TestMergeNodesCombinesDayRanges) can't
+		// mask whether a suggestion leaked through.
 		{"MergeNeverBroadcastsASuggestion", func(t *testing.T) {
 			tree := []vfs.Node{{ID: "2017", Name: "2017", FileCount: 2, Children: []vfs.Node{
-				{ID: "2017/20", Name: "20", FileCount: 1, Suggestions: []vfs.Suggestion{{Name: "Canon EOS 700D"}}},
-				{ID: "2017/19", Name: "19", FileCount: 1, Suggestions: []vfs.Suggestion{{Name: "Canon EOS 700D"}}},
+				{ID: "2017/Mumbai", Name: "Mumbai", FileCount: 1, Suggestions: []vfs.Suggestion{{Name: "Canon EOS 700D"}}},
+				{ID: "2017/Goa", Name: "Goa", FileCount: 1, Suggestions: []vfs.Suggestion{{Name: "Canon EOS 700D"}}},
 			}}}
 			m := newModel(tree, nil, nil, nil, nil)
 			m.visualAnchor, m.cursor, m.visualMode = 1, 2, true
@@ -709,15 +750,15 @@ func TestReview(t *testing.T) {
 			if m.statusIsErr {
 				t.Fatalf("expected success, got %q", m.statusMsg)
 			}
-			row := nodeByID(m.rows, "2017/20")
+			row := nodeByID(m.rows, "2017/Mumbai")
 			if row == nil {
 				t.Fatal("expected the first pick to survive the merge")
 			}
 			if row.newName != "" {
 				t.Errorf("merged folder was renamed to %q — merge must not apply a suggestion", row.newName)
 			}
-			if row.node.Name != "20" {
-				t.Errorf("merged folder name = %q, want the first pick's own name %q", row.node.Name, "20")
+			if row.node.Name != "Mumbai" {
+				t.Errorf("merged folder name = %q, want the first pick's own name %q", row.node.Name, "Mumbai")
 			}
 		}},
 		// TestMergeKeepsAnExplicitRename is the other half: a rename the reviewer
@@ -942,8 +983,10 @@ func TestReview(t *testing.T) {
 			if !slices.IsSorted(names) {
 				t.Errorf("December children = %v, want name order — an appended merge result reads as a deleted folder", names)
 			}
-			if len(names) != 4 || names[2] != "21" {
-				t.Errorf("children = %v, want the merged 21 back in its sorted position", names)
+			// 21 and 22 are plain Date folders, so the merge names the result the
+			// day range they span ("21_22") — see TestMergeNodesCombinesDayRanges
+			if len(names) != 4 || names[2] != "21_22" {
+				t.Errorf("children = %v, want the merged 21_22 back in its sorted position", names)
 			}
 			// and the cursor follows the merged folder rather than staying on an index
 			if m.rows[m.cursor].node.ID != "2017/12_December/21" {
