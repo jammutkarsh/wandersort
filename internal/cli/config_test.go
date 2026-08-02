@@ -196,7 +196,7 @@ func TestConfig(t *testing.T) {
 				t.Errorf("known town must validate, got %v", err)
 			}
 			// ...and a name it has never heard of is accepted as typed — the
-		// geonames database missing a village must not trap the user on this field.
+			// geonames database missing a village must not trap the user on this field.
 			if err := homeField.Validator("Nowhereville Not A Real Town"); err != nil {
 				t.Errorf("unknown town must validate as typed, got %v", err)
 			}
