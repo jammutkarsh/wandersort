@@ -121,11 +121,15 @@ func (r *Resolver) queryNearest(ctx context.Context, lat, lon float64) (string, 
 
 // Candidate is one ranked reverse-geocode match. Which name to use depends on
 // who reads it: a folder named automatically gets DisplayName, a list a person
-// picks from shows FullName.
+// picks from shows FullName as the label (FullName doubles as that
+// suggestion name) and writes FolderName if picked — this package's job, not
+// a caller's: it already knows which qualifier a name needs, so it also
+// knows what's safe to put in a directory name.
 type Candidate struct {
 	Name        string // plain city, no qualifier: "Springfield"
 	DisplayName string // smallest unique qualifier: "Springfield, Illinois"
-	FullName    string // spelled out: "Springfield, Illinois, United States"
+	FullName    string // spelled out, and what a picker shows as the suggestion: "Springfield, Illinois, United States"
+	FolderName  string // DisplayName, sanitized — what a picker writes if this is chosen
 	DistKM      float64
 	hasMarks    bool // the geonames entry carried diacritics stripDiacritics removed
 }
@@ -230,16 +234,40 @@ func nocaseKey(s string) string {
 // need library-wide counts are filled in. Ranking, filtering and limiting run
 // on this alone, so countNames is only ever asked about the survivors.
 type geoRow struct {
-	city, state, country, code string
-	plain                      string // city with diacritics stripped
-	displayName, fullName      string // filled by fillNames
-	lat, lon                   float64
-	distKM                     float64
-	hasMarks                   bool
+	city, state, country, code        string
+	plain                             string // city with diacritics stripped
+	displayName, fullName, folderName string // filled by fillNames
+	lat, lon                          float64
+	distKM                            float64
+	hasMarks                          bool
 }
 
-// fillNames sets displayName and fullName on every row, counting each distinct
-// city name once for the whole batch rather than per row.
+// sanitizeSegment makes a name safe to write as a single path segment — the
+// same rule pkg/path.SanitizeSegment applies, which vfs uses for every other
+// folder segment. Deliberately duplicated rather than importing pkg/path:
+// this package's only use of it is this one line, and staying dependency-free
+// here was chosen over the alternative (one shared rule, no drift risk). If
+// the sanitizing rule ever changes, both copies need the same edit.
+func sanitizeSegment(seg string) string {
+	seg = strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', 0, ' ', ',', '\t', '\n':
+			return '-'
+		}
+		return r
+	}, seg)
+	for strings.Contains(seg, "--") {
+		seg = strings.ReplaceAll(seg, "--", "-")
+	}
+	seg = strings.Trim(seg, " ._-")
+	if seg == "" {
+		return "-"
+	}
+	return seg
+}
+
+// fillNames sets displayName, fullName and folderName on every row, counting
+// each distinct city name once for the whole batch rather than per row.
 func (r *Resolver) fillNames(ctx context.Context, rows []geoRow) error {
 	cities := make([]string, len(rows))
 	for i := range rows {
@@ -255,6 +283,7 @@ func (r *Resolver) fillNames(ctx context.Context, rows []geoRow) error {
 		row.displayName = disambiguate(row.plain, row.state, row.country,
 			count.total, count.countries, count.inCountry[row.code], r.cityClaimed(row.plain), ", ")
 		row.fullName = fullName(row.plain, row.state, row.country)
+		row.folderName = sanitizeSegment(row.displayName)
 	}
 	return nil
 }
@@ -313,6 +342,7 @@ func (r *Resolver) Candidates(ctx context.Context, lat, lon, deltaDegrees float6
 			Name:        row.plain,
 			DisplayName: row.displayName,
 			FullName:    row.fullName,
+			FolderName:  row.folderName,
 			DistKM:      row.distKM,
 			hasMarks:    row.hasMarks,
 		})
@@ -379,12 +409,13 @@ func (r *Resolver) resolveStripped(ctx context.Context, name string, qualifiers 
 }
 
 // PlaceMatch is one geonames entry matching a typed prefix, with coordinates
-// so a caller needs no second lookup. The three names mean what they do on
-// Candidate; ResolveByName resolves any of them.
+// so a caller needs no second lookup. The names mean what they do on
+// Candidate; ResolveByName resolves Name, DisplayName or FullName.
 type PlaceMatch struct {
 	Name        string
 	DisplayName string
 	FullName    string
+	FolderName  string
 	Lat, Lon    float64
 }
 
@@ -447,6 +478,7 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 			Name:        row.plain,
 			DisplayName: row.displayName,
 			FullName:    row.fullName,
+			FolderName:  row.folderName,
 			Lat:         row.lat, Lon: row.lon,
 		})
 	}

@@ -11,6 +11,7 @@ package location_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
@@ -44,6 +45,41 @@ func TestCandidatesQualifyRepeatedNames(t *testing.T) {
 	}
 	if found.FullName == found.Name {
 		t.Errorf("FullName = %q, want city, state and country spelled out", found.FullName)
+	}
+	if found.FolderName == found.Name {
+		t.Errorf("FolderName = %q, want a qualifier too — the name repeats across countries", found.FolderName)
+	}
+	if strings.Contains(found.FolderName, ",") {
+		t.Errorf("FolderName = %q, want the comma sanitized out (it's a folder name, not a label)", found.FolderName)
+	}
+}
+
+// TestFolderNameIsSanitizedDisplayName covers the split itself: FullName is
+// what a picker shows (comma and all), FolderName is what actually gets
+// written if picked — DisplayName with the punctuation a folder name can't
+// carry replaced, not FullName's fuller spelling. sanitizeSegment is
+// unexported (this is an external _test package, driven through installtest),
+// so this checks the externally-visible shape rather than calling it: no
+// comma or space survives, and the qualifier (everything sanitizing can't
+// remove) is still there.
+func TestFolderNameIsSanitizedDisplayName(t *testing.T) {
+	r := installtest.Resolver(t)
+	ctx := context.Background()
+
+	matches, err := r.SearchByName(ctx, "Hyderabad", 8)
+	if err != nil {
+		t.Fatalf("SearchByName: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Fatal("expected at least one Hyderabad match")
+	}
+	for _, m := range matches {
+		if strings.ContainsAny(m.FolderName, ", ") {
+			t.Errorf("FolderName = %q, want no comma or space (DisplayName was %q)", m.FolderName, m.DisplayName)
+		}
+		if want := strings.ReplaceAll(m.DisplayName, ", ", "-"); m.FolderName != want {
+			t.Errorf("FolderName = %q, want %q (DisplayName's qualifier, hyphenated)", m.FolderName, want)
+		}
 	}
 }
 

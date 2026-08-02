@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 // nameSuggestion is one rename candidate shown under the input.
@@ -20,12 +20,13 @@ type nameSuggestion struct {
 	detail string // right-hand hint, e.g. "~12km" or "used before"
 }
 
-// folderName turns a picked display name into the actual folder name — same
-// sanitizing rule Confirm enforces on every node name.
-func folderName(display string) string {
-	// dropdown/search keep the comma ("Seoni, Himachal Pradesh") so a reviewer
-	// can tell same-named places apart; SanitizeSegment strips it back out
-	return vfs.SanitizeSegment(display)
+// folderName sanitizes arbitrary typed or accepted text into an actual folder
+// name — same rule Confirm enforces on every node name. A location suggestion
+// already comes pre-sanitized as FolderName (pkg/location's job, not this
+// package's); this is for the paths that don't go through pkg/location at
+// all: what the reviewer typed by hand, or a plain SOURCE_FOLDER suggestion.
+func folderName(text string) string {
+	return path.SanitizeSegment(text)
 }
 
 // maxSuggestions caps the rename dropdown — it renders above the key help, so
@@ -61,8 +62,11 @@ func (m *Model) refreshSuggestions() {
 	typed := strings.TrimSpace(m.input)
 	prefix := strings.ToLower(typed)
 
-	add := func(label, detail string) bool {
-		value := folderName(label)
+	// add takes label (what's shown, e.g. "Springfield, Illinois") and value
+	// (what's written if picked — already the actual folder name, sanitized).
+	// pkg/location computes both for a place: it already knows which
+	// qualifier a name needs, so it also knows what's safe in a directory name.
+	add := func(label, value, detail string) bool {
 		if value == "" || seen[value] {
 			return true
 		}
@@ -71,19 +75,23 @@ func (m *Model) refreshSuggestions() {
 		return len(m.suggestions) < maxSuggestions
 	}
 
-	// 1. nearby places, already fetched — DisplayName qualifies only on a real
-	// DB collision (state, then country — never both); a genuinely unique city
-	// stays bare, and what is picked is what names the folder
+	// 1. nearby places, already fetched — FullName because six rows reading
+	// "Springfield" are not a choice, and the state/country are the only thing
+	// that tells them apart in this list; FolderName is what actually gets
+	// written, and only qualifies on a real DB collision
 	for _, c := range m.geoCands {
-		name := c.DisplayName
-		if name == "" {
-			name = c.Name
+		label, value := c.FullName, c.FolderName
+		if label == "" {
+			label = c.Name
 		}
-		if prefix != "" && !strings.HasPrefix(strings.ToLower(name), prefix) &&
+		if value == "" {
+			value = c.Name
+		}
+		if prefix != "" && !strings.HasPrefix(strings.ToLower(label), prefix) &&
 			!strings.HasPrefix(strings.ToLower(c.Name), prefix) {
 			continue
 		}
-		if !add(name, fmt.Sprintf("~%.0fkm", c.DistKM)) {
+		if !add(label, value, fmt.Sprintf("~%.0fkm", c.DistKM)) {
 			return
 		}
 	}
@@ -92,12 +100,13 @@ func (m *Model) refreshSuggestions() {
 		return // the two typed-prefix sources below have nothing to match on
 	}
 
-	// 2. names the reviewer confirmed before
+	// 2. names the reviewer confirmed before — already a final folder name,
+	// nothing to disambiguate further, just re-sanitized for safety
 	for _, l := range m.labels {
 		if !strings.HasPrefix(strings.ToLower(l), prefix) {
 			continue
 		}
-		if !add(l, "used before") {
+		if !add(l, folderName(l), "used before") {
 			return
 		}
 	}
@@ -107,7 +116,7 @@ func (m *Model) refreshSuggestions() {
 	if len(prefix) >= minGeonamesPrefix && m.resolver != nil {
 		if matches, err := m.resolver.SearchByName(m.ctx, typed, maxSuggestions); err == nil {
 			for _, pm := range matches {
-				if !add(pm.DisplayName, "") {
+				if !add(pm.FullName, pm.FolderName, "") {
 					return
 				}
 			}
