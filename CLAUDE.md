@@ -257,7 +257,28 @@ one scan ever runs against it at a time (see "Conventions" below):
   this holds regardless of which direction the range was extended in:
   `selectedRows()` normalizes low/high to tree order for iteration, so
   extending *upward* from the anchor would otherwise silently hand naming to
-  whichever row ended up topmost instead of the one actually pressed. **Anchor
+  whichever row ended up topmost instead of the one actually pressed.
+  **Exception: merging plain, unrenamed Date-level folders proposes the day
+  range they jointly span instead** (`combinedDayRange`/`formatDayRange`,
+  `pkg/core/vfs/edit.go`) — merging `01_02` through `24_26` names the result
+  `01_26`, the same `"%02d_%02d"` shape `mergeSameLocationDays` itself would
+  have proposed had it seen the days as one run to begin with. This only
+  fires when every pick's name parses as a Date folder (`"03"` or `"01_02"`)
+  and none carries a typed rename — a rename is the reviewer overriding the
+  proposal, and this never clobbers that, same as the suggestion rule above.
+  Anything not day-shaped at the anchor's depth (a location, a device, an
+  already-renamed folder) falls back to the anchor's own name as usual. The
+  combined name is written straight onto the merged `Node.Name`, not left for
+  `mergeSelection` to surface as a pending `row.newName` the way an explicit
+  typed rename is — a real reported bug: `row.newName` is keyed by ID, and the
+  survivor keeps its original ID, so on `[u]` the reverted (now separate
+  again) node inherited the day-range name as a stray pending rename nobody
+  asked for, rendering a confusing `03 → 03_09` even though the merge had
+  just been undone. It also isn't a suggestion awaiting acceptance, so the
+  arrow rendering was wrong for it either way — merging is already the
+  reviewer's explicit action, and its output shouldn't need a second
+  keypress or look reversible-but-not.
+  **Anchor
   depth is the
   selection rule** — rows deeper than the row `V` was pressed on are that
   folder's own contents and ride along; shallower ones are scaffolding
@@ -712,24 +733,44 @@ reads it straight via `config.Load`.
   `Candidate`/`PlaceMatch` carry both:
 
   - `FullName` (`fullName`) — city, state and country spelled out,
-    `Indore, Madhya Pradesh, India`. **The `config` town picker shows this**:
-    six rows reading `Springfield` are not a choice, and the state/country are
-    the only thing that tells them apart there. Whatever the user picks is
-    what gets saved — WYSIWYG. `SearchByName` also **dedupes on it**: the
-    geonames database holds two `Banjar, West Java, Indonesia` a few hundred
-    metres apart, and listing the same string twice is no more pickable than
-    listing `Banjar` twice.
+    `Indore, Madhya Pradesh, India`. **Every list a person browses shows
+    this**: the `config` town picker and the review rename dropdown's
+    `label` (`internal/review/autocomplete.go`'s `nameSuggestion.label`). Six
+    rows reading `Springfield` are not a choice, and the state/country are the
+    only thing that tells them apart while scrolling the list. `SearchByName`
+    also **dedupes on it**: the geonames database holds two
+    `Banjar, West Java, Indonesia` a few hundred metres apart, and listing the
+    same string twice is no more pickable than listing `Banjar` twice.
   - `DisplayName` (`disambiguate`) — the *smallest qualifier that makes this
-    entry unique*, used where nobody chose anything: the folder `Lookup` names
-    automatically, **and the review TUI's rename autocomplete**
-    (`internal/review/autocomplete.go`). Spelling every folder out to three
-    parts would put `Indore, Madhya Pradesh, India` on a library that only
-    ever saw one Indore — a real reported bug: the rename dropdown used to
-    offer `FullName` unconditionally, so a `Bhopal` with exactly one geonames
-    row still autocompleted to `Bhopal, Madhya Pradesh, India`. The rename
-    picker is a folder name in progress, not a disambiguation list — it
-    should only ever add a qualifier when the DB genuinely has a same-named
-    collision, same as `Lookup`.
+    entry unique*: unqualified unless the name genuinely collides. `Lookup`
+    writes it straight into a folder path (through the unexported
+    `sanitizeSegment`); the rename dropdown never writes it raw (see
+    `FolderName`).
+  - `FolderName` — `DisplayName` run through the package's own unexported
+    `sanitizeSegment`, computed once in `fillNames` alongside the other two
+    names. **This is the whole point of the split**: this package already
+    knows which qualifier a name needs, so it also owns turning that into
+    something safe to write as a directory name — a caller
+    (`internal/review/autocomplete.go`'s `nameSuggestion.value`) just takes
+    it, no local sanitizing call of its own. `sanitizeSegment` is a
+    deliberate duplicate of `pkg/path.SanitizeSegment` (same rule, byte for
+    byte), not an import of it — `vfs` already imports `location`, so
+    `location` importing `vfs` back isn't possible, and this package chose to
+    stay dependency-free over sharing the one call site through `pkg/path`.
+    **Cost**: if the sanitizing rule ever changes, both copies need the same
+    edit or folder names computed by `vfs` and by this package's rename
+    suggestions quietly diverge. A real reported bug motivated the split
+    itself (not the duplication) though: the rename dropdown used to
+    sanitize `FullName` straight into the folder value, so a `Bhopal` with
+    exactly one geonames row still autocompleted to
+    `Bhopal-Madhya-Pradesh-India` on disk, even though the *list* correctly
+    needed no qualifier to tell it apart from anything. `label` (`FullName`)
+    and `value` (`FolderName`) come from different fields on purpose:
+    browsing a list of candidates and deciding what a unique city's folder
+    should be named are different questions, and conflating them either broke
+    the picker (bare `DisplayName` everywhere loses context when several real
+    matches share a name) or broke the folder (`FullName` everywhere
+    over-qualifies a name nothing collides with).
 
   The ladder behind `DisplayName` is computed from three correlated counts
   (`nameCountsSQL`: rows with this name, distinct countries, rows with this
@@ -768,7 +809,21 @@ reads it straight via `config.Load`.
   the whole package — no version check, no download, no install directory.
   Those live in `pkg/install` (`setupExiftool`; see below), which is the one
   place that resolves *a path* to hand `exiftool.New`.
-- `path/` — path canonicalization / home-relative helpers.
+- `path/` — path canonicalization / home-relative helpers, plus
+  `SanitizeSegment` (moved from `pkg/core/vfs`): what a derived *segment*
+  (not a full path) is allowed to contain — strips `/\:,` and whitespace to
+  `-`, collapses runs, trims. `vfs` calls it for every folder segment
+  (device/orientation/media/date, renames — `plan.go`, `review.go`).
+  `pkg/location` intentionally does **not** import this — it keeps its own
+  unexported copy (`sanitizeSegment`, see `pkg/location` above) rather than
+  add the dependency, since `vfs` already imports `location` and `location`
+  importing `vfs` back isn't possible either way. `RelativeToHome`/
+  `ExpandPath` are the `$HOME` ↔ `~` conversion, both directions — already
+  the one place that logic lives; the
+  `config` wizard's output-path suggestion list (`internal/cli/config.go`)
+  builds every candidate path through `RelativeToHome` and reads typed input
+  back through `ExpandPath`, so a suggestion is never shown with the raw home
+  directory spelled out.
 - `deps/` — **the one place a downloadable dependency is fetched.**
   `Download(ctx, dest, url, wantSHA256, onProgress)` writes atomically (temp
   file + rename), reports byte progress, and — when `wantSHA256` is non-empty —
