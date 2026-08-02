@@ -93,7 +93,9 @@ var (
 		"downloads": true, "desktop": true, "backup": true, "misc": true,
 	}
 
-	genericDirPattern = regexp.MustCompile(`(?i)^(\.?(thumbnails|trashed.*|sync|cache))$` +
+	// no (?i): IsGenericDirName lowercases first, and case-folding made the
+	// matcher backtrack through unicode.SimpleFold on every call
+	genericDirPattern = regexp.MustCompile(`^(\.?(thumbnails|trashed.*|sync|cache))$` +
 		`|^new folder(\s*\(\d+\))?$` +
 		`|^(old\s+)?backup[\s_-]*\d*$` +
 		`|^(dcim|temp|tmp|misc|downloads?)[\s_-]*\d*$` +

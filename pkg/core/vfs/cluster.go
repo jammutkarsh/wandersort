@@ -9,7 +9,7 @@ package vfs
 import (
 	"fmt"
 	"path/filepath"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
@@ -31,9 +31,7 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, anchors []locat
 		gap = defaultClusterGap
 	}
 
-	sort.SliceStable(masters, func(a, b int) bool {
-		return masters[a].takenAt.Before(masters[b].takenAt)
-	})
+	sortByCaptureTime(masters)
 
 	var clusters []cluster
 	for i := range masters {
@@ -101,6 +99,24 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, anchors []locat
 	}
 }
 
+// sortByCaptureTime orders masters oldest-first, stably. It sorts indices and
+// applies the permutation once: masterFile is a wide struct, and letting the
+// sort itself move it made the swaps a quarter of the whole in-memory build.
+func sortByCaptureTime(masters []masterFile) {
+	order := make([]int, len(masters))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int {
+		return masters[a].takenAt.Compare(masters[b].takenAt)
+	})
+	sorted := make([]masterFile, len(masters))
+	for k, i := range order {
+		sorted[k] = masters[i]
+	}
+	copy(masters, sorted)
+}
+
 // majorityCity returns the most common resolved city among members, plus
 // whether it got there via atSavedPlace — location alone can't tell a
 // folded saved-place name from a plain resolved one.
@@ -147,10 +163,20 @@ func suggestFor(masters []masterFile, c *cluster, labels []userLabel, anchors []
 	// immediate parent is judged: generic segments higher up (Users, Downloads)
 	// must not disqualify a meaningful leaf folder.
 	counts := map[string]int{}
+	// IsGenericDirName is a regexp match; a cluster's members mostly share a
+	// handful of folders, so judge each distinct one once. A memo rather than a
+	// pass over counts: the tie below is broken by member order, and ranging a
+	// map would make the winner vary run to run.
+	generic := map[string]bool{}
 	best, bestN := "", 0
 	for _, i := range c.members {
 		base := filepath.Base(masters[i].FileDir)
-		if base == "." || base == "/" || classifier.IsGenericDirName(base) {
+		g, seen := generic[base]
+		if !seen {
+			g = base == "." || base == "/" || classifier.IsGenericDirName(base)
+			generic[base] = g
+		}
+		if g {
 			continue
 		}
 		counts[base]++
