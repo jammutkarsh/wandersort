@@ -8,7 +8,9 @@ package vfs
 
 import (
 	"context"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -136,5 +138,52 @@ func TestPlanScreenshotIgnoresRules(t *testing.T) {
 	}, cfg)
 	if want := "2024/08_August/Screenshots/shot.png"; masters[0].targetPath != want {
 		t.Errorf("screenshot: got %q, want %q (Rules must not fragment screenshots)", masters[0].targetPath, want)
+	}
+}
+
+// TestSortByCaptureTimePermutation pins both halves of the sort: the order, and
+// that the permutation is a bijection. An earlier in-place version used the
+// swap form, which implements result[p[i]]=src[i] rather than the
+// result[i]=src[p[i]] this needs — it duplicated masters and dropped others
+// while still returning a plausible-looking slice.
+func TestSortByCaptureTimePermutation(t *testing.T) {
+	// deliberately scrambled, with a tie (b/c) to pin stability and a zero
+	// takenAt (undated) to pin that it sorts first without overflowing
+	at := func(s string) time.Time {
+		ts, err := time.Parse("2006-01-02 15:04:05", s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ts
+	}
+	masters := []masterFile{
+		{FileName: "e", takenAt: at("2024-08-05 10:00:00")},
+		{FileName: "b", takenAt: at("2024-08-02 10:00:00")},
+		{FileName: "d", takenAt: at("2024-08-04 10:00:00")},
+		{FileName: "undated"},
+		{FileName: "c", takenAt: at("2024-08-02 10:00:00")}, // ties with b, must stay after it
+		{FileName: "a", takenAt: at("2024-08-01 10:00:00")},
+	}
+
+	sortByCaptureTime(masters)
+
+	var got []string
+	for i := range masters {
+		got = append(got, masters[i].FileName)
+	}
+	want := []string{"undated", "a", "b", "c", "d", "e"}
+	if !slices.Equal(got, want) {
+		t.Errorf("order: got %v, want %v", got, want)
+	}
+
+	// a permutation loses and duplicates nothing
+	seen := map[string]int{}
+	for _, n := range got {
+		seen[n]++
+	}
+	for n, c := range seen {
+		if c != 1 {
+			t.Errorf("%q appears %d times, want exactly 1", n, c)
+		}
 	}
 }

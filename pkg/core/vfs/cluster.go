@@ -7,6 +7,7 @@
 package vfs
 
 import (
+	"cmp"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -99,22 +100,62 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, anchors []locat
 	}
 }
 
-// sortByCaptureTime orders masters oldest-first, stably. It sorts indices and
-// applies the permutation once: masterFile is a wide struct, and letting the
-// sort itself move it made the swaps a quarter of the whole in-memory build.
+// sortKey is one master reduced to what the sort actually compares: the
+// capture instant, plus the original index. 16 bytes against masterFile's 408,
+// so a 100k library sorts inside L2 instead of chasing 41 MB of struct.
+type sortKey struct {
+	sec  int64
+	nsec int32
+	idx  int32
+}
+
+// sortByCaptureTime orders masters oldest-first, stably. It sorts compact keys
+// and applies the permutation once: masterFile is a wide struct, so both moving
+// it and reaching through an index to read one time field off it touch cache
+// lines the comparison never needs.
 func sortByCaptureTime(masters []masterFile) {
-	order := make([]int, len(masters))
-	for i := range order {
-		order[i] = i
+	keys := make([]sortKey, len(masters))
+	for i := range masters {
+		t := masters[i].takenAt
+		// Unix()+Nanosecond() is the same instant ordering takenAt.Compare
+		// gives — none of these times carry a monotonic reading, they all come
+		// from time.Parse — and unlike UnixNano it doesn't overflow on the zero
+		// time an undated file has.
+		keys[i] = sortKey{t.Unix(), int32(t.Nanosecond()), int32(i)}
 	}
-	slices.SortStableFunc(order, func(a, b int) int {
-		return masters[a].takenAt.Compare(masters[b].takenAt)
+	// carrying idx in the key makes an unstable sort stable, which is what lets
+	// this use the faster SortFunc
+	slices.SortFunc(keys, func(a, b sortKey) int {
+		if a.sec != b.sec {
+			return cmp.Compare(a.sec, b.sec)
+		}
+		if a.nsec != b.nsec {
+			return cmp.Compare(a.nsec, b.nsec)
+		}
+		return cmp.Compare(a.idx, b.idx)
 	})
-	sorted := make([]masterFile, len(masters))
-	for k, i := range order {
-		sorted[k] = masters[i]
+	// Apply the permutation in place, following one cycle at a time: each
+	// master moves exactly once, and idx is reset to its own slot as it goes so
+	// the outer loop skips what a cycle already placed. The scratch-slice
+	// version of this had to zero 41 MB at 100k before writing a byte to it.
+	for k := range keys {
+		if keys[k].idx == int32(k) {
+			continue
+		}
+		held := masters[k] // the one element a cycle can't move into place directly
+		cur := k
+		for {
+			src := int(keys[cur].idx)
+			if src == k { // cycle closed — its last slot wants what we lifted out
+				break
+			}
+			masters[cur] = masters[src]
+			keys[cur].idx = int32(cur)
+			cur = src
+		}
+		masters[cur] = held
+		keys[cur].idx = int32(cur)
 	}
-	copy(masters, sorted)
 }
 
 // majorityCity returns the most common resolved city among members, plus

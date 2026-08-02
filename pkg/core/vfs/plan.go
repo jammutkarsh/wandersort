@@ -31,7 +31,7 @@ func Plan(ctx context.Context, masters []masterFile, labels []userLabel, cfg Con
 	clusterAndSuggest(masters, labels, cfg.Anchors, cfg.ClusterGap)
 	applyNameCase(ctx, masters, cfg.Workers)
 	mergeSameLocationDays(masters, cfg)
-	buildTargets(masters, cfg)
+	buildTargets(ctx, masters, cfg)
 	if ctx.Err() != nil { // don't leave a half-built proposal for persist to write
 		return ctx.Err()
 	}
@@ -84,13 +84,13 @@ func PreviewPaths(cfg Config, samples []Sample) []string {
 // read nothing shared — index-disjoint writes need no synchronisation, and the
 // slice order is untouched either way, so fanning out changes nothing but wall
 // time. workers <= 1 runs the plain loop.
-func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn func(*masterFile)) {
+func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn func(i int, m *masterFile)) {
 	if workers <= 1 {
 		for i := range masters {
 			if ctx.Err() != nil {
 				return
 			}
-			fn(&masters[i])
+			fn(i, &masters[i])
 		}
 		return
 	}
@@ -100,22 +100,28 @@ func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn fu
 	// slower than the plain loop. Runs are small enough that an expensive
 	// stretch (resolveLocations hitting uncached coordinates) still spreads.
 	const runSize = 512
-	runs := make(chan []masterFile, workers)
+	type run struct {
+		base    int // index of run[0] in masters, for callers that need it
+		masters []masterFile
+	}
+	runs := make(chan run, workers)
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Go(func() {
-			for run := range runs {
-				for i := range run {
-					fn(&run[i])
+			for r := range runs {
+				for i := range r.masters {
+					fn(r.base+i, &r.masters[i])
 				}
 			}
 		})
 	}
+	base := 0
 	for chunk := range slices.Chunk(masters, runSize) {
 		if ctx.Err() != nil {
 			break
 		}
-		runs <- chunk
+		runs <- run{base, chunk}
+		base += len(chunk)
 	}
 	close(runs)
 	wg.Wait()
@@ -125,7 +131,7 @@ func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn fu
 // persisted during hashing — exiftool already ran once per file there, so the
 // VFS phase never has to touch the files on disk again
 func deriveAll(ctx context.Context, masters []masterFile, workers int) {
-	forEachMaster(ctx, masters, workers, func(m *masterFile) {
+	forEachMaster(ctx, masters, workers, func(_ int, m *masterFile) {
 		// CreationDate (iOS video) carries a timezone offset; applying it as-is
 		// would shift the video away from same-moment photos, which are all
 		// naive local wall-clock, so stripOffset drops the offset first.
@@ -162,7 +168,7 @@ func resolveLocations(ctx context.Context, masters []masterFile, cfg Config, geo
 	if geo == nil {
 		return
 	}
-	forEachMaster(ctx, masters, cfg.Workers, func(m *masterFile) {
+	forEachMaster(ctx, masters, cfg.Workers, func(_ int, m *masterFile) {
 		if !m.hasGPS {
 			return
 		}
@@ -186,7 +192,7 @@ func resolveLocations(ctx context.Context, masters []masterFile, cfg Config, geo
 // applyNameCase title-cases derived location, suggestion, and device names
 // after every naming decision. Filenames and user-confirmed labels are left alone.
 func applyNameCase(ctx context.Context, masters []masterFile, workers int) {
-	forEachMaster(ctx, masters, workers, func(m *masterFile) {
+	forEachMaster(ctx, masters, workers, func(_ int, m *masterFile) {
 		m.location = caseName(m.location)
 		if m.suggestionSource != SuggestionUserLabel {
 			m.suggestion = caseName(m.suggestion)
@@ -271,16 +277,28 @@ func mergeSameLocationDays(masters []masterFile, cfg Config) {
 // buildTargets derives every master's destination independently, except for
 // a best-effort capture group (see captureDirs) that forces a sidecar/RAW+JPG
 // bundle into one shared directory.
-func buildTargets(masters []masterFile, cfg Config) {
+func buildTargets(ctx context.Context, masters []masterFile, cfg Config) {
 	skip := uninformativeLevels(masters, cfg)
 	groupDirs := captureDirs(masters, skip, cfg)
+
+	// dirFor is a pure function of one master plus the two library-wide maps
+	// above, so the directories fan out. The collision loop below deliberately
+	// does not: `taken` decides which of two files landing on the same path
+	// keeps it and which gets the _2, and that is settled by the order it
+	// reaches them.
+	dirs := make([]string, len(masters))
+	forEachMaster(ctx, masters, cfg.Workers, func(i int, m *masterFile) {
+		// captureDirs wins when it named a shared directory for this file's group
+		if dir, ok := groupDirs[i]; ok {
+			dirs[i] = dir
+			return
+		}
+		dirs[i] = dirFor(m, skip, cfg)
+	})
+
 	taken := map[string]bool{}
 	for i := range masters {
-		// captureDirs wins when it named a shared directory for this file's group
-		dir, ok := groupDirs[i]
-		if !ok {
-			dir = dirFor(&masters[i], skip, cfg)
-		}
+		dir := dirs[i]
 		name := masters[i].FileName
 		stem := strings.TrimSuffix(name, filepath.Ext(name))
 		ext := filepath.Ext(name)
