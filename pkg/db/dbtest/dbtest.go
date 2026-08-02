@@ -19,7 +19,7 @@ import (
 )
 
 // New opens a fresh migrated app database under t.TempDir()
-func New(t *testing.T) *db.DB {
+func New(t testing.TB) *db.DB {
 	t.Helper()
 	d, err := db.New(context.Background(), filepath.Join(t.TempDir(), "test.db"), db.AppDB, logger.NewNoopLogger())
 	if err != nil {
@@ -31,7 +31,7 @@ func New(t *testing.T) *db.DB {
 
 // SeedFile inserts a live file_registry row with fixed timestamps and returns nothing;
 // callers pick the id so tests can reference rows without querying back
-func SeedFile(t *testing.T, d *db.DB, id int64, dir, name string, size int64) {
+func SeedFile(t testing.TB, d *db.DB, id int64, dir, name string, size int64) {
 	t.Helper()
 	if _, err := d.ExecContext(context.Background(), `
 		INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
