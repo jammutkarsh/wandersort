@@ -38,7 +38,7 @@ func Plan(ctx context.Context, masters []masterFile, labels []userLabel, cfg Con
 }
 
 // Sample is one synthetic file for PreviewPaths — the pre-derived form of a
-// master, so a caller with no database and no gazetteer (the config wizard)
+// master, so a caller with no database and no geonames (the config wizard)
 // can ask what folders a Config would produce.
 type Sample struct {
 	TakenAt      time.Time

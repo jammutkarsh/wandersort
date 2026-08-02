@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package install versions, downloads, verifies, and coordinates
-// wandersort's two downloadable dependencies (exiftool, location gazetteer)
+// wandersort's two downloadable dependencies (exiftool, location database)
 // for every command that needs them. pkg/exiftool and pkg/location only run
 // the already-installed binary / query the already-open DB — this package
 // owns all version/URL/layout knowledge instead.

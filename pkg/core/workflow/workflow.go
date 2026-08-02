@@ -31,7 +31,7 @@ import (
 // while the downloads are still running.
 type Deps struct {
 	Exiftool func() (string, error)             // path to the exiftool binary
-	Location func() (*location.Resolver, error) // open gazetteer resolver
+	Location func() (*location.Resolver, error) // open geonames resolver
 }
 
 // Workflow orchestrates the phases of one scan session. Scanning and hashing

@@ -21,7 +21,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-// Resolver returns a Resolver backed by the real gazetteer at
+// Resolver returns a Resolver backed by the real geonames database at
 // ~/.wandersort/location.db, downloading it once per machine if missing.
 func Resolver(t testing.TB) *location.Resolver {
 	t.Helper()

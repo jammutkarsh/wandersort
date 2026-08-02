@@ -36,9 +36,9 @@ const maxSuggestions = 8
 // as the reviewer types, so one fetch has to cover every prefix they might type.
 const geoCandidateFetch = 64
 
-// minGazetteerPrefix is how many characters must be typed before the per-
-// keystroke gazetteer search runs; below it every query matches half the table.
-const minGazetteerPrefix = 2
+// minGeonamesPrefix is how many characters must be typed before the per-
+// keystroke geonames search runs; below it every query matches half the table.
+const minGeonamesPrefix = 2
 
 // loadGeoCandidates caches nearby places for the current row. Called by [r] and
 // ctrl+e only — refreshSuggestions filters this list in memory per keystroke.
@@ -54,7 +54,7 @@ func (m *Model) loadGeoCandidates() {
 }
 
 // refreshSuggestions repopulates the rename dropdown from three ranked sources:
-// nearby places, names confirmed in earlier reviews, then the gazetteer.
+// nearby places, names confirmed in earlier reviews, then the geonames database.
 func (m *Model) refreshSuggestions() {
 	m.suggestions = nil
 	seen := map[string]bool{}
@@ -101,9 +101,9 @@ func (m *Model) refreshSuggestions() {
 		}
 	}
 
-	// 3. gazetteer prefix search, so typing a city works on a folder with no GPS
+	// 3. geonames prefix search, so typing a city works on a folder with no GPS
 	// to seed geoCands. One indexed LIKE 'x%' per keystroke, from 2 chars on.
-	if len(prefix) >= minGazetteerPrefix && m.resolver != nil {
+	if len(prefix) >= minGeonamesPrefix && m.resolver != nil {
 		if matches, err := m.resolver.SearchByName(m.ctx, typed, maxSuggestions); err == nil {
 			for _, pm := range matches {
 				if !add(pm.FullName, "") {

@@ -75,7 +75,7 @@ func TestSplitQualified(t *testing.T) {
 }
 
 // fullName is what every picker shows: city, state and country spelled out,
-// skipping whatever the gazetteer doesn't have.
+// skipping whatever the geonames database doesn't have.
 func TestFullName(t *testing.T) {
 	tests := []struct{ city, state, country, want string }{
 		{"Indore", "Madhya Pradesh", "India", "Indore, Madhya Pradesh, India"},

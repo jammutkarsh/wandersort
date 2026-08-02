@@ -20,7 +20,7 @@ import (
 )
 
 // suggestDebounce is how long a keystroke waits before Suggest actually runs
-// — Suggest hits the gazetteer DB, so firing it on every keystroke serializes
+// — Suggest hits the geonames DB, so firing it on every keystroke serializes
 // a query per character. Debouncing to one query per pause is the standard
 // autocomplete pattern.
 const suggestDebounce = 50 * time.Millisecond

@@ -100,18 +100,18 @@ one scan ever runs against it at a time (see "Conventions" below):
     Output path expands a leading `~` (`expandHome`, applied at save *and*
     when matching suggestions) and only suggests locations whose parent dir
     exists on this machine, which is what makes the list platform-correct.
-    Town inputs validate through `canonicalTown` (gazetteer exact-match) — now
+    Town inputs validate through `canonicalTown` (geonames exact-match) — now
     a free function taking the resolver as a parameter, not a method reading
     a shared field, so a test hands it a fake/real resolver directly.
     **The location DB downloads in the background, with no install screen**:
     `runConfigTUI` builds a `pkg/install.Coordinator` (`a.newDeps`) and calls
     `StartLocationOnly`, feeding its byte progress into the form's own row
     above the footer (`tui.DownloadMsg`, in the same block the examples pin
-    to) and its completion into a `Finished` message. The wizard's `gazetteer`
+    to) and its completion into a `Finished` message. The wizard's `geonames`
     closure is a **non-blocking** peek — `coord.LocationReady()` then
     `coord.Location()` (which, once ready, never blocks) — used by
     `townValidator`/`canonicalTownOrTyped`/`suggestTown`, all of which take the
-    resolver from `gazetteer()`'s return value rather than a package-level
+    resolver from `geonames()`'s return value rather than a package-level
     field. Once the download finishes the row **persists as a dim `✓ … done`
     line** rather than vanishing (a bar that disappears the moment it fills
     reads as a failure); the `Finished` message carries no label, so
@@ -119,11 +119,11 @@ one scan ever runs against it at a time (see "Conventions" below):
     `Finished` with no prior bytes, which is the only message an
     already-on-disk database sends, so it never gets mentioned at all.
     The Saved places step is the only one that needs the database, so it holds
-    on `tui.Field.Await` (showing why) until `gazetteer()` stops returning
-    `errGazetteerPending`; everything above it is answerable meanwhile.
+    on `tui.Field.Await` (showing why) until `geonames()` stops returning
+    `errGeonamesPending`; everything above it is answerable meanwhile.
     `Coordinator`'s internal channel is the happens-before edge making the
     resolver safe to read, enforced by the type rather than documented in a
-    comment (see `pkg/install` below). A gazetteer that never opens at all
+    comment (see `pkg/install` below). A geonames database that never opens at all
     (a failed download — `location.db` opens `mode=ro`, so concurrent
     wandersort processes never contend for it) is **not** treated as "pending":
     `Await` releases and the town is waved through unvalidated and saved as
@@ -181,7 +181,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     global config's `SavedPlaces` — positional: index 0 home, 1 work,
     everything after another frequently-stayed-at place, all anchored the same
     way — resolves each name via `ResolveByName` (a guaranteed exact hit,
-    since the wizard's `canonicalTown` validator only saves gazetteer
+    since the wizard's `canonicalTown` validator only saves geonames
     spellings) and inserts a `SAVED_PLACE`-kind `user_labels` row for it if
     this library lacks one. `resolveLocations` (`core/vfs`) is the only thing
     that reads those rows. The write side is the `config` wizard
@@ -691,7 +691,7 @@ reads it straight via `config.Load`.
   opened `*db.DB` — a query-only constructor, not a setup path. `Lookup`
   (single best match, cached/singleflighted) and `Candidates` (ranked list for
   the review TUI's rename picker) share one query and one rule: a plain-spelled
-  gazetteer entry ("Banjar") always ranks ahead of a diacritic one ("Banjār")
+  geonames entry ("Banjar") always ranks ahead of a diacritic one ("Banjār")
   at roughly the same distance, via `stripDiacritics`, not just whichever the
   distance sort happened to return. `MaxDistSquared` (exported, reused by
   `vfs.resolveLocations` for anchor-folding — don't redefine it locally) is the
@@ -707,8 +707,8 @@ reads it straight via `config.Load`.
     this**: the `config` town suggestions and the review rename picker. Six
     rows reading `Springfield` are not a choice, and the state/country are the
     only thing that tells them apart. Whatever the user picks is what gets
-    saved/named — WYSIWYG. `SearchByName` also **dedupes on it**: the gazetteer
-    holds two `Banjar, West Java, Indonesia` a few hundred metres apart, and
+    saved/named — WYSIWYG. `SearchByName` also **dedupes on it**: the geonames
+    database holds two `Banjar, West Java, Indonesia` a few hundred metres apart, and
     listing the same string twice is no more pickable than listing `Banjar`
     twice.
   - `DisplayName` (`disambiguate`) — the *smallest qualifier that makes this
@@ -728,7 +728,7 @@ reads it straight via `config.Load`.
   The in-country case takes the state even when the name also occurs abroad —
   no other Springfield in Illinois exists to collide with. Two rows for the
   same name in the same state stay identical; a third qualifier would lengthen
-  every folder to fix a near-duplicate in the gazetteer. Cost to know about:
+  every folder to fix a near-duplicate in the geonames database. Cost to know about:
   globally-repeated famous names get a qualifier too (`Paris, France`,
   `San Jose, United States`). A population tiebreak would fix that; it isn't
   worth the rule until someone complains.

@@ -98,7 +98,7 @@ Execute/move stage isn't written yet, so it isn't here.
 ## 7. Location resolution & anchors (depends on hash — GPS-tagged files)
 
 61. `[A]` two GPS points ~15-40km apart, no anchor set → both resolve to *some* named place (previously: silently unlocated past ~11km even though the search box reached 50km).
-62. `[A]` a coordinate near a gazetteer entry with a diacritic in its name (e.g. "Banjār") and a plain-spelled entry at ~the same distance → the plain-spelled name ("Banjar") is proposed, not the diacritic one.
+62. `[A]` a coordinate near a geonames entry with a diacritic in its name (e.g. "Banjār") and a plain-spelled entry at ~the same distance → the plain-spelled name ("Banjar") is proposed, not the diacritic one.
 63. `[H]` set a home anchor (via `wandersort config`), then scan two GPS points both within ~50km of it but resolving to different suburb names → both fold into the anchor's folder name, not two separate suburb folders.
 64. `[A]` scan with no anchors configured → resolved suburbs still get their own individual folders (no unwanted folding).
 65. `[A]` scan a library where most GPS photos resolve to the same city, plus a separate fully-unresolved cluster (e.g. a GPS-less DSLR photo, no EVENT label overlap) with **no confirmed anchor set** → the unresolved cluster's suggestion is the source folder name, *not* the library's dominant city (`anchorCities` no longer guesses from frequency).

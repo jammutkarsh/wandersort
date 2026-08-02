@@ -6,7 +6,7 @@
 
 // Package integration holds tests that run against the real, downloaded
 // location.db rather than fabricated fixtures — they assert against actual
-// gazetteer rows, discovered once by inspecting the shipped database (see
+// geonames rows, discovered once by inspecting the shipped database (see
 // each test's comment for the row(s) it depends on).
 package integration
 
@@ -18,7 +18,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/location"
 )
 
-// TestCandidates exercises Candidates against real gazetteer rows: expanding
+// TestCandidates exercises Candidates against real geonames rows: expanding
 // search radius, plain-spelling preference over diacritics, and distance sort.
 func TestCandidates(t *testing.T) {
 	r := installtest.Resolver(t)
@@ -112,7 +112,7 @@ func TestCandidates(t *testing.T) {
 	}
 }
 
-// TestResolveByName exercises ResolveByName against real gazetteer rows:
+// TestResolveByName exercises ResolveByName against real geonames rows:
 // exact match, fuzzy match, diacritic-stripped round-trip, and qualifier
 // disambiguation (Hyderabad, India vs Hyderabad, Pakistan).
 func TestResolveByName(t *testing.T) {
@@ -127,7 +127,7 @@ func TestResolveByName(t *testing.T) {
 	}{
 		{
 			name: "exact match (Manali, Tamil Nadu)",
-			// The gazetteer's only exact "Manali" row is in Tamil Nadu
+			// The geonames database only exact "Manali" row is in Tamil Nadu
 			// (13.16667, 80.26667), not the Himachal hill town.
 			input:   "manali",
 			wantLat: 13.16667, wantLon: 80.26667,
@@ -140,7 +140,7 @@ func TestResolveByName(t *testing.T) {
 		{
 			name: "diacritic-stripped round-trip (Banjār → Banjar)",
 			// A saved anchor "Banjar, Himachal Pradesh, India" must resolve to
-			// the gazetteer's diacritic "Banjār" row (31.639, 77.34055).
+			// the geonames diacritic "Banjār" row (31.639, 77.34055).
 			input:   "Banjar, Himachal Pradesh, India",
 			wantLat: 31.639, wantLon: 77.34055,
 		},
@@ -202,7 +202,7 @@ func TestResolveByName(t *testing.T) {
 	})
 }
 
-// TestSearchByName exercises SearchByName against real gazetteer rows:
+// TestSearchByName exercises SearchByName against real geonames rows:
 // ambiguous names with distinct FullNames, prefix matches, and the picker
 // round-trip (finding a name it previously handed out).
 func TestSearchByName(t *testing.T) {
@@ -289,7 +289,7 @@ func TestSearchByName(t *testing.T) {
 }
 
 // TestCandidatesDisambiguatesRealDB checks the three-tier DisplayName ladder
-// against real gazetteer rows: unique name → bare, repeats in-country →
+// against real geonames rows: unique name → bare, repeats in-country →
 // state, repeats only abroad → country.
 func TestCandidatesDisambiguatesRealDB(t *testing.T) {
 	r := installtest.Resolver(t)

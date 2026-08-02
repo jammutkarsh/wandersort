@@ -108,7 +108,7 @@ type Candidate struct {
 	DisplayName string // smallest unique qualifier: "Springfield, Illinois"
 	FullName    string // spelled out: "Springfield, Illinois, United States"
 	DistKM      float64
-	hasMarks    bool // the gazetteer entry carried diacritics stripDiacritics removed
+	hasMarks    bool // the geonames entry carried diacritics stripDiacritics removed
 }
 
 // candidateFetchLimit over-fetches so Candidates can prefer a plain-spelled
@@ -251,7 +251,7 @@ func (r *Resolver) resolveStripped(ctx context.Context, name string, qualifiers 
 	return 0, 0, ErrNoLocation
 }
 
-// PlaceMatch is one gazetteer entry matching a typed prefix, with coordinates
+// PlaceMatch is one geonames entry matching a typed prefix, with coordinates
 // so a caller needs no second lookup. The three names mean what they do on
 // Candidate; ResolveByName resolves any of them.
 type PlaceMatch struct {
@@ -261,7 +261,7 @@ type PlaceMatch struct {
 	Lat, Lon    float64
 }
 
-// SearchByName finds gazetteer entries starting with prefix, so a picker offers
+// SearchByName finds geonames entries starting with prefix, so a picker offers
 // DB-backed names instead of free text that might resolve to nothing later.
 func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) ([]PlaceMatch, error) {
 	// a typed name may already carry its qualifier — that is what the picker
@@ -293,7 +293,7 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 			continue
 		}
 		plain := stripDiacritics(name)
-		// the gazetteer has near-duplicates a few hundred metres apart; listing
+		// the geonames database has near-duplicates a few hundred metres apart; listing
 		// one string twice isn't a choice. ORDER BY makes "the first" stable.
 		if full := fullName(plain, state, country); seen[full] {
 			continue
@@ -314,7 +314,7 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 }
 
 // cityClaimed reports whether any anchor already takes this bare city name —
-// the anchor gets the unqualified form, so gazetteer results must qualify.
+// the anchor gets the unqualified form, so geonames results must qualify.
 func (r *Resolver) cityClaimed(city string) bool {
 	for _, a := range r.Anchors {
 		c, _, _ := strings.Cut(a.Name, ",")
@@ -354,7 +354,7 @@ func disambiguate(city, state, country string, nameCount, countryCount, inCountr
 }
 
 // fullName spells a place out for a person choosing from a list: city, state
-// and country, skipping the parts the gazetteer doesn't have. Two same-named
+// and country, skipping the parts the geonames database doesn't have. Two same-named
 // cities are never ambiguous here, whatever the disambiguate ladder decided
 // was enough for a folder name.
 func fullName(city, state, country string) string {
@@ -395,7 +395,7 @@ func matchesQualifiers(state, country string, qualifiers []string) bool {
 	return true
 }
 
-// stripDiacritics normalizes a gazetteer name ("Banjār") to plain ASCII
+// stripDiacritics normalizes a geonames name ("Banjār") to plain ASCII
 // ("Banjar") — combining marks read as typos in an unfamiliar script.
 func stripDiacritics(s string) string {
 	var b strings.Builder

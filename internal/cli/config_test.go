@@ -57,7 +57,7 @@ func TestConfig(t *testing.T) {
 			cfg.CollapseLevels = false
 			a := &app{Config: cfg}
 
-			fields, save := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, errGazetteerPending })
+			fields, save := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, errGeonamesPending })
 
 			// The two folder questions belong to the saved-place step, after the towns:
 			// their examples read off the town typed one field earlier.
@@ -111,17 +111,17 @@ func TestConfig(t *testing.T) {
 				t.Errorf("blank town must stay skippable, got %v", err)
 			}
 
-			// A gazetteer that never opened (failed download, database busy) must not
+			// A geonames database that never opened (failed download, database busy) must not
 			// trap the user on the field — nor drop the town they already had.
 			broken := errors.New("location db: database is locked")
 			brokenFields, brokenSave := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, broken })
 			brokenGroup := fieldByTitle(t, brokenFields, "Saved places")
 			*brokenGroup.Subs[0].Value = "Indore"
 			if err := brokenGroup.Subs[0].Validator("Indore"); err != nil {
-				t.Errorf("unusable gazetteer must let a town through, got %v", err)
+				t.Errorf("unusable geonames must let a town through, got %v", err)
 			}
 			if err := brokenSave(); err != nil {
-				t.Fatalf("save (broken gazetteer): %v", err)
+				t.Fatalf("save (broken geonames): %v", err)
 			}
 			if g, _ := cfg.Load(); len(g.SavedPlaces) < 2 || g.SavedPlaces[0] != "Indore" || g.SavedPlaces[1] != "Indore" {
 				t.Errorf("saved-place = %q/%q, want the typed town kept (work defaults to home)", g.SavedPlaces[0], g.SavedPlaces[1])
@@ -151,11 +151,11 @@ func TestConfig(t *testing.T) {
 				t.Fatalf("saved config = %+v, want %+v", got, want)
 			}
 		}},
-		// TestTownFieldsRoundTripARealTown exercises the real gazetteer path that
+		// TestTownFieldsRoundTripARealTown exercises the real geonames path that
 		// every other case in this file leaves untouched by passing a nil
-		// resolver: with a ready resolver and gazetteer() reporting no error,
+		// resolver: with a ready resolver and geonames() reporting no error,
 		// suggestTown/townValidator/canonicalTown must round-trip a real
-		// town through SearchByName/exactMatch to its canonical gazetteer spelling.
+		// town through SearchByName/exactMatch to its canonical geonames spelling.
 		{"TownFieldsRoundTripARealTown", func(t *testing.T) {
 			// Resolve against the real machine's ~/.wandersort/location.db
 			// *before* HOME gets redirected below — installtest.Resolver reads
@@ -178,7 +178,7 @@ func TestConfig(t *testing.T) {
 			group := fieldByTitle(t, fields, "Saved places")
 			homeField := group.Subs[0]
 
-			// A partial real city name must surface a real gazetteer entry — the
+			// A partial real city name must surface a real geonames entry — the
 			// full "city, state, country" form the picker always lists.
 			suggestions := homeField.Suggest("Indo")
 			found := false
@@ -191,12 +191,12 @@ func TestConfig(t *testing.T) {
 				t.Errorf("suggestions for %q = %v, want to include %q", "Indo", suggestions, "Indore, Madhya Pradesh, India")
 			}
 
-			// A typed name the gazetteer knows validates clean...
+			// A typed name the geonames database knows validates clean...
 			if err := homeField.Validator("indore"); err != nil {
 				t.Errorf("known town must validate, got %v", err)
 			}
 			// ...and a name it has never heard of is accepted as typed — the
-			// gazetteer missing a village must not trap the user on this field.
+		// geonames database missing a village must not trap the user on this field.
 			if err := homeField.Validator("Nowhereville Not A Real Town"); err != nil {
 				t.Errorf("unknown town must validate as typed, got %v", err)
 			}
@@ -204,7 +204,7 @@ func TestConfig(t *testing.T) {
 				t.Errorf("canonicalTown(unknown) = %q, %v, want the typed name back", got, err)
 			}
 
-			// canonicalTown resolves the typed spelling to the gazetteer's own — the
+			// canonicalTown resolves the typed spelling to the geonames own — the
 			// full "city, state, country" form, per canonicalNameOf.
 			got, err := canonicalTown(context.Background(), resolver, "indore")
 			if err != nil {
@@ -219,7 +219,7 @@ func TestConfig(t *testing.T) {
 				t.Fatalf("save: %v", err)
 			}
 			if g, _ := cfg.Load(); len(g.SavedPlaces) == 0 || g.SavedPlaces[0] != "Indore, Madhya Pradesh, India" {
-				t.Errorf("saved home town = %q, want the canonical gazetteer spelling", g.SavedPlaces[0])
+				t.Errorf("saved home town = %q, want the canonical geonames spelling", g.SavedPlaces[0])
 			}
 		}},
 		// TestBadYAMLWarnsAndFallsBackToDefaults covers the escape hatch: a config

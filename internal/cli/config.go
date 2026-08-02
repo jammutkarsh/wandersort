@@ -91,10 +91,10 @@ func (a *app) runConfig(cmd *cobra.Command) error {
 // reports "nothing saved" instead of a bogus "config saved".
 var errConfigCancelled = errors.New("config cancelled")
 
-// errGazetteerPending marks the location database as still downloading. The
+// errGeonamesPending marks the location database as still downloading. The
 // town step holds on it (tui.Field.Await) while the download bar under the
 // banner shows how far along it is.
-var errGazetteerPending = errors.New("location database is still downloading")
+var errGeonamesPending = errors.New("location database is still downloading")
 
 // runConfigTUI runs the settings wizard as one alt-screen program, downloading
 // the location database in the background — no install screen here, that's scan's job.
@@ -104,17 +104,17 @@ func (a *app) runConfigTUI(ctx context.Context) error {
 	// still captures everything.
 	a.Log = logger.NewTUI(a.Config.LogLevel, a.Config.LogFile, func(logger.Event) {})
 
-	// Non-blocking peek: errGazetteerPending while still downloading, otherwise
+	// Non-blocking peek: errGeonamesPending while still downloading, otherwise
 	// the resolved value — LocationReady() already gates Location() from blocking.
 	var coordinator *install.Coordinator
-	gazetteer := func() (*location.Resolver, error) {
+	geonames := func() (*location.Resolver, error) {
 		if !coordinator.LocationReady() {
-			return nil, errGazetteerPending
+			return nil, errGeonamesPending
 		}
 		return coordinator.Location()
 	}
 
-	fields, save := a.buildConfigForm(ctx, gazetteer)
+	fields, save := a.buildConfigForm(ctx, geonames)
 	prog := tea.NewProgram(tui.NewFormModel(fields, save), tea.WithAltScreen(), tea.WithOutput(os.Stderr))
 
 	// Reports into the form's own progress row; a no-op install (already on disk)
@@ -142,7 +142,7 @@ func (a *app) runConfigTUI(ctx context.Context) error {
 
 // buildConfigForm builds the wizard's fields (seeded with the current effective
 // values) and a save closure that writes them to ~/.wandersort/config.yaml.
-func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
+func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
 	g, _ := a.Config.Load()
 
 	out := g.OutputPath
@@ -166,14 +166,14 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 	}
 
 	// Rejects a typo (close candidates exist) but waves through an unknown name
-	// or a gazetteer that never opened — a broken dependency can't trap this field.
+	// or a geonames database that never opened — a broken dependency can't trap this field.
 	townValidator := func(s string) error {
 		if strings.TrimSpace(s) == "" {
 			return nil // blank = skip
 		}
-		resolver, err := gazetteer()
+		resolver, err := geonames()
 		if err != nil {
-			if errors.Is(err, errGazetteerPending) {
+			if errors.Is(err, errGeonamesPending) {
 				return err
 			}
 			return nil
@@ -184,16 +184,16 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 		return nil
 	}
 
-	// same rule at save time: the gazetteer's spelling when it can give one,
+	// same rule at save time: the geonames spelling when it can give one,
 	// else what was typed — dropping a town the user already had is data loss
 	canonicalTownOrTyped := func(typed string) string {
 		typed = strings.TrimSpace(typed)
 		if typed == "" {
 			return ""
 		}
-		resolver, err := gazetteer()
+		resolver, err := geonames()
 		if err != nil {
-			return typed // pending or broken gazetteer — never drop what was typed
+			return typed // pending or broken geonames — never drop what was typed
 		}
 		if name, err := canonicalTown(ctx, resolver, typed); err == nil {
 			return name
@@ -251,7 +251,7 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 
 	suggestTown := func(typed string) []string {
 		typed = strings.TrimSpace(typed)
-		resolver, err := gazetteer()
+		resolver, err := geonames()
 		if len(typed) < 2 || err != nil {
 			return nil
 		}
@@ -308,7 +308,7 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 			Description: "The everyday places you shoot from, and how their photos are foldered.",
 			// Await blocks the form until the location database finishes downloading.
 			Await: func() string {
-				if _, err := gazetteer(); errors.Is(err, errGazetteerPending) {
+				if _, err := geonames(); errors.Is(err, errGeonamesPending) {
 					return "Waiting for the location database to finish downloading…"
 				}
 				return ""
@@ -370,7 +370,7 @@ func (a *app) buildConfigForm(ctx context.Context, gazetteer func() (*location.R
 		if w, err := strconv.Atoi(strings.TrimSpace(workers)); err == nil {
 			g.Workers = w
 		}
-		// Canonicalize towns to the exact gazetteer spelling before saving.
+		// Canonicalize towns to the exact geonames spelling before saving.
 		g.SavedPlaces = []string{canonicalTownOrTyped(home), canonicalTownOrTyped(work)}
 		if err := a.Config.Save(g); err != nil {
 			return fmt.Errorf("save settings: %w", err)
@@ -607,7 +607,7 @@ func toMap(items []string) map[string]bool {
 	return m
 }
 
-// canonicalTown returns the gazetteer's exact spelling of a typed town name.
+// canonicalTown returns the geonames exact spelling of a typed town name.
 func canonicalTown(ctx context.Context, resolver *location.Resolver, typed string) (string, error) {
 	typed = strings.TrimSpace(typed)
 	if typed == "" || resolver == nil {
@@ -623,7 +623,7 @@ func canonicalTown(ctx context.Context, resolver *location.Resolver, typed strin
 	return "", fmt.Errorf("no exact match for %q (did you mean %s?)", typed, matches[0].Name)
 }
 
-// exactMatch returns the gazetteer's own spelling when one of matches is a
+// exactMatch returns the geonames own spelling when one of matches is a
 // case-insensitive match for typed
 func exactMatch(matches []location.PlaceMatch, typed string) (string, bool) {
 	typed = strings.TrimSpace(typed)
@@ -641,7 +641,7 @@ func exactMatch(matches []location.PlaceMatch, typed string) (string, bool) {
 }
 
 // canonicalNameOf is the form an anchor is saved as: the full name when the
-// gazetteer gave one, else whatever shorter form it has.
+// geonames gave one, else whatever shorter form it has.
 func canonicalNameOf(m location.PlaceMatch) string {
 	switch {
 	case m.FullName != "":

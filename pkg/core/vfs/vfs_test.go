@@ -127,7 +127,7 @@ func metaWith(dto string, lat, lon float64, w, h int) classifier.CommonMetadata 
 
 func TestBuildFullExif(t *testing.T) {
 	h := newHarness(t)
-	// 15.5439,73.7553 is Calangute, Goa — a real gazetteer entry with no
+	// 15.5439,73.7553 is Calangute, Goa — a real geonames entry with no
 	// disambiguation qualifier needed (unique name)
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5439, 73.7553, 3024, 4032))
 	geo := installtest.Resolver(t)
@@ -176,7 +176,7 @@ func TestClusterSpillover(t *testing.T) {
 	// two files without GPS, one with — all within the 12h gap
 	a := h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
 	b := h.addFile(t, "dump/DSC_0002.JPG", "IMAGE", metaWith("2024:06:03 12:00:00", 0, 0, 4000, 3000))
-	// 32.2432,77.1892 is the real Manali, Himachal Pradesh — the gazetteer's
+	// 32.2432,77.1892 is the real Manali, Himachal Pradesh — the geonames
 	// row for it carries a diacritic ("Manāli") that's stripped for display,
 	// and it's the only candidate within the tight first-pass search box, so
 	// it resolves to the bare, unqualified "Manali"
@@ -572,7 +572,7 @@ func TestMergeSameLocationDays(t *testing.T) {
 	h := newHarness(t)
 	// Goa on the 2nd, 3rd, 4th; Pune on the 3rd (same day, different place).
 	// Calangute (15.5439,73.7553) and Pune (18.51957,73.85535) are both real,
-	// unqualified gazetteer entries
+	// unqualified geonames entries
 	g2 := h.addFile(t, "d/g2.HEIC", "IMAGE", metaWith("2024:08:02 10:00:00", 15.5439, 73.7553, 3024, 4032))
 	g3 := h.addFile(t, "d/g3.HEIC", "IMAGE", metaWith("2024:08:03 10:00:00", 15.5439, 73.7553, 3024, 4032))
 	g4 := h.addFile(t, "d/g4.HEIC", "IMAGE", metaWith("2024:08:04 10:00:00", 15.5439, 73.7553, 3024, 4032))

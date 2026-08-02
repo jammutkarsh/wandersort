@@ -14,7 +14,7 @@ import (
 )
 
 // runPlan builds the target path for each master under cfg, with no
-// database and no gazetteer — Plan is a pure function of masters/labels/cfg.
+// database and no geonames — Plan is a pure function of masters/labels/cfg.
 func runPlan(t *testing.T, masters []masterFile, cfg Config) []masterFile {
 	t.Helper()
 	if err := Plan(context.Background(), masters, nil, cfg, nil, logger.NewNoopLogger()); err != nil {
