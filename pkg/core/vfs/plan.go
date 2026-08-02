@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -25,10 +26,10 @@ import (
 // Plan turns loaded master rows into their proposed destinations. It touches
 // no database and no files: everything it needs is in masters, labels and cfg.
 func Plan(ctx context.Context, masters []masterFile, labels []userLabel, cfg Config, geo *location.Resolver, log logger.Logger) error {
-	deriveAll(masters)
-	resolveLocations(ctx, masters, cfg.Anchors, geo, log)
+	deriveAll(ctx, masters, cfg.Workers)
+	resolveLocations(ctx, masters, cfg, geo, log)
 	clusterAndSuggest(masters, labels, cfg.Anchors, cfg.ClusterGap)
-	applyNameCase(masters)
+	applyNameCase(ctx, masters, cfg.Workers)
 	mergeSameLocationDays(masters, cfg)
 	buildTargets(masters, cfg)
 	if ctx.Err() != nil { // don't leave a half-built proposal for persist to write
@@ -78,13 +79,53 @@ func PreviewPaths(cfg Config, samples []Sample) []string {
 	return paths
 }
 
+// forEachMaster runs fn over every master, on cfg.Workers goroutines when
+// there is more than one. Only for passes that write to their own master and
+// read nothing shared — index-disjoint writes need no synchronisation, and the
+// slice order is untouched either way, so fanning out changes nothing but wall
+// time. workers <= 1 runs the plain loop.
+func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn func(*masterFile)) {
+	if workers <= 1 {
+		for i := range masters {
+			if ctx.Err() != nil {
+				return
+			}
+			fn(&masters[i])
+		}
+		return
+	}
+
+	// Hand out contiguous runs, not single indices: deriveAll costs a few
+	// hundred nanoseconds per file, so one channel send per file made the pool
+	// slower than the plain loop. Runs are small enough that an expensive
+	// stretch (resolveLocations hitting uncached coordinates) still spreads.
+	const runSize = 512
+	runs := make(chan []masterFile, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for run := range runs {
+				for i := range run {
+					fn(&run[i])
+				}
+			}
+		})
+	}
+	for chunk := range slices.Chunk(masters, runSize) {
+		if ctx.Err() != nil {
+			break
+		}
+		runs <- chunk
+	}
+	close(runs)
+	wg.Wait()
+}
+
 // deriveAll fills the derived fields of every master from the metadata
 // persisted during hashing — exiftool already ran once per file there, so the
 // VFS phase never has to touch the files on disk again
-func deriveAll(masters []masterFile) {
-	for i := range masters {
-		m := &masters[i]
-
+func deriveAll(ctx context.Context, masters []masterFile, workers int) {
+	forEachMaster(ctx, masters, workers, func(m *masterFile) {
 		// CreationDate (iOS video) carries a timezone offset; applying it as-is
 		// would shift the video away from same-moment photos, which are all
 		// naive local wall-clock, so stripOffset drops the offset first.
@@ -106,31 +147,32 @@ func deriveAll(masters []masterFile) {
 		}
 
 		m.device = deviceName(deref(m.DBMake), deref(m.DBModel))
-	}
+	})
 }
 
 // resolveLocations reverse-geocodes every GPS-tagged master, then folds the
 // result into a nearby confirmed saved-place anchor so a home city's own
 // suburbs don't each get their own folder.
-func resolveLocations(ctx context.Context, masters []masterFile, anchors []location.Anchor, geo *location.Resolver, log logger.Logger) {
+//
+// This is the only part of the build that waits on anything — the resolver's
+// cache is a sync.Map over a read-only database with no connection cap, so the
+// lookups genuinely overlap. The result is a pure function of the coordinates,
+// so fanning out changes the order of the debug lines and nothing else.
+func resolveLocations(ctx context.Context, masters []masterFile, cfg Config, geo *location.Resolver, log logger.Logger) {
 	if geo == nil {
 		return
 	}
-	for i := range masters {
-		if ctx.Err() != nil {
-			return
-		}
-		m := &masters[i]
+	forEachMaster(ctx, masters, cfg.Workers, func(m *masterFile) {
 		if !m.hasGPS {
-			continue
+			return
 		}
 		city, err := geo.Lookup(ctx, m.lat, m.lon)
 		if err != nil {
 			log.Debug("No location for coordinates", "lat", m.lat, "lon", m.lon, "error", err)
-			continue
+			return
 		}
 		m.location = city
-		for _, a := range anchors {
+		for _, a := range cfg.Anchors {
 			dLat, dLon := m.lat-a.Lat, m.lon-a.Lon
 			if dLat*dLat+dLon*dLon <= location.MaxDistSquared {
 				m.location = a.FolderName
@@ -138,19 +180,19 @@ func resolveLocations(ctx context.Context, masters []masterFile, anchors []locat
 				break
 			}
 		}
-	}
+	})
 }
 
 // applyNameCase title-cases derived location, suggestion, and device names
 // after every naming decision. Filenames and user-confirmed labels are left alone.
-func applyNameCase(masters []masterFile) {
-	for i := range masters {
-		masters[i].location = caseName(masters[i].location)
-		if masters[i].suggestionSource != SuggestionUserLabel {
-			masters[i].suggestion = caseName(masters[i].suggestion)
+func applyNameCase(ctx context.Context, masters []masterFile, workers int) {
+	forEachMaster(ctx, masters, workers, func(m *masterFile) {
+		m.location = caseName(m.location)
+		if m.suggestionSource != SuggestionUserLabel {
+			m.suggestion = caseName(m.suggestion)
 		}
-		masters[i].device = caseName(masters[i].device)
-	}
+		m.device = caseName(m.device)
+	})
 }
 
 // mergeSameLocationDays collapses runs of consecutive same-location days into
@@ -251,9 +293,10 @@ func buildTargets(masters []masterFile, cfg Config) {
 				suffix = fmt.Sprintf("_%d", n)
 			}
 			p := dir + "/" + stem + suffix + ext
-			if !taken[strings.ToLower(p)] {
+			key := strings.ToLower(p)
+			if !taken[key] {
 				masters[i].targetPath = p
-				taken[strings.ToLower(p)] = true
+				taken[key] = true
 				break
 			}
 		}
@@ -505,11 +548,14 @@ func stripOffset(s string) string {
 	return s
 }
 
+// looseTimeLayouts is tried in order, so the plain exiftool shape leads: it is
+// what almost every DateTimeOriginal parses as, and every layout ahead of it is
+// a parse attempt that fails for the common case.
 var looseTimeLayouts = []string{
+	"2006:01:02 15:04:05",
 	"2006:01:02 15:04:05.999999999-07:00",
 	"2006:01:02 15:04:05-07:00",
 	"2006:01:02 15:04:05.999999999",
-	"2006:01:02 15:04:05",
 	time.RFC3339Nano,
 	time.RFC3339,
 	"2006-01-02 15:04:05",

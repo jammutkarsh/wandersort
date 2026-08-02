@@ -50,6 +50,9 @@ type Config struct {
 	// config.yaml by the caller (workflow or review --rebuild). Nil when
 	// no saved places are configured or the resolver isn't ready.
 	Anchors []location.Anchor
+	// Workers sizes the reverse-geocode pool in resolveLocations, the one
+	// part of the build that waits on anything. 0 or 1 runs it inline.
+	Workers int
 }
 
 func DefaultConfig() Config {
@@ -78,6 +81,7 @@ func ConfigFor(appCfg *config.Configuration) Config {
 	cfg.CollapseLevels = appCfg.CollapseLevels
 	cfg.SavedPlacesDateOnly = appCfg.SavedPlacesDateOnly
 	cfg.MergeSameLocationDays = appCfg.MergeSameLocationDays
+	cfg.Workers = appCfg.Workers
 	switch {
 	// empty Rules keeps the defaults; RuleNone is interpreted only here, so
 	// every caller sees the sentinel resolved the same way

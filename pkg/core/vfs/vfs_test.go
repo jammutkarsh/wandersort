@@ -672,7 +672,7 @@ func TestTakenAtPrefersCreationDateOverCreateDateForVideo(t *testing.T) {
 	creationDate := "2024:06:03 14:00:00+05:30" // same real instant, offset-aware
 	masters := []masterFile{{DBCreateDate: &createDate, DBCreationDate: &creationDate}}
 
-	deriveAll(masters)
+	deriveAll(context.Background(), masters, 0)
 
 	want := time.Date(2024, time.June, 3, 14, 0, 0, 0, time.UTC)
 	if !masters[0].takenAt.Equal(want) {
@@ -951,5 +951,49 @@ func TestCollapseDisabled(t *testing.T) {
 	want := "2024/06_June/Calangute/Vertical/Photos/IMG_0001.HEIC"
 	if got := rows[id].TargetPath; got != want {
 		t.Errorf("target = %q, want %q", got, want)
+	}
+}
+
+// TestParallelResolveMatchesSequential is the check on the reverse-geocode
+// worker pool: the same library built with Workers=1 and Workers=8 must
+// propose byte-identical paths. Run under -race it also covers the fan-out
+// itself — the workers write disjoint masters and share only the resolver.
+func TestParallelResolveMatchesSequential(t *testing.T) {
+	// spread over several real places and days so the pool has distinct
+	// coordinates to resolve, not one cached answer
+	places := []struct {
+		lat, lon float64
+	}{
+		{15.5439, 73.7553}, // Calangute
+		{22.7196, 75.8577}, // Indore
+		{18.5204, 73.8567}, // Pune
+		{19.0760, 72.8777}, // Mumbai
+		{28.6139, 77.2090}, // Delhi
+	}
+
+	build := func(workers int) map[int64]entryRow {
+		h := newHarness(t)
+		for i, p := range places {
+			for j := range 4 {
+				h.addFile(t,
+					fmt.Sprintf("trip%d/IMG_%02d%02d.HEIC", i, i, j),
+					classifier.MediaTypeImage,
+					metaWith(fmt.Sprintf("2024:06:%02d 1%d:00:00", i+1, j), p.lat, p.lon, 3024, 4032))
+			}
+		}
+		cfg := DefaultConfig()
+		cfg.Rules = []string{RuleDate, RuleLocation, RuleDevice}
+		cfg.Workers = workers
+		return h.build(t, cfg, installtest.Resolver(t))
+	}
+
+	sequential, parallel := build(1), build(8)
+	if len(sequential) != len(places)*4 {
+		t.Fatalf("seeded %d entries, want %d", len(sequential), len(places)*4)
+	}
+	for id, want := range sequential {
+		if got := parallel[id]; got.TargetPath != want.TargetPath {
+			t.Errorf("file %d: parallel target = %q, sequential = %q", id, got.TargetPath, want.TargetPath)
+		}
 	}
 }
