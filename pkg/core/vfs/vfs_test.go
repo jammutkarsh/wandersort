@@ -753,6 +753,29 @@ func TestRebuildIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestPersistCrossesChunkBoundary pins the batched INSERT: every other test
+// here fits in one chunk, so nothing else would notice a library that spans
+// several — a dropped or duplicated tail row included.
+func TestPersistCrossesChunkBoundary(t *testing.T) {
+	const n = insertChunk*2 + 3
+	h := newHarness(t)
+	ids := make([]int64, 0, n)
+	for i := range n {
+		ids = append(ids, h.addFile(t, fmt.Sprintf("d/IMG_%04d.HEIC", i), "IMAGE",
+			metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032)))
+	}
+
+	rows := h.build(t, DefaultConfig(), nil)
+	if len(rows) != n {
+		t.Fatalf("persisted %d entries, want %d", len(rows), n)
+	}
+	for _, id := range ids {
+		if rows[id].TargetPath == "" {
+			t.Fatalf("file %d has no proposal", id)
+		}
+	}
+}
+
 // TestLibraryScopeAcrossRuns covers the incremental re-scan contract: a
 // master indexed by an earlier run is still proposed by a later run, and the
 // later run replaces the previous proposal set wholesale
