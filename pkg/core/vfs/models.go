@@ -50,8 +50,9 @@ type Config struct {
 	// config.yaml by the caller (workflow or review --rebuild). Nil when
 	// no saved places are configured or the resolver isn't ready.
 	Anchors []location.Anchor
-	// Workers sizes the reverse-geocode pool in resolveLocations, the one
-	// part of the build that waits on anything. 0 or 1 runs it inline.
+	// Workers sizes the pool every per-master pass fans out over — deriveAll,
+	// resolveLocations, applyNameCase and buildTargets (see forEachMaster).
+	// 0 or 1 runs them inline.
 	Workers int
 }
 

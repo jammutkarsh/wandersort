@@ -79,12 +79,11 @@ func PreviewPaths(cfg Config, samples []Sample) []string {
 	return paths
 }
 
-// forEachMaster runs fn over every master, on cfg.Workers goroutines when
-// there is more than one. Only for passes whose writes are index-disjoint —
-// to fn's own master, or to slot i of a side slice the caller owns — and which
-// read nothing shared but immutable data. Those need no synchronisation, and
-// the slice order is untouched either way, so fanning out changes nothing but
-// wall time. workers <= 1 runs the plain loop.
+// forEachMaster runs fn over every master on `workers` goroutines (<= 1 runs
+// the plain loop). Only for passes that write index-disjointly — to fn's own
+// master, or to slot i of a side slice the caller owns — and read nothing
+// shared but immutable data, so no synchronisation is needed and the result is
+// identical at any worker count.
 func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn func(i int, m *masterFile)) {
 	if workers <= 1 {
 		for i := range masters {
@@ -282,11 +281,11 @@ func buildTargets(ctx context.Context, masters []masterFile, cfg Config) {
 	skip := uninformativeLevels(masters, cfg)
 	groupDirs := captureDirs(masters, skip, cfg)
 
-	// dirFor is a pure function of one master plus the two library-wide maps
-	// above, so the directories fan out. The collision loop below deliberately
-	// does not: `taken` decides which of two files landing on the same path
-	// keeps it and which gets the _2, and that is settled by the order it
-	// reaches them.
+	// dirFor reads one master plus the two library-wide maps above, and its only
+	// write is to that master's own suggestionDir, so the directories fan out.
+	// The collision loop below deliberately does not: `taken` decides which of
+	// two files landing on the same path keeps it and which gets the _2, and
+	// that is settled by the order it reaches them.
 	dirs := make([]string, len(masters))
 	forEachMaster(ctx, masters, cfg.Workers, func(i int, m *masterFile) {
 		// captureDirs wins when it named a shared directory for this file's group

@@ -100,16 +100,13 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, anchors []locat
 	}
 }
 
-// sortKey is one master reduced to what the sort actually compares: the
-// capture instant, plus the original index. 24 bytes against masterFile's 408,
-// so a 100k library sorts inside L2 instead of chasing 41 MB of struct. idx is
-// a plain int — it indexes masters, so it holds whatever a slice can, and this
-// imposes no limit of its own. nsec is int32 because a nanosecond-within-second
-// is 0..999999999 by definition, not because anything is being capped.
+// sortKey is one master reduced to what the sort compares: the capture instant
+// plus the original index. 24 bytes against masterFile's 408, so a 100k library
+// sorts inside L2 instead of chasing 41 MB of struct.
 type sortKey struct {
 	sec  int64
-	idx  int
-	nsec int32
+	idx  int   // indexes masters, so it holds whatever a slice can
+	nsec int32 // nanosecond-within-second, 0..999999999 by definition
 }
 
 // sortByCaptureTime orders masters oldest-first, stably. It sorts compact keys
@@ -119,12 +116,11 @@ type sortKey struct {
 func sortByCaptureTime(masters []masterFile) {
 	keys := make([]sortKey, len(masters))
 	for i := range masters {
-		t := masters[i].takenAt
-		// Unix()+Nanosecond() is the same instant ordering takenAt.Compare
-		// gives — none of these times carry a monotonic reading, they all come
-		// from time.Parse — and unlike UnixNano it doesn't overflow on the zero
-		// time an undated file has.
-		keys[i] = sortKey{sec: t.Unix(), idx: i, nsec: int32(t.Nanosecond())}
+		takenAt := masters[i].takenAt
+		// Unix()+Nanosecond() orders identically to takenAt.Compare (no
+		// monotonic readings here — every time comes from time.Parse) and,
+		// unlike UnixNano, doesn't overflow on an undated file's zero time.
+		keys[i] = sortKey{sec: takenAt.Unix(), idx: i, nsec: int32(takenAt.Nanosecond())}
 	}
 	// carrying idx in the key makes an unstable sort stable, which is what lets
 	// this use the faster SortFunc
@@ -215,12 +211,12 @@ func suggestFor(masters []masterFile, c *cluster, labels []userLabel, anchors []
 	best, bestN := "", 0
 	for _, i := range c.members {
 		base := filepath.Base(masters[i].FileDir)
-		g, seen := generic[base]
+		isGeneric, seen := generic[base]
 		if !seen {
-			g = base == "." || base == "/" || classifier.IsGenericDirName(base)
-			generic[base] = g
+			isGeneric = base == "." || base == "/" || classifier.IsGenericDirName(base)
+			generic[base] = isGeneric
 		}
-		if g {
+		if isGeneric {
 			continue
 		}
 		counts[base]++

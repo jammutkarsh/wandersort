@@ -129,31 +129,30 @@ func (v *VFS) persist(masters []masterFile) (int, error) {
 	return len(masters), nil
 }
 
-// insertChunk is how many proposals go into one INSERT. One statement per
-// file made SQLite compile the same SQL 20k times for a 20k-file library,
-// which cost more than the writes; batching halves the phase's write time.
-// Measured sweep over 20k rows: 1 row 504ms, 25 rows 248ms, 50 rows 241ms,
-// 100 rows 257ms, 500 rows 486ms — a long VALUES list is expensive to compile
-// too, so this is a trough, not a "bigger is better".
+// insertChunk is how many proposals go into one INSERT. A long VALUES list is
+// expensive for SQLite to compile, so this is a measured trough over 20k rows
+// (1 row 504ms, 50 rows 241ms, 500 rows 486ms), not "bigger is better".
 const insertChunk = 50
 
+// insertStatement builds one parameterised multi-row INSERT for a chunk, so
+// SQLite compiles the statement once instead of once per proposal.
 func insertStatement(chunk []masterFile) (string, []any) {
-	var sb strings.Builder
-	sb.WriteString(`INSERT INTO virtual_fs_entries
+	var stmt strings.Builder
+	stmt.WriteString(`INSERT INTO virtual_fs_entries
 		(file_id, source_path, target_path, cluster_id, status, suggestion, suggestion_source, suggestion_dir)
 		VALUES `)
 	args := make([]any, 0, len(chunk)*8)
 	for i := range chunk {
 		if i > 0 {
-			sb.WriteString(",")
+			stmt.WriteString(",")
 		}
-		sb.WriteString("(?,?,?,?,?,?,?,?)")
+		stmt.WriteString("(?,?,?,?,?,?,?,?)")
 		m := &chunk[i]
 		args = append(args, m.FileID, m.absPath, m.targetPath,
 			nullable(m.clusterID), db.StatusProposed,
 			nullable(m.suggestion), nullable(m.suggestionSource), nullable(m.suggestionDir))
 	}
-	return sb.String(), args
+	return stmt.String(), args
 }
 
 func nullable(s string) any {
