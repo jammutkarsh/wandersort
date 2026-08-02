@@ -80,6 +80,31 @@ func (r *Resolver) RelativeToHome(path string) string {
 	return path
 }
 
+// SanitizeSegment makes a derived value safe to use as a single path segment
+// — a folder name, not a full path. The one place this decides what a
+// derived name is allowed to contain, so vfs (device/orientation/media/date
+// segments, renames) and location (the rename dropdown's folder value) apply
+// the same rule instead of two packages agreeing on it by convention.
+func SanitizeSegment(seg string) string {
+	// commas are fine in a name a person is *choosing* (geocode results, a
+	// rename dropdown) — just not once picked, so strip them here.
+	seg = strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', 0, ' ', ',', '\t', '\n':
+			return '-'
+		}
+		return r
+	}, seg)
+	for strings.Contains(seg, "--") {
+		seg = strings.ReplaceAll(seg, "--", "-")
+	}
+	seg = strings.Trim(seg, " ._-")
+	if seg == "" {
+		return "-"
+	}
+	return seg
+}
+
 // Overlaps reports whether a and b name the same directory or one is nested
 // inside the other. Both must already be canonical absolute paths
 func Overlaps(a, b string) bool {

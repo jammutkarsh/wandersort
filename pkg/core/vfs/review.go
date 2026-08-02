@@ -22,6 +22,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 // ErrInvalidTree wraps every rejection of a submitted review tree (unknown node
@@ -219,7 +220,7 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 			if name == "" || name == "." || name == ".." {
 				return fmt.Errorf("%w: invalid node name %q", ErrInvalidTree, n.Name)
 			}
-			name = SanitizeSegment(name)
+			name = wspath.SanitizeSegment(name)
 			newPath := name
 			if parentNew != "" {
 				newPath = parentNew + "/" + name

@@ -21,6 +21,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 // Plan turns loaded master rows into their proposed destinations. It touches
@@ -428,7 +429,7 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 // order. skip names the levels uninformativeLevels found nothing to say with.
 func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 	if m.takenAt.IsZero() {
-		return SanitizeSegment(cfg.Fallback)
+		return path.SanitizeSegment(cfg.Fallback)
 	}
 
 	parts := []string{
@@ -453,7 +454,7 @@ func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 		if seg == "" {
 			continue // level not derivable for this file — skip the folder
 		}
-		parts = append(parts, SanitizeSegment(seg))
+		parts = append(parts, path.SanitizeSegment(seg))
 		if level == RuleLocation {
 			// the folder a reviewer renames, recorded by path not depth so any
 			// Rules order works — no location level means no suggestion node,
@@ -666,25 +667,4 @@ func deviceName(mk, model string) string {
 	default:
 		return mk + " " + model
 	}
-}
-
-// SanitizeSegment makes a derived value safe to use as a single path segment.
-func SanitizeSegment(seg string) string {
-	// commas are fine in a name a person is *choosing* (geocode results, the
-	// rename dropdown) — just not once picked, so strip them here.
-	seg = strings.Map(func(r rune) rune {
-		switch r {
-		case '/', '\\', ':', 0, ' ', ',', '\t', '\n':
-			return '-'
-		}
-		return r
-	}, seg)
-	for strings.Contains(seg, "--") {
-		seg = strings.ReplaceAll(seg, "--", "-")
-	}
-	seg = strings.Trim(seg, " ._-")
-	if seg == "" {
-		return "-"
-	}
-	return seg
 }

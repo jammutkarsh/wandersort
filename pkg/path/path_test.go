@@ -62,6 +62,27 @@ func TestPathUtil_ContractPath(t *testing.T) {
 	}
 }
 
+func TestSanitizeSegment(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"Goa Trip 2024", "Goa-Trip-2024"},
+		{"Springfield, Illinois", "Springfield-Illinois"},
+		{"a/b\\c:d", "a-b-c-d"},
+		{"a---b", "a-b"},
+		{"  .leading-and-trailing._  ", "leading-and-trailing"},
+		{"", "-"},
+		{",,,", "-"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := SanitizeSegment(tt.in); got != tt.want {
+				t.Errorf("SanitizeSegment(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOverlaps(t *testing.T) {
 	tests := []struct {
 		name string
