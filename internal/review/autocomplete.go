@@ -71,10 +71,11 @@ func (m *Model) refreshSuggestions() {
 		return len(m.suggestions) < maxSuggestions
 	}
 
-	// 1. nearby places, already fetched — FullName because six rows reading
-	// "Springfield" are not a choice, and what is picked is what names the folder
+	// 1. nearby places, already fetched — DisplayName qualifies only on a real
+	// DB collision (state, then country — never both); a genuinely unique city
+	// stays bare, and what is picked is what names the folder
 	for _, c := range m.geoCands {
-		name := c.FullName
+		name := c.DisplayName
 		if name == "" {
 			name = c.Name
 		}
@@ -106,7 +107,7 @@ func (m *Model) refreshSuggestions() {
 	if len(prefix) >= minGeonamesPrefix && m.resolver != nil {
 		if matches, err := m.resolver.SearchByName(m.ctx, typed, maxSuggestions); err == nil {
 			for _, pm := range matches {
-				if !add(pm.FullName, "") {
+				if !add(pm.DisplayName, "") {
 					return
 				}
 			}
