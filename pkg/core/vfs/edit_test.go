@@ -57,7 +57,7 @@ func groupedTree() []Node {
 func TestMergeNodesSiblingsSucceeds(t *testing.T) {
 	tree := siblingTree()
 
-	newTree, mergedID, name, ancestor, err := MergeNodes(tree, []string{"2024/June/03", "2024/June/09"}, nil)
+	newTree, mergedID, name, ancestor, err := MergeNodes(tree, []string{"2024/June/03", "2024/June/09"})
 	if err != nil {
 		t.Fatalf("MergeNodes: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestMergeNodesCombinesDayRanges(t *testing.T) {
 		ids[i] = id
 	}
 
-	newTree, mergedID, name, _, err := MergeNodes(tree, ids, nil)
+	newTree, mergedID, name, _, err := MergeNodes(tree, ids)
 	if err != nil {
 		t.Fatalf("MergeNodes: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestMergeNodesSkipsDayRangeOutsideDateFolders(t *testing.T) {
 		{ID: "root/Goa", Name: "Goa", FileCount: 1},
 	}}}
 
-	_, _, name, _, err := MergeNodes(tree, []string{"root/03", "root/Goa"}, nil)
+	_, _, name, _, err := MergeNodes(tree, []string{"root/03", "root/Goa"})
 	if err != nil {
 		t.Fatalf("MergeNodes: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestMergeNodesAcrossBranchesCollapsesToOneNode(t *testing.T) {
 	tree := crossBranchTree()
 
 	newTree, _, _, _, err := MergeNodes(tree,
-		[]string{"2017/April/20/Canon EOS 700D", "2017/August/15/Canon EOS 700D"}, nil)
+		[]string{"2017/April/20/Canon EOS 700D", "2017/August/15/Canon EOS 700D"})
 	if err != nil {
 		t.Fatalf("MergeNodes: %v", err)
 	}
@@ -158,28 +158,31 @@ func TestMergeNodesRejectsWithNoCommonAncestor(t *testing.T) {
 		{ID: "2018", Name: "2018", Children: []Node{{ID: "2018/Camera", Name: "Camera", FileCount: 1}}},
 	}
 
-	_, _, _, _, err := MergeNodes(tree, []string{"2017/Camera", "2018/Camera"}, nil)
+	_, _, _, _, err := MergeNodes(tree, []string{"2017/Camera", "2018/Camera"})
 	if err == nil {
 		t.Fatal("expected rejection for leaves with no common ancestor")
 	}
 }
 
 func TestMergeNodesRejectsFewerThanTwo(t *testing.T) {
-	if _, _, _, _, err := MergeNodes(siblingTree(), []string{"2024/June/03"}, nil); err == nil {
+	if _, _, _, _, err := MergeNodes(siblingTree(), []string{"2024/June/03"}); err == nil {
 		t.Fatal("expected rejection for a single ID")
 	}
 }
 
-func TestMergeNodesRespectsPendingRenames(t *testing.T) {
+// TestMergeNodesKeepsAnchorRename covers the naming rule: a reviewer's rename
+// is written straight onto the node, so the merge keeps it rather than falling
+// back to the day-range name it would propose for two plain Date folders.
+func TestMergeNodesKeepsAnchorRename(t *testing.T) {
 	tree := siblingTree()
-	pending := map[string]string{"2024/June/03": "Renamed"}
+	FindNode(tree, "2024/June/03").Name = "Renamed"
 
-	_, _, name, _, err := MergeNodes(tree, []string{"2024/June/03", "2024/June/09"}, pending)
+	_, _, name, _, err := MergeNodes(tree, []string{"2024/June/03", "2024/June/09"})
 	if err != nil {
 		t.Fatalf("MergeNodes: %v", err)
 	}
 	if name != "Renamed" {
-		t.Errorf("name = %q, want the pending rename on the first pick, not its own name", name)
+		t.Errorf("name = %q, want the rename on the first pick, not its own name", name)
 	}
 }
 

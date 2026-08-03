@@ -42,9 +42,6 @@ func CloneTree(nodes []Node) []Node {
 		if n.Samples != nil {
 			out[i].Samples = append([]string(nil), n.Samples...)
 		}
-		if n.Suggestions != nil {
-			out[i].Suggestions = append([]Suggestion(nil), n.Suggestions...)
-		}
 		if n.MergedIDs != nil {
 			out[i].MergedIDs = append([]string(nil), n.MergedIDs...)
 		}
@@ -100,19 +97,10 @@ func removeChildByID(parent *Node, id string) {
 	}
 }
 
-// finalName is the segment a node will be written as: the caller's pending
-// rename if any, else the proposed name. Suggestions count only once accepted.
-func finalName(n Node, pending map[string]string) string {
-	if name, ok := pending[n.ID]; ok {
-		return name
-	}
-	return n.Name
-}
-
-// childByName finds parent's child that will end up named name, if any.
-func childByName(parent *Node, name string, pending map[string]string) *Node {
+// childByName finds parent's child named name, if any.
+func childByName(parent *Node, name string) *Node {
 	for i := range parent.Children {
-		if finalName(parent.Children[i], pending) == name {
+		if parent.Children[i].Name == name {
 			return &parent.Children[i]
 		}
 	}
@@ -121,14 +109,14 @@ func childByName(parent *Node, name string, pending map[string]string) *Node {
 
 // mergeInto folds src into dst, recursively merging same-named children
 // rather than leaving them as duplicate siblings.
-func mergeInto(dst *Node, src Node, pending map[string]string) {
+func mergeInto(dst *Node, src Node) {
 	dst.FileCount += src.FileCount
 	dst.Samples = append(dst.Samples, src.Samples...)
 	dst.MergedIDs = append(dst.MergedIDs, src.ID)
 	dst.MergedIDs = append(dst.MergedIDs, src.MergedIDs...)
 	for _, c := range src.Children {
-		if twin := childByName(dst, finalName(c, pending), pending); twin != nil {
-			mergeInto(twin, c, pending)
+		if twin := childByName(dst, c.Name); twin != nil {
+			mergeInto(twin, c)
 			continue
 		}
 		dst.Children = append(dst.Children, c)
@@ -219,16 +207,12 @@ func formatDayRange(lo, hi int) string {
 }
 
 // combinedDayRange spans every pick's day range, if every pick is a plain
-// Date-level folder ("03", "01_02") and none carries a typed rename — a
-// rename is the reviewer overriding the proposal, and merge never clobbers
-// that (see finalName). Anything that isn't day-shaped (a location, device,
-// or already-renamed folder at this depth) bails the whole thing out: this
-// only fires when the selection is unambiguously a date merge.
-func combinedDayRange(picks []mergePick, pending map[string]string) (lo, hi int, ok bool) {
+// Date-level folder ("03", "01_02"). Anything that isn't day-shaped (a
+// location, a device, a folder the reviewer already renamed to something of
+// their own) bails the whole thing out: this only fires when the selection is
+// unambiguously a date merge.
+func combinedDayRange(picks []mergePick) (lo, hi int, ok bool) {
 	for i, p := range picks {
-		if _, renamed := pending[p.id]; renamed {
-			return 0, 0, false
-		}
 		d1, d2, valid := parseDayRange(p.value.Name)
 		if !valid {
 			return 0, 0, false
@@ -254,7 +238,7 @@ type mergePick struct {
 // MergeNodes folds every node in ids into one, under their lowest common
 // ancestor by path. Returns the surviving node's ID, its name, and the
 // ancestor's name for the caller's status line.
-func MergeNodes(tree []Node, ids []string, pending map[string]string) (newTree []Node, mergedID, name, ancestorName string, err error) {
+func MergeNodes(tree []Node, ids []string) (newTree []Node, mergedID, name, ancestorName string, err error) {
 	// Assumes no id in ids is an ancestor of another — the review TUI's
 	// same-depth-only selection already guarantees that.
 	if len(ids) < 2 {
@@ -287,36 +271,24 @@ func MergeNodes(tree []Node, ids []string, pending map[string]string) (newTree [
 	leafIDs := map[string]bool{}
 	collectLeafIDs(tree, leafIDs)
 
-	// the first id's own name or its pending rename — never a suggestion,
-	// which is an offer nobody accepted
-	target := finalName(picks[0].value, pending)
+	// the first id's own name — already the reviewer's rename if they typed one,
+	// since a rename is written straight onto the node
+	target := picks[0].value.Name
 
-	// unless every pick is a plain, unrenamed Date folder — merging days
-	// proposes the day range they actually span, the same name the pipeline
-	// would have proposed had it seen them as one run from the start
-	dayCombined := false
-	if lo, hi, ok := combinedDayRange(picks, pending); ok {
+	// unless every pick is a plain Date folder — merging days proposes the day
+	// range they actually span, the same name the pipeline would have proposed
+	// had it seen them as one run from the start
+	if lo, hi, ok := combinedDayRange(picks); ok {
 		target = formatDayRange(lo, hi)
-		dayCombined = true
 	}
 
 	// absorb the rest; mergeInto collapses same-named children recursively, so
 	// three Goa days give one Goa holding one merged device folder
 	merged := picks[0].value
 	for _, p := range picks[1:] {
-		mergeInto(&merged, p.value, pending)
+		mergeInto(&merged, p.value)
 	}
-	// the day-range name is the merge's own deterministic output, not a
-	// choice the reviewer made — write it straight onto the node instead of
-	// leaving it to the caller's pending-rename map (row.newName is keyed by
-	// ID, and the survivor keeps its original ID, so on [u] undo the reverted
-	// unmerged node — same ID, back to its own separate row — would inherit
-	// this name as a leftover "pending rename" nobody asked for). A real
-	// rename the reviewer typed still goes through pending/finalName above,
-	// same as ever.
-	if dayCombined {
-		merged.Name = target
-	}
+	merged.Name = target
 
 	// splice: the picks leave the tree entirely and reappear as one child of
 	// the LCA. Their IDs ride along on MergedIDs so Confirm remaps their files.
