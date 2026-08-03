@@ -6,8 +6,6 @@
 
 package migrations
 
-import "github.com/jammutkarsh/wandersort/pkg/config"
-
 var schema003 = Migration{
 	Version:     3,
 	Description: "vfs_schema",
@@ -43,14 +41,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_vfs_file ON virtual_fs_entries(file_id);
 CREATE INDEX IF NOT EXISTS idx_vfs_status ON virtual_fs_entries(status);
 `
 
-// user_labels remembers the folder names the reviewer typed (events) and
-// anchor locations (saved-place). Written by the review flow, read back as
-// rename completions in later reviews.
+// user_labels remembers the folder names the reviewer typed. Written by the
+// review flow, read back as rename completions in later reviews.
+// SAVED_PLACE is a legacy kind: anchors are built from config.yaml in memory
+// now, so nothing writes it any more — the CHECK still allows it so rows
+// written by older versions stay valid.
 const userLabels = `
 CREATE TABLE IF NOT EXISTS user_labels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     label TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('EVENT','` + config.SavedPlace + `')),
+    kind TEXT NOT NULL CHECK (kind IN ('EVENT','SAVED_PLACE')),
     time_start TEXT,
     time_end TEXT,
     gps_lat REAL,

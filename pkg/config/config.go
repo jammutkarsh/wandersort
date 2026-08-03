@@ -26,11 +26,6 @@ const (
 	configFileName     = "config.yaml"
 )
 
-// SavedPlace is the user_labels.kind for a confirmed anchor location.
-// SavedPlaces is positional: index 0 is home, 1 is work, everything
-// else is another frequently-stayed-at place — all anchored the same way.
-const SavedPlace = "SAVED_PLACE"
-
 type TriBool int
 
 const (
@@ -67,7 +62,9 @@ type Configuration struct {
 	CollapseLevels        bool     `yaml:"collapse-levels"`
 	SavedPlacesDateOnly   bool     `yaml:"saved-places-date-only"`
 	MergeSameLocationDays bool     `yaml:"merge-same-location-days"`
-	SavedPlaces           []string `yaml:"saved-places,omitempty"`
+	// SavedPlaces is positional: index 0 is home, 1 is work, everything else
+	// is another frequently-stayed-at place — all anchored the same way.
+	SavedPlaces []string `yaml:"saved-places,omitempty"`
 
 	// Computed at runtime, never persisted.
 	AppDBPath      string `yaml:"-"`
