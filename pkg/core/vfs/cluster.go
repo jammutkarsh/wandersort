@@ -9,12 +9,8 @@ package vfs
 import (
 	"cmp"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"time"
-
-	"github.com/jammutkarsh/wandersort/pkg/classifier"
-	"github.com/jammutkarsh/wandersort/pkg/location"
 )
 
 // cluster groups masters whose capture times sit within the configured gap of
@@ -24,10 +20,10 @@ type cluster struct {
 	start, end time.Time
 }
 
-// clusterAndSuggest handles files with no location of their own: time-gap
-// clustering, GPS spillover within a cluster, then a ranked name suggestion for
-// whatever is still unresolved.
-func clusterAndSuggest(masters []masterFile, labels []userLabel, anchors []location.Anchor, gap time.Duration) {
+// clusterAndSpill handles files with no location of their own: time-gap
+// clustering, then GPS spillover within a cluster. Whatever is still
+// unresolved gets a dated event segment instead of a location folder.
+func clusterAndSpill(masters []masterFile, gap time.Duration) {
 	if gap <= 0 {
 		gap = defaultClusterGap
 	}
@@ -43,15 +39,6 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, anchors []locat
 		c := &clusters[len(clusters)-1]
 		c.members = append(c.members, i)
 		c.end = t
-	}
-
-	anchorCities := make([]string, 0, len(anchors))
-	seen := map[string]bool{}
-	for _, a := range anchors {
-		if !seen[a.FolderName] {
-			seen[a.FolderName] = true
-			anchorCities = append(anchorCities, a.FolderName)
-		}
 	}
 
 	clusterNum := 0
@@ -80,22 +67,17 @@ func clusterAndSuggest(masters []masterFile, labels []userLabel, anchors []locat
 				masters[i].location = city
 				masters[i].atSavedPlace = cityIsSavedPlace // SavedPlacesDateOnly must suppress its folder here too, not just for its located neighbours
 				masters[i].clusterID = id
-				masters[i].suggestion = city
-				masters[i].suggestionSource = SuggestionSpillover
 			}
 			continue
 		}
 
-		// nothing located: fall back to a dated segment plus a name suggestion.
-		// No member here is atSavedPlace — that always carries a real location
-		// now, which would have made city non-empty above.
+		// nothing located: fall back to a dated segment. No member here is
+		// atSavedPlace — that always carries a real location now, which would
+		// have made city non-empty above.
 		seg := eventSegment(c.start, c.end)
-		sug, src := suggestFor(masters, c, labels, anchorCities)
 		for _, i := range c.members {
 			masters[i].clusterID = id
 			masters[i].eventSegment = seg
-			masters[i].suggestion = sug
-			masters[i].suggestionSource = src
 		}
 	}
 }
@@ -178,57 +160,6 @@ func majorityCity(masters []masterFile, members []int) (city string, atSavedPlac
 		}
 	}
 	return best, home[best]
-}
-
-// suggestFor ranks a name suggestion for a fully unresolved cluster:
-// confirmed label overlapping in time → anchor city → the user's own
-// (non-generic) source folder name.
-func suggestFor(masters []masterFile, c *cluster, labels []userLabel, anchors []string) (string, string) {
-	for _, l := range labels {
-		if l.Kind != "EVENT" {
-			continue
-		}
-		ls, okS := parseTimeLoose(deref(l.TimeStart))
-		le, okE := parseTimeLoose(deref(l.TimeEnd))
-		if okS && okE && ls.Before(c.end.Add(time.Second)) && le.After(c.start.Add(-time.Second)) {
-			return l.Label, SuggestionUserLabel
-		}
-	}
-
-	if len(anchors) > 0 {
-		return anchors[0], SuggestionAnchor
-	}
-
-	// most common meaningful source folder among the members. Only the
-	// immediate parent is judged: generic segments higher up (Users, Downloads)
-	// must not disqualify a meaningful leaf folder.
-	counts := map[string]int{}
-	// IsGenericDirName is a regexp match; a cluster's members mostly share a
-	// handful of folders, so judge each distinct one once. A memo rather than a
-	// pass over counts: the tie below is broken by member order, and ranging a
-	// map would make the winner vary run to run.
-	generic := map[string]bool{}
-	best, bestN := "", 0
-	for _, i := range c.members {
-		base := filepath.Base(masters[i].FileDir)
-		isGeneric, seen := generic[base]
-		if !seen {
-			isGeneric = base == "." || base == "/" || classifier.IsGenericDirName(base)
-			generic[base] = isGeneric
-		}
-		if isGeneric {
-			continue
-		}
-		counts[base]++
-		if counts[base] > bestN {
-			best, bestN = base, counts[base]
-		}
-	}
-	if best != "" {
-		return best, SuggestionSourceFolder
-	}
-
-	return "", ""
 }
 
 // eventSegment renders the dated placeholder for an unresolved cluster. It

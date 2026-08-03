@@ -23,7 +23,7 @@ import (
 // database and no geonames — Plan is a pure function of masters/labels/cfg.
 func runPlan(t *testing.T, masters []masterFile, cfg Config) []masterFile {
 	t.Helper()
-	if err := Plan(context.Background(), masters, nil, cfg, nil, logger.NewNoopLogger()); err != nil {
+	if err := Plan(context.Background(), masters, cfg, nil, logger.NewNoopLogger()); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
 	return masters
@@ -260,8 +260,8 @@ func fanoutFixture() []masterFile {
 // derived is everything Plan writes onto a master, so a mismatch anywhere in
 // the build surfaces rather than only a differing target path.
 func derived(m *masterFile) string {
-	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%s|%v",
-		m.FileID, m.targetPath, m.suggestionDir, m.suggestion, m.suggestionSource,
+	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%v",
+		m.FileID, m.targetPath, m.locationDir,
 		m.clusterID, m.location, m.eventSegment, m.atSavedPlace)
 }
 
@@ -278,7 +278,7 @@ func TestPlanFanoutMatchesSequential(t *testing.T) {
 		c := cfg
 		c.Workers = workers
 		masters := fanoutFixture()
-		if err := Plan(context.Background(), masters, nil, c, nil, logger.NewNoopLogger()); err != nil {
+		if err := Plan(context.Background(), masters, c, nil, logger.NewNoopLogger()); err != nil {
 			t.Fatalf("Plan(workers=%d): %v", workers, err)
 		}
 		out := make([]string, len(masters))
@@ -326,7 +326,7 @@ func TestPlanDegenerateInputs(t *testing.T) {
 		c := cfg
 		c.Workers = workers
 		for _, n := range []int{0, 1, 2} {
-			if err := Plan(context.Background(), fanoutFixture()[:n], nil, c, nil, log); err != nil {
+			if err := Plan(context.Background(), fanoutFixture()[:n], c, nil, log); err != nil {
 				t.Fatalf("workers=%d n=%d: %v", workers, n, err)
 			}
 		}
@@ -335,7 +335,7 @@ func TestPlanDegenerateInputs(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if err := Plan(ctx, fanoutFixture(), nil, c, nil, log); err == nil {
+		if err := Plan(ctx, fanoutFixture(), c, nil, log); err == nil {
 			t.Errorf("workers=%d: cancelled Plan returned nil, so a partial proposal would reach persist", workers)
 		}
 	}

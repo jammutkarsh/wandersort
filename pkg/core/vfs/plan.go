@@ -25,11 +25,11 @@ import (
 )
 
 // Plan turns loaded master rows into their proposed destinations. It touches
-// no database and no files: everything it needs is in masters, labels and cfg.
-func Plan(ctx context.Context, masters []masterFile, labels []userLabel, cfg Config, geo *location.Resolver, log logger.Logger) error {
+// no database and no files: everything it needs is in masters and cfg.
+func Plan(ctx context.Context, masters []masterFile, cfg Config, geo *location.Resolver, log logger.Logger) error {
 	deriveAll(ctx, masters, cfg.Workers)
 	resolveLocations(ctx, masters, cfg, geo, log)
-	clusterAndSuggest(masters, labels, cfg.Anchors, cfg.ClusterGap)
+	clusterAndSpill(masters, cfg.ClusterGap)
 	applyNameCase(ctx, masters, cfg.Workers)
 	mergeSameLocationDays(masters, cfg)
 	buildTargets(ctx, masters, cfg)
@@ -190,14 +190,11 @@ func resolveLocations(ctx context.Context, masters []masterFile, cfg Config, geo
 	})
 }
 
-// applyNameCase title-cases derived location, suggestion, and device names
-// after every naming decision. Filenames and user-confirmed labels are left alone.
+// applyNameCase title-cases the derived location and device names after every
+// naming decision. Filenames are left alone.
 func applyNameCase(ctx context.Context, masters []masterFile, workers int) {
 	forEachMaster(ctx, masters, workers, func(_ int, m *masterFile) {
 		m.location = caseName(m.location)
-		if m.suggestionSource != SuggestionUserLabel {
-			m.suggestion = caseName(m.suggestion)
-		}
 		m.device = caseName(m.device)
 	})
 }
@@ -283,7 +280,7 @@ func buildTargets(ctx context.Context, masters []masterFile, cfg Config) {
 	groupDirs := captureDirs(masters, skip, cfg)
 
 	// dirFor reads one master plus the two library-wide maps above, and its only
-	// write is to that master's own suggestionDir, so the directories fan out.
+	// write is to that master's own locationDir, so the directories fan out.
 	// The collision loop below deliberately does not: `taken` decides which of
 	// two files landing on the same path keeps it and which gets the _2, and
 	// that is settled by the order it reaches them.
@@ -456,10 +453,9 @@ func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 		}
 		parts = append(parts, path.SanitizeSegment(seg))
 		if level == RuleLocation {
-			// the folder a reviewer renames, recorded by path not depth so any
-			// Rules order works — no location level means no suggestion node,
-			// rather than one landing on a Device folder
-			m.suggestionDir = strings.Join(parts, "/")
+			// recorded by path, not depth, so any Rules order works — this is
+			// where the review tree hangs the file's GPS for rename lookups
+			m.locationDir = strings.Join(parts, "/")
 		}
 	}
 	return strings.Join(parts, "/")

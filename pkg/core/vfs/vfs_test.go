@@ -24,12 +24,10 @@ import (
 )
 
 type entryRow struct {
-	FileID           int64   `db:"file_id"`
-	TargetPath       string  `db:"target_path"`
-	ClusterID        *string `db:"cluster_id"`
-	Status           string  `db:"status"`
-	Suggestion       *string `db:"suggestion"`
-	SuggestionSource *string `db:"suggestion_source"`
+	FileID     int64   `db:"file_id"`
+	TargetPath string  `db:"target_path"`
+	ClusterID  *string `db:"cluster_id"`
+	Status     string  `db:"status"`
 }
 
 type harness struct {
@@ -101,7 +99,7 @@ func (h *harness) build(t *testing.T, cfg Config, geo *location.Resolver) map[in
 
 	var rows []entryRow
 	if err := h.d.SQL.Select(&rows, `
-		SELECT file_id, target_path, cluster_id, status, suggestion, suggestion_source
+		SELECT file_id, target_path, cluster_id, status
 		FROM virtual_fs_entries`); err != nil {
 		t.Fatal(err)
 	}
@@ -194,9 +192,6 @@ func TestClusterSpillover(t *testing.T) {
 				t.Errorf("file %d target = %q, want prefix %q", id, got, want)
 			}
 		}
-		if rows[id].SuggestionSource == nil || *rows[id].SuggestionSource != SuggestionSpillover {
-			t.Errorf("file %d suggestion_source = %v, want SPILLOVER", id, rows[id].SuggestionSource)
-		}
 		if rows[id].ClusterID == nil {
 			t.Errorf("file %d should carry a cluster_id", id)
 		}
@@ -224,86 +219,6 @@ func TestUnresolvedEventSegmentAndGapSplit(t *testing.T) {
 	}
 	if *rows[a].ClusterID == *rows[b].ClusterID {
 		t.Errorf("gap-split files should be in different clusters")
-	}
-}
-
-func TestUserLabelSuggestion(t *testing.T) {
-	h := newHarness(t)
-	h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
-	// label casing is user-chosen and must survive title-casing
-	if _, err := h.d.ExecContext(context.Background(), `
-		INSERT INTO user_labels (label, kind, time_start, time_end)
-		VALUES ('Manali TRIP', 'EVENT', '2024-06-02T00:00:00Z', '2024-06-06T00:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-
-	rows := h.build(t, DefaultConfig(), nil)
-	for _, r := range rows {
-		if r.Suggestion == nil || *r.Suggestion != "Manali TRIP" {
-			t.Errorf("suggestion = %v, want 'Manali TRIP'", r.Suggestion)
-		}
-		if r.SuggestionSource == nil || *r.SuggestionSource != SuggestionUserLabel {
-			t.Errorf("suggestion_source = %v, want USER_LABEL", r.SuggestionSource)
-		}
-	}
-}
-
-// TestAnchorSuggestion covers a fully unresolved cluster (no GPS at all)
-// falling back to a *confirmed* saved-place anchor for its suggestion.
-// anchorCities deliberately no longer falls back to "the library's most
-// frequent city" with no confirmed anchor — see the anchorCities doc comment
-// for why (a real reported bug: an unrelated DSLR photo with no GPS anywhere
-// nearby was "suggested" whatever city happened to dominate the library).
-func TestAnchorSuggestion(t *testing.T) {
-	h := newHarness(t)
-	u := h.addFile(t, "dump/DSC_0009.JPG", "IMAGE", metaWith("2024:06:20 10:00:00", 0, 0, 4000, 3000))
-
-	cfg := DefaultConfig()
-	addHomeAnchor(&cfg, "Indore", 0, 0)
-	rows := h.build(t, cfg, nil)
-	if rows[u].Suggestion == nil || *rows[u].Suggestion != "Indore" {
-		t.Errorf("suggestion = %v, want 'Indore'", rows[u].Suggestion)
-	}
-	if rows[u].SuggestionSource == nil || *rows[u].SuggestionSource != SuggestionAnchor {
-		t.Errorf("suggestion_source = %v, want ANCHOR", rows[u].SuggestionSource)
-	}
-}
-
-// TestNoAnchorFallsThroughToSourceFolder covers the fixed bug directly: with
-// no confirmed anchor and no matching EVENT label, a fully unresolved cluster
-// must NOT invent a location from library-wide frequency — it should fall
-// through to the next rung (source folder name) instead.
-func TestNoAnchorFallsThroughToSourceFolder(t *testing.T) {
-	h := newHarness(t)
-	// plenty of directly-resolved "Banjar" photos elsewhere in the library —
-	// none of this should leak into the unrelated DSLR cluster below
-	// 31.63722,77.34028 is the real Banjar, Himachal Pradesh
-	for i := range 5 {
-		h.addFile(t, fmt.Sprintf("phone/IMG_%d.HEIC", i), "IMAGE", metaWith("2024:05:01 10:00:00", 31.63722, 77.34028, 3024, 4032))
-	}
-	geo := installtest.Resolver(t)
-
-	u := h.addFile(t, "Diwali 2024/IMG_9001.JPG", "IMAGE", metaWith("2024:08:15 10:00:00", 0, 0, 6000, 4000))
-
-	rows := h.build(t, DefaultConfig(), geo)
-	if rows[u].Suggestion == nil || *rows[u].Suggestion != "Diwali 2024" {
-		t.Errorf("suggestion = %v, want the source folder 'Diwali 2024', not the library's frequent city", rows[u].Suggestion)
-	}
-	if rows[u].SuggestionSource == nil || *rows[u].SuggestionSource != SuggestionSourceFolder {
-		t.Errorf("suggestion_source = %v, want SOURCE_FOLDER", rows[u].SuggestionSource)
-	}
-}
-
-func TestSourceFolderSuggestion(t *testing.T) {
-	h := newHarness(t)
-	u := h.addFile(t, "Goa Trip 2024/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
-
-	rows := h.build(t, DefaultConfig(), nil)
-	if rows[u].Suggestion == nil || *rows[u].Suggestion != "Goa Trip 2024" {
-		t.Errorf("suggestion = %v, want 'Goa Trip 2024'", rows[u].Suggestion)
-	}
-	if rows[u].SuggestionSource == nil || *rows[u].SuggestionSource != SuggestionSourceFolder {
-		t.Errorf("suggestion_source = %v, want SOURCE_FOLDER", rows[u].SuggestionSource)
 	}
 }
 
@@ -416,7 +331,7 @@ func TestCaptureGroupSidecarCoLocatesWithPair(t *testing.T) {
 }
 
 // TestCaptureDirsForcesRawJpgTogetherAndKeepsRicherLocation is a direct unit
-// test of captureDirs, deliberately bypassing Run()/clusterAndSuggest: the
+// test of captureDirs, deliberately bypassing Run()/clusterAndSpill: the
 // full pipeline's time-gap spillover (cluster.go's majorityCity) already
 // fills in a same-moment file's missing location from a nearby member
 // regardless of filename, so an end-to-end RAW+JPG test would pass even with
@@ -520,7 +435,7 @@ func TestSavedPlacesDateOnly(t *testing.T) {
 // TestSavedPlacesDateOnlySpilloverStaysSuppressed covers a reported bug: a
 // GPS-less file clustered with GPS-tagged home photos (an indoor shot with no
 // fix, taken minutes after ones that resolved to the home anchor) inherited
-// the anchor's location string via clusterAndSuggest's spillover but not the
+// the anchor's location string via clusterAndSpill's spillover but not the
 // atSavedPlace flag, so it alone leaked a location folder SavedPlacesDateOnly was
 // supposed to suppress for the whole cluster.
 func TestSavedPlacesDateOnlySpilloverStaysSuppressed(t *testing.T) {
@@ -807,7 +722,7 @@ func TestLibraryScopeAcrossRuns(t *testing.T) {
 
 	var rows []entryRow
 	if err := h.d.SQL.Select(&rows,
-		`SELECT file_id, target_path, cluster_id, status, suggestion, suggestion_source FROM virtual_fs_entries`); err != nil {
+		`SELECT file_id, target_path, cluster_id, status FROM virtual_fs_entries`); err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 {
@@ -870,18 +785,18 @@ func TestUnknownLocationEmitsNoLocationFolder(t *testing.T) {
 
 	var withDir int
 	if err := h.d.SQL.Get(&withDir,
-		`SELECT COUNT(*) FROM virtual_fs_entries WHERE suggestion_dir IS NOT NULL`); err != nil {
+		`SELECT COUNT(*) FROM virtual_fs_entries WHERE location_dir IS NOT NULL`); err != nil {
 		t.Fatal(err)
 	}
 	if withDir != 0 {
-		t.Errorf("%d rows carry a suggestion_dir, want 0 — there is no location folder to hang a suggestion on", withDir)
+		t.Errorf("%d rows carry a location_dir, want 0 — there is no location folder in this proposal", withDir)
 	}
 }
 
-// TestSuggestionDirTracksTheLocationLevel covers the misplaced-suggestion bug:
-// with location second, the suggestion must attach to the location folder, not
-// to whatever sits at the old hardcoded depth 2 (here, the Day).
-func TestSuggestionDirTracksTheLocationLevel(t *testing.T) {
+// TestLocationDirTracksTheLocationLevel covers the misplaced-GPS bug: with
+// location second, the recorded folder must be the location one, not whatever
+// sits at the old hardcoded depth 2 (here, the Day).
+func TestLocationDirTracksTheLocationLevel(t *testing.T) {
 	h := newHarness(t)
 	h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5439, 73.7553, 3024, 4032))
 	cfg := DefaultConfig()
@@ -890,12 +805,12 @@ func TestSuggestionDirTracksTheLocationLevel(t *testing.T) {
 
 	var dirs []string
 	if err := h.d.SQL.Select(&dirs,
-		`SELECT suggestion_dir FROM virtual_fs_entries`); err != nil {
+		`SELECT location_dir FROM virtual_fs_entries`); err != nil {
 		t.Fatal(err)
 	}
 	want := "2024/06_June/03/Calangute"
 	if len(dirs) != 1 || dirs[0] != want {
-		t.Errorf("suggestion_dir = %v, want [%q] — the location folder, not the Day", dirs, want)
+		t.Errorf("location_dir = %v, want [%q] — the location folder, not the Day", dirs, want)
 	}
 }
 

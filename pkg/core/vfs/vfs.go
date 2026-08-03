@@ -54,12 +54,7 @@ func (v *VFS) Run(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	labels, err := v.loadLabels(ctx)
-	if err != nil {
-		return 0, err
-	}
-
-	if err := Plan(ctx, masters, labels, v.cfg, v.resolver, v.log); err != nil {
+	if err := Plan(ctx, masters, v.cfg, v.resolver, v.log); err != nil {
 		return 0, err
 	}
 
@@ -96,15 +91,6 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 	return masters, nil
 }
 
-func (v *VFS) loadLabels(ctx context.Context) ([]userLabel, error) {
-	var labels []userLabel
-	if err := v.db.SQL.SelectContext(ctx, &labels,
-		`SELECT label, kind, time_start, time_end, gps_lat, gps_lon FROM user_labels WHERE kind = 'EVENT'`); err != nil {
-		return nil, fmt.Errorf("query user labels: %w", err)
-	}
-	return labels, nil
-}
-
 // persist replaces the whole previous proposal — one live set for the
 // library. The delete goes through the same FIFO writer as the inserts, so a
 // rebuild leaves no stale rows behind.
@@ -139,18 +125,17 @@ const insertChunk = 50
 func insertStatement(chunk []masterFile) (string, []any) {
 	var stmt strings.Builder
 	stmt.WriteString(`INSERT INTO virtual_fs_entries
-		(file_id, source_path, target_path, cluster_id, status, suggestion, suggestion_source, suggestion_dir)
+		(file_id, source_path, target_path, cluster_id, status, location_dir)
 		VALUES `)
-	args := make([]any, 0, len(chunk)*8)
+	args := make([]any, 0, len(chunk)*6)
 	for i := range chunk {
 		if i > 0 {
 			stmt.WriteString(",")
 		}
-		stmt.WriteString("(?,?,?,?,?,?,?,?)")
+		stmt.WriteString("(?,?,?,?,?,?)")
 		m := &chunk[i]
 		args = append(args, m.FileID, m.absPath, m.targetPath,
-			nullable(m.clusterID), db.StatusProposed,
-			nullable(m.suggestion), nullable(m.suggestionSource), nullable(m.suggestionDir))
+			nullable(m.clusterID), db.StatusProposed, nullable(m.locationDir))
 	}
 	return stmt.String(), args
 }

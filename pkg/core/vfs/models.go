@@ -22,14 +22,6 @@ const (
 	RuleMedia       = "media"
 )
 
-// Suggestion provenance stored on virtual_fs_entries.suggestion_source
-const (
-	SuggestionUserLabel    = "USER_LABEL"
-	SuggestionSpillover    = "SPILLOVER"
-	SuggestionAnchor       = "ANCHOR"
-	SuggestionSourceFolder = "SOURCE_FOLDER"
-)
-
 // defaultClusterGap is the capture-time gap that starts a new event cluster
 const defaultClusterGap = 12 * time.Hour
 
@@ -117,31 +109,19 @@ type masterFile struct {
 	DBCreationDate *string  `db:"exif_creation_date"`
 	IsScreenshot   bool     `db:"is_screenshot"`
 
-	absPath          string
-	takenAt          time.Time
-	width, height    int64
-	hasGPS           bool
-	lat, lon         float64
-	device           string
-	location         string // resolved city; "" when unknown
-	atSavedPlace     bool   // GPS at a confirmed saved-place place; suppresses the location level (SavedPlacesDateOnly)
-	clusterID        string // set when the location decision came from cluster logic
-	eventSegment     string // dated segment for unresolved clusters, e.g. "03-05"
-	dayOverride      string // date-level range label from mergeSameLocationDays, e.g. "02_04"
-	suggestion       string
-	suggestionSource string
-	targetPath       string
-	// the node a reviewer renames, recorded by dirFor when it emits the
-	// location level so the review tree never has to guess the depth
-	suggestionDir string
-}
-
-// userLabel is a confirmed name from a previous review, read for suggestions.
-type userLabel struct {
-	Label     string   `db:"label"`
-	Kind      string   `db:"kind"`
-	TimeStart *string  `db:"time_start"`
-	TimeEnd   *string  `db:"time_end"`
-	GPSLat    *float64 `db:"gps_lat"`
-	GPSLon    *float64 `db:"gps_lon"`
+	absPath       string
+	takenAt       time.Time
+	width, height int64
+	hasGPS        bool
+	lat, lon      float64
+	device        string
+	location      string // resolved city; "" when unknown
+	atSavedPlace  bool   // GPS at a confirmed saved-place place; suppresses the location level (SavedPlacesDateOnly)
+	clusterID     string // set when the location decision came from cluster logic
+	eventSegment  string // dated segment for unresolved clusters, e.g. "03-05"
+	dayOverride   string // date-level range label from mergeSameLocationDays, e.g. "02_04"
+	targetPath    string
+	// the folder the location level emitted, recorded by dirFor so the review
+	// tree can hang this file's GPS off the right node without guessing a depth
+	locationDir string
 }

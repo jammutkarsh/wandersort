@@ -84,7 +84,7 @@ func BenchmarkPlan(b *testing.B) {
 		b.StopTimer()
 		masters := benchMasters(20000)
 		b.StartTimer()
-		if err := Plan(context.Background(), masters, nil, cfg, geo, log); err != nil {
+		if err := Plan(context.Background(), masters, cfg, geo, log); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -99,7 +99,7 @@ func BenchmarkPlanNoGeo(b *testing.B) {
 		b.StopTimer()
 		masters := benchMasters(20000)
 		b.StartTimer()
-		if err := Plan(context.Background(), masters, nil, cfg, nil, log); err != nil {
+		if err := Plan(context.Background(), masters, cfg, nil, log); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -120,7 +120,7 @@ func BenchmarkPlanScattered(b *testing.B) {
 				b.StopTimer()
 				masters := scatteredMasters(4000)
 				b.StartTimer()
-				if err := Plan(context.Background(), masters, nil, cfg, geo, log); err != nil {
+				if err := Plan(context.Background(), masters, cfg, geo, log); err != nil {
 					b.Fatal(err)
 				}
 			}

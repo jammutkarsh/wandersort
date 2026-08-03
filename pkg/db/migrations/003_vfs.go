@@ -29,13 +29,11 @@ CREATE TABLE IF NOT EXISTS virtual_fs_entries (
     cluster_id TEXT,
     status TEXT NOT NULL DEFAULT 'PROPOSED'
         CHECK (status IN ('PROPOSED','APPROVED','DONE','ERROR')),
-    suggestion TEXT,
-    suggestion_source TEXT,
-    -- the directory a proposal's suggestion belongs to — the folder a reviewer
-    -- renames. The VFS build records it so the review tree can attach the
-    -- suggestion by path instead of guessing a depth (which broke as soon as
-    -- location wasn't the first rules level).
-    suggestion_dir TEXT,
+    -- the folder the location level emitted for this file. The VFS build
+    -- records it so the review tree can hang the file's GPS off that node by
+    -- path instead of guessing a depth (which broke as soon as location wasn't
+    -- the first rules level).
+    location_dir TEXT,
     created_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
 );
 
@@ -45,9 +43,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_vfs_file ON virtual_fs_entries(file_id);
 CREATE INDEX IF NOT EXISTS idx_vfs_status ON virtual_fs_entries(status);
 `
 
-// user_labels remembers confirmed folder names (events) and anchor locations
-// (saved-place). Written by the review flow, read by the VFS phase to rank
-// suggestions on later scans.
+// user_labels remembers the folder names the reviewer typed (events) and
+// anchor locations (saved-place). Written by the review flow, read back as
+// rename completions in later reviews.
 const userLabels = `
 CREATE TABLE IF NOT EXISTS user_labels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

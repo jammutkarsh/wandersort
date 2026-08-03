@@ -49,9 +49,7 @@ func BenchmarkPersist(b *testing.B) {
 	for i := range masters {
 		masters[i].targetPath = fmt.Sprintf("2024/06_June/%02d/Goa/Apple iPhone 15 Pro/IMG_%05d.HEIC", i%28+1, i)
 		masters[i].clusterID = fmt.Sprintf("c%d", i%50)
-		masters[i].suggestion = "Goa"
-		masters[i].suggestionSource = SuggestionSpillover
-		masters[i].suggestionDir = "Goa"
+		masters[i].locationDir = "Goa"
 	}
 
 	for b.Loop() {
