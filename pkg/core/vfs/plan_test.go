@@ -221,6 +221,38 @@ func TestPlanCaptureGroupRejectsReusedCounter(t *testing.T) {
 	}
 }
 
+// TestPlanCaptureGroupRejectsDeviceMismatch is the reported bug: two different
+// phones reused the same filename counter on the same day (well within the
+// agreement window, e.g. after a phone upgrade), and the window check alone
+// wasn't enough to keep them apart — DeviceA's photo/edit and the reused
+// counter's stray sidecar must not be forced into one directory.
+func TestPlanCaptureGroupRejectsDeviceMismatch(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	cfg.MergeSameLocationDays = false
+
+	got := runPlan(t, []masterFile{
+		{
+			FileDir: "/phone", FileName: "IMG_1051.HEIC",
+			DBDateTaken: new("2025:12:14 16:55:59"), DBMake: new("Apple"), DBModel: new("iPhone 17 Pro Max"),
+			location: "Indore",
+		},
+		{
+			FileDir: "/phone", FileName: "IMG_1051.JPG",
+			DBDateTaken: new("2025:12:14 16:56:10"), DBMake: new("Apple"), DBModel: new("iPhone 16 Pro"),
+		},
+	}, cfg)
+	want := []string{
+		"2025/12_December/14/Indore/IMG_1051.HEIC",
+		"2025/12_December/14/Unknown/IMG_1051.JPG",
+	}
+	for i, m := range got {
+		if m.targetPath != want[i] {
+			t.Errorf("%s: got %q, want %q", m.FileName, m.targetPath, want[i])
+		}
+	}
+}
+
 func TestPlanScreenshotIgnoresRules(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDevice, RuleLocation, RuleOrientation, RuleMedia}

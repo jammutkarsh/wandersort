@@ -453,8 +453,14 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 		// A group only forms when its EXIF-timestamped members agree — a bare
 		// stem match isn't enough, since camera filename counters get reused
 		// across unrelated shoots. A sidecar has no EXIF time to vote with, so
-		// it rides along on whatever its siblings agree on.
+		// it rides along on whatever its siblings agree on. Time agreement
+		// alone isn't enough either: a counter can be reused by a *different*
+		// device on the same day (e.g. after a phone upgrade), which the
+		// window wouldn't catch — so members with a known device must also
+		// agree on it.
 		var lo, hi time.Time
+		device := ""
+		deviceMismatch := false
 		for _, i := range g.members {
 			m := &masters[i]
 			if !m.hasExifTime() {
@@ -468,8 +474,16 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 			case t.After(hi):
 				hi = t
 			}
+			if m.device != "" {
+				switch {
+				case device == "":
+					device = m.device
+				case device != m.device:
+					deviceMismatch = true
+				}
+			}
 		}
-		if lo.IsZero() || hi.Sub(lo) > captureAgreementWindow {
+		if lo.IsZero() || hi.Sub(lo) > captureAgreementWindow || deviceMismatch {
 			continue // can't safely anchor this group — leave members independent
 		}
 
