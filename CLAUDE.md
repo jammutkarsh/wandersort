@@ -604,7 +604,19 @@ reads it straight via `config.Load`.
   the device name, which put a location folder named after the camera right
   next to the real device folder (`…/Canon EOS 700D/Canon EOS 700D/`) — wrong
   information, and duplicated. Unknown location now means the level is simply
-  absent for that file, and `location_dir` stays NULL.
+  absent for that file, and `location_dir` stays NULL — *unless* located
+  siblings share its parent folder, in which case `markUnknownLocations`
+  (`plan.go`) names it `Unknown` (`vfs.UnknownLocation`) so it stops sitting
+  loose next to real location folders. Only then: a folder whose files are
+  *all* unlocated gets a single `Unknown` child saying nothing the parent
+  didn't. "Siblings" is `locationParent` — the segments `dirFor` emits above
+  the location level, so any `Rules` order works. It runs **before**
+  `mergeSameLocationDays`, which is the point: an `Unknown` is a location like
+  any other from there on, so its days fold into ranges on the same terms as
+  everyone else's instead of the GPS-less files being the only ones left
+  un-merged. Known ceiling (marked `ponytail:` in the source): the sibling
+  test is pre-merge, so a located sibling that the day-merge later lifts into
+  a range folder leaves its `Unknown` behind alone in the single day.
   `resolveLocations` folds a directly-resolved GPS city
   into a *confirmed* `ANCHOR_HOME`/`ANCHOR_WORK` label when within
   `location.MaxDistSquared` (~50km) of it, so a metro's suburbs land in one
@@ -615,7 +627,44 @@ reads it straight via `config.Load`.
   folder names, which fabricated locations with no relationship to the
   cluster (a real reported bug — a GPS-less DSLR photo was "suggested"
   whatever city dominated the user's phone-photo library). That whole ladder
-  is gone with the suggestion concept.
+  is gone with the suggestion concept. **`clusterAndSpill` no longer spills
+  either**: it used to hand a cluster's GPS-less members the majority city of
+  its located ones. Same bug in a smaller radius — a 12h cluster is most of a
+  day, so a DSLR shot nine hours after a phone photo inherited the phone's
+  city, and since most GPS-less files sit near a saved place, in practice it
+  named nearly all of them after the saved place (a real reported bug: `Unknown`
+  never appeared anywhere in a 15k-file library because spillover had already
+  eaten every candidate). The rule is now strict — no GPS, no place — and the
+  reviewer merges an `Unknown` into its neighbour with `[V]`/`[m]` if they
+  know better. `majorityCity` went with it. Only a cluster with *nothing*
+  located still decides anything (the dated event segment); a mixed cluster
+  decides nothing and assigns no `cluster_id`.
+  `captureDirs` (`plan.go`) is the one exception to "every master derives its
+  own directory": files in the same source dir sharing a `captureStem`
+  (extension dropped, `IMG_E`/`IMG_O` folded to `IMG_`) are one capture split
+  across extensions, and all take the leader's directory. Two rules earn their
+  keep:
+  - **Agreement is a window, not an instant** (`captureAgreementWindow`,
+    5 min). It used to require the EXIF times to match to the second, which an
+    iPhone edit breaks: `IMG_E0231.JPG` carried a `DateTimeOriginal` 13s after
+    `IMG_0231.PNG`, so the group was discarded and `IMG_0231.AAE` stranded in a
+    date folder while both screenshots went to Screenshots (a real reported
+    bug). What the check actually defends against — a reused filename counter
+    from a later shoot — is hours or days out, never minutes, so the window
+    costs nothing. A genuine reuse (`IMG_1051.HEIC` on the 14th,
+    `IMG_1051.JPG` on the 28th) still splits the group and leaves its sidecar
+    behind; that is the correct answer, since nothing says which one it belongs
+    to.
+  - **Leader order is screenshot > non-sidecar > located > canonical name.**
+    Screenshot first because `dirFor` short-circuits Rules for one, so a
+    sidecar of a screenshot has to follow it into `Screenshots`; sidecar last
+    because it carries no derived data of its own and would otherwise drag a
+    whole group into whatever its file mtime implied.
+
+  Known gap: a sidecar whose only sibling is a video has no group at all —
+  `captureDirs` skips videos so a Live Photo `.MOV` isn't forced across the
+  Photos/Videos split — so it falls back to its own mtime (12 files in one real
+  15k library).
   `review.go` (issue #8's reconcile core, read by the CLI TUI) exposes the
   proposal as a directory tree the reviewer edits
   before `Confirm` writes it back: `BuildTree` also carries one exemplar
@@ -628,7 +677,11 @@ reads it straight via `config.Load`.
   Rules' first level, so any other order (`rules: [device, location]`, or a
   `date` level in front) hung it on whatever shared Device/Day node sat at
   depth 2. No `location_dir` (no location level in this proposal) means no
-  GPS-bearing node, rather than a wrong one. `location_dir` is a column of
+  GPS-bearing node, rather than a wrong one. `captureDirs` copies the group
+  leader's `locationDir` onto every member: `buildTargets` short-circuits
+  `dirFor` for a grouped file, so without that copy the file wrote a NULL
+  `location_dir` and its folder silently lost GPS-radius renames (8185 of
+  15024 entries in one real library). `location_dir` is a column of
   **003's `CREATE TABLE`**, not its own migration — the pre-tag rule (no tag
   yet, so no users) says edit the existing migration rather than stack an
   `ALTER` on it. The cost is that `migrations.Run` tracks versions
