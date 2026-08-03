@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package workflow
+package volume
 
 import (
 	"context"
@@ -12,12 +12,12 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 // CheckOutputSpace warns, once, when the output volume cannot hold the whole
 // library. Best-effort: an unreadable size or volume is a warning, never a
-// failure. Exported because `review` runs it too.
+// failure. Lives next to FreeBytes rather than in the pipeline, so the review
+// TUI can run the same check without importing the orchestrator.
 func CheckOutputSpace(ctx context.Context, database *db.DB, log logger.Logger, outputDir string) {
 	var librarySize int64
 	if err := database.SQL.GetContext(ctx, &librarySize,
@@ -26,7 +26,7 @@ func CheckOutputSpace(ctx context.Context, database *db.DB, log logger.Logger, o
 		return
 	}
 
-	free, err := volume.FreeBytes(outputDir)
+	free, err := FreeBytes(outputDir)
 	if err != nil {
 		log.Warn("Cannot check output volume free space", "path", outputDir, "error", err)
 		return
@@ -51,13 +51,4 @@ func humanBytes(n uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
-}
-
-// finalizeSession logs the pipeline's terminal outcome
-func (wf *Workflow) finalizeSession(finalStatus string, finalErr *string) {
-	if finalErr != nil {
-		wf.log.Error("Pipeline finished", "status", finalStatus, "error", *finalErr)
-		return
-	}
-	wf.log.Info("Pipeline finished", "status", finalStatus)
 }
