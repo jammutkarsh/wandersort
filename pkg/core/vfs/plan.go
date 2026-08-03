@@ -31,6 +31,7 @@ func Plan(ctx context.Context, masters []masterFile, cfg Config, geo *location.R
 	resolveLocations(ctx, masters, cfg, geo, log)
 	clusterAndSpill(masters, cfg.ClusterGap)
 	applyNameCase(ctx, masters, cfg.Workers)
+	markUnknownLocations(masters, cfg)
 	mergeSameLocationDays(masters, cfg)
 	buildTargets(ctx, masters, cfg)
 	if ctx.Err() != nil { // don't leave a half-built proposal for persist to write
@@ -72,6 +73,7 @@ func PreviewPaths(cfg Config, samples []Sample) []string {
 			dayOverride:  s.DayOverride,
 		}
 	}
+	markUnknownLocations(masters, cfg)
 	skip := uninformativeLevels(masters, cfg)
 	paths := make([]string, len(masters))
 	for i := range masters {
@@ -197,6 +199,72 @@ func applyNameCase(ctx context.Context, masters []masterFile, workers int) {
 		m.location = caseName(m.location)
 		m.device = caseName(m.device)
 	})
+}
+
+// UnknownLocation is the location folder a file with no resolvable place gets
+// when located siblings share its parent folder.
+const UnknownLocation = "Unknown"
+
+// markUnknownLocations gives unlocated files a real location name, so they
+// stop sitting loose next to their located siblings and are treated like any
+// other location from here on — mergeSameLocationDays included, which is what
+// keeps their dates from being folded differently to everyone else's.
+//
+// A folder whose files are *all* unlocated gets no Unknown: the level would
+// hold exactly one child saying nothing the parent didn't already.
+func markUnknownLocations(masters []masterFile, cfg Config) {
+	if !slices.Contains(cfg.Rules, RuleLocation) {
+		return
+	}
+	skip := uninformativeLevels(masters, cfg)
+	located := map[string]bool{}
+	for i := range masters {
+		if m := &masters[i]; hasLocationLevel(m) && segmentFor(m, RuleLocation, cfg) != "" {
+			located[locationParent(m, skip, cfg)] = true
+		}
+	}
+	for i := range masters {
+		m := &masters[i]
+		// atSavedPlace under SavedPlacesDateOnly is a deliberately suppressed
+		// folder, not an unknown one
+		if !hasLocationLevel(m) || m.atSavedPlace || segmentFor(m, RuleLocation, cfg) != "" {
+			continue
+		}
+		if located[locationParent(m, skip, cfg)] {
+			m.location = UnknownLocation
+		}
+	}
+}
+
+// hasLocationLevel reports whether dirFor emits a location level for m at all
+// — an undated file goes straight to Fallback and a screenshot to Screenshots.
+func hasLocationLevel(m *masterFile) bool {
+	return !m.takenAt.IsZero() && !m.IsScreenshot
+}
+
+// locationParent is the folder path m's location level sits under: everything
+// dirFor emits above it. Files sharing it are siblings at that level.
+//
+// ponytail: computed pre-merge, so a located sibling that mergeSameLocationDays
+// later lifts into a day *range* leaves the Unknown behind alone in its day.
+// Order the two passes properly if that shows up in practice.
+func locationParent(m *masterFile, skip map[string]bool, cfg Config) string {
+	parts := []string{
+		strconv.Itoa(m.takenAt.Year()),
+		m.takenAt.Format("01_January"),
+	}
+	for _, level := range cfg.Rules {
+		if level == RuleLocation {
+			break
+		}
+		if skip[level] {
+			continue
+		}
+		if seg := segmentFor(m, level, cfg); seg != "" {
+			parts = append(parts, path.SanitizeSegment(seg))
+		}
+	}
+	return strings.Join(parts, "/")
 }
 
 // mergeSameLocationDays collapses runs of consecutive same-location days into
@@ -327,6 +395,14 @@ var variantPrefixes = []struct{ variant, canonical string }{
 	{"IMG_O", "IMG_"},
 }
 
+// captureAgreementWindow is how far apart two EXIF capture times may sit and
+// still count as one capture. Not zero: an iPhone edit (IMG_E…) is written
+// after its original and can carry a DateTimeOriginal seconds later, which
+// used to break the group apart and strand the .AAE sidecar in a date folder
+// while its screenshot went to Screenshots. Reused filename counters — the
+// thing this check defends against — are hours or days apart, never minutes.
+const captureAgreementWindow = 5 * time.Minute
+
 // captureStem normalizes a filename to the key used to group same-capture
 // files: strip the extension, then fold a known variant prefix.
 func captureStem(filename string) string {
@@ -374,35 +450,44 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 		if len(g.members) < 2 {
 			continue
 		}
-		// A group only forms when every EXIF-timestamped member agrees to the
-		// second — a bare stem match isn't enough, since camera filename counters
-		// get reused across unrelated shoots. A sidecar has no EXIF time to vote
-		// with, so it rides along on whatever its siblings agree on.
-		var agreed time.Time
-		conflict := false
+		// A group only forms when its EXIF-timestamped members agree — a bare
+		// stem match isn't enough, since camera filename counters get reused
+		// across unrelated shoots. A sidecar has no EXIF time to vote with, so
+		// it rides along on whatever its siblings agree on.
+		var lo, hi time.Time
 		for _, i := range g.members {
 			m := &masters[i]
 			if !m.hasExifTime() {
 				continue
 			}
-			t := m.takenAt.Truncate(time.Second)
-			switch {
-			case agreed.IsZero():
-				agreed = t
-			case !t.Equal(agreed):
-				conflict = true
+			switch t := m.takenAt; {
+			case lo.IsZero():
+				lo, hi = t, t
+			case t.Before(lo):
+				lo = t
+			case t.After(hi):
+				hi = t
 			}
 		}
-		if conflict || agreed.IsZero() {
+		if lo.IsZero() || hi.Sub(lo) > captureAgreementWindow {
 			continue // can't safely anchor this group — leave members independent
 		}
 
-		// representative: resolved location beats none (a GPS-less RAW must not
-		// drag the group into the fallback its JPG sibling would avoid), then
-		// canonical filename, then insertion order
+		// representative: a screenshot outranks everything (its whole point is
+		// that Rules don't apply to it, and a sidecar of one belongs in
+		// Screenshots with it), then anything over a sidecar (which carries no
+		// derived data of its own), then a resolved location over none (a
+		// GPS-less RAW must not drag the group into the fallback its JPG
+		// sibling would avoid), then canonical filename, then insertion order
 		leader, bestScore := g.members[0], -1
 		for _, i := range g.members {
 			score := 0
+			if masters[i].IsScreenshot {
+				score += 8
+			}
+			if masters[i].MediaType != classifier.MediaTypeSidecar {
+				score += 4
+			}
 			if masters[i].location != "" {
 				score += 2
 			}
@@ -417,6 +502,11 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 		dir := dirFor(&masters[leader], skip, cfg)
 		for _, i := range g.members {
 			dirs[i] = dir
+			// buildTargets skips dirFor for a group member, so the leader's
+			// locationDir has to come along with the directory — without it
+			// every grouped file wrote a NULL location_dir and the review
+			// tree had no GPS to re-query for that folder's renames
+			masters[i].locationDir = masters[leader].locationDir
 		}
 	}
 	return dirs

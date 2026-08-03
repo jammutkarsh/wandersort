@@ -128,6 +128,99 @@ func TestPlanMergeSameLocationDays(t *testing.T) {
 	}
 }
 
+func TestPlanUnknownLocationOnlyBesideLocatedSiblings(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	cfg.CollapseLevels = false
+	cfg.MergeSameLocationDays = false
+	// keep the GPS-less shots in their own cluster, so clusterAndSpill can't
+	// hand them Goa before the location level is decided
+	cfg.ClusterGap = time.Minute
+
+	got := runPlan(t, []masterFile{
+		{FileDir: "/src", FileName: "gps.jpg", DBDateTaken: new("2024:08:02 10:00:00"), location: "Goa"},
+		{FileDir: "/src", FileName: "nogps.jpg", DBDateTaken: new("2024:08:02 20:00:00")},
+		{FileDir: "/src", FileName: "alone.jpg", DBDateTaken: new("2024:08:03 10:00:00")},
+	}, cfg)
+	want := []string{
+		"2024/08_August/02/Goa/gps.jpg",
+		"2024/08_August/02/Unknown/nogps.jpg",
+		"2024/08_August/03/alone.jpg", // whole day unlocated — no Unknown folder
+	}
+	for i, m := range got {
+		if m.targetPath != want[i] {
+			t.Errorf("%s: got %q, want %q", m.FileName, m.targetPath, want[i])
+		}
+	}
+}
+
+func TestPlanUnknownLocationMergesDaysLikeAnyOther(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	cfg.CollapseLevels = false
+	cfg.MergeSameLocationDays = true
+	cfg.ClusterGap = time.Minute
+
+	got := runPlan(t, []masterFile{
+		{FileDir: "/src", FileName: "gps02.jpg", DBDateTaken: new("2024:08:02 10:00:00"), location: "Goa"},
+		{FileDir: "/src", FileName: "nogps02.jpg", DBDateTaken: new("2024:08:02 20:00:00")},
+		{FileDir: "/src", FileName: "gps03.jpg", DBDateTaken: new("2024:08:03 10:00:00"), location: "Goa"},
+		{FileDir: "/src", FileName: "nogps03.jpg", DBDateTaken: new("2024:08:03 20:00:00")},
+	}, cfg)
+	want := []string{
+		"2024/08_August/02_03/Goa/gps02.jpg",
+		"2024/08_August/02_03/Unknown/nogps02.jpg",
+		"2024/08_August/02_03/Goa/gps03.jpg",
+		"2024/08_August/02_03/Unknown/nogps03.jpg",
+	}
+	for i, m := range got {
+		if m.targetPath != want[i] {
+			t.Errorf("%s: got %q, want %q", m.FileName, m.targetPath, want[i])
+		}
+	}
+}
+
+// TestPlanSidecarFollowsScreenshot is the reported bug: IMG_0231.AAE landed in
+// a date folder while IMG_0231.PNG sat in Screenshots. The edit variant
+// IMG_E0231.JPG folds to the same capture stem but carries a DateTimeOriginal
+// 13s later, which the old exact-second agreement read as a conflict and threw
+// the whole group away.
+func TestPlanSidecarFollowsScreenshot(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+
+	got := runPlan(t, []masterFile{
+		{FileDir: "/phone", FileName: "IMG_0231.AAE", MediaType: classifier.MediaTypeSidecar, ModifiedAt: "2025:12:02 23:00:02"},
+		{FileDir: "/phone", FileName: "IMG_0231.PNG", DBDateTaken: new("2025:12:02 23:00:02"), IsScreenshot: true},
+		{FileDir: "/phone", FileName: "IMG_E0231.JPG", DBDateTaken: new("2025:12:02 23:00:15"), IsScreenshot: true},
+	}, cfg)
+	for _, m := range got {
+		if want := "2025/12_December/Screenshots/" + m.FileName; m.targetPath != want {
+			t.Errorf("%s: got %q, want %q", m.FileName, m.targetPath, want)
+		}
+	}
+}
+
+// TestPlanCaptureGroupRejectsReusedCounter keeps the guard the agreement window
+// exists for: the same filename reused by a later shoot must not be forced into
+// one directory.
+func TestPlanCaptureGroupRejectsReusedCounter(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	cfg.MergeSameLocationDays = false
+
+	got := runPlan(t, []masterFile{
+		{FileDir: "/cam", FileName: "IMG_0231.JPG", DBDateTaken: new("2024:03:01 09:00:00"), location: "Goa"},
+		{FileDir: "/cam", FileName: "IMG_0231.CR2", DBDateTaken: new("2024:03:04 09:00:00"), location: "Pune"},
+	}, cfg)
+	want := []string{"2024/03_March/01/Goa/IMG_0231.JPG", "2024/03_March/04/Pune/IMG_0231.CR2"}
+	for i, m := range got {
+		if m.targetPath != want[i] {
+			t.Errorf("%s: got %q, want %q", m.FileName, m.targetPath, want[i])
+		}
+	}
+}
+
 func TestPlanScreenshotIgnoresRules(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDevice, RuleLocation, RuleOrientation, RuleMedia}
