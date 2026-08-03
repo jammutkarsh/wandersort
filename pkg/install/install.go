@@ -140,43 +140,38 @@ func (c *Coordinator) progressFor(phase string) func(done, total int64) {
 	return func(done, total int64) { c.opts.OnProgress(phase, done, total) }
 }
 
-// Exiftool blocks until the exiftool binary is ready, silently.
-func (c *Coordinator) Exiftool() (string, error) {
-	<-c.exifReady
-	return c.exifPath, c.exifErr
-}
+// ErrPending reports that a dependency is still installing. Only LocationNow
+// returns it — the blocking getters wait instead.
+var ErrPending = errors.New("dependency is still downloading")
 
-// AwaitExiftool blocks until the exiftool binary is ready, logging why only
-// if the call actually has to wait — installed dependencies leave no trace.
-// For a caller (a pipeline phase) that may be stalled behind its own
-// process's still-running download, not a competing process.
-func (c *Coordinator) AwaitExiftool() (string, error) {
+// Exiftool blocks until the exiftool binary is ready, saying so only if the
+// call actually has to wait. Narration is a property of waiting, not of who
+// asked: a caller that finds the binary already installed sees nothing, and
+// one stalled behind its own process's still-running download is told why
+// rather than looking hung.
+func (c *Coordinator) Exiftool() (string, error) {
 	c.awaitLog(c.exifReady, "Waiting for the exiftool download to finish…")
 	return c.exifPath, c.exifErr
 }
 
-// Location blocks until the location resolver is ready, silently.
+// Location blocks until the location resolver is ready, with the same
+// "say so only if it actually blocks" behaviour as Exiftool.
 func (c *Coordinator) Location() (*location.Resolver, error) {
-	<-c.locReady
-	return c.resolver, c.locErr
-}
-
-// AwaitLocation is Location with the same "log only if it actually blocks"
-// behavior as AwaitExiftool.
-func (c *Coordinator) AwaitLocation() (*location.Resolver, error) {
 	c.awaitLog(c.locReady, "Waiting for the location database download to finish…")
 	return c.resolver, c.locErr
 }
 
-// LocationReady reports whether Location/AwaitLocation would return
-// immediately, without blocking — for a caller (a form validator running on
-// every keystroke) that must never wait on a download.
-func (c *Coordinator) LocationReady() bool {
+// LocationNow returns the resolver without ever blocking — for a caller (a
+// form validator running on every keystroke) that cannot wait on a download.
+// ErrPending means the install is still running and asking again later may
+// work; any other error means it never will, which is a different answer: a
+// wizard holds a field on the first and waves it through on the second.
+func (c *Coordinator) LocationNow() (*location.Resolver, error) {
 	select {
 	case <-c.locReady:
-		return true
+		return c.resolver, c.locErr
 	default:
-		return false
+		return nil, ErrPending
 	}
 }
 
@@ -215,7 +210,10 @@ const (
 	// downloadStallTimeout aborts an attempt with no new bytes in this long —
 	// a dead TCP connection (e.g. wifi→ethernet switch) never tells us
 	// itself, so io.Copy would otherwise hang forever instead of retrying.
-	downloadStallTimeout = 1 * time.Second
+	// It's armed before the request is even sent, so it also has to cover
+	// DNS+TCP+TLS+first-byte — 1s was too tight for that on a real (non-loopback)
+	// network and turned ordinary latency into spurious retry storms.
+	downloadStallTimeout = 3 * time.Second
 )
 
 // nonRetryable marks a download failure retrying can't fix — a bad URL

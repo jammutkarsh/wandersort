@@ -9,6 +9,7 @@ package install
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,14 +20,14 @@ import (
 )
 
 // TestReadinessIsNotReadyUntilClosed covers the non-blocking peeks: before
-// anything closes locReady, LocationReady and LocationDBIfReady must not
-// block and must report "not ready" — the whole point of these being
-// separate from the blocking Location/Exiftool getters.
+// anything closes locReady, LocationNow and LocationDBIfReady must not block
+// and must report "still pending" — the whole point of these being separate
+// from the blocking Location/Exiftool getters.
 func TestReadinessIsNotReadyUntilClosed(t *testing.T) {
 	c := New(Options{})
 
-	if c.LocationReady() {
-		t.Error("LocationReady() = true before Start, want false")
+	if _, err := c.LocationNow(); !errors.Is(err, ErrPending) {
+		t.Errorf("LocationNow() = %v before Start, want ErrPending", err)
 	}
 	if got := c.LocationDBIfReady(); got != nil {
 		t.Errorf("LocationDBIfReady() = %v before Start, want nil", got)
@@ -52,12 +53,12 @@ func TestGettersUnblockOnceReady(t *testing.T) {
 		t.Errorf("Exiftool() = %q, %v, want /bin/exiftool, nil", path, err)
 	}
 	// Location() blocks until locReady closes, establishing the
-	// happens-before edge the LocationReady() check below relies on.
+	// happens-before edge the LocationNow() check below relies on.
 	if _, err := c.Location(); err != nil {
 		t.Errorf("Location() = %v, want nil", err)
 	}
-	if !c.LocationReady() {
-		t.Error("LocationReady() = false after locReady closed")
+	if _, err := c.LocationNow(); err != nil {
+		t.Errorf("LocationNow() = %v after locReady closed, want nil", err)
 	}
 }
 
