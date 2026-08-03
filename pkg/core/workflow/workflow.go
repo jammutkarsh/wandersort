@@ -24,6 +24,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
+	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 // Deps supplies the two downloadable dependencies, blocking until each
@@ -51,7 +52,6 @@ type Workflow struct {
 	scanner *scanner.Scanner
 	hasher  *hasher.Hasher
 	scorer  *scorer.Scorer
-	vfs     vfs.Config
 }
 
 type workflowPhase struct {
@@ -104,7 +104,6 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 		hasher:    hasher.New(db, log, cfg.Workers),
 		scorer:    scorer.New(db, log),
 		workers:   cfg.Workers,
-		vfs:       vfsCfg,
 		log:       log,
 		path:      path.New(),
 		outputDir: filepath.Dir(cfg.AppDBPath),
@@ -167,7 +166,7 @@ func (wf *Workflow) runSession(paths []string) (finalStatus string, finalErr *st
 
 	// last thing before the run is marked done, so it sits next to the
 	// "run wandersort review" hint rather than scrolling past mid-pipeline
-	CheckOutputSpace(wf.ctx, wf.db, wf.log, wf.outputDir)
+	volume.CheckOutputSpace(wf.ctx, wf.db, wf.log, wf.outputDir)
 
 	finalStatus = db.StatusCompleted
 	return
@@ -216,10 +215,7 @@ func (wf *Workflow) workflowPhases(paths []string) []workflowPhase {
 				if err != nil {
 					return 0, fmt.Errorf("location resolver: %w", err)
 				}
-				g, _ := wf.appCfg.Load()
-				resolver.BuildAnchors(wf.ctx, g.SavedPlaces)
-				wf.vfs.Anchors = resolver.Anchors
-				return vfs.New(wf.db, resolver, wf.log, wf.vfs).Run(wf.ctx)
+				return vfs.Propose(wf.ctx, wf.db, resolver, wf.appCfg, wf.log)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Proposed destinations for %d files", count) },
 		},
@@ -272,4 +268,13 @@ func (wf *Workflow) run(phase workflowPhase) (int, string, *string, bool) {
 		logger.ElapsedKey, elapsed.Round(time.Millisecond).String())
 
 	return count, "", nil, success
+}
+
+// finalizeSession logs the pipeline's terminal outcome
+func (wf *Workflow) finalizeSession(finalStatus string, finalErr *string) {
+	if finalErr != nil {
+		wf.log.Error("Pipeline finished", "status", finalStatus, "error", *finalErr)
+		return
+	}
+	wf.log.Info("Pipeline finished", "status", finalStatus)
 }
