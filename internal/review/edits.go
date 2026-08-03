@@ -76,22 +76,38 @@ func (m *Model) mergeSelection() {
 		}
 	}
 
-	var mergedID, target string
-	ok := m.applyEdit("merge", func(tree []vfs.Node) ([]vfs.Node, string, error) {
-		newTree, id, name, ancestor, err := vfs.MergeNodes(tree, ids, m.pendingNames())
+	var mergedID string
+	if ok := m.applyEdit("merge", func(tree []vfs.Node) ([]vfs.Node, string, error) {
+		newTree, id, name, ancestor, err := vfs.MergeNodes(tree, ids)
 		if err != nil {
 			return nil, "", err
 		}
-		mergedID, target = id, name
+		mergedID = id
 		return newTree, fmt.Sprintf("merged %d folders into %q under %q ([u] to undo)", len(ids), name, ancestor), nil
-	})
-	if !ok {
+	}); ok {
+		m.focusNode(mergedID)
+	}
+}
+
+// applyRename writes the name straight onto the node — there is no pending
+// rename layer, so nothing is left over to render as an arrow or to survive an
+// undo. Snapshots first, so [u] reverts a rename like any other edit.
+func (m *Model) applyRename(name string) {
+	row := m.rows[m.cursor]
+	id, old := row.node.ID, row.node.Name
+	if name == "" || name == old {
 		return
 	}
-	if row := nodeRowByID(m.rows, mergedID); row != nil && target != row.node.Name {
-		row.newName = target
+	if ok := m.applyEdit("rename", func(tree []vfs.Node) ([]vfs.Node, string, error) {
+		n := vfs.FindNode(tree, id)
+		if n == nil {
+			return nil, "", fmt.Errorf("internal error locating %q", old)
+		}
+		n.Name = name
+		return tree, fmt.Sprintf("renamed %q to %q ([u] to undo)", old, name), nil
+	}); ok {
+		m.focusNode(id) // the re-sort may have moved it
 	}
-	m.focusNode(mergedID)
 }
 
 // selectedRows are the rows [m]/[d]/[D] act on: in visual mode every row of the
@@ -115,18 +131,6 @@ func (m *Model) selectedRows() []*reviewRow {
 		}
 	}
 	return out
-}
-
-// pendingNames maps node ID → the rename typed for it, so a merge compares the
-// names folders will end up with, not the ones they start with.
-func (m *Model) pendingNames() map[string]string {
-	pending := map[string]string{}
-	for _, r := range m.rows {
-		if r.newName != "" {
-			pending[r.node.ID] = r.newName
-		}
-	}
-	return pending
 }
 
 // dropFolders removes each selected folder and lifts its children onto its

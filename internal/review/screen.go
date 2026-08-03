@@ -8,7 +8,6 @@ package review
 
 import (
 	"context"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -63,16 +62,10 @@ func (s screen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return s, s.finalize()
 }
 
-// finalize applies the reviewer's renames and writes the plan, off the UI
-// goroutine. The nodes are pointers into inner.tree, so the goroutine's writes
-// are visible to Confirm.
+// finalize writes the reviewed plan off the UI goroutine. Every edit is
+// already on the tree itself, so there is nothing to apply first.
 func (s screen) finalize() tea.Cmd {
 	return func() tea.Msg {
-		for _, r := range s.inner.rows {
-			if name := strings.TrimSpace(r.newName); name != "" {
-				r.node.Name = name
-			}
-		}
 		if err := vfs.Confirm(s.ctx, s.db, s.inner.tree); err != nil {
 			return finalizeMsg{err: err}
 		}

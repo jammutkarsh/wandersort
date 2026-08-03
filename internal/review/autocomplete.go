@@ -54,10 +54,19 @@ func (m *Model) loadGeoCandidates() {
 	}
 }
 
+// fillSuggestion writes the picked completion into the rename input, same as
+// the config wizard's [tab]/[enter] pick.
+func (m *Model) fillSuggestion(i int) {
+	m.input = m.suggestions[i].value
+	m.refreshSuggestions()
+}
+
 // refreshSuggestions repopulates the rename dropdown from three ranked sources:
-// nearby places, names confirmed in earlier reviews, then the geonames database.
+// nearby places, names the reviewer used in earlier reviews, then the geonames
+// database.
 func (m *Model) refreshSuggestions() {
 	m.suggestions = nil
+	m.suggCursor = -1
 	seen := map[string]bool{}
 	typed := strings.TrimSpace(m.input)
 	prefix := strings.ToLower(typed)
@@ -100,7 +109,7 @@ func (m *Model) refreshSuggestions() {
 		return // the two typed-prefix sources below have nothing to match on
 	}
 
-	// 2. names the reviewer confirmed before — already a final folder name,
+	// 2. names the reviewer used before — already a final folder name,
 	// nothing to disambiguate further, just re-sanitized for safety
 	for _, l := range m.labels {
 		if !strings.HasPrefix(strings.ToLower(l), prefix) {

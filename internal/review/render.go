@@ -51,19 +51,13 @@ func (m Model) header() string {
 			tui.FaintTxt.Render(fmt.Sprintf("%d folders  %d files", len(m.rows), files)), m.width)
 }
 
-// rowView renders one tree line: guide + name, file count right-aligned,
-// pending rename and any unaccepted suggestion shown inline.
+// rowView renders one tree line: guide + name, file count right-aligned. The
+// name shown is the node's own — a rename is written straight onto it, so
+// there is no "old → new" or "suggested" state to render.
 func (m Model) rowView(i int, inRange bool) string {
 	r := m.rows[i]
 
 	cursor := "  "
-	name := r.node.Name
-	suggestion := ""
-	if r.newName != "" && r.newName != r.node.Name {
-		name += " → " + r.newName
-	} else if len(r.node.Suggestions) > 0 {
-		suggestion = "  ⇢ " + r.node.Suggestions[0].Name
-	}
 	count := fmt.Sprintf("%d files", r.node.FileCount)
 
 	if inRange || i == m.cursor {
@@ -71,19 +65,10 @@ func (m Model) rowView(i int, inRange bool) string {
 		if i == m.cursor {
 			cursor = "❯ "
 		}
-		return tui.Selected.Render(tui.Row(cursor+r.guide+name+suggestion, count, m.width))
+		return tui.Selected.Render(tui.Row(cursor+r.guide+r.node.Name, count, m.width))
 	}
 
-	styled := r.node.Name
-	if r.newName != "" && r.newName != r.node.Name {
-		styled += tui.DimText.Render(" → ") + tui.OK.Render(r.newName)
-	}
-	if suggestion != "" {
-		// amber, not dim: an unaccepted suggestion is the one thing on the row
-		// that still wants a keypress
-		styled += tui.Attn.Render(suggestion)
-	}
-	return tui.Row(cursor+tui.FaintTxt.Render(r.guide)+styled, tui.FaintTxt.Render(count), m.width)
+	return tui.Row(cursor+tui.FaintTxt.Render(r.guide)+r.node.Name, tui.FaintTxt.Render(count), m.width)
 }
 
 // footer is everything below the tree: the rename prompt, a spinner, or the
@@ -97,19 +82,28 @@ func (m Model) footer() string {
 			tui.DimText.Render("Rename "+m.rows[m.cursor].node.Name+" to"),
 			tui.Title.Render(" » "), tui.Text.Render(m.input))
 		for i, s := range m.suggestions {
-			// same shape as the wizard's completion list: dim rows, and the top
-			// match — what [tab] fills in — says so
-			line := "    " + tui.FaintTxt.Render("· ") + tui.DimText.Render(s.label)
+			// same shape as the wizard's completion list: dim rows, the arrowed-onto
+			// one highlighted, and the top match — what [tab] fills in — says so
+			line := "    "
+			if i == m.suggCursor {
+				line += tui.Selected.Render(s.label)
+			} else {
+				line += tui.FaintTxt.Render("· ") + tui.DimText.Render(s.label)
+			}
 			if s.detail != "" {
 				line += " " + tui.FaintTxt.Render("("+s.detail+")")
 			}
-			if i == 0 {
+			switch {
+			case i == m.suggCursor:
+				line += tui.FaintTxt.Render("  ⏎ pick")
+			case i == 0 && m.suggCursor < 0:
 				line += tui.FaintTxt.Render("  ⇥ tab")
 			}
 			fmt.Fprintln(&b, tui.Row(line, "", m.width))
 		}
 		b.WriteString(tui.Footer(strings.Join([]string{
 			tui.KeyHint("enter", "apply"),
+			tui.KeyHint("↑↓", "pick a place"),
 			tui.KeyHint("tab", "use top match"),
 			tui.KeyHint("ctrl+e", "wider search"),
 			tui.KeyHint("esc", "cancel"),
@@ -143,8 +137,6 @@ func (m Model) keyHelp() string {
 	hints := []string{
 		tui.KeyHint("↑↓", "move"),
 		tui.KeyHint("n/N", "same level"),
-		tui.KeyHint("enter", "accept"),
-		tui.KeyHint("a", "accept all"),
 		tui.KeyHint("r", "rename"),
 		tui.KeyHint("p", "peek"),
 	}
@@ -178,9 +170,7 @@ func (m Model) helpView() string {
 			{"n / N", "next / previous folder at the same depth — crosses into other branches"},
 		}},
 		{"Naming", []key{
-			{"enter", "accept this folder's suggestion (never overwrites a rename you typed)"},
-			{"a", "accept every suggestion in the tree"},
-			{"r", "rename — type a name, or pick a nearby place; tab fills the top match"},
+			{"r", "rename — type a name, or ↑/↓ to a nearby place; tab fills the top match"},
 		}},
 		{"Reshaping", []key{
 			{"V", "start selecting folders; move the cursor to extend, esc to clear"},

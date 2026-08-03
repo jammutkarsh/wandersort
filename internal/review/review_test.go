@@ -188,8 +188,8 @@ func TestReview(t *testing.T) {
 			// pending rename: it's the merge's own output, not something the
 			// reviewer typed, and [u] must revert it cleanly (see MergeNodes'
 			// dayCombined handling in edit.go)
-			if r03 == nil || r03.node.Name != "03_09" || r03.newName != "" {
-				t.Fatalf("want the surviving node named %q with no pending rename, got %+v", "03_09", r03)
+			if r03 == nil || r03.node.Name != "03_09" {
+				t.Fatalf("want the surviving node named %q, got %+v", "03_09", r03)
 			}
 			if r09 := nodeByID(m.rows, "2024/June/09"); r09 != nil {
 				t.Error("09 should be folded into 03, not still its own row")
@@ -227,11 +227,11 @@ func TestReview(t *testing.T) {
 			rm := next.(Model)
 
 			r03 := nodeByID(rm.rows, "2024/June/03")
-			if r03 == nil || r03.node.Name != "03" || r03.newName != "" {
-				t.Errorf("after undo want 03 back on its own with no pending rename, got %+v", r03)
+			if r03 == nil || r03.node.Name != "03" {
+				t.Errorf("after undo want 03 back on its own under its proposed name, got %+v", r03)
 			}
-			if r09 := nodeByID(rm.rows, "2024/June/09"); r09 == nil || r09.node.Name != "09" || r09.newName != "" {
-				t.Errorf("after undo want 09 back as its own row with no pending rename, got %+v", r09)
+			if r09 := nodeByID(rm.rows, "2024/June/09"); r09 == nil || r09.node.Name != "09" {
+				t.Errorf("after undo want 09 back as its own row under its proposed name, got %+v", r09)
 			}
 		}},
 		// TestMergeSurvivorIsTheAnchorNotTheTopmostRow covers the reported bug:
@@ -264,8 +264,8 @@ func TestReview(t *testing.T) {
 				t.Error("Goa should be folded into Mumbai (the anchor), not still its own row")
 			}
 			rMumbai := nodeByID(m.rows, "2024/June/Mumbai")
-			if rMumbai == nil || rMumbai.node.Name != "Mumbai" || rMumbai.newName != "" {
-				t.Fatalf("want the anchor row still named %q with no pending rename, got %+v", "Mumbai", rMumbai)
+			if rMumbai == nil || rMumbai.node.Name != "Mumbai" {
+				t.Fatalf("want the anchor row still named %q, got %+v", "Mumbai", rMumbai)
 			}
 			if got := rMumbai.node.MergedIDs; len(got) != 1 || got[0] != "2024/June/Goa" {
 				t.Errorf("MergedIDs = %v, want [2024/June/Goa]", got)
@@ -527,7 +527,8 @@ func TestReview(t *testing.T) {
 		// first, and only quit if the reviewer insists.
 		{"QuitWarnsOnceBeforeDiscardingEdits", func(t *testing.T) {
 			m := newModel(sampleTree(), nil, nil, nil, nil)
-			m.rows[1].newName = "Manali"
+			m.cursor = 1
+			m.applyRename("Manali")
 
 			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 			rm := next.(Model)
@@ -556,14 +557,14 @@ func TestReview(t *testing.T) {
 				t.Error("q with a clean tree should quit straight away")
 			}
 		}},
-		// TestStructuralEditKeepsPendingRenames covers a silent data-loss bug: merge,
-		// delete and undo all rebuild the row list with flattenTree, which allocates
-		// fresh reviewRow values. Without reflow carrying newName across by node ID,
-		// every rename the reviewer typed on rows the edit never touched vanished.
-		{"StructuralEditKeepsPendingRenames", func(t *testing.T) {
+		// TestStructuralEditKeepsEarlierRenames covers a silent data-loss bug: merge,
+		// delete and undo all rebuild the row list from the tree. A rename on a row
+		// the edit never touched has to survive that.
+		{"StructuralEditKeepsEarlierRenames", func(t *testing.T) {
 			m := newModel(siblingTree(), nil, nil, nil, nil)
 			// rows: 0=2024, 1=June, 2=03, 3=09. Rename the year, then merge the leaves.
-			nodeByID(m.rows, "2024").newName = "Two Thousand Twenty Four"
+			m.cursor = 0
+			m.applyRename("Two Thousand Twenty Four")
 
 			m.visualMode, m.visualAnchor, m.cursor = true, 2, 3
 			m.mergeSelection()
@@ -571,21 +572,23 @@ func TestReview(t *testing.T) {
 			if m.statusIsErr {
 				t.Fatalf("merge failed: %q", m.statusMsg)
 			}
-			if got := nodeByID(m.rows, "2024").newName; got != "Two Thousand Twenty Four" {
-				t.Errorf("after merge, year newName = %q, want the rename to survive", got)
+			if got := m.rows[0].node.Name; got != "Two Thousand Twenty Four" {
+				t.Errorf("after merge, year name = %q, want the rename to survive", got)
 			}
 		}},
-		// TestUndoKeepsPendingRenames is the undo half of the same bug.
-		{"UndoKeepsPendingRenames", func(t *testing.T) {
+		// TestUndoKeepsEarlierRenames is the undo half: [u] walks back one edit, not
+		// every edit — the rename made before the merge stays.
+		{"UndoKeepsEarlierRenames", func(t *testing.T) {
 			m := newModel(siblingTree(), nil, nil, nil, nil)
-			nodeByID(m.rows, "2024").newName = "Renamed Year"
+			m.cursor = 0
+			m.applyRename("Renamed Year")
 			m.visualMode, m.visualAnchor, m.cursor = true, 2, 3
 			m.mergeSelection()
 
 			next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 			rm := next.(Model)
-			if got := nodeByID(rm.rows, "2024").newName; got != "Renamed Year" {
-				t.Errorf("after undo, year newName = %q, want %q", got, "Renamed Year")
+			if got := rm.rows[0].node.Name; got != "Renamed Year" {
+				t.Errorf("after undo, year name = %q, want %q", got, "Renamed Year")
 			}
 			if nodeByID(rm.rows, "2024/June/09") == nil {
 				t.Error("undo should have restored the folded-away leaf")
@@ -659,6 +662,63 @@ func TestReview(t *testing.T) {
 				t.Errorf("suggestions = %+v, want the pre-loaded label filtered in memory", rm.suggestions)
 			}
 		}},
+		// TestRenameArrowsPickASuggestion covers the reported bug: ↑/↓ and tab did
+		// nothing in the rename editor, so a listed place could only be retyped by
+		// hand. They now walk the list like the config wizard's completions —
+		// enter on an arrowed-onto row picks it, the next enter applies.
+		{"RenameArrowsPickASuggestion", func(t *testing.T) {
+			m := newModel(sampleTree(), context.Background(), nil, nil, nil)
+			m.labels = []string{"Manali", "Mandi"}
+			m.cursor = 1 // the June leaf
+			m.input, m.editing = "Man", true
+			m.refreshSuggestions()
+			if m.suggCursor != -1 {
+				t.Fatalf("suggCursor = %d, want -1 before any arrow key", m.suggCursor)
+			}
+
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+			next, _ = next.(Model).Update(tea.KeyMsg{Type: tea.KeyDown})
+			rm := next.(Model)
+			if rm.suggCursor != 1 {
+				t.Fatalf("suggCursor = %d after two ↓, want 1 (the second suggestion)", rm.suggCursor)
+			}
+
+			next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyEnter}) // pick, don't apply
+			rm = next.(Model)
+			if !rm.editing || rm.input != "Mandi" {
+				t.Fatalf("after enter on a picked row: editing=%v input=%q, want still editing with %q",
+					rm.editing, rm.input, "Mandi")
+			}
+
+			next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyEnter}) // now apply
+			rm = next.(Model)
+			if rm.editing {
+				t.Error("the second enter should close the editor")
+			}
+			if got := rm.rows[rm.cursor].node.Name; got != "Mandi" {
+				t.Errorf("node name = %q, want the rename written straight onto the node", got)
+			}
+		}},
+		// TestRenameUndoRestoresTheOldName covers the other half of the same report:
+		// a rename used to sit in a side field rendered as "old → new", which [u]
+		// did not clear. The rename is a tree edit like any other now.
+		{"RenameUndoRestoresTheOldName", func(t *testing.T) {
+			m := newModel(siblingTree(), context.Background(), nil, nil, nil)
+			m.cursor = 2 // the "03" day
+			m.applyRename("Goa")
+			if got := m.rows[m.cursor].node.Name; got != "Goa" {
+				t.Fatalf("node name = %q, want %q", got, "Goa")
+			}
+
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+			rm := next.(Model)
+			if row := nodeByID(rm.rows, "2024/June/03"); row == nil || row.node.Name != "03" {
+				t.Fatalf("after undo want the day back as %q, got %+v", "03", row)
+			}
+			if rm.hasEdits() {
+				t.Error("undoing the only edit should leave nothing pending")
+			}
+		}},
 		// TestMergingParentsCollapsesSameNamedChildren covers the reported case:
 		// merging three Day folders of one trip must leave a single Goa underneath,
 		// not three the reviewer then has to merge by hand. Children that genuinely
@@ -716,11 +776,12 @@ func TestReview(t *testing.T) {
 				t.Fatalf("June children = %+v, want one Goa (the days were emptied and pruned)", june.Children)
 			}
 		}},
-		// TestMergeRespectsPendingRenames covers name matching: children collapse on
-		// the name they will actually be written as, not the one they started with.
-		{"MergeRespectsPendingRenames", func(t *testing.T) {
+		// TestMergeRespectsRenames covers name matching: children collapse on the
+		// name they will actually be written as, not the one they started with.
+		{"MergeRespectsRenames", func(t *testing.T) {
 			m := newModel(tripTree(), nil, nil, nil, nil)
-			m.rows[10].newName = "iPhone" // rename 05's Canon to match the others
+			m.cursor = 10
+			m.applyRename("iPhone") // rename 05's Canon to match the others
 			m.visualAnchor, m.cursor, m.visualMode = 2, 10, true
 
 			m.mergeSelection()
@@ -730,17 +791,14 @@ func TestReview(t *testing.T) {
 				t.Fatalf("Goa children = %+v, want one — the renamed Canon collapses into iPhone", goa)
 			}
 		}},
-		// TestMergeNeverBroadcastsASuggestion covers the reported surprise: merging
-		// folders produced a name nobody chose ("Canon EOS 700D → Mumbai"), because
-		// the merged name fell back to a suggestion. A suggestion is an offer the
-		// reviewer hasn't accepted — the merge must use the first pick's own name,
-		// or the rename they actually typed on it. Non-date names, so the day-range
-		// combine (a different feature — see TestMergeNodesCombinesDayRanges) can't
-		// mask whether a suggestion leaked through.
-		{"MergeNeverBroadcastsASuggestion", func(t *testing.T) {
+		// TestMergeKeepsTheAnchorsOwnName covers the naming rule with non-date
+		// names, where the day-range combine (a different feature — see
+		// TestMergeNodesCombinesDayRanges) can't mask what the merge chose: the
+		// survivor is named after the row [V] was pressed on, nothing else.
+		{"MergeKeepsTheAnchorsOwnName", func(t *testing.T) {
 			tree := []vfs.Node{{ID: "2017", Name: "2017", FileCount: 2, Children: []vfs.Node{
-				{ID: "2017/Mumbai", Name: "Mumbai", FileCount: 1, Suggestions: []vfs.Suggestion{{Name: "Canon EOS 700D"}}},
-				{ID: "2017/Goa", Name: "Goa", FileCount: 1, Suggestions: []vfs.Suggestion{{Name: "Canon EOS 700D"}}},
+				{ID: "2017/Mumbai", Name: "Mumbai", FileCount: 1},
+				{ID: "2017/Goa", Name: "Goa", FileCount: 1},
 			}}}
 			m := newModel(tree, nil, nil, nil, nil)
 			m.visualAnchor, m.cursor, m.visualMode = 1, 2, true
@@ -754,9 +812,6 @@ func TestReview(t *testing.T) {
 			if row == nil {
 				t.Fatal("expected the first pick to survive the merge")
 			}
-			if row.newName != "" {
-				t.Errorf("merged folder was renamed to %q — merge must not apply a suggestion", row.newName)
-			}
 			if row.node.Name != "Mumbai" {
 				t.Errorf("merged folder name = %q, want the first pick's own name %q", row.node.Name, "Mumbai")
 			}
@@ -765,13 +820,15 @@ func TestReview(t *testing.T) {
 		// typed on the first pick *is* what the merged folder should be called.
 		{"MergeKeepsAnExplicitRename", func(t *testing.T) {
 			m := newModel(siblingTree(), nil, nil, nil, nil)
-			m.rows[2].newName = "Goa Trip"
-			m.visualAnchor, m.cursor, m.visualMode = 2, 3, true
+			m.cursor = 2
+			m.applyRename("Goa Trip") // the cursor follows the node through the re-sort
+			m.visualAnchor, m.visualMode = m.cursor, true
+			m.cursor = 2 // the other day
 
 			m.mergeSelection()
 
 			row := nodeByID(m.rows, "2024/June/03")
-			if row == nil || row.newName != "Goa Trip" {
+			if row == nil || row.node.Name != "Goa Trip" {
 				t.Fatalf("want the typed rename carried onto the merged folder, got %+v", row)
 			}
 		}},

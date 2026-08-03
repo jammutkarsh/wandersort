@@ -46,9 +46,15 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.editing {
 		switch key.Type {
 		case tea.KeyEnter:
-			m.rows[m.cursor].newName = folderName(m.input)
+			// an arrowed-onto suggestion: pick it into the input instead of
+			// applying, same as the config wizard's completion list
+			if m.suggCursor >= 0 && m.suggCursor < len(m.suggestions) {
+				m.fillSuggestion(m.suggCursor)
+				return m, nil
+			}
 			m.editing = false
 			m.suggestions = nil
+			m.applyRename(folderName(m.input))
 		case tea.KeyEsc:
 			m.editing = false
 			m.suggestions = nil
@@ -64,10 +70,17 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyRunes:
 			m.input += string(key.Runes)
 			m.refreshSuggestions()
+		case tea.KeyUp:
+			if m.suggCursor > -1 {
+				m.suggCursor--
+			}
+		case tea.KeyDown:
+			if m.suggCursor < len(m.suggestions)-1 {
+				m.suggCursor++
+			}
 		case tea.KeyTab:
 			if len(m.suggestions) > 0 {
-				m.input = m.suggestions[0].value
-				m.refreshSuggestions()
+				m.fillSuggestion(max(m.suggCursor, 0))
 			}
 		case tea.KeyCtrlE:
 			m.radiusDelta += location.NearSearchDegrees
@@ -116,19 +129,8 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.jumpSameDepth(1)
 	case "N":
 		m.jumpSameDepth(-1)
-	case "enter":
-		if r := m.rows[m.cursor]; r.newName == "" && len(r.node.Suggestions) > 0 {
-			r.newName = folderName(r.node.Suggestions[0].Name)
-		}
-		if m.cursor < len(m.rows)-1 {
-			m.cursor++
-		}
 	case "r":
-		r := m.rows[m.cursor]
-		m.input = r.newName
-		if m.input == "" {
-			m.input = r.node.Name
-		}
+		m.input = m.rows[m.cursor].node.Name
 		m.editing = true
 		m.radiusDelta = location.NearSearchDegrees
 		m.loadGeoCandidates()
@@ -141,12 +143,6 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cached := make(map[string]string, len(m.previewDirs))
 			maps.Copy(cached, m.previewDirs)
 			cmd = tea.Batch(peekCmd(m.ctx, m.db, node, cached), m.spin.Tick)
-		}
-	case "a":
-		for _, r := range m.rows {
-			if r.newName == "" && len(r.node.Suggestions) > 0 {
-				r.newName = folderName(r.node.Suggestions[0].Name)
-			}
 		}
 	case "V":
 		if m.visualMode {

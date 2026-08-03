@@ -26,14 +26,13 @@ func (a *app) newReviewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "review",
 		Short: "Review and correct the proposed folder structure",
-		Long: `Walks the folder hierarchy proposed by the last scan so you can rename
-directories the pipeline could not resolve confidently (for example an
-unlocated event cluster) before anything is moved. Confirmed names are
-remembered and suggested automatically on future scans.`,
+		Long: `Walks the folder hierarchy proposed by the last scan so you can rename,
+merge, drop and flatten folders before anything is moved. Names you type are
+remembered and offered as rename completions in later reviews.`,
 		Example: `# Review interactively
 wandersort review
 
-# Skip the TUI: accept every suggestion and confirm the plan immediately
+# Skip the TUI: confirm the proposed hierarchy as-is
 wandersort review --yes
 
 # Re-propose the hierarchy with the current config.yaml rules first
@@ -43,7 +42,7 @@ wandersort review --rebuild`,
 		},
 	}
 
-	cmd.Flags().Bool(flagYes, false, "Skip the interactive review: accept every suggestion and confirm the plan immediately")
+	cmd.Flags().Bool(flagYes, false, "Skip the interactive review: confirm the proposed hierarchy as-is")
 	cmd.Flags().Bool(flagRebuild, false,
 		"Re-run the VFS proposal with the current config.yaml rules before reviewing (no re-scan or re-hash)")
 	return cmd
@@ -72,16 +71,16 @@ func (a *app) runReview(cmd *cobra.Command) error {
 	// --rebuild re-proposes from metadata already in the DB: a changed rules
 	// setting applies without a re-scan or re-hash
 	if rebuild {
-		// vfs.Run wipes every entry, including an already-confirmed plan.
-		// Names survive in user_labels and come back as suggestions, but
-		// dropping confirmed work needs saying out loud.
+		// vfs.Run wipes every entry, including an already-confirmed plan. The
+		// names survive in user_labels as rename completions, but dropping
+		// confirmed work needs saying out loud.
 		approved, err := approvedCount(ctx, a.AppDB)
 		if err != nil {
 			return err
 		}
 		if approved > 0 && !yes {
 			return fmt.Errorf("--rebuild would discard the confirmed plan (%d approved files).\n"+
-				"Your confirmed folder names are remembered and will be re-suggested; re-run with --yes to rebuild and confirm the new plan non-interactively", approved)
+				"The names you typed are remembered as rename completions; re-run with --yes to rebuild and confirm the new plan non-interactively", approved)
 		}
 		// rebuild only re-runs the vfs phase — no exif phase, so no exiftool
 		// needed. Deps.Start(ctx) below (via the else branch) would download it
@@ -118,7 +117,7 @@ func (a *app) runReview(cmd *cobra.Command) error {
 	}
 
 	if yes {
-		if err := review.AcceptAll(ctx, opts); err != nil {
+		if err := review.ConfirmAll(ctx, opts); err != nil {
 			return err
 		}
 	} else {
@@ -130,7 +129,7 @@ func (a *app) runReview(cmd *cobra.Command) error {
 		}
 		resolver, err := a.Deps.Location()
 		if err != nil {
-			a.Log.Warn("Location resolver unavailable, rename suggestions disabled", "error", err)
+			a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
 		}
 		opts.Resolver = resolver
 		if err := review.Run(ctx, opts); err != nil {
@@ -169,7 +168,7 @@ func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	// gracefully without a resolver if it somehow hasn't.
 	resolver, err := a.Deps.Location()
 	if err != nil {
-		a.Log.Warn("Location resolver unavailable, rename suggestions disabled", "error", err)
+		a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
 	}
 	return review.Screen(ctx, review.Options{
 		DB:        a.AppDB,

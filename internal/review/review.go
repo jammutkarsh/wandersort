@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -47,11 +46,6 @@ func Run(ctx context.Context, o Options) error {
 	if !rm.confirmed {
 		return fmt.Errorf("review cancelled — nothing changed")
 	}
-	for _, r := range rm.rows {
-		if name := strings.TrimSpace(r.newName); name != "" {
-			r.node.Name = name
-		}
-	}
 	if err := vfs.Confirm(ctx, o.DB, rm.tree); err != nil {
 		return err
 	}
@@ -61,12 +55,10 @@ func Run(ctx context.Context, o Options) error {
 	return nil
 }
 
-// AcceptAll takes every suggestion without showing a TUI and confirms the
-// plan (`wandersort review --yes`).
-func AcceptAll(ctx context.Context, o Options) error {
-	for _, it := range collectReviewable(o.Tree) {
-		it.Name = it.Suggestions[0].Name
-	}
+// ConfirmAll writes the proposed hierarchy as-is, without showing a TUI
+// (`wandersort review --yes`). Suggestions are what the reviewer would rename
+// a folder *to* — taking them unattended is a decision nobody made.
+func ConfirmAll(ctx context.Context, o Options) error {
 	if err := vfs.Confirm(ctx, o.DB, o.Tree); err != nil {
 		return err
 	}
@@ -99,30 +91,16 @@ func Outcome(m tea.Model) (confirmed bool, err error, ok bool) {
 	return s.confirmed, s.finalErr, true
 }
 
-// collectReviewable returns pointers to every node carrying suggestions, in
-// tree order, so edits through them mutate the tree passed to Confirm.
-func collectReviewable(nodes []vfs.Node) []*vfs.Node {
-	var out []*vfs.Node
-	for i := range nodes {
-		if len(nodes[i].Suggestions) > 0 {
-			out = append(out, &nodes[i])
-		}
-		out = append(out, collectReviewable(nodes[i].Children)...)
-	}
-	return out
-}
-
 /* --- bubbletea model --- */
 
 // reviewRow is one visible line of the proposed hierarchy: a tree node at its
-// depth, plus the rename the TUI collects for it ("" = keep as proposed).
-// parent identifies true siblings for the merge command — nil for top-level
-// (Year) rows, which are siblings of each other too.
+// depth. Renames are written straight onto the node, so a row holds no name
+// state of its own. parent identifies true siblings for the merge command —
+// nil for top-level (Year) rows, which are siblings of each other too.
 type reviewRow struct {
-	node    *vfs.Node
-	parent  *vfs.Node
-	depth   int
-	newName string
+	node   *vfs.Node
+	parent *vfs.Node
+	depth  int
 	// guide is the drawn tree prefix ("│  ├─ "), precomputed here because a row
 	// can't tell whether it's a last child from its depth alone.
 	guide string
@@ -175,6 +153,7 @@ type Model struct {
 	// Rename autocomplete. Both sources are fetched up front and filtered in
 	// memory per keystroke, so typing never hits the DB.
 	suggestions []nameSuggestion
+	suggCursor  int                  // ↑/↓-picked suggestion; -1 = none picked
 	geoCands    []location.Candidate // refetched only by [r] and ctrl+e
 	labels      []string             // confirmed names, loaded once at startup
 	radiusDelta float64              // live search width; ctrl+e widens it
@@ -208,6 +187,7 @@ func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, resolver *l
 	sp.Style = lipgloss.NewStyle().Foreground(tui.Primary)
 	m := Model{
 		spin:        sp,
+		suggCursor:  -1,
 		tree:        tree,
 		rows:        buildRows(tree),
 		ctx:         ctx,
@@ -246,34 +226,16 @@ func (m Model) wrapDim(s string) string {
 	return tui.DimText.Width(m.width).Render(s)
 }
 
-// reflow rebuilds the row list after a structural edit (merge, drop, undo).
+// reflow rebuilds the row list after a tree edit (rename, merge, drop, undo).
 func (m *Model) reflow() {
 	vfs.SortTree(m.tree)
-	// flattenTree allocates fresh rows, so pending renames have to be carried
-	// across by node ID or a splice silently discards them
-	pending := m.pendingNames()
 	m.rows = buildRows(m.tree)
-	for _, r := range m.rows {
-		if name, ok := pending[r.node.ID]; ok {
-			r.newName = name
-		}
-	}
 	m.cursor = min(m.cursor, len(m.rows)-1) // the tree may have shrunk
 }
 
-// hasEdits reports whether quitting would lose a rename or a structural edit.
-// Derived, not tracked with a flag no edit path can forget to set.
-func (m Model) hasEdits() bool {
-	if len(m.undo) > 0 {
-		return true
-	}
-	for _, r := range m.rows {
-		if r.newName != "" {
-			return true
-		}
-	}
-	return false
-}
+// hasEdits reports whether quitting would lose an edit. Every edit — rename
+// included — snapshots the tree first, so the undo stack is the whole answer.
+func (m Model) hasEdits() bool { return len(m.undo) > 0 }
 
 // jumpSameDepth moves the cursor to the next ([n]) or previous ([N]) row at
 // the cursor's own depth, so a deep tree is walkable without scrolling through
@@ -312,14 +274,4 @@ func (m *Model) scrollIntoView() {
 	if m.cursor >= m.offset+m.visibleRows() {
 		m.offset = m.cursor - m.visibleRows() + 1
 	}
-}
-
-// nodeRowByID finds the row for a node ID after a reflatten.
-func nodeRowByID(rows []*reviewRow, id string) *reviewRow {
-	for _, r := range rows {
-		if r.node.ID == id {
-			return r
-		}
-	}
-	return nil
 }
