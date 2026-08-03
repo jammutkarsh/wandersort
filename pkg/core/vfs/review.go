@@ -24,6 +24,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/logger"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 )
 
@@ -159,6 +160,28 @@ func FilesUnder(ctx context.Context, nodeID string, database *db.DB) ([]string, 
 		return nil, fmt.Errorf("query files under %q: %w", nodeID, err)
 	}
 	return paths, nil
+}
+
+// Labels returns every folder name the reviewer has typed in an earlier
+// review, for this review's rename completions to offer back. The read side of
+// what Confirm writes — one package understands the table, rather than the
+// writer living here and the reader in the TUI.
+//
+// A failure is not one: it costs the reviewer their "used before" completions,
+// never the review itself, so it warns and returns nothing.
+func Labels(ctx context.Context, database *db.DB, log logger.Logger) []string {
+	if database == nil {
+		return nil
+	}
+	var labels []string
+	if err := database.SQL.SelectContext(ctx, &labels,
+		`SELECT DISTINCT label FROM user_labels ORDER BY label`); err != nil {
+		if log != nil {
+			log.Warn("Could not load confirmed labels for rename suggestions", "error", err)
+		}
+		return nil
+	}
+	return labels
 }
 
 // Confirm applies the (possibly edited) tree back onto the proposal's

@@ -19,6 +19,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -38,6 +39,19 @@ func New(db *db.DB, resolver *location.Resolver, log logger.Logger, cfg Config) 
 		log:      log,
 		cfg:      cfg,
 	}
+}
+
+// Propose builds the proposal for the whole library from the user's settings —
+// the phase as a single call, for every caller that has an *config.Configuration
+// and a resolver (the scan pipeline, and review --rebuild). Assembling the
+// Config and resolving the saved-place anchors are steps of the phase, not of
+// its callers; New is for a test or a caller that wants to state the Config
+// itself.
+func Propose(ctx context.Context, database *db.DB, resolver *location.Resolver, appCfg *config.Configuration, log logger.Logger) (int, error) {
+	cfg := ConfigFor(appCfg)
+	cfg.Anchors = resolver.BuildAnchors(ctx, appCfg.SavedPlaces)
+	log.Info("Proposing destination folders", "rules", cfg.Rules, "anchors", len(cfg.Anchors))
+	return New(database, resolver, log, cfg).Run(ctx)
 }
 
 // Run builds the virtual filesystem proposal for the whole library's master
