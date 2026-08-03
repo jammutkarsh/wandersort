@@ -33,7 +33,7 @@ one scan ever runs against it at a time (see "Conventions" below):
 - `internal/cli/` — cobra CLI. One file per command, plus `app.go` and `root.go`:
   - `app.go` — `Execute(cfg)`, **the package's only exported symbol**, plus the
     unexported `app` struct and everything hanging off it: `initAppDB`,
-    `closeDBs`, `syncAnchors`, `tuiEnabled`, and `newDeps` — the one-line
+    `closeDBs`, `lockOutput`, `isTuiEnabled`, and `newDeps` — the one-line
     constructor for a `pkg/install.Coordinator` (see below), stored on
     `app.Deps`. Exiftool path / location resolver readiness used to be four
     raw fields (`ExiftoolPath`, `LocationResolver`, `LocationDB`,
@@ -100,16 +100,19 @@ one scan ever runs against it at a time (see "Conventions" below):
     Output path expands a leading `~` (`expandHome`, applied at save *and*
     when matching suggestions) and only suggests locations whose parent dir
     exists on this machine, which is what makes the list platform-correct.
-    Town inputs validate through `canonicalTown` (geonames exact-match) — now
-    a free function taking the resolver as a parameter, not a method reading
-    a shared field, so a test hands it a fake/real resolver directly.
+    Town inputs validate through `location.Resolver.Canonical` (geonames
+    exact-match) — the *write* side of `ResolveByName`, and in `pkg/location`
+    for that reason: one package decides both the spelling an anchor is saved
+    as and how that spelling is found again, so a saved town always resolves.
+    The wizard keeps only the "did you mean" message.
     **The location DB downloads in the background, with no install screen**:
     `runConfigTUI` builds a `pkg/install.Coordinator` (`a.newDeps`) and calls
     `StartLocationOnly`, feeding its byte progress into the form's own row
     above the footer (`tui.DownloadMsg`, in the same block the examples pin
     to) and its completion into a `Finished` message. The wizard's `geonames`
-    closure is a **non-blocking** peek — `coord.LocationReady()` then
-    `coord.Location()` (which, once ready, never blocks) — used by
+    closure is `coord.LocationNow` — the **non-blocking** getter, which reports
+    `install.ErrPending` while the download runs and the resolver (or a
+    permanent failure) once it doesn't. Used by
     `townValidator`/`canonicalTownOrTyped`/`suggestTown`, all of which take the
     resolver from `geonames()`'s return value rather than a package-level
     field. Once the download finishes the row **persists as a dim `✓ … done`
@@ -120,7 +123,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     already-on-disk database sends, so it never gets mentioned at all.
     The Saved places step is the only one that needs the database, so it holds
     on `tui.Field.Await` (showing why) until `geonames()` stops returning
-    `errGeonamesPending`; everything above it is answerable meanwhile.
+    `install.ErrPending`; everything above it is answerable meanwhile.
     `Coordinator`'s internal channel is the happens-before edge making the
     resolver safe to read, enforced by the type rather than documented in a
     comment (see `pkg/install` below). A geonames database that never opens at all
@@ -145,10 +148,12 @@ one scan ever runs against it at a time (see "Conventions" below):
     scan/hash need nothing, exif blocks on exiftool, vfs blocks on the
     location DB. `runScanTUI` builds a `pkg/install.Coordinator` (`a.newDeps`,
     stored on `a.Deps`) and calls `Start`, then wires `workflow.Deps.Exiftool`/
-    `Location` to `a.Deps.AwaitExiftool`/`AwaitLocation` — each logs a
+    `Location` to `a.Deps.Exiftool`/`Location` — each logs a
     "Waiting for …" `UserKey` line only when that phase actually stalls behind
     its own still-running download, and returns immediately once ready with no
-    hand-rolled channels or `await` closure in `scan.go` itself. Download byte
+    hand-rolled channels or `await` closure in `scan.go` itself. They stay
+    closures rather than method values because the TUI path builds the
+    workflow before the Coordinator exists. Download byte
     progress renders as rows under the banner (`tui.InstallProgressMsg` →
     `ScanModel.viewDownloads`, persisting as `✓ done` like the config
     wizard's bar). In practice the location DB is already on disk — the
@@ -156,11 +161,9 @@ one scan ever runs against it at a time (see "Conventions" below):
     only fetches exiftool; the vfs gate is the fallback for a config run whose
     download failed. A download that fails mid-pipeline fails the run at the
     phase that needed it; files stay `HASHED` and the next run resumes.
-    Anchor sync (`a.syncAnchors` → `vfs.SyncAnchors`) happens inside the
-    `Location` dep closure, right after `AwaitLocation` returns — the earliest
-    point the resolver exists, and vfs is the only phase that reads anchors;
-    `syncAnchors` takes the resolver as a parameter rather than reading a
-    shared field. **`scan`/`review` are the only things that install
+    Anchors are resolved inside `vfs.Propose`, which the vfs phase calls once
+    the resolver exists — vfs is the only phase that reads them, so nothing
+    above it has to carry them. **`scan`/`review` are the only things that install
     dependencies** (`pkg/install.Coordinator.Start`/`StartLocationOnly`,
     which install exiftool *then* the location DB when both are asked for —
     the small download unblocks the earlier phase; the big one has the whole
@@ -175,18 +178,21 @@ one scan ever runs against it at a time (see "Conventions" below):
     (`StringSlice`); `config.yaml`'s `rules` key (see below) controls the VFS
     folder depth for this scan's proposal — no CLI flag, set it via
     `wandersort config`. The plain path (`--plain`/non-TTY) keeps the simple
-    order: blocking `Deps.Start` + `Deps.Exiftool`/`Deps.Location`, then
-    `syncAnchors`, then the pipeline with `workflow.ReadyDeps`.
-  - **There is no `anchor.go`.** `app.syncAnchors` (in `app.go`) reads the
+    order: blocking `Deps.Start` + `Deps.Exiftool`/`Deps.Location`, then the
+    pipeline with the same `workflow.Deps`.
+  - **There is no `anchor.go`, and no anchor row in the database.** Anchors are
+    built in memory, per run, by `location.Resolver.BuildAnchors`, from the
     global config's `SavedPlaces` — positional: index 0 home, 1 work,
     everything after another frequently-stayed-at place, all anchored the same
-    way — resolves each name via `ResolveByName` (a guaranteed exact hit,
-    since the wizard's `canonicalTown` validator only saves geonames
-    spellings) and inserts a `SAVED_PLACE`-kind `user_labels` row for it if
-    this library lacks one. `resolveLocations` (`core/vfs`) is the only thing
-    that reads those rows. The write side is the `config` wizard
-    (`config.Save`), and its canonical-spelling helpers `exactMatch`/
-    `canonicalNameOf` sit in `config.go` next to their only caller.
+    way. Each name resolves via `ResolveByName` (a guaranteed exact hit, since
+    the wizard's `Canonical` validator only saves geonames spellings).
+    `BuildAnchors` **returns** the set and also keeps it on the resolver, which
+    needs it for `cityClaimed`; `vfs.Propose` takes the returned value.
+    Callers never read the field back — an anchor is a value passed on, not
+    state two packages share, which is what the old
+    `BuildAnchors`-then-copy-`resolver.Anchors` ritual (duplicated in
+    `workflow` and `cli/review`) made it. `user_labels`' `SAVED_PLACE` kind is
+    legacy: nothing writes it, the CHECK constraint just still allows it.
   - `review.go` — `review` cmd: cobra wiring only (db-exists check, output
     lock, the `--rebuild` guard via `approvedCount`, `vfs.BuildTree`), then
     hands off to `internal/review`. There is no session lookup before
@@ -199,7 +205,7 @@ one scan ever runs against it at a time (see "Conventions" below):
 - `internal/review/` — the bubbletea **full-tree view** TUI over the VFS
   proposal (issue #8), extracted from `internal/cli` because it was 60% of that
   package's lines while cobra wiring is the rest. Its whole exported surface is
-  four functions in `run.go`:
+  four functions in `review.go`:
   - `Run(ctx, Options)` — standalone full-screen review; writes the approved
     plan and runs the free-space check.
   - `ConfirmAll(ctx, Options)` — `--yes`: write the proposal as-is, no TUI.
@@ -209,11 +215,11 @@ one scan ever runs against it at a time (see "Conventions" below):
     `tui.Switch(nil)` quits the shell).
   - `Outcome(m tea.Model) (confirmed, err, ok)` — how an embedded review ended.
 
-  `Options` carries `DB`/`SessionID`/`Tree`/`Resolver`/`Log`/`OutputDir`; a nil
+  `Options` carries `DB`/`Tree`/`Resolver`/`Log`/`OutputDir`; a nil
   `Resolver` just disables rename autocomplete. `copy.go` holds the unexported
   `copyFiles`/`copyFile` the peek feature uses (same atomic
-  temp-file-then-rename pattern as `pkg/deps`); it moved here with the TUI
-  because the preview is its only caller.
+  temp-file-then-rename pattern `pkg/install` downloads with); it moved here
+  with the TUI because the preview is its only caller.
 
   **The tree-reshaping rules themselves — merge, drop, flatten, and the
   tree-walking helpers they share — live in `pkg/core/vfs/edit.go`
@@ -367,9 +373,21 @@ one scan ever runs against it at a time (see "Conventions" below):
   by renaming, merging, dropping and flattening. A second "accept" verb next
   to `[r]` was one concept too many for the same act, and a row that showed
   both a name and a competing offer for it never read as a decided plan.
-  What the reviewer *does* type is remembered (`Confirm` writes every renamed
-  folder's name to `user_labels`) and comes back as a `used before` rename
-  completion next time.
+  What the reviewer *does* type is remembered (`vfs.Confirm` writes every
+  renamed folder's name to `user_labels`, and `vfs.Labels` reads them back —
+  the writer and the reader of that table live in one package, rather than the
+  TUI running its own `SELECT` against a schema it otherwise knows nothing
+  about) and comes back as a `used before` rename completion next time.
+
+  **The rename dropdown's ranking is `pkg/location`'s, not this package's**
+  (`location.Resolver.Suggest`, taking a `SuggestQuery` of prefix + prefetched
+  nearby `Candidate`s + prior labels). It ranks nearby places, then prior
+  names, then a geonames prefix search; dedupes on the folder name; and caps
+  the list. `internal/review/autocomplete.go` is now just the per-row
+  `Candidates` fetch (refreshed only by `[r]` and `ctrl+e`, since the radius is
+  a TUI concern) and one call. That package already owns which qualifier a name
+  needs, how it reads in a list, and what is safe on disk — a caller that ranks
+  and sanitizes for itself is re-deriving all three.
   **`↑`/`↓` walk the rename dropdown** (`Model.suggCursor`, `-1` = nothing
   picked), `tab` fills the picked-or-top match and `enter` on a picked row
   fills it rather than applying — the same completion behaviour as the
@@ -410,13 +428,12 @@ Back in `internal/cli/`:
   - `internal/cli` holds **only** `app.go` + `root.go` + one file per
     subcommand (plus the `help.go` exception above). **No single-function
     files**: the old `tui.go` (just `tuiEnabled`) and `anchor.go` were folded
-    into `app.go` and `config.go`/`core/vfs` respectively. Everything else that
+    into `app.go` and `core/vfs` respectively. Everything else that
     used to live here moved
     out to its own package so a future TUI entry point can reuse it:
     - `pkg/lock/` — all wandersort file locking: generic acquire mechanics
       (`acquire`, `Lock`, `ErrHeld`) plus the two domain wrappers —
-      `AcquireOutput` (one scan per output dir, styled "already running"
-      message) and `AcquireInstall` (install coordination across
+      `AcquireOutput` (one scan per output dir) and `AcquireInstall` (install coordination across
       scan/review — see `pkg/install` below, the one caller) — and the lock
       filenames (`OutputFileName`, `InstallFileName`). The lock itself is a
       real OS advisory lock (`tryFlock` — `unix.Flock` in `lock_unix.go`,
@@ -425,7 +442,11 @@ Back in `internal/cli/`:
       the instant the holding process's file descriptor closes, crash or
       SIGKILL included, so there is no dead-PID staleness check and no
       leftover lock file that ever needs deleting by hand — the PID still
-      written into the file is for `alreadyRunningError`'s message only.
+      written into the file is only there so the "already running" message can
+      name the holder. **This package renders nothing**: a held output lock
+      comes back as `*lock.AlreadyRunningError{PID}` and `cli.app.lockOutput`
+      styles it. It used to import `pkg/tui` to colour that string, which put
+      a full-screen TUI kit underneath a file lock.
       `Coordinator`
       tries the install lock non-blocking first so it can log a
       `UserKey`-tagged "waiting for another process…" line before falling
@@ -569,7 +590,14 @@ reads it straight via `config.Load`.
 - `vfs/` — phase 5. Proposes destinations for every live master in the library
   from the persisted metadata (never re-reads files); each run replaces the
   proposal set wholesale (safe to call again mid-review — see `review.go`'s
-  `--rebuild` flag). `Config.Rules` (below Year/Month)
+  `--rebuild` flag). **`vfs.Propose` is the phase as one call** — it builds its
+  own `Config` via `ConfigFor` and resolves the saved-place anchors via
+  `BuildAnchors` before running. Assembling those is part of the phase, not of
+  its callers: `workflow`'s vfs phase and `cli/review --rebuild` used to run
+  the same four-line ritual (load the config file again, build anchors, copy
+  `resolver.Anchors` onto the `Config`, `New(...).Run`) and either could drift
+  from the other. `New` stays for a test, or a caller that wants to state the
+  `Config` itself. `Config.Rules` (below Year/Month)
   is `location`/`orientation`/`device`/`media` in any order, or empty for a
   flat `Year/Month` — set via `config.yaml`'s `rules` key (`wandersort config`
   wizard only, no CLI flag). `date` is a Day level, so the full
@@ -785,7 +813,7 @@ reads it straight via `config.Load`.
   - `FullName` (`fullName`) — city, state and country spelled out,
     `Indore, Madhya Pradesh, India`. **Every list a person browses shows
     this**: the `config` town picker and the review rename dropdown's
-    `label` (`internal/review/autocomplete.go`'s `nameSuggestion.label`). Six
+    `label` (`Suggestion.Label`, from this package's own `Suggest`). Six
     rows reading `Springfield` are not a choice, and the state/country are the
     only thing that tells them apart while scrolling the list. `SearchByName`
     also **dedupes on it**: the geonames database holds two
@@ -793,24 +821,20 @@ reads it straight via `config.Load`.
     same string twice is no more pickable than listing `Banjar` twice.
   - `DisplayName` (`disambiguate`) — the *smallest qualifier that makes this
     entry unique*: unqualified unless the name genuinely collides. `Lookup`
-    writes it straight into a folder path (through the unexported
-    `sanitizeSegment`); the rename dropdown never writes it raw (see
-    `FolderName`).
-  - `FolderName` — `DisplayName` run through the package's own unexported
-    `sanitizeSegment`, computed once in `fillNames` alongside the other two
-    names. **This is the whole point of the split**: this package already
-    knows which qualifier a name needs, so it also owns turning that into
-    something safe to write as a directory name — a caller
-    (`internal/review/autocomplete.go`'s `nameSuggestion.value`) just takes
-    it, no local sanitizing call of its own. `sanitizeSegment` is a
-    deliberate duplicate of `pkg/path.SanitizeSegment` (same rule, byte for
-    byte), not an import of it — `vfs` already imports `location`, so
-    `location` importing `vfs` back isn't possible, and this package chose to
-    stay dependency-free over sharing the one call site through `pkg/path`.
-    **Cost**: if the sanitizing rule ever changes, both copies need the same
-    edit or folder names computed by `vfs` and by this package's rename
-    suggestions quietly diverge. A real reported bug motivated the split
-    itself (not the duplication) though: the rename dropdown used to
+    writes it straight into a folder path (through `path.SanitizeSegment`);
+    the rename dropdown never writes it raw (see `FolderName`).
+  - `FolderName` — `DisplayName` run through `path.SanitizeSegment`, computed
+    once in `fillNames` alongside the other two names. **This is the whole
+    point of the split**: this package already knows which qualifier a name
+    needs, so it also owns turning that into something safe to write as a
+    directory name — a caller (`Suggestion.Value`) just takes it, no local
+    sanitizing call of its own. The sanitizing rule itself is `pkg/path`'s and
+    is *imported*, not copied: this package used to carry a byte-for-byte fork
+    of it to stay dependency-free, defending against a cycle that cannot exist
+    (`pkg/path` imports nothing in this project), at the cost of two copies
+    that had to be edited together or folder names quietly diverged. A real
+    reported bug motivated the name split itself (not the duplication) though:
+    the rename dropdown used to
     sanitize `FullName` straight into the folder value, so a `Bhopal` with
     exactly one geonames row still autocompleted to
     `Bhopal-Madhya-Pradesh-India` on disk, even though the *list* correctly
@@ -864,33 +888,25 @@ reads it straight via `config.Load`.
   (not a full path) is allowed to contain — strips `/\:,` and whitespace to
   `-`, collapses runs, trims. `vfs` calls it for every folder segment
   (device/orientation/media/date, renames — `plan.go`, `review.go`).
-  `pkg/location` intentionally does **not** import this — it keeps its own
-  unexported copy (`sanitizeSegment`, see `pkg/location` above) rather than
-  add the dependency, since `vfs` already imports `location` and `location`
-  importing `vfs` back isn't possible either way. `RelativeToHome`/
+  `pkg/location` imports it too, for `FolderName`. **This package imports
+  nothing else in the project**, which is what makes it safe to depend on from
+  anywhere — the rule lives once, not once per caller. `RelativeToHome`/
   `ExpandPath` are the `$HOME` ↔ `~` conversion, both directions — already
   the one place that logic lives; the
   `config` wizard's output-path suggestion list (`internal/cli/config.go`)
   builds every candidate path through `RelativeToHome` and reads typed input
   back through `ExpandPath`, so a suggestion is never shown with the raw home
   directory spelled out.
-- `deps/` — **the one place a downloadable dependency is fetched.**
-  `Download(ctx, dest, url, wantSHA256, onProgress)` writes atomically (temp
-  file + rename), reports byte progress, and — when `wantSHA256` is non-empty —
-  verifies the digest and removes `dest` on mismatch. `SHA256File` is exported
-  for the callers that verify at a different moment. `exiftool.Setup` passes the
-  digest from its release manifest; `location.Setup` passes `""` because the
-  expected hash ships in the metadata file it downloads next, and `location.New`
-  checks it when opening. **There is no `pkg/utils`** — a package named for
-  nothing in particular is where unrelated helpers accumulate; `download.go` and
-  `hash.go` had exactly these two callers, and `copy.go` had one (the review
-  TUI's preview), so it went to `internal/review` as unexported `copyFiles`.
+- **There is no `pkg/deps` and no `pkg/utils`** — a package named for nothing
+  in particular is where unrelated helpers accumulate. The atomic download
+  (temp file + rename, byte progress, SHA256 verify) is `install.downloadFile`,
+  next to its only callers; `copy.go` had one caller (the review TUI's
+  preview), so it went to `internal/review` as unexported `copyFiles`.
 - `install/` — **the one place a downloadable dependency's version, download
-  location, on-disk layout, and readiness are all known.** `pkg/exiftool` and
-  `pkg/location` only ever run the already-installed binary or query an
-  already-open, already-verified database — neither imports `deps/` (the
-  byte-level fetch mechanics) or knows a version number, a download URL, or a
-  file path; all of that lives here instead:
+  location, on-disk layout, fetch, and readiness are all known.** `pkg/exiftool`
+  and `pkg/location` only ever run the already-installed binary or query an
+  already-open, already-verified database — neither knows a version number, a
+  download URL, or a file path; all of that lives here instead:
   - `exiftool_setup.go` — `setupExiftool` (version-gated: `$PATH` or
     `binDir`, else download+extract), `fetchReleaseMeta`, `checkVersion`,
     `extractTarGz`. Moved verbatim from the old `pkg/exiftool/verify.go`.
@@ -910,15 +926,17 @@ reads it straight via `config.Load`.
   phase `"exiftool"`/`"location"`), and readiness. `Start` installs both;
   `StartLocationOnly` installs just the location database, for a caller (the
   config wizard) with no use for exiftool. Every caller gets a getter, never a
-  raw channel: `Exiftool`/`Location` block silently; `AwaitExiftool`/
-  `AwaitLocation` block and log a `UserKey` "Waiting for … to finish" line, but
-  only if the call actually has to wait — for a pipeline phase that may be
-  stalled behind its own process's still-running download, not a competing
-  one (`scan`'s TUI path is the only caller that needs this narration, since
-  its scan/hash phases run concurrently with the downloads); `LocationReady`
-  and `LocationDBIfReady` are non-blocking peeks, for a caller (a form
-  validator running on every keystroke, or `closeDBs` at shutdown) that must
-  never wait on a download. This replaced four raw `*app` fields
+  raw channel, and there is **one getter per dependency**, not a silent/logging
+  pair: `Exiftool`/`Location` block, and log a `UserKey` "Waiting for … to
+  finish" line only if the call actually has to wait. Narration is a property
+  of waiting, not of who asked — the old `Await*` twins meant a caller could
+  pick the wrong one and silently lose the line that stops a stalled scan
+  looking hung. `LocationNow` never blocks and reports `install.ErrPending`
+  while the install runs, so a form validator running on every keystroke can
+  tell "ask again later" from "this will never work" — a distinction it needs,
+  since it holds the field on the first and waves it through on the second.
+  `LocationDBIfReady` is the same non-blocking peek at the raw handle, for
+  `closeDBs` at shutdown. This replaced four raw `*app` fields
   (`ExiftoolPath`, `LocationResolver`, `LocationDB`, `InstallProgress`) a
   background goroutine wrote and a pipeline goroutine read, with the
   happens-before edge documented in a comment rather than enforced by a type —
@@ -933,6 +951,20 @@ reads it straight via `config.Load`.
 
 - Bounded worker pools, never fire-and-forget goroutines.
 - Wrap errors with `%w`. Upserts over SELECT-then-INSERT.
+- **Imports point down only.** An edge that would point back up — a lower
+  package reaching for a higher one's constant, style, or type — means the
+  logic is in the wrong package, not that the edge is needed. Two real ones
+  were removed for exactly this: `lock → tui` (to colour an error string) and
+  `migrations → config` (for a schema literal). `pkg/path`, `pkg/logger` and
+  `pkg/lock` import nothing else in the project, which is what makes them safe
+  to depend on from anywhere.
+- **A module owns its whole domain.** If a caller is re-deriving a rule the
+  module already knows — how a place name is spelled, what a folder segment may
+  contain, what a phase's `Config` is assembled from — the code belongs in the
+  module, not the caller. The test: if two callers do it, they will drift.
+- **Never duplicate a rule to avoid an import.** Check whether the cycle is
+  real first; `pkg/location` carried a byte-for-byte fork of
+  `path.SanitizeSegment` for a cycle that could not have existed.
 
 ## Build / test
 
