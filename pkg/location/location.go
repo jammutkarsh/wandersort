@@ -20,6 +20,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 	_ "modernc.org/sqlite"
 )
 
@@ -51,9 +52,10 @@ type Resolver struct {
 	db    *db.DB
 	cache sync.Map
 	log   logger.Logger
-	// Anchors are saved places resolved to GPS coordinates. Nil until
-	// BuildAnchors is called.
-	Anchors []Anchor
+	// anchors are saved places resolved to GPS coordinates, kept only so
+	// cityClaimed can qualify a candidate name against them. Nil until
+	// BuildAnchors is called, which is also what hands them to callers.
+	anchors []Anchor
 }
 
 // NewResolver wraps an already-open, already-verified location database.
@@ -242,30 +244,6 @@ type geoRow struct {
 	hasMarks                          bool
 }
 
-// sanitizeSegment makes a name safe to write as a single path segment — the
-// same rule pkg/path.SanitizeSegment applies, which vfs uses for every other
-// folder segment. Deliberately duplicated rather than importing pkg/path:
-// this package's only use of it is this one line, and staying dependency-free
-// here was chosen over the alternative (one shared rule, no drift risk). If
-// the sanitizing rule ever changes, both copies need the same edit.
-func sanitizeSegment(seg string) string {
-	seg = strings.Map(func(r rune) rune {
-		switch r {
-		case '/', '\\', ':', 0, ' ', ',', '\t', '\n':
-			return '-'
-		}
-		return r
-	}, seg)
-	for strings.Contains(seg, "--") {
-		seg = strings.ReplaceAll(seg, "--", "-")
-	}
-	seg = strings.Trim(seg, " ._-")
-	if seg == "" {
-		return "-"
-	}
-	return seg
-}
-
 // fillNames sets displayName, fullName and folderName on every row, counting
 // each distinct city name once for the whole batch rather than per row.
 func (r *Resolver) fillNames(ctx context.Context, rows []geoRow) error {
@@ -283,7 +261,7 @@ func (r *Resolver) fillNames(ctx context.Context, rows []geoRow) error {
 		row.displayName = disambiguate(row.plain, row.state, row.country,
 			count.total, count.countries, count.inCountry[row.code], r.cityClaimed(row.plain), ", ")
 		row.fullName = fullName(row.plain, row.state, row.country)
-		row.folderName = sanitizeSegment(row.displayName)
+		row.folderName = path.SanitizeSegment(row.displayName)
 	}
 	return nil
 }
@@ -485,10 +463,87 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 	return out, nil
 }
 
+// canonicalSearchLimit is how many rows Canonical looks through for an exact
+// match. Enough to reach past the near-duplicates a popular name attracts,
+// small enough that a rejection can name one alternative.
+const canonicalSearchLimit = 8
+
+// Canonical returns the spelling a typed place name must be stored as: the
+// geonames own form, qualified far enough to resolve back to exactly one row.
+// It is the write side of ResolveByName — this package decides both, so a name
+// saved by a picker is always one this package can find again.
+//
+// A name the database has never heard of comes back unchanged (a village
+// geonames is missing must not be undismissable), but a near-miss is an error
+// naming the closest alternative: silently saving "Hyderbad" would anchor the
+// library to whatever that eventually resolved to.
+func (r *Resolver) Canonical(ctx context.Context, typed string) (string, error) {
+	typed = strings.TrimSpace(typed)
+	if typed == "" || r == nil {
+		return "", fmt.Errorf("locationResolver: no place name given")
+	}
+	matches, err := r.SearchByName(ctx, typed, canonicalSearchLimit)
+	if err != nil || len(matches) == 0 {
+		return typed, nil
+	}
+	if name, ok := exactMatch(matches, typed); ok {
+		return name, nil
+	}
+	return "", fmt.Errorf("no exact match for %q (did you mean %s?)", typed, matches[0].FullName)
+}
+
+// SuggestNames lists place names for a picker to offer as prefix completions.
+// FullName, not the bare city: six identical "Springfield"s are unpickable,
+// and the qualified form is what Canonical saves and ResolveByName round-trips.
+func (r *Resolver) SuggestNames(ctx context.Context, prefix string, limit int) []string {
+	matches, err := r.SearchByName(ctx, prefix, limit)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, len(matches))
+	for i, m := range matches {
+		names[i] = m.FullName
+	}
+	return names
+}
+
+// exactMatch returns geonames' own spelling when one of matches is a
+// case-insensitive match for typed. The qualified forms are tried first: a
+// bare "Hyderabad" must still be stored qualified, or it resolves back to
+// whichever row the database happens to return first — which is how a home
+// town in India became one in Pakistan.
+func exactMatch(matches []PlaceMatch, typed string) (string, bool) {
+	typed = strings.TrimSpace(typed)
+	for _, m := range matches {
+		if strings.EqualFold(m.FullName, typed) {
+			return canonicalNameOf(m), true
+		}
+	}
+	for _, m := range matches {
+		if strings.EqualFold(m.DisplayName, typed) || strings.EqualFold(m.Name, typed) {
+			return canonicalNameOf(m), true
+		}
+	}
+	return "", false
+}
+
+// canonicalNameOf is the form a place is saved as: the fullest spelling the
+// geonames row supports.
+func canonicalNameOf(m PlaceMatch) string {
+	switch {
+	case m.FullName != "":
+		return m.FullName
+	case m.DisplayName != "":
+		return m.DisplayName
+	default:
+		return m.Name
+	}
+}
+
 // cityClaimed reports whether any anchor already takes this bare city name —
 // the anchor gets the unqualified form, so geonames results must qualify.
 func (r *Resolver) cityClaimed(city string) bool {
-	for _, a := range r.Anchors {
+	for _, a := range r.anchors {
 		c, _, _ := strings.Cut(a.Name, ",")
 		if strings.EqualFold(c, city) {
 			return true
@@ -588,18 +643,24 @@ type Anchor struct {
 	Lon        float64
 }
 
-// BuildAnchors resolves saved-place names and stores them in r.Anchors.
+// BuildAnchors resolves saved-place names to coordinates and returns them.
 // Names that fail to resolve are skipped with a warning. FolderName is
 // disambiguated when two anchors share the same city: the smallest qualifier
 // that tells them apart (state, then country) is appended.
+//
+// The set is also kept on the resolver, because Candidates needs it (via
+// cityClaimed) to decide how a nearby place is spelled. Callers that place
+// files take the returned slice rather than reading that field back — anchors
+// are a value the caller passes on, not state two packages share.
+//
 // It replaces any previous set rather than appending to it, so calling it twice
 // in one process (a second scan, a rebuilt proposal) doesn't leave every anchor
 // duplicated. The whole set is built locally and published in one assignment, so
-// a concurrent reader (Candidates, via cityClaimed) sees either the old anchors
-// or the new ones, never an empty window mid-rebuild.
-func (r *Resolver) BuildAnchors(ctx context.Context, savedPlaces []string) {
+// a concurrent reader sees either the old anchors or the new ones, never an
+// empty window mid-rebuild.
+func (r *Resolver) BuildAnchors(ctx context.Context, savedPlaces []string) []Anchor {
 	if r == nil {
-		return
+		return nil
 	}
 	var anchors []Anchor
 	for _, name := range savedPlaces {
@@ -643,5 +704,6 @@ func (r *Resolver) BuildAnchors(ctx context.Context, savedPlaces []string) {
 		inCountryCount := cityCountries[e.city][e.country]
 		anchors[i].FolderName = disambiguate(e.city, e.state, e.country, nameCount, countryCount, inCountryCount, false, " - ")
 	}
-	r.Anchors = anchors
+	r.anchors = anchors
+	return anchors
 }
