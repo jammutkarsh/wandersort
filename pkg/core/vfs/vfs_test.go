@@ -169,7 +169,11 @@ func TestScreenshotGroupsByMonthOnly(t *testing.T) {
 	}
 }
 
-func TestClusterSpillover(t *testing.T) {
+// TestClusterNoSpillover pins the strict rule: a GPS-less file never borrows a
+// located neighbour's city, however close in time. It gets an Unknown folder
+// beside that neighbour instead, and the reviewer can merge the two if they
+// know better.
+func TestClusterNoSpillover(t *testing.T) {
 	h := newHarness(t)
 	// two files without GPS, one with — all within the 12h gap
 	a := h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
@@ -186,18 +190,20 @@ func TestClusterSpillover(t *testing.T) {
 	rows := h.build(t, cfg, geo)
 
 	for _, id := range []int64{a, b} {
-		if got := rows[id].TargetPath; got != "2024/06_June/Manali/Horizontal/Photos/"+filepath.Base(rows[id].TargetPath) {
-			// location segment is what matters
-			if want := "2024/06_June/Manali/"; len(got) < len(want) || got[:len(want)] != want {
-				t.Errorf("file %d target = %q, want prefix %q", id, got, want)
-			}
-		}
-		if rows[id].ClusterID == nil {
-			t.Errorf("file %d should carry a cluster_id", id)
+		// location segment is what matters
+		if want := "2024/06_June/Unknown/"; !strings.HasPrefix(rows[id].TargetPath, want) {
+			t.Errorf("file %d target = %q, want prefix %q", id, rows[id].TargetPath, want)
 		}
 	}
-	if rows[c].ClusterID != nil {
-		t.Errorf("directly located file should have NULL cluster_id")
+	if want := "2024/06_June/Manali/"; !strings.HasPrefix(rows[c].TargetPath, want) {
+		t.Errorf("located file target = %q, want prefix %q", rows[c].TargetPath, want)
+	}
+	// a cluster with something located in it decides nothing, so nobody in it
+	// is a cluster member
+	for _, id := range []int64{a, b, c} {
+		if rows[id].ClusterID != nil {
+			t.Errorf("file %d should have NULL cluster_id", id)
+		}
 	}
 }
 

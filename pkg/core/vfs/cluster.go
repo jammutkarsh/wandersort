@@ -20,9 +20,16 @@ type cluster struct {
 	start, end time.Time
 }
 
-// clusterAndSpill handles files with no location of their own: time-gap
-// clustering, then GPS spillover within a cluster. Whatever is still
-// unresolved gets a dated event segment instead of a location folder.
+// clusterAndSpill groups files by capture-time gap and gives a cluster with
+// *nothing* located a dated event segment instead of a location folder.
+//
+// It used to also spill one member's GPS city over the cluster's GPS-less
+// members. That invented a place: a 12h cluster is most of a day, so a DSLR
+// shot nine hours after a phone photo inherited the phone's city — and near a
+// saved place, which is where most GPS-less files sit, it named every one of
+// them after the saved place. A GPS-less file now keeps no location and
+// markUnknownLocations (plan.go) puts it in an Unknown folder beside its
+// located siblings, which says what is actually known.
 func clusterAndSpill(masters []masterFile, gap time.Duration) {
 	if gap <= 0 {
 		gap = defaultClusterGap
@@ -44,36 +51,27 @@ func clusterAndSpill(masters []masterFile, gap time.Duration) {
 	clusterNum := 0
 	for ci := range clusters {
 		c := &clusters[ci]
-		city, cityIsSavedPlace := majorityCity(masters, c.members)
 
-		var unlocated []int
+		located := 0
 		for _, i := range c.members {
-			if masters[i].location == "" {
-				unlocated = append(unlocated, i)
+			if masters[i].location != "" {
+				located++
 			}
 		}
-		if len(unlocated) == 0 {
-			continue // every member already located (saved-place included); nothing to decide
+		if located == len(c.members) {
+			continue // nothing unlocated to decide
+		}
+		if located > 0 {
+			// mixed cluster: the GPS-less members get an Unknown folder next to
+			// their located siblings, not a place borrowed from them
+			continue
 		}
 
 		clusterNum++
 		id := fmt.Sprintf("c%d", clusterNum)
 
-		// spillover: one located member names the whole event. A GPS-less file
-		// clustered with saved-place photos inherits atSavedPlace too — it's
-		// almost certainly the same everyday place (an indoor shot with no fix).
-		if city != "" {
-			for _, i := range unlocated {
-				masters[i].location = city
-				masters[i].atSavedPlace = cityIsSavedPlace // SavedPlacesDateOnly must suppress its folder here too, not just for its located neighbours
-				masters[i].clusterID = id
-			}
-			continue
-		}
-
 		// nothing located: fall back to a dated segment. No member here is
-		// atSavedPlace — that always carries a real location now, which would
-		// have made city non-empty above.
+		// atSavedPlace — that always carries a real location.
 		seg := eventSegment(c.start, c.end)
 		for _, i := range c.members {
 			masters[i].clusterID = id
@@ -137,29 +135,6 @@ func sortByCaptureTime(masters []masterFile) {
 		masters[cur] = held
 		keys[cur].idx = cur
 	}
-}
-
-// majorityCity returns the most common resolved city among members, plus
-// whether it got there via atSavedPlace — location alone can't tell a
-// folded saved-place name from a plain resolved one.
-func majorityCity(masters []masterFile, members []int) (city string, atSavedPlace bool) {
-	counts := map[string]int{}
-	home := map[string]bool{}
-	best, bestN := "", 0
-	for _, i := range members {
-		city := masters[i].location
-		if city == "" {
-			continue
-		}
-		if masters[i].atSavedPlace {
-			home[city] = true
-		}
-		counts[city]++
-		if counts[city] > bestN {
-			best, bestN = city, counts[city]
-		}
-	}
-	return best, home[best]
 }
 
 // eventSegment renders the dated placeholder for an unresolved cluster. It
