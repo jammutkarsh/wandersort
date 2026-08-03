@@ -202,7 +202,7 @@ one scan ever runs against it at a time (see "Conventions" below):
   four functions in `run.go`:
   - `Run(ctx, Options)` — standalone full-screen review; writes the approved
     plan and runs the free-space check.
-  - `AcceptAll(ctx, Options)` — `--yes`: take every suggestion, no TUI.
+  - `ConfirmAll(ctx, Options)` — `--yes`: write the proposal as-is, no TUI.
   - `Screen(ctx, Options) tea.Model` — the same review as an app-shell screen,
     so `scan` can swap into it inside its own program (`screen.go`, which
     finalizes in-program: on save it runs `vfs.Confirm` itself, then
@@ -238,55 +238,43 @@ one scan ever runs against it at a time (see "Conventions" below):
   the cursor's own depth** (`jumpSameDepth`), crossing into other branches
   by design — that's what makes `V` then `n``n` select one level across
   several months without arrowing through every folder's contents; stops at
-  the ends, never wraps. `enter` accept suggestion, `r` rename (with
+  the ends, never wraps. `r` rename (with
   ranked autocomplete — `Tab` fills the top match, `Ctrl-E` widens the search
   radius by another ~10km, typed text also prefix-matches previously
-  confirmed `user_labels`), `p` peek (copies up to 250MB of the folder's
+  typed `user_labels`), `p` peek (copies up to 250MB of the folder's
   files into a temp dir via `copyFiles` and opens that folder —
-  read-only, nothing on disk is touched), `a` accept all, `V`/`m`/`u`
+  read-only, nothing on disk is touched), `V`/`m`/`u`
   Vim-style merge: `V` starts a contiguous range (sequential — no picking
   rows out of order), `m` **folds every row in the range at the anchor row's
   depth into one node under their lowest common ancestor**
   (`vfs.MergeNodes`, via `commonPathPrefix` + `FindNode`/`removeChildByID` —
   a real tree-splice, not just a rename), named after **the row `V` was
-  pressed on** — its own name, or the rename the reviewer typed on it, never
-  its suggestion (an offer nobody accepted; broadcasting one put a name on
-  the merged folder that came from no visible choice) — with the summed
+  pressed on** — its own name, which is already the rename the reviewer typed
+  on it, since a rename is written straight onto the node — with the summed
   `FileCount`. `mergeSelection` pulls the anchor's ID to the front of the
   slice it hands `vfs.MergeNodes` (which always keeps `ids[0]`) precisely so
   this holds regardless of which direction the range was extended in:
   `selectedRows()` normalizes low/high to tree order for iteration, so
   extending *upward* from the anchor would otherwise silently hand naming to
   whichever row ended up topmost instead of the one actually pressed.
-  **Exception: merging plain, unrenamed Date-level folders proposes the day
+  **Exception: merging plain Date-level folders proposes the day
   range they jointly span instead** (`combinedDayRange`/`formatDayRange`,
   `pkg/core/vfs/edit.go`) — merging `01_02` through `24_26` names the result
   `01_26`, the same `"%02d_%02d"` shape `mergeSameLocationDays` itself would
   have proposed had it seen the days as one run to begin with. This only
-  fires when every pick's name parses as a Date folder (`"03"` or `"01_02"`)
-  and none carries a typed rename — a rename is the reviewer overriding the
-  proposal, and this never clobbers that, same as the suggestion rule above.
-  Anything not day-shaped at the anchor's depth (a location, a device, an
-  already-renamed folder) falls back to the anchor's own name as usual. The
-  combined name is written straight onto the merged `Node.Name`, not left for
-  `mergeSelection` to surface as a pending `row.newName` the way an explicit
-  typed rename is — a real reported bug: `row.newName` is keyed by ID, and the
-  survivor keeps its original ID, so on `[u]` the reverted (now separate
-  again) node inherited the day-range name as a stray pending rename nobody
-  asked for, rendering a confusing `03 → 03_09` even though the merge had
-  just been undone. It also isn't a suggestion awaiting acceptance, so the
-  arrow rendering was wrong for it either way — merging is already the
-  reviewer's explicit action, and its output shouldn't need a second
-  keypress or look reversible-but-not.
+  fires when every pick's name parses as a Date folder (`"03"` or `"01_02"`).
+  Anything not day-shaped at the anchor's depth (a location, a device, a
+  folder the reviewer renamed to something of their own) falls back to the
+  anchor's own name as usual — a rename *is* the node's name (see the rename
+  paragraph below), so no separate "was it renamed?" check is needed.
   **Anchor
   depth is the
   selection rule** — rows deeper than the row `V` was pressed on are that
   folder's own contents and ride along; shallower ones are scaffolding
   spanned to reach the next branch. One rule covers both shapes: leaves from
   different branches (anchor on a leaf) and whole parent folders (anchor on
-  a Day). **Merging parents merges their subtrees**: children whose *final*
-  names match (`finalName` honours a pending rename, since that's what
-  `Confirm` writes) collapse recursively via `mergeInto` (both unexported,
+  a Day). **Merging parents merges their subtrees**: children whose names
+  match collapse recursively via `mergeInto`/`childByName` (both unexported,
   `pkg/core/vfs/edit.go`) — three days in Goa
   give one Goa holding one merged device folder, not three the reviewer then
   has to merge by hand. This is what makes merging work across different Month/Day
@@ -306,13 +294,11 @@ one scan ever runs against it at a time (see "Conventions" below):
   (`pruneEmptied`, using a pre-merge leaf-ID set to tell a real leaf from an
   ancestor the merge hollowed out). Rows caught in the range that still have
   children (the Month/Day scaffolding between two branches) are skipped, not
-  merged. **`u` undoes structural edits all the way back**, not just the
-  last one: every reshaping edit pushes a whole-tree clone
-  (`Model.snapshot` calling `vfs.CloneTree`, capped at `maxUndo` = 100) onto
-  a stack,
-  since a structural edit can't be undone by restoring per-row name strings
-  the way a plain rename-merge could. Trees are folders only, never files,
-  so a clone is cheap.
+  merged. **`u` undoes every edit all the way back**, not just the
+  last one: every edit — renames included — goes through
+  `Model.applyEdit`, which pushes a whole-tree clone first (`Model.snapshot`
+  calling `vfs.CloneTree`, capped at `maxUndo` = 100) onto a stack. Trees are
+  folders only, never files, so a clone is cheap.
   `d`/`D` **remove nesting the reviewer doesn't want**. Both act on
   `selectedRows` — a `[V]` range (every row in it at the anchor row's depth,
   the same rule `m` uses) or just the cursor row when there's no selection.
@@ -341,10 +327,10 @@ one scan ever runs against it at a time (see "Conventions" below):
   folder remap onto it — same machinery as merge, with `remapUnderMerged`
   covering anything deeper. Both undo via `[u]`.
   `c` **save & exit** (the only thing that writes — `q` discards, so `q`
-  with pending edits warns once and needs a second `q`; `hasEdits` derives
-  "pending" from the rows and the undo snapshot rather than a flag any edit
-  path could forget to set). `--yes` accepts every suggestion
-  non-interactively; `--rebuild` re-runs `vfs.Run` with the current
+  with pending edits warns once and needs a second `q`; `hasEdits` is just
+  "the undo stack is non-empty", since every edit snapshots, rather than a
+  flag any edit path could forget to set). `--yes` confirms the proposal
+  as-is, non-interactively; `--rebuild` re-runs `vfs.Run` with the current
   `config.yaml` `rules` *before* reviewing, so a config change
   re-proposes the hierarchy without a re-scan or re-hash (editing
   `config.yaml` alone, without `--rebuild`, changes nothing until the next
@@ -367,13 +353,27 @@ one scan ever runs against it at a time (see "Conventions" below):
   Rows are drawn with real box-drawing guides (`reviewRow.guide`, computed in
   `flattenTree` because a row can't tell it's a last child from its depth) —
   the old two-space indent plus a `└ ` on every level made sibling and child
-  look alike. An unaccepted suggestion renders as `⇢ name` in `tui.Attn`
-  (amber = still wants a keypress), not as dim `(N files, suggested: …)`
-  parentheses next to the count.
-  **Rename precedence is default name < location suggestion < user's own
-  rename** — `enter`/`a` only ever fill from a suggestion when the row's
-  `newName` is still empty, never clobbering something the reviewer already
-  typed. **Preview caching is content-based, not node-based**
+  look alike.
+  **A rename is written straight onto `Node.Name`** (`applyRename`, an
+  `applyEdit` like merge and drop) — there is no pending-rename layer, no
+  `row.newName`, and therefore no `old → new` arrow on the row. There used to
+  be one, and it was a reported bug twice over: the arrow made an applied
+  rename read as still-unapplied, and because the name lived in a row field
+  keyed by node ID rather than in the tree, `[u]` restored the tree but left
+  the arrow and its text behind. **There is no suggestion concept at all any
+  more** — no `Node.Suggestions`, no `⇢` row marker, no `enter` accept, no
+  `a` accept-all, no `AcceptAll`, and no `suggestion`/`suggestion_source`
+  columns: the pipeline hands the reviewer a finished plan, and they edit it
+  by renaming, merging, dropping and flattening. A second "accept" verb next
+  to `[r]` was one concept too many for the same act, and a row that showed
+  both a name and a competing offer for it never read as a decided plan.
+  What the reviewer *does* type is remembered (`Confirm` writes every renamed
+  folder's name to `user_labels`) and comes back as a `used before` rename
+  completion next time.
+  **`↑`/`↓` walk the rename dropdown** (`Model.suggCursor`, `-1` = nothing
+  picked), `tab` fills the picked-or-top match and `enter` on a picked row
+  fills it rather than applying — the same completion behaviour as the
+  `config` wizard's town inputs, which is where reviewers expect it from. **Preview caching is content-based, not node-based**
   (`filesSignature`, keyed on the sorted file list, not the node ID): a
   directory with one child chain (e.g. `.../08/Horizontal/Photos`) shares
   literally the same files between its parent and its leaf, so peeking
@@ -604,34 +604,31 @@ reads it straight via `config.Load`.
   the device name, which put a location folder named after the camera right
   next to the real device folder (`…/Canon EOS 700D/Canon EOS 700D/`) — wrong
   information, and duplicated. Unknown location now means the level is simply
-  absent for that file, and `suggestion_dir` stays NULL so nothing hangs a
-  suggestion off it. `BuildTree` also **drops a suggestion equal to the
-  folder's own name** (a source folder named after the camera made
-  SOURCE_FOLDER suggest the name already on screen).
+  absent for that file, and `location_dir` stays NULL.
   `resolveLocations` folds a directly-resolved GPS city
   into a *confirmed* `ANCHOR_HOME`/`ANCHOR_WORK` label when within
   `location.MaxDistSquared` (~50km) of it, so a metro's suburbs land in one
-  folder instead of fragmenting by neighbourhood — `anchorCities`
-  (`pkg/core/vfs/cluster.go`) deliberately does **not** also fall back to "the
-  library's most frequent city" the way it used to: that fabricated a
-  location with no temporal/spatial relationship to the cluster being named
-  (a real reported bug — a GPS-less DSLR photo "suggested" whatever city
-  dominated the user's phone-photo library). No confirmed anchor means the
-  suggestion ladder falls through to the source-folder-name rung instead.
+  folder instead of fragmenting by neighbourhood. A cluster with nothing
+  located at all gets a dated event segment (`clusterAndSpill`,
+  `pkg/core/vfs/cluster.go`) and no invented place name: an earlier version
+  ranked a name for it out of confirmed labels, anchor cities and source
+  folder names, which fabricated locations with no relationship to the
+  cluster (a real reported bug — a GPS-less DSLR photo was "suggested"
+  whatever city dominated the user's phone-photo library). That whole ladder
+  is gone with the suggestion concept.
   `review.go` (issue #8's reconcile core, read by the CLI TUI) exposes the
   proposal as a directory tree the reviewer edits
   before `Confirm` writes it back: `BuildTree` also carries one exemplar
   GPS coordinate per location node (`Node.Lat/Lon`) for the TUI's expand-radius
   rename, and `FilesUnder` lists a node's source files for the preview-copy
-  feature. **Suggestions attach by path, not by depth:** `dirFor` records the
-  folder it emitted for the location level as `virtual_fs_entries.suggestion_dir`,
-  and `BuildTree` hangs the suggestion + GPS off exactly that node. The old
-  fixed `suggestionDepth = 2` assumed location was Rules' first level, so
-  any other order (`rules: [device, location]`, or a `date` level in front)
-  smeared every file's suggestion onto whatever shared Device/Day node sat at
-  depth 2 — reported as "one suggestion across the whole tree". No
-  `suggestion_dir` (no location level in this proposal) now means no suggestion
-  node at all, rather than a misplaced one. `suggestion_dir` is a column of
+  feature. **The GPS attaches by path, not by depth:** `dirFor` records the
+  folder it emitted for the location level as
+  `virtual_fs_entries.location_dir`, and `BuildTree` hangs the coordinate off
+  exactly that node. The old fixed `suggestionDepth = 2` assumed location was
+  Rules' first level, so any other order (`rules: [device, location]`, or a
+  `date` level in front) hung it on whatever shared Device/Day node sat at
+  depth 2. No `location_dir` (no location level in this proposal) means no
+  GPS-bearing node, rather than a wrong one. `location_dir` is a column of
   **003's `CREATE TABLE`**, not its own migration — the pre-tag rule (no tag
   yet, so no users) says edit the existing migration rather than stack an
   `ALTER` on it. The cost is that `migrations.Run` tracks versions
