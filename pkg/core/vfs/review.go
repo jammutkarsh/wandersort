@@ -8,16 +8,18 @@ package vfs
 
 // review.go is the reconcile core behind `wandersort review`: exposes PROPOSED
 // rows as a directory tree, applies edits back onto virtual_fs_entries, and
-// records renamed locations. Nodes match by immutable ID, never by tree diff.
+// remembers the names the reviewer typed. Nodes match by immutable ID, never
+// by tree diff.
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
+	"slices"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/jmoiron/sqlx"
 
@@ -34,23 +36,15 @@ var ErrInvalidTree = errors.New("invalid review tree")
 // to a "run scan first" hint.
 var ErrNoProposal = errors.New("no proposal to review")
 
-// Suggestion is a proposed name for a directory node, carried from the VFS
-// build so the review UI can offer a one-key accept.
-type Suggestion struct {
-	Name   string `json:"name"`
-	Source string `json:"source"`
-}
-
 // Node is one directory in the proposed hierarchy, as the review TUI edits
 // it. ID is the proposed dir path at build time and is
 // immutable — reconcile matches on it. Name is the editable last segment.
 type Node struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	FileCount   int          `json:"fileCount"`
-	Samples     []string     `json:"samples,omitempty"`
-	Suggestions []Suggestion `json:"suggestions,omitempty"`
-	Children    []Node       `json:"children"`
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	FileCount int      `json:"fileCount"`
+	Samples   []string `json:"samples,omitempty"`
+	Children  []Node   `json:"children"`
 	// One exemplar GPS coordinate (location-depth node only), so the review UI
 	// can re-query the resolver for ranked rename alternatives.
 	Lat *float64 `json:"lat,omitempty"`
@@ -68,17 +62,15 @@ const maxSamples = 3
 // result means no proposal exists — the caller decides if that's a 404.
 func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 	var rows []struct {
-		TargetPath       string   `db:"target_path"`
-		SourcePath       string   `db:"source_path"`
-		Suggestion       *string  `db:"suggestion"`
-		SuggestionSource *string  `db:"suggestion_source"`
-		SuggestionDir    *string  `db:"suggestion_dir"`
-		GPSLat           *float64 `db:"exif_gps_latitude"`
-		GPSLon           *float64 `db:"exif_gps_longitude"`
+		TargetPath  string   `db:"target_path"`
+		SourcePath  string   `db:"source_path"`
+		LocationDir *string  `db:"location_dir"`
+		GPSLat      *float64 `db:"exif_gps_latitude"`
+		GPSLon      *float64 `db:"exif_gps_longitude"`
 	}
 	if err := database.SQL.SelectContext(ctx, &rows,
-		`SELECT vfe.target_path, vfe.source_path, vfe.suggestion, vfe.suggestion_source,
-		        vfe.suggestion_dir, fm.exif_gps_latitude, fm.exif_gps_longitude
+		`SELECT vfe.target_path, vfe.source_path, vfe.location_dir,
+		        fm.exif_gps_latitude, fm.exif_gps_longitude
 		 FROM virtual_fs_entries vfe
 		 LEFT JOIN file_metadata fm ON fm.file_id = vfe.file_id
 		 WHERE vfe.status IN (?, ?)`,
@@ -89,10 +81,9 @@ func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 	type tnode struct {
 		Node
 		childIdx map[string]*tnode
-		sugSeen  map[string]bool
 	}
 	newT := func(id, name string) *tnode {
-		return &tnode{Node: Node{ID: id, Name: name}, childIdx: map[string]*tnode{}, sugSeen: map[string]bool{}}
+		return &tnode{Node: Node{ID: id, Name: name}, childIdx: map[string]*tnode{}}
 	}
 	root := newT("", "")
 
@@ -115,31 +106,18 @@ func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 				cur.Samples = append(cur.Samples, r.SourcePath)
 			}
 		}
-		// The suggestion attaches to the exact folder the VFS build recorded it
-		// against, not a guessed depth — a guessed depth moved with Rules order
-		// and smeared suggestions onto the wrong shared node.
-		if r.SuggestionDir == nil || *r.SuggestionDir == "" {
+		// GPS attaches to the exact folder the location level emitted, not a
+		// guessed depth — a guessed depth moved with Rules order and hung one
+		// file's coordinates off whatever shared node sat there.
+		if r.LocationDir == nil || *r.LocationDir == "" {
 			continue
 		}
-		depth := strings.Count(*r.SuggestionDir, "/")
-		if depth >= len(nodes) || nodes[depth].ID != *r.SuggestionDir {
+		depth := strings.Count(*r.LocationDir, "/")
+		if depth >= len(nodes) || nodes[depth].ID != *r.LocationDir {
 			continue
 		}
-		loc := nodes[depth]
-		if loc.Lat == nil && r.GPSLat != nil && r.GPSLon != nil {
+		if loc := nodes[depth]; loc.Lat == nil && r.GPSLat != nil && r.GPSLon != nil {
 			loc.Lat, loc.Lon = r.GPSLat, r.GPSLon
-		}
-		// identical-to-current-name is noise: it offers the reviewer the name
-		// they're already looking at
-		if r.Suggestion != nil && *r.Suggestion != "" && *r.Suggestion != loc.Name {
-			src := ""
-			if r.SuggestionSource != nil {
-				src = *r.SuggestionSource
-			}
-			if key := *r.Suggestion + "\x00" + src; !loc.sugSeen[key] {
-				loc.sugSeen[key] = true
-				loc.Suggestions = append(loc.Suggestions, Suggestion{Name: *r.Suggestion, Source: src})
-			}
 		}
 	}
 	if len(root.childIdx) == 0 {
@@ -184,8 +162,9 @@ func FilesUnder(ctx context.Context, nodeID string, database *db.DB) ([]string, 
 }
 
 // Confirm applies the (possibly edited) tree back onto the proposal's
-// entries, flips PROPOSED rows to APPROVED, and records renamed location
-// nodes in user_labels. The write is synchronous: a nil return means committed.
+// entries, flips PROPOSED rows to APPROVED, and remembers every name the
+// reviewer typed in user_labels, so the next review's rename completions
+// offer it. The write is synchronous: a nil return means committed.
 func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 	var targets []string
 	if err := database.SQL.SelectContext(ctx, &targets,
@@ -206,13 +185,8 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 	// old-path (node ID) → new-path. Two nodes renamed to the same path is a
 	// deliberate merge, not an error — remap tolerates many old IDs
 	// collapsing onto one new path.
-	type labelWrite struct {
-		oldDirs []string // every merged node contributing to this label, so spanFor covers all of them
-		name    string
-	}
 	remap := map[string]string{}
-	labelIdx := map[string]int{} // name+kind -> index into labels, so a merge accumulates oldDirs instead of double-inserting
-	var labels []labelWrite
+	learned := map[string]bool{} // names the reviewer gave a folder, deduped
 	var walk func(nodes []Node, parentNew string) error
 	walk = func(nodes []Node, parentNew string) error {
 		for _, n := range nodes {
@@ -232,14 +206,11 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 				}
 				remap[id] = newPath
 			}
-			if newPath != n.ID && len(n.Suggestions) > 0 && !hasUserLabel(n.Suggestions) {
-				key := name + "\x00EVENT"
-				if i, ok := labelIdx[key]; ok {
-					labels[i].oldDirs = append(labels[i].oldDirs, oldDirs...)
-				} else {
-					labelIdx[key] = len(labels)
-					labels = append(labels, labelWrite{oldDirs: oldDirs, name: name})
-				}
+			// compare the *segment*, not the path: a merge moves a node under a
+			// new parent without renaming it, and the name it kept is the
+			// pipeline's own, not something worth completing later
+			if name != path.Base(n.ID) {
+				learned[name] = true
 			}
 			if err := walk(n.Children, newPath); err != nil {
 				return err
@@ -249,18 +220,6 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 	}
 	if err := walk(roots, ""); err != nil {
 		return err
-	}
-
-	// capture-time spans, only needed to date the new labels
-	var capRows []capRow
-	if len(labels) > 0 {
-		if err := database.SQL.SelectContext(ctx, &capRows, `
-			SELECT vfe.target_path, fm.exif_date_time_original, fm.exif_create_date, fr.file_modified_at
-			FROM virtual_fs_entries vfe
-			JOIN file_registry fr ON fr.id = vfe.file_id
-			JOIN file_metadata fm ON fm.file_id = vfe.file_id`); err != nil {
-			return fmt.Errorf("load capture times: %w", err)
-		}
 	}
 
 	if err := database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
@@ -326,14 +285,9 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 			db.StatusApproved, db.StatusProposed); err != nil {
 			return err
 		}
-		for _, l := range labels {
-			var ts, te any
-			if start, end, ok := spanFor(capRows, l.oldDirs); ok {
-				ts, te = db.FormatTime(start), db.FormatTime(end)
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO user_labels (label, kind, time_start, time_end)
-				VALUES (?, 'EVENT', ?, ?)`, l.name, ts, te); err != nil {
+		for _, name := range slices.Sorted(maps.Keys(learned)) {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO user_labels (label, kind) VALUES (?, 'EVENT')`, name); err != nil {
 				return err
 			}
 		}
@@ -342,52 +296,4 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 		return fmt.Errorf("confirm vfs: %w", err)
 	}
 	return nil
-}
-
-type capRow struct {
-	TargetPath string  `db:"target_path"`
-	DateOrig   *string `db:"exif_date_time_original"`
-	CreateDate *string `db:"exif_create_date"`
-	ModifiedAt string  `db:"file_modified_at"`
-}
-
-// spanFor returns the min/max capture time of every file under any of oldDirs
-// (each dir or its descendants), used to date a freshly written EVENT label —
-// a merge contributes more than one oldDir, so the label spans all of them.
-func spanFor(rows []capRow, oldDirs []string) (start, end time.Time, ok bool) {
-	under := func(d string) bool {
-		for _, oldDir := range oldDirs {
-			if d == oldDir || strings.HasPrefix(d, oldDir+"/") {
-				return true
-			}
-		}
-		return false
-	}
-	for _, r := range rows {
-		d := path.Dir(r.TargetPath)
-		if !under(d) {
-			continue
-		}
-		t := firstTime(deref(r.DateOrig), deref(r.CreateDate), r.ModifiedAt)
-		if t.IsZero() {
-			continue
-		}
-		if !ok || t.Before(start) {
-			start = t
-		}
-		if !ok || t.After(end) {
-			end = t
-		}
-		ok = true
-	}
-	return start, end, ok
-}
-
-func hasUserLabel(ss []Suggestion) bool {
-	for _, s := range ss {
-		if s.Source == SuggestionUserLabel {
-			return true
-		}
-	}
-	return false
 }

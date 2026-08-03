@@ -18,20 +18,30 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 )
 
-// renameFirstSuggested edits the first node carrying suggestions (the location
-// node) and returns its immutable ID so the test can assert on the rewrite.
-func renameFirstSuggested(nodes []Node, newName string) (oldID string, ok bool) {
+// leafNodes collects every childless node — with rules [location] and no GPS
+// these are the dated event folders a reviewer renames.
+func leafNodes(nodes []Node) []*Node {
+	var out []*Node
 	for i := range nodes {
-		if len(nodes[i].Suggestions) > 0 {
-			oldID = nodes[i].ID
-			nodes[i].Name = newName
-			return oldID, true
+		if len(nodes[i].Children) == 0 {
+			out = append(out, &nodes[i])
+			continue
 		}
-		if oldID, ok = renameFirstSuggested(nodes[i].Children, newName); ok {
-			return oldID, true
-		}
+		out = append(out, leafNodes(nodes[i].Children)...)
 	}
-	return "", false
+	return out
+}
+
+// renameFirstLeaf renames the first leaf folder and returns its immutable ID
+// so the test can assert on the rewrite.
+func renameFirstLeaf(nodes []Node, newName string) (oldID string, ok bool) {
+	leaves := leafNodes(nodes)
+	if len(leaves) == 0 {
+		return "", false
+	}
+	oldID = leaves[0].ID
+	leaves[0].Name = newName
+	return oldID, true
 }
 
 func TestReview(t *testing.T) {
@@ -41,12 +51,12 @@ func TestReview(t *testing.T) {
 	}{
 		{"ReviewBuildAndConfirm", func(t *testing.T) {
 			h := newHarness(t)
-			// two unlocated files, same folder + day → one cluster, one location node
-			// that carries a suggestion (the node a reviewer renames)
+			// two unlocated files, same folder + day → one cluster, one dated
+			// event folder (the node a reviewer renames)
 			h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 			h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:03 16:00:00", 0, 0, 3024, 4032))
 			cfg := DefaultConfig()
-			cfg.Rules = []string{RuleLocation} // eventSegment suggestion rung needs no date level ahead of it
+			cfg.Rules = []string{RuleLocation} // eventSegment needs no date level ahead of it
 			h.build(t, cfg, installtest.Resolver(t))
 
 			ctx := context.Background()
@@ -58,9 +68,9 @@ func TestReview(t *testing.T) {
 				t.Fatal("empty tree")
 			}
 
-			oldID, ok := renameFirstSuggested(tree, "Manali")
+			oldID, ok := renameFirstLeaf(tree, "Manali")
 			if !ok {
-				t.Fatal("no node carried a suggestion to rename")
+				t.Fatal("no folder to rename")
 			}
 
 			if err := Confirm(ctx, h.d, tree); err != nil {
@@ -88,21 +98,18 @@ func TestReview(t *testing.T) {
 				}
 			}
 
-			// the rename is remembered as an EVENT label with a capture-time span
+			// the name the reviewer typed is remembered, so the next review's
+			// rename completions offer it
 			var labels []struct {
-				Label     string  `db:"label"`
-				Kind      string  `db:"kind"`
-				TimeStart *string `db:"time_start"`
+				Label string `db:"label"`
+				Kind  string `db:"kind"`
 			}
 			if err := h.d.SQL.Select(&labels,
-				`SELECT label, kind, time_start FROM user_labels`); err != nil {
+				`SELECT label, kind FROM user_labels`); err != nil {
 				t.Fatal(err)
 			}
 			if len(labels) != 1 || labels[0].Label != "Manali" || labels[0].Kind != "EVENT" {
 				t.Fatalf("labels = %+v, want one EVENT Manali", labels)
-			}
-			if labels[0].TimeStart == nil {
-				t.Error("EVENT label has no time span")
 			}
 		}},
 		{"ReviewConfirmRejectsUnknownID", func(t *testing.T) {
@@ -125,7 +132,7 @@ func TestReview(t *testing.T) {
 			h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 			h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
 			cfg := DefaultConfig()
-			cfg.Rules = []string{RuleLocation} // eventSegment suggestion rung needs no date level ahead of it
+			cfg.Rules = []string{RuleLocation} // eventSegment needs no date level ahead of it
 			h.build(t, cfg, installtest.Resolver(t))
 
 			ctx := context.Background()
@@ -133,19 +140,9 @@ func TestReview(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var suggested []*Node
-			var collect func(nodes []Node)
-			collect = func(nodes []Node) {
-				for i := range nodes {
-					if len(nodes[i].Suggestions) > 0 {
-						suggested = append(suggested, &nodes[i])
-					}
-					collect(nodes[i].Children)
-				}
-			}
-			collect(tree)
+			suggested := leafNodes(tree)
 			if len(suggested) < 2 {
-				t.Fatalf("want two sibling suggestion nodes, got %d", len(suggested))
+				t.Fatalf("want two sibling event folders, got %d", len(suggested))
 			}
 			suggested[0].Name = "Manali"
 			suggested[1].Name = "Manali"
@@ -184,7 +181,7 @@ func TestReview(t *testing.T) {
 			h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 			h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
 			cfg := DefaultConfig()
-			cfg.Rules = []string{RuleLocation} // eventSegment suggestion rung needs no date level ahead of it
+			cfg.Rules = []string{RuleLocation} // eventSegment needs no date level ahead of it
 			h.build(t, cfg, installtest.Resolver(t))
 
 			ctx := context.Background()
@@ -192,19 +189,9 @@ func TestReview(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var suggested []*Node
-			var collect func(nodes []Node)
-			collect = func(nodes []Node) {
-				for i := range nodes {
-					if len(nodes[i].Suggestions) > 0 {
-						suggested = append(suggested, &nodes[i])
-					}
-					collect(nodes[i].Children)
-				}
-			}
-			collect(tree)
+			suggested := leafNodes(tree)
 			if len(suggested) < 2 {
-				t.Fatalf("want two sibling suggestion nodes, got %d", len(suggested))
+				t.Fatalf("want two sibling event folders, got %d", len(suggested))
 			}
 			foldedID := suggested[1].ID
 			suggested[0].Name = "Manali"
@@ -241,7 +228,7 @@ func TestReview(t *testing.T) {
 			h.addFile(t, "dumpA/IMG_0042.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 			h.addFile(t, "dumpB/IMG_0042.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
 			cfg := DefaultConfig()
-			cfg.Rules = []string{RuleLocation} // eventSegment suggestion rung needs no date level ahead of it
+			cfg.Rules = []string{RuleLocation} // eventSegment needs no date level ahead of it
 			h.build(t, cfg, nil)
 
 			ctx := context.Background()
@@ -249,17 +236,7 @@ func TestReview(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var suggested []*Node
-			var collect func([]Node)
-			collect = func(ns []Node) {
-				for i := range ns {
-					if len(ns[i].Suggestions) > 0 {
-						suggested = append(suggested, &ns[i])
-					}
-					collect(ns[i].Children)
-				}
-			}
-			collect(tree)
+			suggested := leafNodes(tree)
 			if len(suggested) != 2 {
 				t.Fatalf("want 2 renameable dirs, got %d", len(suggested))
 			}
@@ -296,7 +273,7 @@ func TestReview(t *testing.T) {
 			h := newHarness(t)
 			h.addFile(t, "dump/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
 			cfg := DefaultConfig()
-			cfg.Rules = []string{RuleLocation} // eventSegment suggestion rung needs no date level ahead of it
+			cfg.Rules = []string{RuleLocation} // eventSegment needs no date level ahead of it
 			h.build(t, cfg, nil)
 
 			ctx := context.Background()
@@ -304,7 +281,7 @@ func TestReview(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, ok := renameFirstSuggested(tree, "Goa [2024]"); !ok {
+			if _, ok := renameFirstLeaf(tree, "Goa [2024]"); !ok {
 				t.Fatal("no renameable node in the proposal")
 			}
 			if err := Confirm(ctx, h.d, tree); err != nil {
@@ -337,33 +314,6 @@ func TestReview(t *testing.T) {
 			if len(files) != 1 {
 				t.Errorf("FilesUnder(%q) = %v, want the one file under it", bracketed, files)
 			}
-		}},
-		// TestSuggestionEqualToFolderNameIsDropped covers the noise case: a source
-		// folder named after the camera makes SOURCE_FOLDER suggest the name the
-		// folder already has ("Canon EOS 700D (suggested: Canon EOS 700D)"). Offering
-		// the reviewer a rename to the current name is not a suggestion.
-		{"SuggestionEqualToFolderNameIsDropped", func(t *testing.T) {
-			h := newHarness(t)
-			h.addFile(t, "Canon EOS 700D/DSC_0001.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
-			h.build(t, DefaultConfig(), installtest.Resolver(t))
-
-			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.d)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var walk func(nodes []Node)
-			walk = func(nodes []Node) {
-				for _, n := range nodes {
-					for _, s := range n.Suggestions {
-						if s.Name == n.Name {
-							t.Errorf("node %q offers a suggestion of its own name (%s)", n.ID, s.Source)
-						}
-					}
-					walk(n.Children)
-				}
-			}
-			walk(tree)
 		}},
 	}
 	for _, tt := range tests {
