@@ -8,17 +8,22 @@ package review
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
+	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
 func sampleTree() []vfs.Node {
@@ -1091,9 +1096,274 @@ func TestReview(t *testing.T) {
 				}
 			}
 		}},
+		// TestViewRendersHeaderRowsAndFooter is a smoke test over the whole render
+		// path — header, rows, footer — since none of it had any coverage.
+		{"ViewRendersHeaderRowsAndFooter", func(t *testing.T) {
+			m := newModel(siblingTree(), nil, nil, nil, nil)
+			m.height, m.width = 40, 80
+			out := ansi.Strip(m.View())
+			for _, want := range []string{"2024", "June", "03", "09", "4 folders", "1 files"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("View() missing %q:\n%s", want, out)
+				}
+			}
+		}},
+		// TestViewShowsHelpWhenToggled covers the [?] full-screen key reference.
+		{"ViewShowsHelpWhenToggled", func(t *testing.T) {
+			m := newModel(sampleTree(), nil, nil, nil, nil)
+			m.height, m.width = 40, 80
+			m.showHelp = true
+			out := ansi.Strip(m.View())
+			for _, want := range []string{"Moving", "Naming", "Reshaping", "Leaving", "merge the selected folders"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("helpView missing %q:\n%s", want, out)
+				}
+			}
+		}},
+		// TestFooterShowsRenameSuggestions covers the editing branch of footer():
+		// the rename prompt, the suggestion list with the picked row highlighted,
+		// and the top-match tab hint.
+		{"FooterShowsRenameSuggestions", func(t *testing.T) {
+			m := newModel(sampleTree(), nil, nil, nil, nil)
+			m.height, m.width = 40, 80
+			m.editing = true
+			m.input = "Go"
+			m.suggestions = []location.Suggestion{{Label: "Goa, India", Value: "Goa"}, {Label: "Gondia, India", Value: "Gondia"}}
+			m.suggCursor = 1
+			out := ansi.Strip(m.footer())
+			for _, want := range []string{"Rename", "Goa, India", "Gondia, India", "pick", "wider", "search"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("footer() missing %q:\n%s", want, out)
+				}
+			}
+		}},
+		// TestFooterShowsPreviewSpinnerAndError cover the previewing and
+		// previewErr branches of footer(), neither of which had any coverage.
+		{"FooterShowsPreviewSpinnerAndError", func(t *testing.T) {
+			m := newModel(sampleTree(), nil, nil, nil, nil)
+			m.height, m.width = 40, 80
+			m.previewing = true
+			if out := ansi.Strip(m.footer()); !strings.Contains(out, "Copying preview") {
+				t.Errorf("footer() during preview missing spinner text:\n%s", out)
+			}
+
+			m.previewing = false
+			m.previewErr = fmt.Errorf("disk full")
+			if out := ansi.Strip(m.footer()); !strings.Contains(out, "Preview failed") || !strings.Contains(out, "disk full") {
+				t.Errorf("footer() with previewErr missing failure text:\n%s", out)
+			}
+		}},
+		// TestOutcomeReportsScreenState covers the three-way Outcome() contract:
+		// a real screen reports its confirmed/err state, anything else reports
+		// ok=false rather than panicking on the type assertion.
+		{"OutcomeReportsScreenState", func(t *testing.T) {
+			confirmed, err, ok := Outcome(screen{confirmed: true, finalErr: nil})
+			if !confirmed || err != nil || !ok {
+				t.Errorf("confirmed screen: got (%v, %v, %v), want (true, nil, true)", confirmed, err, ok)
+			}
+
+			wantErr := fmt.Errorf("boom")
+			confirmed, err, ok = Outcome(screen{confirmed: false, finalErr: wantErr})
+			if confirmed || err != wantErr || !ok {
+				t.Errorf("failed screen: got (%v, %v, %v), want (false, %v, true)", confirmed, err, ok, wantErr)
+			}
+
+			confirmed, err, ok = Outcome(newModel(sampleTree(), nil, nil, nil, nil))
+			if confirmed || err != nil || ok {
+				t.Errorf("non-screen model: got (%v, %v, %v), want (false, nil, false)", confirmed, err, ok)
+			}
+		}},
+		// TestScreenFinalizesOnConfirm drives the embedded review's whole
+		// save-and-exit path: pressing [c] marks it done+confirmed, screen.Update
+		// kicks off finalize() (vfs.Confirm against the real DB), and the
+		// resulting finalizeMsg carries no error when the write succeeds.
+		{"ScreenFinalizesOnConfirm", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+			insertVFSEntry(t, d, 1, "/src/a.jpg", "2024/June/a.jpg")
+
+			s := Screen(ctx, Options{DB: d, Tree: sampleTree(), Log: logger.NewNoopLogger(), OutputDir: t.TempDir()})
+
+			next, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+			sm := next.(screen)
+			if !sm.finalizing {
+				t.Fatal("expected finalizing = true right after [c]")
+			}
+			if cmd == nil {
+				t.Fatal("expected a non-nil finalize Cmd")
+			}
+			if !strings.Contains(ansi.Strip(sm.View()), "Saving your plan") {
+				t.Errorf("View() while finalizing = %q, want the saving banner", sm.View())
+			}
+
+			msg := cmd()
+			final, _ := sm.Update(msg)
+			fs := final.(screen)
+			if fs.finalErr != nil {
+				t.Errorf("finalErr = %v, want nil", fs.finalErr)
+			}
+			confirmed, err, ok := Outcome(fs)
+			if !ok || !confirmed || err != nil {
+				t.Errorf("Outcome(fs) = (%v, %v, %v), want (true, nil, true)", confirmed, err, ok)
+			}
+		}},
+		// TestScreenFinalizeReportsConfirmError covers the failure branch: no
+		// proposal at all in the DB means vfs.Confirm returns ErrNoProposal, and
+		// that error must surface through Outcome rather than being swallowed.
+		{"ScreenFinalizeReportsConfirmError", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t) // no virtual_fs_entries rows at all
+
+			s := Screen(ctx, Options{DB: d, Tree: sampleTree(), Log: logger.NewNoopLogger(), OutputDir: t.TempDir()})
+			next, _ := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+			sm := next.(screen)
+
+			final, _ := sm.Update(finalizeMsg{err: vfs.ErrNoProposal})
+			fs := final.(screen)
+			// confirmed reflects that the reviewer chose to save (pressed [c]),
+			// set the moment finalizing starts — independent of whether the write
+			// itself then succeeds. finalErr is what actually failed.
+			confirmed, err, ok := Outcome(fs)
+			if !ok || !confirmed || err != vfs.ErrNoProposal {
+				t.Errorf("Outcome(fs) = (%v, %v, %v), want (true, %v, true)", confirmed, err, ok, vfs.ErrNoProposal)
+			}
+		}},
+		// TestScreenQuitWithoutConfirmSwitchesAwayWithoutFinalizing covers [q]:
+		// the shell should switch away (tui.Switch(nil)) without ever running
+		// vfs.Confirm, since nothing was approved.
+		{"ScreenQuitWithoutConfirmSwitchesAwayWithoutFinalizing", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+			s := Screen(ctx, Options{DB: d, Tree: sampleTree(), Log: logger.NewNoopLogger(), OutputDir: t.TempDir()})
+
+			next, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+			sm := next.(screen)
+			if sm.finalizing {
+				t.Error("expected finalizing = false after quitting without edits")
+			}
+			if cmd == nil {
+				t.Fatal("expected the tui.Switch(nil) Cmd")
+			}
+			confirmed, _, ok := Outcome(sm)
+			if !ok || confirmed {
+				t.Errorf("Outcome(sm) after quit = (%v, _, %v), want (false, true)", confirmed, ok)
+			}
+		}},
+		// TestConfirmAllWritesProposalWithoutTUI covers `review --yes`: the
+		// non-interactive path writes the tree exactly as proposed.
+		{"ConfirmAllWritesProposalWithoutTUI", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+			insertVFSEntry(t, d, 1, "/src/a.jpg", "2024/June/a.jpg")
+
+			if err := ConfirmAll(ctx, Options{DB: d, Tree: sampleTree(), Log: logger.NewNoopLogger(), OutputDir: t.TempDir()}); err != nil {
+				t.Fatalf("ConfirmAll: %v", err)
+			}
+
+			var status string
+			if err := d.SQL.GetContext(ctx, &status, `SELECT status FROM virtual_fs_entries WHERE file_id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if status != "APPROVED" {
+				t.Errorf("status = %q, want APPROVED", status)
+			}
+		}},
+		// TestPeekCmdCopiesFilesAndCachesBySignature drives peekCmd end to end
+		// against a real DB: it should copy the node's files to a temp dir and
+		// report a msg the caller can cache under filesSignature.
+		{"PeekCmdCopiesFilesAndCachesBySignature", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+			// peekCmd copies real bytes from source_path, so the fixture's source
+			// file has to actually exist on disk
+			srcFile := filepath.Join(t.TempDir(), "a.jpg")
+			if err := os.WriteFile(srcFile, []byte("hello"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			insertVFSEntry(t, d, 1, srcFile, "2024/June/a.jpg")
+
+			node := &vfs.Node{ID: "2024/June"}
+			msg := peekCmd(ctx, d, node, map[string]string{})()
+			pm := msg.(previewDoneMsg)
+			if pm.err != nil {
+				t.Fatalf("peekCmd: %v", pm.err)
+			}
+			defer os.RemoveAll(pm.dir)
+			if _, err := os.Stat(filepath.Join(pm.dir, "a.jpg")); err != nil {
+				t.Errorf("expected a.jpg copied into %s: %v", pm.dir, err)
+			}
+			if pm.signature != filesSignature([]string{srcFile}) {
+				t.Errorf("signature = %q, want %q", pm.signature, filesSignature([]string{srcFile}))
+			}
+		}},
+		// TestPeekCmdReusesCachedCopy covers the cache-hit branch: a signature
+		// already present in the cache map short-circuits the copy entirely.
+		{"PeekCmdReusesCachedCopy", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+			srcFile := filepath.Join(t.TempDir(), "a.jpg")
+			if err := os.WriteFile(srcFile, []byte("hello"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			insertVFSEntry(t, d, 1, srcFile, "2024/June/a.jpg")
+
+			cachedDir := t.TempDir()
+			cache := map[string]string{filesSignature([]string{srcFile}): cachedDir}
+			node := &vfs.Node{ID: "2024/June"}
+			msg := peekCmd(ctx, d, node, cache)()
+			pm := msg.(previewDoneMsg)
+			if pm.err != nil {
+				t.Fatalf("peekCmd: %v", pm.err)
+			}
+			if pm.dir != cachedDir {
+				t.Errorf("dir = %q, want the cached %q (no fresh copy)", pm.dir, cachedDir)
+			}
+		}},
+		// TestPeekCmdReportsNoFilesUnderNode covers the empty-node error path.
+		{"PeekCmdReportsNoFilesUnderNode", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+			node := &vfs.Node{ID: "nowhere"}
+			msg := peekCmd(ctx, d, node, map[string]string{})()
+			pm := msg.(previewDoneMsg)
+			if pm.err == nil {
+				t.Fatal("expected an error for a node with no files")
+			}
+		}},
+		// TestConfirmAllReportsNoProposal covers the error path: an empty DB has
+		// nothing to confirm, and that must come back as an error, not silently
+		// succeed.
+		{"ConfirmAllReportsNoProposal", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+			err := ConfirmAll(ctx, Options{DB: d, Tree: sampleTree(), Log: logger.NewNoopLogger(), OutputDir: t.TempDir()})
+			if err == nil {
+				t.Fatal("expected an error confirming an empty proposal")
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
+	}
+}
+
+// insertVFSEntry inserts one file_registry row and its matching
+// virtual_fs_entries proposal row — the minimal fixture vfs.Confirm needs to
+// recognize a tree's node IDs as valid target directories.
+func insertVFSEntry(t *testing.T, d *db.DB, fileID int64, sourcePath, targetPath string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
+			file_extension, media_type, discovered_at, last_seen_at)
+		VALUES (?, '/src', 'a.jpg', 1024, '2024-06-01T10:00:00.000000000Z', '.jpg', 'IMAGE',
+			'2024-06-01T10:00:00.000000000Z', '2024-06-01T10:00:00.000000000Z')`, fileID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
+		VALUES (?, ?, ?, 'PROPOSED')`, fileID, sourcePath, targetPath); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -928,7 +928,7 @@ func (m ConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				*m.Value = true
 			}
 			return m, tea.Quit
-		case "n", "escape":
+		case "n", "esc":
 			if m.Value != nil {
 				*m.Value = false
 			}
