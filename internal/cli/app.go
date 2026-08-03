@@ -8,15 +8,19 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
+	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -44,17 +48,36 @@ func (a *app) newDeps(onProgress func(phase string, done, total int64)) *install
 	})
 }
 
-// workflowDeps gates each pipeline phase on its own dependency and syncs anchors
-// as soon as the resolver exists. Requires a.Deps already built and started.
+// workflowDeps gates each pipeline phase on its own dependency. Read through
+// closures, not method values: the TUI path builds the workflow before the
+// Coordinator exists, so a.Deps has to be resolved when a phase actually asks.
 func (a *app) workflowDeps() workflow.Deps {
 	return workflow.Deps{
 		Exiftool: func() (string, error) {
-			return a.Deps.AwaitExiftool()
+			return a.Deps.Exiftool()
 		},
 		Location: func() (*location.Resolver, error) {
-			return a.Deps.AwaitLocation()
+			return a.Deps.Location()
 		},
 	}
+}
+
+// lockOutput takes the exclusive output-dir lock every command that touches
+// the database needs. A lock held by another process is the one error users
+// hit routinely, so it gets the full styled explanation rather than a wrapped
+// one-liner; pkg/lock reports the fact, this decides how it reads.
+func (a *app) lockOutput() (*lock.Lock, error) {
+	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
+	var running *lock.AlreadyRunningError
+	if errors.As(err, &running) {
+		return nil, fmt.Errorf("%s", tui.Bad.Render(fmt.Sprintf("Another wandersort process is already running (PID %d).", running.PID))+"\n\n"+
+			tui.FaintTxt.Render("Only one scan or review can use the same output directory at a time.")+"\n"+
+			tui.FaintTxt.Render("Stop the other process, then try again."))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("acquire lock: %w", err)
+	}
+	return l, nil
 }
 
 func (a *app) initAppDB(ctx context.Context) error {

@@ -91,11 +91,6 @@ func (a *app) runConfig(cmd *cobra.Command) error {
 // reports "nothing saved" instead of a bogus "config saved".
 var errConfigCancelled = errors.New("config cancelled")
 
-// errGeonamesPending marks the location database as still downloading. The
-// town step holds on it (tui.Field.Await) while the download bar under the
-// banner shows how far along it is.
-var errGeonamesPending = errors.New("location database is still downloading")
-
 // runConfigTUI runs the settings wizard as one alt-screen program, downloading
 // the location database in the background — no install screen here, that's scan's job.
 func (a *app) runConfigTUI(ctx context.Context) error {
@@ -104,15 +99,11 @@ func (a *app) runConfigTUI(ctx context.Context) error {
 	// still captures everything.
 	a.Log = logger.NewTUI(a.Config.LogLevel, a.Config.LogFile, func(logger.Event) {})
 
-	// Non-blocking peek: errGeonamesPending while still downloading, otherwise
-	// the resolved value — LocationReady() already gates Location() from blocking.
+	// Non-blocking peek on every keystroke: install.ErrPending while the
+	// database is still downloading, the resolver or a permanent failure once
+	// it isn't. The wizard must never block on it — see townValidator.
 	var coordinator *install.Coordinator
-	geonames := func() (*location.Resolver, error) {
-		if !coordinator.LocationReady() {
-			return nil, errGeonamesPending
-		}
-		return coordinator.Location()
-	}
+	geonames := func() (*location.Resolver, error) { return coordinator.LocationNow() }
 
 	fields, save := a.buildConfigForm(ctx, geonames)
 	prog := tea.NewProgram(tui.NewFormModel(fields, save), tea.WithAltScreen(), tea.WithOutput(os.Stderr))
@@ -173,15 +164,13 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 		}
 		resolver, err := geonames()
 		if err != nil {
-			if errors.Is(err, errGeonamesPending) {
+			if errors.Is(err, install.ErrPending) {
 				return err
 			}
 			return nil
 		}
-		if _, err := canonicalTown(ctx, resolver, s); err != nil {
-			return err
-		}
-		return nil
+		_, err = resolver.Canonical(ctx, s)
+		return err
 	}
 
 	// same rule at save time: the geonames spelling when it can give one,
@@ -195,7 +184,7 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 		if err != nil {
 			return typed // pending or broken geonames — never drop what was typed
 		}
-		if name, err := canonicalTown(ctx, resolver, typed); err == nil {
+		if name, err := resolver.Canonical(ctx, typed); err == nil {
 			return name
 		}
 		return "" // near-miss the validator would have rejected ("did you mean")
@@ -255,17 +244,7 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 		if len(typed) < 2 || err != nil {
 			return nil
 		}
-		matches, err := resolver.SearchByName(ctx, typed, 6)
-		if err != nil {
-			return nil
-		}
-		// FullName, not the bare city: six identical "Springfield"s are
-		// unpickable. The saved town keeps that form; ResolveByName round-trips it.
-		names := make([]string, len(matches))
-		for i, m := range matches {
-			names[i] = m.FullName
-		}
-		return names
+		return resolver.SuggestNames(ctx, typed, 6)
 	}
 
 	rulesField := &tui.Field{
@@ -308,7 +287,7 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 			Description: "The everyday places you shoot from, and how their photos are foldered.",
 			// Await blocks the form until the location database finishes downloading.
 			Await: func() string {
-				if _, err := geonames(); errors.Is(err, errGeonamesPending) {
+				if _, err := geonames(); errors.Is(err, install.ErrPending) {
 					return "Waiting for the location database to finish downloading…"
 				}
 				return ""
@@ -605,50 +584,4 @@ func toMap(items []string) map[string]bool {
 		m[item] = true
 	}
 	return m
-}
-
-// canonicalTown returns the geonames exact spelling of a typed town name.
-func canonicalTown(ctx context.Context, resolver *location.Resolver, typed string) (string, error) {
-	typed = strings.TrimSpace(typed)
-	if typed == "" || resolver == nil {
-		return "", fmt.Errorf("no town")
-	}
-	matches, err := resolver.SearchByName(ctx, typed, 8)
-	if err != nil || len(matches) == 0 {
-		return typed, nil
-	}
-	if name, ok := exactMatch(matches, typed); ok {
-		return name, nil
-	}
-	return "", fmt.Errorf("no exact match for %q (did you mean %s?)", typed, matches[0].Name)
-}
-
-// exactMatch returns the geonames own spelling when one of matches is a
-// case-insensitive match for typed
-func exactMatch(matches []location.PlaceMatch, typed string) (string, bool) {
-	typed = strings.TrimSpace(typed)
-	for _, m := range matches {
-		if strings.EqualFold(m.FullName, typed) {
-			return canonicalNameOf(m), true
-		}
-	}
-	for _, m := range matches {
-		if strings.EqualFold(m.DisplayName, typed) || strings.EqualFold(m.Name, typed) {
-			return canonicalNameOf(m), true
-		}
-	}
-	return "", false
-}
-
-// canonicalNameOf is the form an anchor is saved as: the full name when the
-// geonames gave one, else whatever shorter form it has.
-func canonicalNameOf(m location.PlaceMatch) string {
-	switch {
-	case m.FullName != "":
-		return m.FullName
-	case m.DisplayName != "":
-		return m.DisplayName
-	default:
-		return m.Name
-	}
 }

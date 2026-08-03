@@ -11,11 +11,9 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/spf13/cobra"
 )
@@ -53,9 +51,9 @@ func (a *app) runReset(cmd *cobra.Command) error {
 		}
 	}
 
-	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
+	l, err := a.lockOutput()
 	if err != nil {
-		return fmt.Errorf("acquire lock: %w", err)
+		return err
 	}
 	defer l.Unlock()
 

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
@@ -57,7 +58,7 @@ func TestConfig(t *testing.T) {
 			cfg.CollapseLevels = false
 			a := &app{Config: cfg}
 
-			fields, save := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, errGeonamesPending })
+			fields, save := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
 
 			// The two folder questions belong to the saved-place step, after the towns:
 			// their examples read off the town typed one field earlier.
@@ -154,7 +155,7 @@ func TestConfig(t *testing.T) {
 		// TestTownFieldsRoundTripARealTown exercises the real geonames path that
 		// every other case in this file leaves untouched by passing a nil
 		// resolver: with a ready resolver and geonames() reporting no error,
-		// suggestTown/townValidator/canonicalTown must round-trip a real
+		// suggestTown/townValidator/Canonical must round-trip a real
 		// town through SearchByName/exactMatch to its canonical geonames spelling.
 		{"TownFieldsRoundTripARealTown", func(t *testing.T) {
 			// Resolve against the real machine's ~/.wandersort/location.db
@@ -200,18 +201,18 @@ func TestConfig(t *testing.T) {
 			if err := homeField.Validator("Nowhereville Not A Real Town"); err != nil {
 				t.Errorf("unknown town must validate as typed, got %v", err)
 			}
-			if got, err := canonicalTown(context.Background(), resolver, "Nowhereville Not A Real Town"); err != nil || got != "Nowhereville Not A Real Town" {
-				t.Errorf("canonicalTown(unknown) = %q, %v, want the typed name back", got, err)
+			if got, err := resolver.Canonical(context.Background(), "Nowhereville Not A Real Town"); err != nil || got != "Nowhereville Not A Real Town" {
+				t.Errorf("Canonical(unknown) = %q, %v, want the typed name back", got, err)
 			}
 
-			// canonicalTown resolves the typed spelling to the geonames own — the
-			// full "city, state, country" form, per canonicalNameOf.
-			got, err := canonicalTown(context.Background(), resolver, "indore")
+			// Canonical resolves the typed spelling to the geonames own — the
+			// full "city, state, country" form.
+			got, err := resolver.Canonical(context.Background(), "indore")
 			if err != nil {
-				t.Fatalf("canonicalTown(%q): %v", "indore", err)
+				t.Fatalf("Canonical(%q): %v", "indore", err)
 			}
 			if want := "Indore, Madhya Pradesh, India"; got != want {
-				t.Errorf("canonicalTown(%q) = %q, want %q", "indore", got, want)
+				t.Errorf("Canonical(%q) = %q, want %q", "indore", got, want)
 			}
 
 			*homeField.Value = "indore"
@@ -290,42 +291,5 @@ func TestConfig(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
-	}
-}
-
-// A name shared by several cities is offered — and must be saved — with its
-// qualifier: the bare city resolves to whichever row the DB returns first,
-// which is how a home town in India became one in Pakistan.
-func TestExactMatch(t *testing.T) {
-	simple := []location.PlaceMatch{
-		{Name: "Delhi", DisplayName: "Delhi"},
-		{Name: "Dehradun", DisplayName: "Dehradun"},
-	}
-	qualified := []location.PlaceMatch{
-		{Name: "Hyderabad", DisplayName: "Hyderabad, Pakistan"},
-		{Name: "Hyderabad", DisplayName: "Hyderabad, India"},
-	}
-
-	tests := []struct {
-		name    string
-		matches []location.PlaceMatch
-		typed   string
-		want    string
-		wantOK  bool
-	}{
-		{"case-insensitive returns canonical spelling", simple, "delhi", "Delhi", true},
-		{"prefix is not an exact match", simple, "Del", "", false},
-		{"qualified typed name keeps its qualifier", qualified, "Hyderabad, India", "Hyderabad, India", true},
-		// Typing the bare name still matches, and still saves a qualified
-		// form — an unqualified anchor can't be resolved back to one row.
-		{"bare name resolves to first match's qualified name", qualified, "hyderabad", "Hyderabad, Pakistan", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := exactMatch(tt.matches, tt.typed)
-			if ok != tt.wantOK || got != tt.want {
-				t.Errorf("exactMatch(%q) = (%q, %v), want (%q, %v)", tt.typed, got, ok, tt.want, tt.wantOK)
-			}
-		})
 	}
 }

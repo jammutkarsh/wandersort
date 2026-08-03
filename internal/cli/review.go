@@ -18,7 +18,6 @@ import (
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -53,9 +52,9 @@ func (a *app) runReview(cmd *cobra.Command) error {
 		return fmt.Errorf("no database found — run 'wandersort scan' first")
 	}
 
-	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
+	l, err := a.lockOutput()
 	if err != nil {
-		return fmt.Errorf("acquire lock: %w", err)
+		return err
 	}
 	defer l.Unlock()
 
@@ -91,12 +90,8 @@ func (a *app) runReview(cmd *cobra.Command) error {
 		if err != nil {
 			return fmt.Errorf("dependencies: %w", err)
 		}
-		cfg := vfs.ConfigFor(a.Config)
-		g, _ := a.Config.Load()
-		resolver.BuildAnchors(ctx, g.SavedPlaces)
-		cfg.Anchors = resolver.Anchors
-		a.Log.Info("Rebuilding folder proposal", "rules", cfg.Rules, logger.UserKey, true)
-		if _, err := vfs.New(a.AppDB, resolver, a.Log, cfg).Run(ctx); err != nil {
+		a.Log.Info("Rebuilding folder proposal", logger.UserKey, true)
+		if _, err := vfs.Propose(ctx, a.AppDB, resolver, a.Config, a.Log); err != nil {
 			return fmt.Errorf("rebuild proposal: %w", err)
 		}
 	}

@@ -19,7 +19,6 @@ import (
 
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
-	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/spf13/cobra"
@@ -74,9 +73,9 @@ func (a *app) runScanPlain(paths []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
+	l, err := a.lockOutput()
 	if err != nil {
-		return fmt.Errorf("acquire lock: %w", err)
+		return err
 	}
 	defer l.Unlock()
 
@@ -113,10 +112,10 @@ func (a *app) runScanTUI(paths []string) error {
 	if err := a.initAppDB(ctx); err != nil {
 		return err
 	}
-	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
+	l, err := a.lockOutput()
 	if err != nil {
 		a.closeDBs()
-		return fmt.Errorf("acquire lock: %w", err)
+		return err
 	}
 	defer a.closeDBs()
 	defer l.Unlock()
