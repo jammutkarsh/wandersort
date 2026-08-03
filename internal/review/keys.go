@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jammutkarsh/wandersort/pkg/location"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -54,7 +55,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.editing = false
 			m.suggestions = nil
-			m.applyRename(folderName(m.input))
+			m.applyRename(path.SanitizeSegment(m.input))
 		case tea.KeyEsc:
 			m.editing = false
 			m.suggestions = nil

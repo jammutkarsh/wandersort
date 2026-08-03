@@ -16,11 +16,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
-	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
+	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 // Options is everything the review TUI needs. Resolver may be nil — rename
@@ -51,7 +51,7 @@ func Run(ctx context.Context, o Options) error {
 	}
 	// review is the last look before a plan is approved — finding out mid-move
 	// that the output volume is too small is far worse than being told here
-	workflow.CheckOutputSpace(ctx, o.DB, o.Log, o.OutputDir)
+	volume.CheckOutputSpace(ctx, o.DB, o.Log, o.OutputDir)
 	return nil
 }
 
@@ -62,7 +62,7 @@ func ConfirmAll(ctx context.Context, o Options) error {
 	if err := vfs.Confirm(ctx, o.DB, o.Tree); err != nil {
 		return err
 	}
-	workflow.CheckOutputSpace(ctx, o.DB, o.Log, o.OutputDir)
+	volume.CheckOutputSpace(ctx, o.DB, o.Log, o.OutputDir)
 	return nil
 }
 
@@ -152,7 +152,7 @@ type Model struct {
 
 	// Rename autocomplete. Both sources are fetched up front and filtered in
 	// memory per keystroke, so typing never hits the DB.
-	suggestions []nameSuggestion
+	suggestions []location.Suggestion
 	suggCursor  int                  // ↑/↓-picked suggestion; -1 = none picked
 	geoCands    []location.Candidate // refetched only by [r] and ctrl+e
 	labels      []string             // confirmed names, loaded once at startup
@@ -198,13 +198,7 @@ func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, resolver *l
 	}
 	// user_labels only changes on Confirm, after this TUI exits, so the set is
 	// fixed for the session — load it once instead of querying per keystroke.
-	// Failure just means no "used before" suggestions.
-	if database != nil {
-		if err := database.SQL.SelectContext(ctx, &m.labels,
-			`SELECT DISTINCT label FROM user_labels ORDER BY label`); err != nil && log != nil {
-			log.Warn("Could not load confirmed labels for rename suggestions", "error", err)
-		}
-	}
+	m.labels = vfs.Labels(ctx, database, log)
 	return m
 }
 

@@ -86,12 +86,12 @@ func (m Model) footer() string {
 			// one highlighted, and the top match — what [tab] fills in — says so
 			line := "    "
 			if i == m.suggCursor {
-				line += tui.Selected.Render(s.label)
+				line += tui.Selected.Render(s.Label)
 			} else {
-				line += tui.FaintTxt.Render("· ") + tui.DimText.Render(s.label)
+				line += tui.FaintTxt.Render("· ") + tui.DimText.Render(s.Label)
 			}
-			if s.detail != "" {
-				line += " " + tui.FaintTxt.Render("("+s.detail+")")
+			if s.Detail != "" {
+				line += " " + tui.FaintTxt.Render("("+s.Detail+")")
 			}
 			switch {
 			case i == m.suggCursor:

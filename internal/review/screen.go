@@ -12,10 +12,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
-	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
+	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 // screen embeds the review TUI as an app-shell screen so scan can swap into
@@ -69,7 +69,7 @@ func (s screen) finalize() tea.Cmd {
 		if err := vfs.Confirm(s.ctx, s.db, s.inner.tree); err != nil {
 			return finalizeMsg{err: err}
 		}
-		workflow.CheckOutputSpace(s.ctx, s.db, s.log, s.outputDir)
+		volume.CheckOutputSpace(s.ctx, s.db, s.log, s.outputDir)
 		return finalizeMsg{}
 	}
 }
