@@ -5,8 +5,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package lock is wandersort's file locking for scan/review coordination:
-// acquire mechanics plus domain filenames and the "already running" message.
-// A real OS advisory lock (tryFlock), not a PID file — see tryLock.
+// acquire mechanics plus the domain lock filenames. A real OS advisory lock
+// (tryFlock), not a PID file — see tryLock.
 package lock
 
 import (
@@ -18,8 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
 const (
@@ -52,13 +50,14 @@ func (l *Lock) Unlock() {
 }
 
 // AcquireOutput takes the exclusive output-dir lock used by scan and review.
-// It renders a helpful message when another live wandersort process holds it.
+// A held lock comes back as *AlreadyRunningError, so the caller can style the
+// message however it presents errors — this package renders nothing.
 func AcquireOutput(dir string) (*Lock, error) {
 	lockPath := filepath.Join(dir, OutputFileName)
 	l, err := acquire(context.Background(), dir, OutputFileName, false)
 	if errors.Is(err, ErrHeld) {
 		pid, _ := readLockPID(lockPath)
-		return nil, alreadyRunningError(pid)
+		return nil, &AlreadyRunningError{PID: pid}
 	}
 	return l, err
 }
@@ -70,14 +69,16 @@ func AcquireInstall(ctx context.Context, dir string, block bool) (*Lock, error) 
 	return acquire(ctx, dir, InstallFileName, block)
 }
 
-// alreadyRunningError renders the user-facing message for a held output-dir lock.
-func alreadyRunningError(pid int) error {
-	msg := tui.Bad.Render(fmt.Sprintf("Another wandersort process is already running (PID %d).", pid)) + "\n\n" +
-		tui.FaintTxt.Render("Only one scan or review can use the same output directory at a time.") + "\n" +
-		tui.FaintTxt.Render("Stop the other process, then try again.")
+// AlreadyRunningError reports that a live wandersort process already holds the
+// output-dir lock. It carries the holder's PID rather than a rendered message:
+// styling belongs to whatever is presenting the error.
+type AlreadyRunningError struct{ PID int }
 
-	return fmt.Errorf("%s", msg)
+func (e *AlreadyRunningError) Error() string {
+	return fmt.Sprintf("another wandersort process is already running (PID %d)", e.PID)
 }
+
+func (e *AlreadyRunningError) Unwrap() error { return ErrHeld }
 
 // acquire opens (creating if needed) dir/name and takes an OS advisory lock
 // on it. When block is true it retries a non-blocking attempt until it
