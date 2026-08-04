@@ -31,17 +31,34 @@ type Options struct {
 	Resolver  *location.Resolver
 	Log       logger.Logger
 	OutputDir string // for the post-approve free-space check
+	// Load, when Tree is empty, lets Run show the TUI immediately behind a
+	// loading spinner instead of blocking the terminal on the location
+	// resolver, --rebuild's vfs.Propose, and vfs.BuildTree before the program
+	// ever appears.
+	Load func(ctx context.Context) ([]vfs.Node, *location.Resolver, error)
 }
 
 // Run drives the standalone full-screen review to completion and writes the
 // approved plan. Returns an error if the reviewer quit without saving.
 func Run(ctx context.Context, o Options) error {
-	m, err := tea.NewProgram(newModel(o.Tree, ctx, o.DB, o.Resolver, o.Log),
-		tea.WithOutput(os.Stderr), tea.WithAltScreen()).Run()
+	var first tea.Model
+	if len(o.Tree) == 0 && o.Load != nil {
+		first = newLoadingScreen(ctx, o)
+	} else {
+		first = newModel(o.Tree, ctx, o.DB, o.Resolver, o.Log)
+	}
+	m, err := tea.NewProgram(tui.NewShell(first), tea.WithOutput(os.Stderr), tea.WithAltScreen()).Run()
 	if err != nil {
 		return fmt.Errorf("review ui: %w", err)
 	}
-	rm := m.(Model)
+	cur := m.(tui.Shell).Current()
+	if ls, ok := cur.(loadingScreen); ok {
+		if ls.err != nil {
+			return ls.err
+		}
+		return fmt.Errorf("review cancelled — nothing changed")
+	}
+	rm := cur.(Model)
 	defer cleanupPreviewDirs(rm.previewDirs)
 	if !rm.confirmed {
 		return fmt.Errorf("review cancelled — nothing changed")
