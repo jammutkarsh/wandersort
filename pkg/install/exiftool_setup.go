@@ -151,13 +151,13 @@ func downloadAndExtractExiftool(ctx context.Context, binDir string, log logger.L
 	archiveName := filepath.Join(binDir, fileMeta.Name)
 	url := filesBaseURL + "/" + fileMeta.Name
 
-	log.Info("Downloading ExifTool…", logger.UserKey, true, "dir", path.New().RelativeToHome(binDir), "url", url, "os", runtime.GOOS)
+	log.Info("downloading exiftool", "dir", path.New().RelativeToHome(binDir), "url", url, "os", runtime.GOOS)
 
 	// Reuse a cached archive only if its checksum still matches — a mismatch
 	// means either corruption or tampering, so re-download either way
 	if _, err := os.Stat(archiveName); err == nil {
 		if sum, err := fileSHA256(archiveName); err == nil && sum == fileMeta.SHA256 {
-			log.Info("exiftool checksum verified", logger.UserKey, true, "path", archiveName, "hash", sum)
+			log.Info("exiftool checksum verified", "path", archiveName, "hash", sum)
 			log.Info("using cached archive", "path", archiveName)
 		} else {
 			log.Warn("cached archive checksum mismatch; re-downloading", "path", archiveName)
@@ -166,13 +166,15 @@ func downloadAndExtractExiftool(ctx context.Context, binDir string, log logger.L
 	}
 
 	if _, err := os.Stat(archiveName); err != nil {
-		log.Info("Downloading exiftool", logger.UserKey, true, logger.PhaseKey, "exiftool", logger.EventKey, "start")
-		// Download verifies the digest and removes the file on mismatch
+		// UserKey lives on the InstallProgressMsg row (viewDownloads) alone —
+		// it already shows "downloading -> ✓ done" in place; a matching log
+		// line here would just be the same fact printed a second time, as a
+		// note that can never update once written.
 		if err := downloadFile(ctx, log, archiveName, url, fileMeta.SHA256, onProgress); err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
-		log.Info("exiftool downloaded", logger.UserKey, true, logger.PhaseKey, "exiftool", logger.EventKey, "done")
-		log.Info("exiftool checksum verified", logger.UserKey, true, "path", archiveName, "hash", fileMeta.SHA256)
+		log.Info("exiftool downloaded")
+		log.Info("exiftool checksum verified", "path", archiveName, "hash", fileMeta.SHA256)
 	}
 
 	if err := extractTarGz(archiveName, binDir); err != nil {
