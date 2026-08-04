@@ -8,7 +8,6 @@ package tui
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -227,13 +226,6 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.suggCursor--
 				}
 				return m, nil
-			}
-		}
-
-		// digits jump to the step with that number in the stack
-		if !m.inputFocused() {
-			if n, ok := optionNumber(msg.String(), len(m.Fields)); ok {
-				return m.jumpTo(n)
 			}
 		}
 
@@ -518,22 +510,8 @@ func (m FormModel) awaitReason() string {
 	return ""
 }
 
-// optionNumber maps a "1".."9" keypress to a zero-based option index, false if
-// the key isn't a digit or points past the last option.
-func optionNumber(key string, count int) (int, bool) {
-	if len(key) != 1 || key[0] < '1' || key[0] > '9' {
-		return 0, false
-	}
-	n, _ := strconv.Atoi(key)
-	if n > count {
-		return 0, false
-	}
-	return n - 1, true
-}
-
 // collapsedRow renders a one-line summary of a step: done steps show their
-// answer, pending steps are dim placeholders. The leading number is the
-// step's jump target — press it from anywhere to land here.
+// answer, pending steps are dim placeholders.
 func (m FormModel) collapsedRow(f *Field, i int, done bool) string {
 	num := fmt.Sprintf("%d) ", i+1)
 	if !done {
@@ -671,8 +649,7 @@ func (m FormModel) controlView(f *Field, label string) string {
 
 // optionRow renders one pickable option as `marker label`. Options are
 // navigated with ↑/↓ (and space/y/n to pick), never numbered — the numbers on
-// screen belong to the step list, so jumping between questions and picking an
-// option never compete for the same keys.
+// screen are step ordinals, not pickable keys.
 func optionRow(label string, on, cursor bool) string {
 	marker := FaintTxt.Render("○ ")
 	if on {
@@ -774,9 +751,6 @@ func (m FormModel) renderFooter() string {
 			hints = append([]string{KeyHint("↑↓", "pick"), KeyHint("tab", "complete")}, hints...)
 		}
 	}
-	if field.Kind != FieldInput {
-		hints = append(hints, KeyHint(fmt.Sprintf("1-%d", len(m.Fields)), "jump"))
-	}
 	hints = append(hints, KeyHint("c", "save & exit"))
 	return Footer(strings.Join(hints, "   "), m.w)
 }
@@ -822,20 +796,6 @@ func (m FormModel) moveNext() (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	}
-	m.seedInput()
-	return m, textinput.Blink
-}
-
-// jumpTo moves straight to step n (0-based) — the numbered step list is what
-// makes this navigable, not the options inside a step. A no-op onto the
-// current step or an out-of-range number.
-func (m FormModel) jumpTo(n int) (tea.Model, tea.Cmd) {
-	if n < 0 || n >= len(m.Fields) || n == m.Current {
-		return m, nil
-	}
-	m.Current = n
-	m.subIdx = 0
-	m.multiCursor = 0
 	m.seedInput()
 	return m, textinput.Blink
 }

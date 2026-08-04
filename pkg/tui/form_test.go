@@ -228,10 +228,9 @@ func TestForm(t *testing.T) {
 				t.Errorf("example must not sit inside the description:\n%s", view)
 			}
 		}},
-		// The step list — not the options inside a step — is numbered, and a digit
-		// key jumps straight to that step. A digit typed into a text field is
-		// ordinary input, never a jump.
-		{"FormStepNumberingAndJump", func(t *testing.T) {
+		// The step list — not the options inside a step — is numbered. There is no
+		// digit-jump: a digit typed anywhere is ordinary input (or ignored).
+		{"FormStepNumbering", func(t *testing.T) {
 			out := ""
 			rules := map[string]bool{"date": true}
 			fields := []*Field{
@@ -249,20 +248,20 @@ func TestForm(t *testing.T) {
 				t.Errorf("option markers must not carry step-style numbers:\n%s", view)
 			}
 
-			// A digit typed into the focused text field is ordinary input, not a jump.
+			// A digit typed into the focused text field is ordinary input.
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
 			m = next.(FormModel)
 			if m.Current != 0 || out != "2" {
-				t.Errorf("digit in a text field must type, not jump: Current=%d out=%q", m.Current, out)
+				t.Errorf("digit in a text field must type: Current=%d out=%q", m.Current, out)
 			}
 
-			// "2" now jumps to step 2 once the active field isn't a text input.
+			// Past the text field, a digit no longer jumps to that step.
 			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			m = next.(FormModel)
 			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
 			m = next.(FormModel)
-			if m.Current != 0 {
-				t.Errorf("jumping back to step 1 from step 2 failed: Current=%d", m.Current)
+			if m.Current != 1 {
+				t.Errorf("digit must not jump steps: Current=%d", m.Current)
 			}
 		}},
 		// The download row shows progress under the banner and disappears when done.
