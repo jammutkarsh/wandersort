@@ -8,6 +8,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -17,6 +18,18 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
+
+// DepsErr marks a Pipeline failure that happened before any phase started —
+// downloading a dependency failed. There's no phase progress on screen worth
+// leaving up for this, and the raw error (a URL, a transport failure) reads
+// better as a plain line in the normal terminal than crammed into the
+// footer, so the scan screen quits immediately on it instead of rendering it
+// like an ordinary phase failure; the caller prints it once back outside the
+// TUI (see DepsFailure).
+type DepsErr struct{ Err error }
+
+func (e *DepsErr) Error() string { return e.Err.Error() }
+func (e *DepsErr) Unwrap() error { return e.Err }
 
 // LogEventMsg carries one logger.Event into the TUI. The scan command forwards
 // events from the TUI logger's sink into the program via program.Send.
@@ -77,6 +90,7 @@ type ScanModel struct {
 
 	done       bool  // pipeline returned (success or fail)
 	failErr    error // non-nil = pipeline failed
+	depsErr    error // non-nil = a dependency download failed; see DepsErr
 	cancelling bool  // ctrl+c pressed, waiting for the pipeline to unwind
 	finished   bool  // succeeded; showing the review prompt
 	loading    bool  // "y" pressed before the prefetch below landed
@@ -94,6 +108,11 @@ type ScanModel struct {
 // no in-program review screen was wired (ReviewNext==nil) — the caller then
 // launches review itself after the program exits.
 func (m ScanModel) WantsReview() bool { return m.gotoReview }
+
+// DepsFailure reports a dependency-download failure (see DepsErr), if that's
+// why the pipeline ended — the caller prints it in the normal terminal once
+// the TUI has exited, rather than the screen showing it in its own footer.
+func (m ScanModel) DepsFailure() error { return m.depsErr }
 
 // NewScanModel builds the scan screen. The five stages mirror the workflow
 // phases (keys match logger.PhaseKey: scan/hash/exif/score/vfs).
@@ -150,6 +169,10 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case scanDoneMsg:
 		m.done = true
 		if msg.err != nil {
+			if de, ok := errors.AsType[*DepsErr](msg.err); ok {
+				m.depsErr = de.Err
+				return m, tea.Quit
+			}
 			m.failErr = msg.err
 			m.sl.FinishRemaining(true, "")
 			if m.cancelling {
@@ -254,6 +277,15 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if e.UserFacing {
+		// install.Coordinator's "Waiting for the … download to finish…" lines
+		// (the only UserKey lines worded this way) belong on the stalled
+		// stage's own row, not buried in the notes scroll — a running stage
+		// with no bar yet (still parked on the download) otherwise looks
+		// hung instead of saying why.
+		if m.cur != "" && strings.HasPrefix(e.Message, "Waiting for ") {
+			m.sl.SetLabel(m.cur, e.Message)
+			return m, nil
+		}
 		m.notes = append(m.notes, e.Message)
 	}
 	return m, nil

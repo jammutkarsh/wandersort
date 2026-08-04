@@ -83,6 +83,16 @@ func (sl *StageList) SetWidth(w int) {
 	sl.sb.bar.Width = clamp(w-30, 20, 60)
 }
 
+// SetLabel updates a running stage's message in place, without touching its
+// state or start time — for a stage parked on something outside its own
+// progress (e.g. waiting on a background dependency download) that needs to
+// say why without resetting its elapsed clock the way a second Start would.
+func (sl *StageList) SetLabel(key, label string) {
+	if s := sl.get(key); s != nil && s.state == stateRunning {
+		s.label = label
+	}
+}
+
 func (sl *StageList) Start(key, label string) {
 	if s := sl.get(key); s != nil {
 		s.state = stateRunning
