@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS virtual_fs_entries (
 -- the whole table, so there is never more than one live batch to disambiguate
 CREATE UNIQUE INDEX IF NOT EXISTS idx_vfs_file ON virtual_fs_entries(file_id);
 CREATE INDEX IF NOT EXISTS idx_vfs_status ON virtual_fs_entries(status);
+-- lets Confirm's "SELECT DISTINCT target_path" (no WHERE) walk a sorted
+-- index instead of a full table scan + temp b-tree for DISTINCT
+CREATE INDEX IF NOT EXISTS idx_vfs_target_path ON virtual_fs_entries(target_path);
 `
 
 // user_labels remembers the folder names the reviewer typed. Written by the

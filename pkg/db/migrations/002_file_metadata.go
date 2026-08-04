@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS file_metadata (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_metadata_hash_file ON file_metadata(file_hash, file_id);
+-- file_id is the second column above, so a plain "WHERE file_id = ?" (every
+-- vfs.BuildTree/vfs.Propose/scorer join) can't seek on it — SQLite falls
+-- back to a full table scan per outer row. That's the actual gap between
+-- "the proposal is already finalized" and "review takes forever to open".
+CREATE INDEX IF NOT EXISTS idx_file_metadata_file_id ON file_metadata(file_id);
 
 CREATE TRIGGER IF NOT EXISTS trg_file_metadata_hashed
 AFTER INSERT ON file_metadata
