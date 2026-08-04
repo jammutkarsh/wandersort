@@ -19,10 +19,36 @@ import (
 
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
+	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/spf13/cobra"
 )
+
+// waitForDeps blocks until both downloadable dependencies are ready, so no
+// pipeline phase starts until they are: dependencies used to download in the
+// background while scan/hash ran, and a failed download surfaced through
+// whichever phase happened to be running when it gave up — "pipeline
+// cancelled during exif phase" for an ordinary network failure, not a
+// cancellation. Downloading first trades that overlap for a single, clear
+// failure before any file is touched.
+func waitForDeps(deps *install.Coordinator) error {
+	for _, d := range []struct {
+		name string
+		get  func() error
+	}{
+		{"exiftool", func() error { _, err := deps.Exiftool(); return err }},
+		{"location database", func() error { _, err := deps.Location(); return err }},
+	} {
+		// The full technical error (URL, transport failure) already went to
+		// the log file via the retry warnings — the user just needs to know
+		// what to do next.
+		if err := d.get(); err != nil {
+			return fmt.Errorf("failed to download the %s — retry the scan to download it again", d.name)
+		}
+	}
+	return nil
+}
 
 func (a *app) newScanCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -86,6 +112,10 @@ func (a *app) runScanPlain(paths []string) error {
 	a.Deps.Start(ctx)
 	defer a.closeDBs()
 
+	if err := waitForDeps(a.Deps); err != nil {
+		return err
+	}
+
 	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, a.workflowDeps())
 
 	scanPaths, err := wf.RunScan(paths)
@@ -102,9 +132,9 @@ func (a *app) runScanPlain(paths []string) error {
 	return nil
 }
 
-// runScanTUI is the full-screen path: the scan starts immediately, with
-// missing dependencies downloading in the background instead of behind an
-// install screen.
+// runScanTUI is the full-screen path: dependencies download first (their
+// progress renders as rows under the banner, same as before), and no pipeline
+// phase starts until both are ready.
 func (a *app) runScanTUI(paths []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -128,11 +158,13 @@ func (a *app) runScanTUI(paths []string) error {
 	a.Log = tuiLog // swapped so dependency-install milestones land in the TUI too
 	defer func() { a.Log = origLog }()
 
-	// each phase gates only on its own dependency (exif on exiftool, vfs on the
-	// location DB), so a first-ever run's walk/hash overlap the downloads
 	wf := workflow.NewWorkflow(ctx, a.AppDB, tuiLog, a.Config, a.workflowDeps())
 	first := tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {
+			// a.Deps is set below, before prog.Run() ever invokes this closure.
+			if err := waitForDeps(a.Deps); err != nil {
+				return &tui.DepsErr{Err: err}
+			}
 			_, err := wf.RunScan(paths)
 			return err
 		},
@@ -161,6 +193,11 @@ func (a *app) runScanTUI(paths []string) error {
 	}
 
 	if shell, ok := final.(tui.Shell); ok {
+		if scan, ok := shell.Current().(tui.ScanModel); ok {
+			if err := scan.DepsFailure(); err != nil {
+				return err
+			}
+		}
 		if confirmed, saveErr, ok := review.Outcome(shell.Current()); ok {
 			return a.reportReviewOutcome(confirmed, saveErr)
 		}

@@ -18,6 +18,7 @@ import (
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -68,11 +69,10 @@ func (a *app) runReview(cmd *cobra.Command) error {
 	yes, _ := cmd.Flags().GetBool(flagYes)
 
 	// --rebuild re-proposes from metadata already in the DB: a changed rules
-	// setting applies without a re-scan or re-hash
+	// setting applies without a re-scan or re-hash. vfs.Run wipes every entry,
+	// including an already-confirmed plan — the names survive in user_labels
+	// as rename completions, but dropping confirmed work needs saying out loud.
 	if rebuild {
-		// vfs.Run wipes every entry, including an already-confirmed plan. The
-		// names survive in user_labels as rename completions, but dropping
-		// confirmed work needs saying out loud.
 		approved, err := approvedCount(ctx, a.AppDB)
 		if err != nil {
 			return err
@@ -81,53 +81,55 @@ func (a *app) runReview(cmd *cobra.Command) error {
 			return fmt.Errorf("--rebuild would discard the confirmed plan (%d approved files).\n"+
 				"The names you typed are remembered as rename completions; re-run with --yes to rebuild and confirm the new plan non-interactively", approved)
 		}
-		// rebuild only re-runs the vfs phase — no exif phase, so no exiftool
-		// needed. Deps.Start(ctx) below (via the else branch) would download it
-		// for nothing; ask only for what this command needs.
-		a.Deps = a.newDeps(nil)
-		a.Deps.StartLocationOnly(ctx, nil)
+	}
+	// rebuild only re-runs the vfs phase — no exif phase, so no exiftool
+	// needed; ask only for what this command needs.
+	a.Deps = a.newDeps(nil)
+	a.Deps.StartLocationOnly(ctx, nil)
+
+	outputDir := filepath.Dir(a.Config.AppDBPath)
+
+	// load is the proposal work (location resolver, --rebuild's vfs.Propose,
+	// vfs.BuildTree) that used to run before the terminal showed anything.
+	load := func(ctx context.Context) ([]vfs.Node, *location.Resolver, error) {
 		resolver, err := a.Deps.Location()
+		if err != nil && !rebuild {
+			a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
+			err = nil
+		} else if err != nil {
+			return nil, nil, fmt.Errorf("dependencies: %w", err)
+		}
+		if rebuild {
+			a.Log.Info("Rebuilding folder proposal", logger.UserKey, true)
+			if _, err := vfs.Propose(ctx, a.AppDB, resolver, a.Config, a.Log); err != nil {
+				return nil, nil, fmt.Errorf("rebuild proposal: %w", err)
+			}
+		}
+		tree, err := vfs.BuildTree(ctx, a.AppDB)
 		if err != nil {
-			return fmt.Errorf("dependencies: %w", err)
+			return nil, nil, err
 		}
-		a.Log.Info("Rebuilding folder proposal", logger.UserKey, true)
-		if _, err := vfs.Propose(ctx, a.AppDB, resolver, a.Config, a.Log); err != nil {
-			return fmt.Errorf("rebuild proposal: %w", err)
+		if len(tree) == 0 {
+			return nil, nil, fmt.Errorf("no proposal to review — run 'wandersort scan' first")
 		}
-	}
-
-	tree, err := vfs.BuildTree(ctx, a.AppDB)
-	if err != nil {
-		return err
-	}
-	if len(tree) == 0 {
-		return fmt.Errorf("no proposal to review — run 'wandersort scan' first")
-	}
-
-	opts := review.Options{
-		DB:        a.AppDB,
-		Tree:      tree,
-		Log:       a.Log,
-		OutputDir: filepath.Dir(a.Config.AppDBPath),
+		return tree, resolver, nil
 	}
 
 	if yes {
-		if err := review.ConfirmAll(ctx, opts); err != nil {
+		// no TUI either way — do the load inline and confirm.
+		tree, _, err := load(ctx)
+		if err != nil {
+			return err
+		}
+		if err := review.ConfirmAll(ctx, review.Options{
+			DB: a.AppDB, Tree: tree, Log: a.Log, OutputDir: outputDir,
+		}); err != nil {
 			return err
 		}
 	} else {
-		// rename autocomplete degrades gracefully without a resolver. Reuse
-		// the rebuild's Deps if it already ran one, rather than installing twice.
-		if a.Deps == nil {
-			a.Deps = a.newDeps(nil)
-			a.Deps.StartLocationOnly(ctx, nil)
-		}
-		resolver, err := a.Deps.Location()
-		if err != nil {
-			a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
-		}
-		opts.Resolver = resolver
-		if err := review.Run(ctx, opts); err != nil {
+		if err := review.Run(ctx, review.Options{
+			DB: a.AppDB, Log: a.Log, OutputDir: outputDir, Load: load,
+		}); err != nil {
 			return err
 		}
 	}
