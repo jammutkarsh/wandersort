@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
@@ -109,13 +110,21 @@ func TestRunReviewRebuildBlocksApprovedPlan(t *testing.T) {
 func TestReportReviewOutcome(t *testing.T) {
 	a := &app{Log: logger.NewNoopLogger()}
 
-	if err := a.reportReviewOutcome(true, errors.New("boom")); err == nil {
+	if _, err := a.reportReviewOutcome(true, errors.New("boom")); err == nil {
 		t.Error("a save error must always surface, even when confirmed=true")
 	}
-	if err := a.reportReviewOutcome(false, nil); err != nil {
+	note, err := a.reportReviewOutcome(false, nil)
+	if err != nil {
 		t.Errorf("a cancelled review with no error must not itself error, got %v", err)
 	}
-	if err := a.reportReviewOutcome(true, nil); err != nil {
+	if !strings.Contains(note, "cancelled") {
+		t.Errorf("cancelled note = %q, want it to say so", note)
+	}
+	note, err = a.reportReviewOutcome(true, nil)
+	if err != nil {
 		t.Errorf("a confirmed review with no error must not error, got %v", err)
+	}
+	if !strings.Contains(note, "approved") {
+		t.Errorf("confirmed note = %q, want it to say so", note)
 	}
 }

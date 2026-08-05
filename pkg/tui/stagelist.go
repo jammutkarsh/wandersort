@@ -162,6 +162,18 @@ func (sl *StageList) FinishRemaining(failed bool, defaultLabel string) {
 	}
 }
 
+// Summary is every finished stage's one-line result with its elapsed time —
+// what a completed run leaves behind for a screen that outlives it.
+func (sl StageList) Summary() []string {
+	var out []string
+	for _, s := range sl.stages {
+		if s.state == stateDone && s.label != "" {
+			out = append(out, s.label+"  "+s.dur)
+		}
+	}
+	return out
+}
+
 // HeaderLines is how many rows the stage headers and bar occupy — the host
 // subtracts it (plus its own chrome) from the terminal height to budget the
 // tail window it passes to View.

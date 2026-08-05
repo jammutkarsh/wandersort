@@ -152,7 +152,7 @@ func (m Model) keyHelp() string {
 			tui.KeyHint("d", "drop"),
 			tui.KeyHint("D", "flatten"))
 	}
-	hints = append(hints, tui.KeyHint("u", "undo"), tui.KeyHint("c", "save & exit"), tui.KeyHint("q", "discard"),
+	hints = append(hints, tui.KeyHint("u", "undo"), tui.KeyHint("c", "save & exit"), tui.KeyHint("ctrl+c", "discard"),
 		tui.KeyHint("?", "help"))
 	return strings.Join(hints, "   ")
 }
@@ -182,7 +182,7 @@ func (m Model) helpView() string {
 		{"Leaving", []key{
 			{"p", "peek — copies a sample of the folder's files and opens them (read-only)"},
 			{"c", "save the plan and exit — the only key that writes anything"},
-			{"q", "exit without saving (warns once if you have unsaved edits)"},
+			{"ctrl+c", "exit without saving (warns once if you have unsaved edits)"},
 		}},
 	}
 

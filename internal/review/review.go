@@ -179,7 +179,7 @@ type Model struct {
 	visualMode   bool
 	visualAnchor int
 	showHelp     bool // [?] — full-screen key reference; any key closes it
-	quitWarned   bool // [q] with pending edits warns once before discarding
+	quitWarned   bool // [ctrl+c] with pending edits warns once before discarding
 	// embedded runs the model inside the app-shell (scan → review swap): it
 	// sets done instead of tea.Quit, and the shell wrapper finalizes.
 	embedded bool

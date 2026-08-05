@@ -176,16 +176,17 @@ func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	}), nil
 }
 
-// reportReviewOutcome reports how the embedded review ended
-func (a *app) reportReviewOutcome(confirmed bool, saveErr error) error {
-	switch {
-	case saveErr != nil:
-		return fmt.Errorf("save plan: %w", saveErr)
-	case !confirmed:
-		a.Log.Info("Review cancelled — nothing changed", logger.UserKey, true)
-		return nil
-	default:
-		a.Log.Info("Folder structure approved.", logger.UserKey, true)
-		return nil
+// reportReviewOutcome reports how the embedded review ended, and hands back
+// the line it logged — the shell shows it above the next folder input, since
+// the session carries on past the review that produced it.
+func (a *app) reportReviewOutcome(confirmed bool, saveErr error) (string, error) {
+	if saveErr != nil {
+		return "", fmt.Errorf("save plan: %w", saveErr)
 	}
+	note := "Review cancelled — nothing changed"
+	if confirmed {
+		note = "Folder structure approved."
+	}
+	a.Log.Info(note, logger.UserKey, true)
+	return note, nil
 }

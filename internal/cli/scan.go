@@ -203,7 +203,8 @@ func (a *app) runScanTUI(paths []string) error {
 			}
 		}
 		if confirmed, saveErr, ok := review.Outcome(shell.Current()); ok {
-			return a.reportReviewOutcome(confirmed, saveErr)
+			_, err := a.reportReviewOutcome(confirmed, saveErr)
+			return err
 		}
 	}
 	return nil

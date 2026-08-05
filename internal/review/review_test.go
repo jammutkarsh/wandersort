@@ -528,38 +528,38 @@ func TestReview(t *testing.T) {
 			}
 		}},
 		// TestQuitWarnsOnceBeforeDiscardingEdits covers the reported "no way to save":
-		// [c] saves, [q] throws everything away — so [q] with pending edits must warn
-		// first, and only quit if the reviewer insists.
+		// [c] saves, ctrl+c throws everything away — so ctrl+c with pending edits
+		// must warn first, and only quit if the reviewer insists.
 		{"QuitWarnsOnceBeforeDiscardingEdits", func(t *testing.T) {
 			m := newModel(sampleTree(), nil, nil, nil, nil)
 			m.cursor = 1
 			m.applyRename("Manali")
 
-			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 			rm := next.(Model)
 			if cmd != nil {
-				t.Fatal("first q with unsaved edits should not quit")
+				t.Fatal("first ctrl+c with unsaved edits should not quit")
 			}
 			if !rm.statusIsErr || rm.statusMsg == "" {
 				t.Errorf("want a flagged unsaved-changes warning, got %q", rm.statusMsg)
 			}
 
-			if _, cmd := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd == nil {
-				t.Error("second q should quit")
+			if _, cmd := rm.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd == nil {
+				t.Error("second ctrl+c should quit")
 			}
 
 			// any other key in between resets the warning — no accidental quit later
 			moved, _ := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-			if _, cmd := moved.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd != nil {
-				t.Error("q after moving should warn again, not quit")
+			if _, cmd := moved.(Model).Update(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd != nil {
+				t.Error("ctrl+c after moving should warn again, not quit")
 			}
 		}},
 		// TestQuitWithNoEditsExitsImmediately covers the other side: nothing typed,
 		// nothing to lose, no nagging.
 		{"QuitWithNoEditsExitsImmediately", func(t *testing.T) {
 			m := newModel(sampleTree(), nil, nil, nil, nil)
-			if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd == nil {
-				t.Error("q with a clean tree should quit straight away")
+			if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd == nil {
+				t.Error("ctrl+c with a clean tree should quit straight away")
 			}
 		}},
 		// TestStructuralEditKeepsEarlierRenames covers a silent data-loss bug: merge,
@@ -1228,7 +1228,7 @@ func TestReview(t *testing.T) {
 				t.Errorf("Outcome(fs) = (%v, %v, %v), want (true, %v, true)", confirmed, err, ok, vfs.ErrNoProposal)
 			}
 		}},
-		// TestScreenQuitWithoutConfirmSwitchesAwayWithoutFinalizing covers [q]:
+		// TestScreenQuitWithoutConfirmSwitchesAwayWithoutFinalizing covers ctrl+c:
 		// the shell should switch away (tui.Switch(nil)) without ever running
 		// vfs.Confirm, since nothing was approved.
 		{"ScreenQuitWithoutConfirmSwitchesAwayWithoutFinalizing", func(t *testing.T) {
@@ -1236,7 +1236,7 @@ func TestReview(t *testing.T) {
 			d := dbtest.New(t)
 			s := Screen(ctx, Options{DB: d, Tree: sampleTree(), Log: logger.NewNoopLogger(), OutputDir: t.TempDir()})
 
-			next, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+			next, cmd := s.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 			sm := next.(screen)
 			if sm.finalizing {
 				t.Error("expected finalizing = false after quitting without edits")

@@ -30,6 +30,9 @@ type app struct {
 	Log    logger.Logger
 	AppDB  *db.DB
 	Deps   *install.Coordinator
+	// outLock is the output-dir lock the shell takes lazily (see ensureOutput);
+	// the subcommands hold their own and unlock it themselves.
+	outLock *lock.Lock
 }
 
 func Execute() error {
@@ -78,6 +81,35 @@ func (a *app) lockOutput() (*lock.Lock, error) {
 		return nil, fmt.Errorf("acquire lock: %w", err)
 	}
 	return l, nil
+}
+
+// hasProposal reports whether an earlier run left something to review. The
+// database file is the proxy — nothing else writes one, and answering it for
+// real means opening the database, which is exactly what the caller is
+// deciding whether to do.
+func (a *app) hasProposal() bool {
+	_, err := os.Stat(a.Config.AppDBPath)
+	return err == nil
+}
+
+// ensureOutput takes the output lock and opens the database, once — the shell
+// defers both until a scan or a review actually needs them, so the settings
+// wizard (which only writes config.yaml) runs with nothing held and a second
+// wandersort is only refused at the point it would really collide.
+func (a *app) ensureOutput(ctx context.Context) error {
+	if a.outLock != nil {
+		return nil
+	}
+	l, err := a.lockOutput()
+	if err != nil {
+		return err
+	}
+	if err := a.initAppDB(ctx); err != nil {
+		l.Unlock()
+		return err
+	}
+	a.outLock = l
+	return nil
 }
 
 func (a *app) initAppDB(ctx context.Context) error {

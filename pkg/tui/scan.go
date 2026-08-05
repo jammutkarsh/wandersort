@@ -65,6 +65,12 @@ type ScanConfig struct {
 	// ReviewNext builds the review screen for the post-scan "continue?" prompt.
 	// nil (or an error) means no in-program review — the screen just exits.
 	ReviewNext func() (tea.Model, error)
+	// AutoReview switches into the review screen the moment it's ready instead
+	// of asking. The unified shell scans in order to review, and the shell
+	// keeps the session alive afterwards, so the y/n prompt is one keypress
+	// between the user and the thing they asked for. The scan subcommand,
+	// which exits after the review, keeps asking.
+	AutoReview bool
 }
 
 // ScanModel is the full-screen live scan view: a Docker-buildkit-style stack
@@ -120,8 +126,22 @@ func (m ScanModel) DepsFailure() error { return m.depsErr }
 // that follows it) or which error field the cancellation surfaced through.
 // The caller prints a short "cancelled" line in the normal terminal once the
 // TUI has exited — the reviewer asked to leave, so the screen quits straight
-// away instead of parking them on a failure footer they'd have to press q on.
+// away instead of parking them on a failure footer they'd have to ctrl+c off.
 func (m ScanModel) Cancelled() bool { return m.cancelling }
+
+// Running reports that the pipeline hasn't returned yet. The shell routes a
+// quit request here while it is, so the cancel guard gets a say no matter
+// which tab the user pressed it on.
+func (m ScanModel) Running() bool { return !m.done }
+
+// Failed reports that the pipeline returned an error. The screen is the only
+// place that error is written, so a caller replacing this screen has to know
+// not to throw it away unread.
+func (m ScanModel) Failed() bool { return m.failErr != nil }
+
+// Summary is each finished stage's one-line result, for the home screen's
+// history block once the session moves on from this scan.
+func (m ScanModel) Summary() []string { return m.sl.Summary() }
 
 // NewScanModel builds the scan screen. The five stages mirror the workflow
 // phases (keys match logger.PhaseKey: scan/hash/exif/score/vfs).
@@ -194,6 +214,15 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sl.FinishRemaining(false, "done")
 		m.finished = true
+		// AutoReview: no y/n prompt — go straight into review, or park on
+		// "Opening review…" until the prefetch lands and the reviewReadyMsg
+		// case above switches for us.
+		if m.cfg.AutoReview && m.cfg.ReviewNext != nil && m.reviewErr == nil {
+			if m.reviewModel != nil {
+				return m, Switch(m.reviewModel)
+			}
+			m.loading = true
+		}
 		return m, nil
 	}
 	return m, m.sl.Update(msg)
@@ -208,12 +237,14 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.done {
 			return m, tea.Quit
 		}
-		m.cancelling = true
-		return m, nil
-	case "q":
-		if m.done {
+		// Second press is the escape hatch: cancelling waits for the pipeline
+		// to unwind, and a phase that never does would otherwise leave the
+		// screen unquittable.
+		if m.cancelling {
 			return m, tea.Quit
 		}
+		m.cancelling = true
+		return m, nil
 	}
 	if m.finished && !m.loading {
 		switch k.String() {
@@ -233,8 +264,6 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.loading = true
 				return m, m.fetchReview()
 			}
-		case "n", "N":
-			return m, tea.Quit
 		}
 	}
 	return m, nil
@@ -425,12 +454,12 @@ func (m ScanModel) footer() string {
 		b.WriteString(Bad.Render("Scan failed: "))
 		b.WriteString(Text.Render(m.failErr.Error()))
 		b.WriteString("\n")
-		b.WriteString(Footer(KeyHint("q", "quit"), m.w))
+		b.WriteString(Footer(KeyHint("ctrl+c", "quit"), m.w))
 	case m.reviewErr != nil:
 		b.WriteString(Bad.Render("Could not open review: "))
 		b.WriteString(Text.Render(m.reviewErr.Error()))
 		b.WriteString("\n")
-		b.WriteString(Footer(KeyHint("q", "quit"), m.w))
+		b.WriteString(Footer(KeyHint("ctrl+c", "quit"), m.w))
 	case m.loading:
 		b.WriteString(OK.Render("✓ Scan complete."))
 		b.WriteString("  ")
@@ -440,9 +469,15 @@ func (m ScanModel) footer() string {
 		b.WriteString("  ")
 		b.WriteString(DimText.Render("Continue to review?"))
 		b.WriteString("\n")
-		b.WriteString(Footer(KeyHint("y", "review")+"   "+KeyHint("n", "quit"), m.w))
+		// ctrl+c, not "n": one quit key everywhere, since every other screen
+		// (home, review, the wizard) already ends on it.
+		b.WriteString(Footer(KeyHint("y", "review")+"   "+KeyHint("ctrl+c", "quit"), m.w))
 	case m.cancelling:
-		b.WriteString(Attn.Render("Cancelling…"))
+		// Warn-once-then-act, same shape as the review screen's discard guard:
+		// the first ctrl+c cancels and says what that costs, the second gives
+		// up on the unwind and quits outright.
+		b.WriteString(Attn.Render("⚠ Cancelling the scan — press ctrl+c again to quit now. " +
+			"Progress so far is saved; the next run resumes."))
 	default:
 		b.WriteString(Footer(KeyHint("ctrl+c", "cancel"), m.w))
 	}

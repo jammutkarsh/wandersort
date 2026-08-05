@@ -54,6 +54,9 @@ Flags take precedence over environment variables.`,
 		},
 		SilenceErrors: true,
 		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.runRoot(cmd)
+		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			cfg, warning, err := config.Resolve(config.Overrides{
 				OutputPath:            flagStr(cmd, flagOutputPath),

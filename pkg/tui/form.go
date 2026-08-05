@@ -109,6 +109,26 @@ type FormModel struct {
 	dl     progress.Model // background-download bar, drawn under the banner
 	dlMsg  DownloadMsg
 	dlSeen bool // a DownloadMsg arrived; nothing renders before the first one
+
+	// Embedded runs the form inside the app shell, which owns the program: it
+	// reports Done instead of quitting, and the shell returns to the previous
+	// tab. Same shape as the review model's own embedded mode.
+	Embedded bool
+	done     bool
+}
+
+// Done reports that an embedded form has finished — saved, submitted, or
+// aborted. The shell polls it after every key it forwards.
+func (m FormModel) Done() bool { return m.done }
+
+// finish ends the form: quits its own program, or just says so when the shell
+// owns the program.
+func (m FormModel) finish() (tea.Model, tea.Cmd) {
+	if m.Embedded {
+		m.done = true
+		return m, nil
+	}
+	return m, tea.Quit
 }
 
 func NewFormModel(fields []*Field, onSubmit func() error) FormModel {
@@ -185,7 +205,7 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			m.aborted = true
-			return m, tea.Quit
+			return m.finish()
 		case "c":
 			// save & exit: same key as the review TUI, for changing one setting
 			// without clicking through every step
@@ -702,18 +722,20 @@ func (m FormModel) inputView(f *Field, label string) string {
 	return b.String()
 }
 
-// suggWindow returns the [start, end) slice of m.sugg to render — a
-// maxFormSuggestions-tall window scrolled to keep suggCursor visible, so a
-// list longer than the window is reachable by ↑/↓ instead of being silently
-// truncated.
 func (m FormModel) suggWindow() (start, end int) {
-	n := len(m.sugg)
-	if n <= maxFormSuggestions {
+	return suggWindow(len(m.sugg), m.suggCursor, maxFormSuggestions)
+}
+
+// suggWindow returns the [start, end) slice of a completion list to render — a
+// rows-tall window scrolled to keep cursor visible, so a list longer than the
+// window is reachable by ↑/↓ instead of being silently truncated.
+func suggWindow(n, cursor, rows int) (start, end int) {
+	if n <= rows {
 		return 0, n
 	}
-	start = max(m.suggCursor-maxFormSuggestions+1, 0)
-	start = min(start, n-maxFormSuggestions)
-	return start, start + maxFormSuggestions
+	start = max(cursor-rows+1, 0)
+	start = min(start, n-rows)
+	return start, start + rows
 }
 
 func (m FormModel) renderFooter() string {
@@ -791,10 +813,10 @@ func (m FormModel) moveNext() (tea.Model, tea.Cmd) {
 		if m.onSubmit != nil {
 			if err := m.onSubmit(); err != nil {
 				m.err = err
-				return m, tea.Quit
+				return m.finish()
 			}
 		}
-		return m, tea.Quit
+		return m.finish()
 	}
 	m.seedInput()
 	return m, textinput.Blink
@@ -822,10 +844,10 @@ func (m FormModel) saveAndExit() (tea.Model, tea.Cmd) {
 	if m.onSubmit != nil {
 		if err := m.onSubmit(); err != nil {
 			m.err = err
-			return m, tea.Quit
+			return m.finish()
 		}
 	}
-	return m, tea.Quit
+	return m.finish()
 }
 
 func (m FormModel) movePrev() (tea.Model, tea.Cmd) {

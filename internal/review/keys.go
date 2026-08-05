@@ -97,18 +97,12 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	m.quitWarned = m.quitWarned && key.String() == "q"
+	m.quitWarned = m.quitWarned && key.String() == "ctrl+c"
 	switch key.String() {
 	case "ctrl+c":
-		m.done = true
-		if m.embedded {
-			return m, nil
-		}
-		return m, tea.Quit
-	case "q":
 		if m.hasEdits() && !m.quitWarned {
 			m.quitWarned = true
-			m.statusMsg, m.statusIsErr = "unsaved changes — [c] saves and exits, press q again to discard them", true
+			m.statusMsg, m.statusIsErr = "unsaved changes — [c] saves and exits, press ctrl+c again to discard them", true
 			break
 		}
 		m.done = true

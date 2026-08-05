@@ -85,7 +85,7 @@ func (m loadingScreen) View() string {
 	top := tui.Banner("review")
 	if m.err != nil {
 		body := top + "\n" + tui.Bad.Render("Could not open review: ") + tui.Text.Render(m.err.Error())
-		return tui.Screen(body, tui.Footer(tui.KeyHint("q", "quit"), m.w), m.h)
+		return tui.Screen(body, tui.Footer(tui.KeyHint("ctrl+c", "quit"), m.w), m.h)
 	}
 	body := top + "\n" + m.spin.View() + " " + tui.DimText.Render("Loading proposal…")
 	return tui.Screen(body, "", m.h)

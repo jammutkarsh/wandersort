@@ -323,6 +323,37 @@ func TestForm(t *testing.T) {
 				t.Errorf("an install that never reported bytes must stay invisible:\n%s", view)
 			}
 		}},
+		// Embedded in the app shell, the form never quits the program — the
+		// container owns it, and quitting would take the running scan down
+		// with the wizard.
+		{"FormEmbeddedReportsDoneInsteadOfQuitting", func(t *testing.T) {
+			for _, tc := range []struct {
+				name string
+				key  tea.KeyMsg
+			}{
+				{"abort", tea.KeyMsg{Type: tea.KeyCtrlC}},
+				{"save & exit", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}},
+				{"last field", tea.KeyMsg{Type: tea.KeyEnter}},
+			} {
+				saved := false
+				yes := true
+				m := NewFormModel([]*Field{{Kind: FieldConfirm, Title: "Only step", BoolValue: &yes}},
+					func() error { saved = true; return nil })
+				m.Embedded = true
+
+				next, cmd := m.Update(tc.key)
+				fm := next.(FormModel)
+				if cmd != nil {
+					t.Errorf("%s: embedded form returned a cmd (%v), want none", tc.name, flattenCmd(cmd))
+				}
+				if !fm.Done() {
+					t.Errorf("%s: embedded form should report Done()", tc.name)
+				}
+				if tc.name != "abort" && !saved {
+					t.Errorf("%s: should still have submitted", tc.name)
+				}
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)

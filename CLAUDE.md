@@ -46,6 +46,11 @@ one scan ever runs against it at a time (see "Conventions" below):
     one way in and no struct to assemble. `tuiEnabled` decides TUI vs plain
     line logging (plain when `--plain` is set or stderr isn't a terminal);
     the TUI draws to stderr so stdout stays clean for piping.
+    `ensureOutput` is the shell's lazy `lockOutput` + `initAppDB` pair (stored
+    on `app.outLock`, idempotent): the wizard writes only `config.yaml`, so a
+    session that opens it first holds nothing, and a second `wandersort` is
+    refused at the point it would really collide rather than at launch. The
+    subcommands still take their own lock and unlock it themselves.
   - `root.go` — root cmd and flag-name constants. **`PersistentPreRunE` is the
     single place** config is resolved: it ensures `~/.wandersort/config.yaml`
     exists (`config.EnsureGlobalConfigFile`), builds a `config.FlagOverrides`
@@ -69,7 +74,64 @@ one scan ever runs against it at a time (see "Conventions" below):
     exists so it reaches the log file too, not just the terminal. Hard-failing
     would let one stray tab in an all-optional settings file brick every
     command — including `wandersort config`, the one that opens the file to
-    fix it.
+    fix it. The root cmd's own `RunE` is `shell.go`'s `runRoot`: bare
+    `wandersort` opens the unified app, and `--plain` / a piped stderr still
+    prints help.
+  - `shell.go` — the **unified TUI shell** behind a bare `wandersort`: a
+    tab bar plus one live screen per tab (`shellModel`), so scan, the settings
+    wizard and review are one invocation instead of three. **It is not
+    `tui.Shell`** — `Shell` hosts exactly one screen, and mode-cycling with a
+    live background scan needs the scan model to keep receiving its log events
+    while a form is on top of it. Routing: `ctrl+t` cycles (skipping review
+    only when `canReview` says there is nothing there); every other key goes to
+    the **active** tab only;
+    `WindowSizeMsg` goes to all screens at `Height-1` (the container owns the
+    tab-bar line); **everything else is broadcast to every live screen**, which
+    is how `LogEventMsg`/`InstallProgressMsg` reach a backgrounded scan without
+    this file naming the scan screen's unexported messages. Broadcast is safe
+    for the animation ticks because every bubbles spinner/progress/textinput
+    tick carries its own model ID and a foreign one is dropped, not answered.
+    `tui.SwitchMsg` is intercepted rather than forwarded: a non-nil `Next` is
+    the scan's prefetched review, opened straight away only if the user is
+    watching the scan (never yanked out of a half-answered form — the tab bar
+    says `Review ✓ ready` instead); a **nil `Next` does not quit** the way it
+    does in `tui.Shell` — the review handing back means one plan is settled,
+    not that the session is over, so the scan tab goes back to a fresh
+    `tui.HomeModel` carrying the finished scan's stage summaries
+    (`ScanModel.Summary`) and the review's outcome line. **`scanTabHome` does
+    the same on `ctrl+t` back into a finished scan's tab** — the run is over,
+    so returning there means "scan something else"; without it the tab showed
+    that one finished run forever and a second folder meant quitting the app,
+    which was a reported bug and the opposite of the point. A *failed* run
+    keeps its screen (`ScanModel.Failed`): that screen is the only place the
+    reason is written. That is the small-library-first flow: organize one
+    folder, then add more without leaving the app. A second scan reuses the already-open DB/lock and the
+    already-started `a.Deps` (the Coordinator closes its readiness channels, so
+    `Start` can only ever be called once — `runShell` does it eagerly, once).
+    **`reviewReady` (a screen is stashed) is not the same question as
+    `canReview` (the tab can be entered at all)** — conflating them was a
+    reported bug twice over: a relaunch over an earlier run's proposal, and the
+    session right after a save (which drops the stashed screen), both said
+    `Review — waiting for scan` forever, because only the *scan's* prefetch
+    ever set the flag. `canReview` is `reviewReady || a.hasProposal()` (the
+    database file on disk, since nothing else writes one) **and not while a
+    scan is running** — that run replaces the proposal wholesale, so the tree
+    on disk is about to be stale. `ctrl+t` into a reviewable-but-unprefetched
+    tab runs `openReview` (the same `ensureOutput` + `newReviewScreen` cmd
+    `ctrl+r` on the home screen uses) and **leaves the tab where it is until
+    the screen lands**, so there is never a blank frame. The tab bar's
+    `✓ ready` follows `canReview`, not `reviewReady`, for the same reason: a
+    plan left on disk is as ready as one this session prefetched, and a plain
+    dim tab says nothing about it being there at all.
+    **`ctrl+c` anywhere quits the app**, matching the standalone `config` and
+    `review` commands, which both end the process on it — being dropped back on
+    the folder input instead was a reported bug. While a scan is running it
+    goes to the scan screen so the cancel guard gets a say. Otherwise it is
+    still *forwarded* to the active screen first, so the review's
+    unsaved-edits guard can warn once; `quitReq` is what turns the screen's
+    answer (`Done`, or the `SwitchMsg{nil}` a review hands back with) into a
+    quit rather than a walk home, and any other keystroke clears it — the user
+    stayed, so a later save must go home as usual.
   - `config.go` — `config` cmd: **the settings wizard** (there is no `setup`
     command — dependency downloads belong to `scan`). `buildConfigForm` +
     `tui.FormModel`: a top-down stacked form (answered fields collapse to
@@ -163,8 +225,8 @@ one scan ever runs against it at a time (see "Conventions" below):
     phase that needed it; files stay `HASHED` and the next run resumes.
     Anchors are resolved inside `vfs.Propose`, which the vfs phase calls once
     the resolver exists — vfs is the only phase that reads them, so nothing
-    above it has to carry them. **`scan`/`review` are the only things that install
-    dependencies** (`pkg/install.Coordinator.Start`/`StartLocationOnly`,
+    above it has to carry them. **`scan`/`review`/the shell are the only things
+    that install dependencies** (`pkg/install.Coordinator.Start`/`StartLocationOnly`,
     which install exiftool *then* the location DB when both are asked for —
     the small download unblocks the earlier phase; the big one has the whole
     pipeline to hide behind — and each command asks only for what it needs:
@@ -425,8 +487,8 @@ Back in `internal/cli/`:
   - `help.go` — custom lipgloss-styled help renderer. Kept in `cli` (unlike
     `lock.go`) since it's a one-off cobra `SetHelpFunc`, not reusable
     logic another entry point would need.
-  - `internal/cli` holds **only** `app.go` + `root.go` + one file per
-    subcommand (plus the `help.go` exception above). **No single-function
+  - `internal/cli` holds **only** `app.go` + `root.go` + `shell.go` + one file
+    per subcommand (plus the `help.go` exception above). **No single-function
     files**: the old `tui.go` (just `tuiEnabled`) and `anchor.go` were folded
     into `app.go` and `core/vfs` respectively. Everything else that
     used to live here moved
@@ -742,7 +804,37 @@ reads it straight via `config.Load`.
   **numbered** option lists: `1)`/`2)` next to every choice, since an
   arrow-only list gives the eye nothing to aim at. A `FieldGroup` holds fields
   of *any* kind, which is what makes the Saved places step one screen with two
-  inputs and two yes/no questions), and shared chrome (`Banner`/`Footer`/`KeyHint`/`Screen`).
+  inputs and two yes/no questions; `FormModel.Embedded` mirrors the review
+  model's own embedded mode — the three quit points go through `finish()`,
+  which sets `done` instead of `tea.Quit` when the shell owns the program, and
+  the container polls `Done()`), the shell's landing screen
+  (`home.go` — `HomeModel`: the scan-folder list, **one path per enter**, which
+  is what keeps folders with spaces working with no quoting or comma-escaping.
+  Folders are held expanded (the scan needs real paths) and rendered back
+  through `path.RelativeToHome`, the way they were typed and the way every
+  completion offers them. `↑` walks out of the input and up into the folders
+  already added (`sel`, `-1` = typing) — but only once the completion dropdown
+  is out of the way, since `↑` is the dropdown's key first; on a folder,
+  `enter` lifts it back into the input to correct and `ctrl+x` drops that one
+  rather than blindly the last. The input is blurred while a folder is
+  selected, since two cursors on screen reads as a bug, and any ordinary
+  keystroke returns to typing so a key never lands somewhere invisible;
+  shell-style directory completion through the injected `HomeConfig.Suggest`
+  (`cli.suggestDirs`, shared with the wizard's output-path field), `StartScanMsg`
+  on an empty enter, `OpenReviewMsg` on `ctrl+r`, and `HomeErrMsg` so a held
+  output lock renders on the screen instead of taking the app down. Every
+  command is ctrl-chorded because the input is always focused, so letters are
+  ordinary text; completions are refreshed synchronously — they read the local
+  filesystem, so the wizard's debounce would buy nothing), and shared chrome
+  (`Banner`/`Footer`/`KeyHint`/`Screen`).
+  `ScanConfig.AutoReview` switches straight into the prefetched review instead
+  of asking (the shell scans in order to review, and the session continues
+  afterwards); the `scan` subcommand, which exits after the review, keeps
+  asking. Mid-scan `ctrl+c` is warn-once-then-act: the first press cancels and
+  says what that costs, a second gives up on a pipeline that won't unwind.
+  **`ctrl+c` is the one quit key on every screen** — the post-scan prompt's
+  `[n] quit` was the last holdout and is gone; `[y]` still opens the review.
+  (`ConfirmModel`'s `y`/`n` stays: that is a yes/no question, not a way out.)
   Design rules live in `pkg/tui/README.md` — new screens compose from this
   kit, never invent colours/markers. The pipeline feeds it through the logger
   only (`pkg/logger/stream.go`: `StreamKey` per-file lines — logged at **Info**,
