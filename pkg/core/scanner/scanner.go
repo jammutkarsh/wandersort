@@ -410,10 +410,15 @@ func (s *Scanner) storeScan(ctx context.Context, dbWritesWG *sync.WaitGroup, sto
 
 		file.ID = fileID
 
+		// The row is already written at this point — forwarding it downstream
+		// is best-effort, not part of "did the DB write succeed". Returning
+		// ctx.Err() here made a cancelled pipeline look like a DB failure:
+		// BulkWriter would roll back and retry the op, so the file would be
+		// written and reported to storedFiles a second time on retry, on top
+		// of a Done() double-fire on the already-invoked WaitGroup entry.
 		select {
 		case storedFiles <- file:
 		case <-ctx.Done():
-			return ctx.Err()
 		}
 
 		return nil

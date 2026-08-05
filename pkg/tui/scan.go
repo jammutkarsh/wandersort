@@ -114,6 +114,15 @@ func (m ScanModel) WantsReview() bool { return m.gotoReview }
 // the TUI has exited, rather than the screen showing it in its own footer.
 func (m ScanModel) DepsFailure() error { return m.depsErr }
 
+// Cancelled reports whether the user's own ctrl+c is why the screen ended —
+// true once ctrl+c has been pressed on a still-running pipeline, regardless
+// of which stage was in flight (the pipeline itself, or the review prefetch
+// that follows it) or which error field the cancellation surfaced through.
+// The caller prints a short "cancelled" line in the normal terminal once the
+// TUI has exited — the reviewer asked to leave, so the screen quits straight
+// away instead of parking them on a failure footer they'd have to press q on.
+func (m ScanModel) Cancelled() bool { return m.cancelling }
+
 // NewScanModel builds the scan screen. The five stages mirror the workflow
 // phases (keys match logger.PhaseKey: scan/hash/exif/score/vfs).
 func NewScanModel(cfg ScanConfig) ScanModel {
@@ -158,6 +167,9 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.reviewErr = msg.err
 			m.loading = false
+			if m.cancelling {
+				return m, tea.Quit
+			}
 			return m, nil
 		}
 		m.reviewModel = msg.model

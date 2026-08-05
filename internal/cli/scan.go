@@ -8,6 +8,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -196,6 +197,9 @@ func (a *app) runScanTUI(paths []string) error {
 		if scan, ok := shell.Current().(tui.ScanModel); ok {
 			if err := scan.DepsFailure(); err != nil {
 				return err
+			}
+			if scan.Cancelled() {
+				return errors.New("scan cancelled")
 			}
 		}
 		if confirmed, saveErr, ok := review.Outcome(shell.Current()); ok {

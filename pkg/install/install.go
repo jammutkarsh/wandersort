@@ -240,10 +240,6 @@ func (c *Coordinator) awaitLog(ch <-chan struct{}, why string) error {
 }
 
 const (
-	// downloadMaxAttempts bounds retries on a transport failure (dropped or
-	// stalled connection, DNS hiccup) — not on a bad response, see
-	// nonRetryable below.
-	downloadMaxAttempts = 4
 	// downloadStallTimeout aborts an attempt with no new bytes in this long —
 	// a dead TCP connection (e.g. wifi→ethernet switch) never tells us
 	// itself, so io.Copy would otherwise hang forever instead of retrying.
@@ -262,42 +258,45 @@ const (
 
 // nonRetryable marks a download failure retrying can't fix — a bad URL
 // (status code) or a checksum mismatch will fail the exact same way every
-// time, so downloadFile gives up after the first attempt instead of wasting
-// downloadMaxAttempts-1 retries and their backoff delays on it.
+// time, so downloadFile gives up after the first attempt instead of retrying
+// forever on something no backoff will ever fix.
 type nonRetryable struct{ err error }
 
 func (n *nonRetryable) Error() string { return n.err.Error() }
 func (n *nonRetryable) Unwrap() error { return n.err }
 
-// downloadFile fetches url to dest atomically, verifying wantSHA256 if set,
-// and retries on transport failure (downloadMaxAttempts). onProgress and
+// downloadFile fetches url to dest atomically, verifying wantSHA256 if set.
+// On a transport failure it retries forever, with exponential backoff, until
+// it succeeds or ctx is cancelled (the user hit ctrl+c) — a flaky network is
+// not a reason to give up installing a required dependency. onProgress and
 // wantSHA256 may be nil/empty.
 func downloadFile(ctx context.Context, log logger.Logger, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
 	cleanStaleDownloads(filepath.Dir(dest))
 
-	var err error
-	for attempt := 1; attempt <= downloadMaxAttempts; attempt++ {
-		err = downloadAttempt(ctx, dest, url, wantSHA256, onProgress)
+	for attempt := 1; ; attempt++ {
+		err := downloadAttempt(ctx, dest, url, wantSHA256, onProgress)
 		if err == nil {
 			return nil
 		}
 		// A bad status/checksum fails identically every time; only a
-		// transport failure is worth spending a retry on.
+		// transport failure is worth retrying.
 		var nr *nonRetryable
-		if errors.As(err, &nr) || ctx.Err() != nil || attempt == downloadMaxAttempts {
+		if errors.As(err, &nr) || ctx.Err() != nil {
 			return terminalDownloadErr(ctx, err)
 		}
 		if log != nil {
 			log.Warn("Download failed, retrying", logger.UserKey, true,
-				"url", url, "attempt", attempt, "of", downloadMaxAttempts, "error", err)
+				"url", url, "attempt", attempt, "error", err)
 		}
+		// exponent capped at 3 (1<<3 * base == downloadBackoffMax already) so
+		// an attempt count that climbs for hours never overflows the shift.
+		delay := min(downloadBackoffBase*time.Duration(1<<min(attempt-1, 3)), downloadBackoffMax)
 		select {
-		case <-time.After(min(downloadBackoffBase*time.Duration(1<<(attempt-1)), downloadBackoffMax)):
+		case <-time.After(delay):
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
-	return terminalDownloadErr(ctx, err)
 }
 
 // terminalDownloadErr is downloadFile's final, non-retryable failure.

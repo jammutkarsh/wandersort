@@ -203,6 +203,15 @@ func (bw *BulkWriter) start() {
 
 // executeBatch runs all operations in a single transaction
 // Falls back to executeIndividually on commit/operation failure
+//
+// ponytail: on fallback this re-invokes every op in the batch, including
+// ones that already ran once in this same doomed transaction — safe only
+// because DBOperation callers are expected to have no side effects beyond
+// the tx itself. scanner.storeScan violated that (a WaitGroup.Done() per
+// invocation) and double-fired on retry; fixed there, not here. A caller
+// with irrevocable per-invocation side effects will hit the same class of
+// bug again — fix would be a per-op post-commit hook so side effects fire
+// exactly once, after the operation is durably committed.
 func (bw *BulkWriter) executeBatch(batch []DBOperation) error {
 	ctx, cancel := context.WithTimeout(context.Background(), batchExecutionTimeout)
 	defer cancel()
