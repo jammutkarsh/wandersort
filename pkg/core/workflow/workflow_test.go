@@ -222,3 +222,35 @@ func TestFinalizeSessionLogsOutcome(t *testing.T) {
 	wf.finalizeSession(db.StatusFailed, &errStr)
 	wf.finalizeSession(db.StatusCompleted, nil)
 }
+
+// TestUpdateConfigDirtySemantics is what decides whether the vfs phase runs a
+// second time: a save that lands *during* a pass has to be picked up (the
+// proposal it produced used the old settings), a save that lands before one
+// must not trigger a re-run (that pass already used the new settings).
+func TestUpdateConfigDirtySemantics(t *testing.T) {
+	wf, _ := newTestWorkflow(t, context.Background())
+	updated := &config.Configuration{Workers: 9, Rules: []string{"device"}}
+
+	// Saved before the pass starts: taken along with it, nothing left over.
+	wf.UpdateConfig(updated)
+	if got := wf.takeConfig(); got != updated {
+		t.Error("takeConfig returned stale settings after UpdateConfig")
+	}
+	if wf.configChanged() {
+		t.Error("a save picked up by the pass itself should not force a re-run")
+	}
+
+	// Saved while the pass is running: the pass used the old settings, so the
+	// phase loop has to go round once more.
+	again := &config.Configuration{Workers: 3}
+	wf.UpdateConfig(again)
+	if !wf.configChanged() {
+		t.Fatal("a save during a pass should force a re-run")
+	}
+	if got := wf.takeConfig(); got != again {
+		t.Error("the re-run took the old settings")
+	}
+	if wf.configChanged() {
+		t.Error("the re-run should clear the flag, or the phase loops forever")
+	}
+}

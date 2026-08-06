@@ -1465,3 +1465,108 @@ func dayWithLocationsTree() []vfs.Node {
 		}},
 	}}}
 }
+
+// TestRebuildAsk covers the one destructive thing the review can do to its own
+// plan. The question is a full-screen yes/no rather than a status line
+// precisely because a line above the key bar is what nobody reads — so the
+// modal has to own the keyboard until it is answered, and answering yes has to
+// rebuild on that press, not the one after.
+func TestRebuildAsk(t *testing.T) {
+	rebuilt := []vfs.Node{{ID: "2023", Name: "2023", FileCount: 7}}
+	pressR := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}}
+	pressY := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}
+	pressN := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}
+
+	rebuildable := func() Model {
+		return newModel(sampleTree(), context.Background(), nil, nil, nil).withHost(Options{
+			Rebuild: func(context.Context) ([]vfs.Node, error) { return rebuilt, nil },
+		})
+	}
+
+	t.Run("no hook, no key", func(t *testing.T) {
+		m := newModel(sampleTree(), context.Background(), nil, nil, nil)
+		next, cmd := m.Update(pressR)
+		if next.(Model).askRebuild || cmd != nil {
+			t.Error("[R] must do nothing when the host supplied no rebuild")
+		}
+		if strings.Contains(m.keyHelp(), "rebuild") {
+			t.Error("the key bar offers a rebuild the host can't perform")
+		}
+	})
+
+	t.Run("one press asks, y rebuilds on that press", func(t *testing.T) {
+		asked, cmd := rebuildable().Update(pressR)
+		if !asked.(Model).askRebuild || cmd != nil {
+			t.Fatal("[R] must raise the question, not rebuild straight away")
+		}
+		next, cmd := asked.(Model).Update(pressY)
+		got := next.(Model)
+		if got.askRebuild || !got.rebuilding || cmd == nil {
+			t.Error("y must start the rebuild — a second press to confirm again is the bug")
+		}
+	})
+
+	t.Run("n keeps the plan", func(t *testing.T) {
+		asked, _ := rebuildable().Update(pressR)
+		next, cmd := asked.(Model).Update(pressN)
+		got := next.(Model)
+		if got.askRebuild || got.rebuilding || cmd != nil {
+			t.Error("n must dismiss the question without rebuilding")
+		}
+	})
+
+	t.Run("the question owns the keyboard", func(t *testing.T) {
+		asked, _ := rebuildable().Update(pressR)
+		// [r] would open the rename editor if the tree were still listening
+		next, _ := asked.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+		got := next.(Model)
+		if got.editing || !got.askRebuild {
+			t.Error("keys must not fall through to the tree while the question is up")
+		}
+	})
+
+	t.Run("ctrl+c still gets out", func(t *testing.T) {
+		asked, _ := rebuildable().Update(pressR)
+		next, _ := asked.(Model).Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		if !next.(Model).done {
+			t.Error("the question must never trap the app")
+		}
+	})
+
+	t.Run("SettingsChangedMsg raises it", func(t *testing.T) {
+		next, _ := rebuildable().Update(SettingsChangedMsg{})
+		if !next.(Model).askRebuild {
+			t.Error("a settings change while the review is open went unnoticed")
+		}
+	})
+
+	t.Run("rebuilt tree replaces everything derived from the old one", func(t *testing.T) {
+		m := rebuildable()
+		m.applyRename("Renamed")
+		m.cursor, m.visualMode, m.rebuilding = 1, true, true
+
+		next, _ := m.Update(rebuiltMsg{tree: rebuilt})
+		got := next.(Model)
+		switch {
+		case got.rebuilding:
+			t.Error("still rebuilding after the tree landed")
+		case len(got.rows) != 1 || got.rows[0].node.Name != "2023":
+			t.Errorf("rows = %+v, want the re-proposed tree", got.rows)
+		case got.undo != nil:
+			t.Error("undo steps describe folders that no longer exist")
+		case got.cursor != 0 || got.visualMode:
+			t.Error("cursor and selection must reset onto the new tree")
+		}
+	})
+
+	t.Run("empty rebuild keeps the current plan", func(t *testing.T) {
+		next, _ := rebuildable().Update(rebuiltMsg{tree: nil})
+		got := next.(Model)
+		if len(got.rows) == 0 {
+			t.Error("an empty rebuild left the review with no rows to point at")
+		}
+		if !got.statusIsErr {
+			t.Error("an empty rebuild must say it kept the old plan")
+		}
+	})
+}

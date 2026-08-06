@@ -17,7 +17,6 @@ import (
 
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -73,7 +72,7 @@ func (a *app) runReview(cmd *cobra.Command) error {
 	// including an already-confirmed plan — the names survive in user_labels
 	// as rename completions, but dropping confirmed work needs saying out loud.
 	if rebuild {
-		approved, err := approvedCount(ctx, a.AppDB)
+		approved, err := vfs.ApprovedCount(ctx, a.AppDB)
 		if err != nil {
 			return err
 		}
@@ -88,6 +87,17 @@ func (a *app) runReview(cmd *cobra.Command) error {
 	a.Deps.StartLocationOnly(ctx, nil)
 
 	outputDir := filepath.Dir(a.Config.AppDBPath)
+
+	// Nothing re-proposes on its own, so a settings change since this plan was
+	// built is only visible here. The interactive review asks about it itself
+	// (a full-screen yes/no over the tree); the non-interactive paths can't
+	// ask anyone, so they say it once and carry on.
+	settingsChanged := !rebuild && a.settingsChanged(outputDir)
+	if settingsChanged && (yes || !a.isTuiEnabled(cmd)) {
+		a.Log.Warn("Settings changed since this proposal — run 'wandersort review --rebuild' to apply them",
+			logger.UserKey, true)
+		settingsChanged = false
+	}
 
 	// load is the proposal work (location resolver, --rebuild's vfs.Propose,
 	// vfs.BuildTree) that used to run before the terminal showed anything.
@@ -129,6 +139,7 @@ func (a *app) runReview(cmd *cobra.Command) error {
 	} else {
 		if err := review.Run(ctx, review.Options{
 			DB: a.AppDB, Log: a.Log, OutputDir: outputDir, Load: load,
+			Rebuild: a.rebuildTree, SettingsChanged: settingsChanged,
 		}); err != nil {
 			return err
 		}
@@ -138,21 +149,48 @@ func (a *app) runReview(cmd *cobra.Command) error {
 	return nil
 }
 
-// approvedCount is how many entries the user already confirmed — the size of
-// the plan a --rebuild would throw away.
-func approvedCount(ctx context.Context, database *db.DB) (int, error) {
-	var n int
-	if err := database.SQL.GetContext(ctx, &n,
-		`SELECT COUNT(*) FROM virtual_fs_entries WHERE status = ?`,
-		db.StatusApproved); err != nil {
-		return 0, fmt.Errorf("count approved entries: %w", err)
+// settingsChanged reports that the settings moved since the current proposal
+// was built. No stamp file (a proposal from before stamping) is never a
+// change — there is nothing to compare against. Net-zero edits in the wizard
+// are not a change either: the comparison is the fingerprint of the settings
+// themselves, not "did the user open the wizard".
+func (a *app) settingsChanged(outputDir string) bool {
+	stamp, ok, err := vfs.ReadStamp(outputDir)
+	if err != nil {
+		a.Log.Warn("Could not read the settings this proposal used", "error", err)
+		return false
 	}
-	return n, nil
+	return ok && stamp != vfs.ConfigStamp(vfs.ConfigFor(a.Config))
+}
+
+// rebuildTree re-proposes the whole hierarchy from the settings as they stand
+// right now and returns the new tree — the "yes" arm of the review's rebuild
+// question. `a.Config` is re-resolved on every wizard save (see
+// app.reloadConfig), so "right now" really is what the user last saved.
+func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
+	resolver, err := a.Deps.Location()
+	if err != nil {
+		return nil, fmt.Errorf("dependencies: %w", err)
+	}
+	a.Log.Info("Rebuilding folder proposal", logger.UserKey, true)
+	if _, err := vfs.Propose(ctx, a.AppDB, resolver, a.Config, a.Log); err != nil {
+		return nil, fmt.Errorf("rebuild proposal: %w", err)
+	}
+	return vfs.BuildTree(ctx, a.AppDB)
 }
 
 // newReviewScreen builds the review screen over the current proposal, reusing
-// the scan's already-open DB and Deps — no lock/DB re-init needed.
+// the scan's already-open DB and Deps — no lock/DB re-init needed. It never
+// rebuilds on the way in: the review asks about a settings change itself, on
+// screen, so there is one place that decision is made.
 func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
+	// Doesn't block: a.Deps was started by the scan and vfs already ran, so
+	// the location download has resolved by now. Autocomplete just degrades
+	// gracefully without a resolver if it somehow hasn't.
+	resolver, err := a.Deps.Location()
+	if err != nil {
+		a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
+	}
 	tree, err := vfs.BuildTree(ctx, a.AppDB)
 	if err != nil {
 		return nil, err
@@ -160,19 +198,14 @@ func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	if len(tree) == 0 {
 		return nil, fmt.Errorf("no proposal to review")
 	}
-	// Doesn't block: a.Deps was started by runScanTUI and vfs already ran, so
-	// the location download has resolved by now. Autocomplete just degrades
-	// gracefully without a resolver if it somehow hasn't.
-	resolver, err := a.Deps.Location()
-	if err != nil {
-		a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
-	}
 	return review.Screen(ctx, review.Options{
-		DB:        a.AppDB,
-		Tree:      tree,
-		Resolver:  resolver,
-		Log:       a.Log,
-		OutputDir: filepath.Dir(a.Config.AppDBPath),
+		DB:              a.AppDB,
+		Tree:            tree,
+		Resolver:        resolver,
+		Log:             a.Log,
+		OutputDir:       filepath.Dir(a.Config.AppDBPath),
+		Rebuild:         a.rebuildTree,
+		SettingsChanged: a.settingsChanged(filepath.Dir(a.Config.AppDBPath)),
 	}), nil
 }
 

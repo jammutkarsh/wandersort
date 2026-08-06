@@ -14,9 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
-	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -35,9 +33,7 @@ type treeLoadedMsg struct {
 // vfs.Propose, then vfs.BuildTree) before the TUI ever appears.
 type loadingScreen struct {
 	ctx  context.Context
-	load func(context.Context) ([]vfs.Node, *location.Resolver, error)
-	db   *db.DB
-	log  logger.Logger
+	o    Options
 	spin spinner.Model
 	w, h int
 	err  error
@@ -47,12 +43,12 @@ func newLoadingScreen(ctx context.Context, o Options) loadingScreen {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(tui.Primary)
-	return loadingScreen{ctx: ctx, load: o.Load, db: o.DB, log: o.Log, spin: sp}
+	return loadingScreen{ctx: ctx, o: o, spin: sp}
 }
 
 func (m loadingScreen) Init() tea.Cmd {
 	return tea.Batch(m.spin.Tick, func() tea.Msg {
-		tree, resolver, err := m.load(m.ctx)
+		tree, resolver, err := m.o.Load(m.ctx)
 		return treeLoadedMsg{tree: tree, resolver: resolver, err: err}
 	})
 }
@@ -72,7 +68,7 @@ func (m loadingScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
-		return m, tui.Switch(newModel(msg.tree, m.ctx, m.db, msg.resolver, m.log))
+		return m, tui.Switch(newModel(msg.tree, m.ctx, m.o.DB, msg.resolver, m.o.Log).withHost(m.o))
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)

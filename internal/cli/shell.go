@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -46,6 +47,10 @@ type shellModel struct {
 
 	screens [numTabs]tea.Model
 	tab     int
+
+	// wf is the running scan's workflow, kept so a settings save can retarget
+	// its vfs phase while it is still going (see configSaved).
+	wf *workflow.Workflow
 
 	// reviewReady is "a built review screen is stashed in the tab" — the scan
 	// prefetched one, or ctrl+t/ctrl+r built one on demand. It is not the same
@@ -169,7 +174,9 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// prefetched is stale; the new run's vfs phase repopulates it.
 		m.screens[tabReview], m.reviewReady = nil, false
 		m.tab = tabScan
-		return m, m.place(tabScan, m.a.newScanScreen(m.ctx, m.cancel, msg.paths))
+		var screen tui.ScanModel
+		m.wf, screen = m.a.newScanScreen(m.ctx, m.cancel, msg.paths)
+		return m, m.place(tabScan, screen)
 
 	case reviewOpenMsg:
 		m.opening = false
@@ -239,6 +246,8 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if err := fm.Error(); err != nil {
 			cmd = tea.Batch(cmd, m.forward(tabScan, tui.HomeErrMsg{Err: err}))
+		} else if !fm.IsAborted() {
+			cmd = tea.Batch(cmd, m.configSaved())
 		}
 		if m.tab == tabConfig {
 			m.tab = tabScan
@@ -248,6 +257,36 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, cmd
+}
+
+// configSaved picks up a wizard save without a relaunch: the settings the
+// review compares its plan against and the next scan uses are re-resolved
+// here, and a scan that is still running has its vfs phase retargeted, so the
+// folders it ends up proposing are the ones just asked for.
+func (m *shellModel) configSaved() tea.Cmd {
+	note, err := m.a.reloadConfig()
+	if err != nil {
+		return m.forward(tabScan, tui.HomeErrMsg{Err: err})
+	}
+	if m.wf != nil && m.scanRunning() {
+		m.wf.UpdateConfig(m.a.Config)
+	}
+	// A review already on screen was built before this save, so its own stamp
+	// check has been and gone — tell it directly, or the plan it is showing
+	// silently stops matching the settings. Only when the settings really
+	// moved, though: a trip through the wizard that lands back where it
+	// started is not a change, and asking about it is the one thing a
+	// full-screen question can't get away with.
+	var cmd tea.Cmd
+	if m.a.settingsChanged(filepath.Dir(m.a.Config.AppDBPath)) {
+		cmd = m.forward(tabReview, review.SettingsChangedMsg{})
+	}
+	if note != "" {
+		// ponytail: shown on the home screen's error line, so it's lost if a
+		// scan is on screen instead. Give HomeModel a note line if that matters.
+		cmd = tea.Batch(cmd, m.forward(tabScan, tui.HomeErrMsg{Err: errors.New(note)}))
+	}
+	return cmd
 }
 
 // handleSwitch intercepts the screen-swap message the scan and review screens
@@ -434,10 +473,11 @@ func (a *app) newHomeScreen(lastScan []string) tui.HomeModel {
 }
 
 // newScanScreen wires a scan of paths into the shell, gated behind the same
-// upfront dependency download the scan subcommand uses.
-func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, paths []string) tui.ScanModel {
+// upfront dependency download the scan subcommand uses. The workflow comes
+// back with the screen: a settings save mid-run retargets it (configSaved).
+func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, paths []string) (*workflow.Workflow, tui.ScanModel) {
 	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, a.workflowDeps())
-	return tui.NewScanModel(tui.ScanConfig{
+	return wf, tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {
 			if err := waitForDeps(a.Deps); err != nil {
 				return &tui.DepsErr{Err: err}

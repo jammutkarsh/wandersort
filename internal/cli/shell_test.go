@@ -19,6 +19,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/jammutkarsh/wandersort/internal/review"
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
@@ -415,4 +417,41 @@ func flattenTeaCmd(cmd tea.Cmd) []tea.Msg {
 		return out
 	}
 	return []tea.Msg{msg}
+}
+
+// TestConfigSavedNotifiesOpenReview is the reported bug plus its follow-up:
+// the stamp check runs when a review screen is built, so a settings change
+// made while the review is already on screen has to be pushed to it — but
+// *only* when the settings really moved. A trip through the wizard that lands
+// back where it started must not raise a full-screen question about nothing.
+func TestConfigSavedNotifiesOpenReview(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stamp string
+		want  bool
+	}{
+		{"settings moved", "some-other-settings", true},
+		{"net-zero edit", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testShell(t)
+			fakeProposal(t, m.a)
+			stamp := tc.stamp
+			if stamp == "" {
+				stamp = vfs.ConfigStamp(vfs.ConfigFor(m.a.Config))
+			}
+			if err := vfs.WriteStamp(filepath.Dir(m.a.Config.AppDBPath), stamp); err != nil {
+				t.Fatal(err)
+			}
+			open := &probe{name: "review"}
+			m.screens[tabReview] = open
+			m.reviewReady = true
+
+			m.configSaved()
+
+			if got := open.got(review.SettingsChangedMsg{}); got != tc.want {
+				t.Errorf("review told the settings changed = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }

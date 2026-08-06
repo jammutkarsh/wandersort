@@ -36,16 +36,29 @@ type Options struct {
 	// resolver, --rebuild's vfs.Propose, and vfs.BuildTree before the program
 	// ever appears.
 	Load func(ctx context.Context) ([]vfs.Node, *location.Resolver, error)
+	// Rebuild re-proposes the whole hierarchy from the caller's current
+	// settings and returns the new tree, behind [R]. Nil hides the key — the
+	// review can't do this itself, it has neither the settings nor the phase.
+	Rebuild func(ctx context.Context) ([]vfs.Node, error)
+	// SettingsChanged opens the review with the rebuild question already up —
+	// the caller compared the config stamp before building the screen.
+	SettingsChanged bool
 }
+
+// SettingsChangedMsg tells an already-open review that the settings moved
+// under it. The stamp check only runs when a review screen is built, so
+// without this a change made while the review is on screen — which is exactly
+// what the unified shell makes easy — would never be noticed.
+type SettingsChangedMsg struct{}
 
 // Run drives the standalone full-screen review to completion and writes the
 // approved plan. Returns an error if the reviewer quit without saving.
 func Run(ctx context.Context, o Options) error {
 	var first tea.Model
-	if len(o.Tree) == 0 && o.Load != nil {
+	if o.Load != nil && len(o.Tree) == 0 {
 		first = newLoadingScreen(ctx, o)
 	} else {
-		first = newModel(o.Tree, ctx, o.DB, o.Resolver, o.Log)
+		first = newModel(o.Tree, ctx, o.DB, o.Resolver, o.Log).withHost(o)
 	}
 	m, err := tea.NewProgram(tui.NewShell(first), tea.WithOutput(os.Stderr), tea.WithAltScreen()).Run()
 	if err != nil {
@@ -87,7 +100,7 @@ func ConfirmAll(ctx context.Context, o Options) error {
 // inside its own bubbletea program. Pass the model the shell leaves behind to
 // Outcome.
 func Screen(ctx context.Context, o Options) tea.Model {
-	m := newModel(o.Tree, ctx, o.DB, o.Resolver, o.Log)
+	m := newModel(o.Tree, ctx, o.DB, o.Resolver, o.Log).withHost(o)
 	m.embedded = true
 	return screen{
 		inner:     m,
@@ -184,6 +197,18 @@ type Model struct {
 	// sets done instead of tea.Quit, and the shell wrapper finalizes.
 	embedded bool
 	done     bool
+	// [R] re-proposes the whole hierarchy from the caller's current settings.
+	// Both a settings change and the key itself raise askRebuild — a
+	// full-screen yes/no the reviewer has to answer, not a status line: the
+	// plan on screen no longer matches the settings, and a line above the key
+	// bar is exactly what nobody reads. It is also the only warning a rebuild
+	// needs (it discards every edit), which is why there is no press-twice
+	// dance on top of it.
+	rebuild       func(ctx context.Context) ([]vfs.Node, error)
+	askRebuild    bool
+	rebuildChoice bool // which button the modal has under the cursor
+	approvedFiles int  // what a rebuild would re-propose; named in the modal
+	rebuilding    bool
 	// undo holds one whole-tree snapshot per structural edit, so [u] walks all
 	// the way back — a reshaped tree can't be restored from per-row names.
 	undo        []undoStep
@@ -216,6 +241,59 @@ func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, resolver *l
 	// user_labels only changes on Confirm, after this TUI exits, so the set is
 	// fixed for the session — load it once instead of querying per keystroke.
 	m.labels = vfs.Labels(ctx, database, log)
+	return m
+}
+
+// withHost applies the parts of Options only the caller can answer — how to
+// rebuild, and whether the settings already moved. Separate from newModel so
+// the loading screen and the two entry points share one constructor.
+func (m Model) withHost(o Options) Model {
+	m.rebuild = o.Rebuild
+	if o.SettingsChanged {
+		m.raiseRebuildAsk()
+	}
+	return m
+}
+
+// raiseRebuildAsk puts the rebuild question up. The approved count is read
+// here, once, rather than per frame — the modal names it because that is the
+// work a rebuild throws away.
+func (m *Model) raiseRebuildAsk() {
+	if m.rebuild == nil { // the host can't rebuild; asking would go nowhere
+		return
+	}
+	m.askRebuild = true
+	m.rebuildChoice = true
+	m.approvedFiles, _ = vfs.ApprovedCount(m.ctx, m.db)
+}
+
+// rebuiltMsg carries [R]'s new tree back from the vfs phase.
+type rebuiltMsg struct {
+	tree []vfs.Node
+	err  error
+}
+
+// rebuilt swaps in the re-proposed hierarchy. Everything derived from the old
+// tree goes with it: the undo stack can't describe edits to folders that no
+// longer exist, and the cursor's row is gone.
+func (m Model) rebuilt(msg rebuiltMsg) Model {
+	m.rebuilding = false
+	if msg.err != nil {
+		m.statusMsg, m.statusIsErr = "rebuild failed: "+msg.err.Error(), true
+		return m
+	}
+	// An empty tree would leave every key that reads the cursor row with
+	// nothing to read; keeping the old one is also the more useful answer.
+	if len(msg.tree) == 0 {
+		m.statusMsg, m.statusIsErr = "rebuild proposed no folders — keeping the current plan", true
+		return m
+	}
+	m.tree = msg.tree
+	m.undo = nil
+	m.cursor, m.offset = 0, 0
+	m.visualMode = false
+	m.reflow()
+	m.statusMsg, m.statusIsErr = "folders re-proposed with your current settings", false
 	return m
 }
 

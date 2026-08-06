@@ -184,6 +184,22 @@ func Labels(ctx context.Context, database *db.DB, log logger.Logger) []string {
 	return labels
 }
 
+// ApprovedCount is how many entries the reviewer already confirmed — the size
+// of the plan a rebuild would throw away. Lives here rather than in each
+// caller: what a status means is this package's business, and both the
+// `--rebuild` guard and the review's rebuild question ask the same question.
+func ApprovedCount(ctx context.Context, database *db.DB) (int, error) {
+	if database == nil {
+		return 0, nil
+	}
+	var n int
+	if err := database.SQL.GetContext(ctx, &n,
+		`SELECT COUNT(*) FROM virtual_fs_entries WHERE status = ?`, db.StatusApproved); err != nil {
+		return 0, fmt.Errorf("count approved entries: %w", err)
+	}
+	return n, nil
+}
+
 // Confirm applies the (possibly edited) tree back onto the proposal's
 // entries, flips PROPOSED rows to APPROVED, and remembers every name the
 // reviewer typed in user_labels, so the next review's rename completions

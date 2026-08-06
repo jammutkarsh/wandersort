@@ -33,6 +33,29 @@ type app struct {
 	// outLock is the output-dir lock the shell takes lazily (see ensureOutput);
 	// the subcommands hold their own and unlock it themselves.
 	outLock *lock.Lock
+	// overrides is the flag layer this invocation resolved with, kept so a
+	// re-resolve mid-session layers the same way (see reloadConfig).
+	overrides config.Overrides
+}
+
+// reloadConfig re-resolves the settings after the wizard rewrote config.yaml
+// under a running session. The output path is the one setting that cannot move
+// mid-session — the database and the lock are already open on the old one — so
+// it is held back and returned as a note for the user instead.
+func (a *app) reloadConfig() (note string, err error) {
+	cfg, warning, err := config.Resolve(a.overrides)
+	if err != nil {
+		return "", fmt.Errorf("reload settings: %w", err)
+	}
+	if warning != "" {
+		a.Log.Warn(warning, logger.UserKey, true)
+	}
+	if a.AppDB != nil && cfg.AppDBPath != a.Config.AppDBPath {
+		cfg.AppDBPath, cfg.LogFile = a.Config.AppDBPath, a.Config.LogFile
+		note = "Output folder saved — it takes effect the next time you start wandersort"
+	}
+	a.Config = cfg
+	return note, nil
 }
 
 func Execute() error {

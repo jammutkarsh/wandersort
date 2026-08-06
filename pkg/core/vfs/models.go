@@ -42,6 +42,10 @@ type Config struct {
 	// config.yaml by the caller (workflow or review --rebuild). Nil when
 	// no saved places are configured or the resolver isn't ready.
 	Anchors []location.Anchor
+	// SavedPlaces is the same places as the names the user typed, before
+	// resolution. Anchors can't stand in for them in ConfigStamp: resolving
+	// needs the location database, and the stamp check must work without it.
+	SavedPlaces []string
 	// Workers sizes the pool every per-master pass fans out over — deriveAll,
 	// resolveLocations, applyNameCase and buildTargets (see forEachMaster).
 	// 0 or 1 runs them inline.
@@ -75,6 +79,7 @@ func ConfigFor(appCfg *config.Configuration) Config {
 	cfg.SavedPlacesDateOnly = appCfg.SavedPlacesDateOnly
 	cfg.MergeSameLocationDays = appCfg.MergeSameLocationDays
 	cfg.Workers = appCfg.Workers
+	cfg.SavedPlaces = appCfg.SavedPlaces
 	switch {
 	// empty Rules keeps the defaults; RuleNone is interpreted only here, so
 	// every caller sees the sentinel resolved the same way

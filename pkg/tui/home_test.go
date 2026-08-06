@@ -166,8 +166,8 @@ func TestHome(t *testing.T) {
 			m = next.(HomeModel)
 			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 			m = next.(HomeModel)
-			if got := m.ti.Value(); got != "~/Pictures" {
-				t.Errorf("tab filled %q, want the top completion", got)
+			if got := m.ti.Value(); got != "~/Pictures/" {
+				t.Errorf("tab filled %q, want the top completion with a trailing slash", got)
 			}
 		}},
 		// [ctrl+r] only offers itself when there is a proposal to open.

@@ -23,12 +23,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scrollIntoView()
 		return m, nil
 	case spinner.TickMsg:
-		if !m.previewing {
+		if !m.previewing && !m.rebuilding {
 			return m, nil
 		}
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
+	case SettingsChangedMsg:
+		m.raiseRebuildAsk()
+		return m, nil
+	case rebuiltMsg:
+		return m.rebuilt(msg), nil
 	case previewDoneMsg:
 		m.previewing = false
 		m.previewErr = msg.err
@@ -41,6 +46,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	}
 	return m, nil
+}
+
+// answerRebuildAsk drives the rebuild modal: the same keys tui.ConfirmModel
+// answers, since that is what it is drawn as. Anything else is swallowed —
+// the question has to be answered, not scrolled past.
+func (m Model) answerRebuildAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "left", "h":
+		m.rebuildChoice = true
+	case "right", "l":
+		m.rebuildChoice = false
+	case "y":
+		return m.startRebuild()
+	case "n", "esc":
+		m.askRebuild = false
+	case "enter":
+		if m.rebuildChoice {
+			return m.startRebuild()
+		}
+		m.askRebuild = false
+	}
+	return m, nil
+}
+
+// startRebuild runs the host's rebuild off the UI goroutine, behind the same
+// spinner [p] uses. The modal was the confirmation, so nothing warns again.
+func (m Model) startRebuild() (tea.Model, tea.Cmd) {
+	m.askRebuild = false
+	m.rebuilding = true
+	m.statusMsg, m.statusIsErr = "", false
+	rebuild, ctx := m.rebuild, m.ctx
+	return m, tea.Batch(m.spin.Tick, func() tea.Msg {
+		tree, err := rebuild(ctx)
+		return rebuiltMsg{tree: tree, err: err}
+	})
 }
 
 func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -89,6 +129,12 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.refreshSuggestions()
 		}
 		return m, nil
+	}
+
+	// The rebuild question owns the screen until it is answered — that is the
+	// point of it. ctrl+c still falls through, so the app is never trapped.
+	if m.askRebuild && key.String() != "ctrl+c" {
+		return m.answerRebuildAsk(key)
 	}
 
 	if m.showHelp {
@@ -155,6 +201,10 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.flattenFolders(m.selectedRows())
 	case "?":
 		m.showHelp = true
+	case "R":
+		if !m.rebuilding {
+			m.raiseRebuildAsk()
+		}
 	case "u":
 		if n := len(m.undo); n > 0 {
 			step := m.undo[n-1]

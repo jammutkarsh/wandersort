@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
@@ -42,8 +43,15 @@ type Workflow struct {
 	db      *db.DB
 	log     logger.Logger
 	deps    Deps
-	appCfg  *config.Configuration
 	workers int
+
+	// appCfg is swappable while the pipeline runs (UpdateConfig): the shell
+	// hosts the settings wizard and the scan in one program, so a save can
+	// land mid-run. Only the vfs phase re-reads it — everything above it has
+	// already used what it needed.
+	mu      sync.Mutex
+	appCfg  *config.Configuration
+	cfgDirt bool
 
 	/* Utilities */
 	path      *path.Resolver
@@ -109,6 +117,33 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 		outputDir: filepath.Dir(cfg.AppDBPath),
 	}
 	return wf
+}
+
+// UpdateConfig swaps the settings the vfs phase builds its proposal from, so
+// a wizard save inside the shell retargets the run that is already going.
+// Safe from any goroutine; takes effect at the next vfs (re)start. The phases
+// above vfs read nothing from it, so nothing else needs to be told.
+func (wf *Workflow) UpdateConfig(cfg *config.Configuration) {
+	wf.mu.Lock()
+	defer wf.mu.Unlock()
+	wf.appCfg = cfg
+	wf.cfgDirt = true
+}
+
+// takeConfig reads the settings for one vfs pass and marks them as used, so a
+// save that arrives during the pass is what configChanged then reports.
+func (wf *Workflow) takeConfig() *config.Configuration {
+	wf.mu.Lock()
+	defer wf.mu.Unlock()
+	wf.cfgDirt = false
+	return wf.appCfg
+}
+
+// configChanged reports a save that landed since the last takeConfig.
+func (wf *Workflow) configChanged() bool {
+	wf.mu.Lock()
+	defer wf.mu.Unlock()
+	return wf.cfgDirt
 }
 
 // RunScan canonicalizes and prunes nested scan roots, then runs the pipeline
@@ -215,7 +250,19 @@ func (wf *Workflow) workflowPhases(paths []string) []workflowPhase {
 				if err != nil {
 					return 0, fmt.Errorf("location resolver: %w", err)
 				}
-				return vfs.Propose(wf.ctx, wf.db, resolver, wf.appCfg, wf.log)
+				// A settings save that lands while this is running gets a
+				// second pass rather than a cancelled first one: vfs.Propose
+				// replaces the proposal wholesale and is idempotent, so
+				// letting it finish and re-running costs one pass and needs no
+				// context surgery or half-written state.
+				for {
+					count, err := vfs.Propose(wf.ctx, wf.db, resolver, wf.takeConfig(), wf.log)
+					if err != nil || !wf.configChanged() {
+						return count, err
+					}
+					wf.log.Info("Settings changed — rebuilding folder proposal with new settings",
+						logger.UserKey, true)
+				}
 			},
 			summary: func(count int) string { return fmt.Sprintf("Proposed destinations for %d files", count) },
 		},

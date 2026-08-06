@@ -11,9 +11,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/spf13/cobra"
 )
@@ -70,6 +72,12 @@ func (a *app) runReset(cmd *cobra.Command) error {
 
 	if err := a.AppDB.Optimize(ctx); err != nil {
 		a.Log.Warn("database optimization after reset failed", "error", err)
+	}
+
+	// The stamp describes a proposal that no longer exists.
+	stamp := filepath.Join(filepath.Dir(a.Config.AppDBPath), vfs.StampFileName)
+	if err := os.Remove(stamp); err != nil && !os.IsNotExist(err) {
+		a.Log.Warn("could not remove the settings stamp", "error", err)
 	}
 
 	fmt.Fprintln(os.Stderr, tui.OK.Render("All wandersort data deleted."))

@@ -234,8 +234,11 @@ func (m HomeModel) enter() (tea.Model, tea.Cmd) {
 
 // fill writes the picked completion into the input. Suggestions come from the
 // local filesystem, so they're refreshed synchronously — no debounce needed.
+// Every suggestion is a directory (suggestDirs filters to dirs only), so a
+// trailing "/" always applies — it's what tells the reader tab landed inside
+// a real folder, and refresh() immediately lists what's below it.
 func (m *HomeModel) fill(i int) {
-	m.ti.SetValue(m.sugg[i])
+	m.ti.SetValue(m.sugg[i] + "/")
 	m.ti.CursorEnd()
 	m.refresh()
 }

@@ -51,6 +51,15 @@ one scan ever runs against it at a time (see "Conventions" below):
     session that opens it first holds nothing, and a second `wandersort` is
     refused at the point it would really collide rather than at launch. The
     subcommands still take their own lock and unlock it themselves.
+    `reloadConfig` re-runs `config.Resolve` after the shell's own wizard
+    rewrote `config.yaml` mid-session — with `app.overrides`, the flag layer
+    `PersistentPreRunE` resolved with, so a flag still beats what was just
+    saved. **The output path is the one setting it holds back**: the database
+    and the lock are already open on the old one, so it keeps the old
+    `AppDBPath`/`LogFile` and returns a note saying it takes effect next
+    launch. Everything else (rules, toggles, saved places) is live from that
+    moment — which is what makes the stamp check and a mid-run
+    `Workflow.UpdateConfig` agree on one `a.Config`.
   - `root.go` — root cmd and flag-name constants. **`PersistentPreRunE` is the
     single place** config is resolved: it ensures `~/.wandersort/config.yaml`
     exists (`config.EnsureGlobalConfigFile`), builds a `config.FlagOverrides`
@@ -132,6 +141,16 @@ one scan ever runs against it at a time (see "Conventions" below):
     answer (`Done`, or the `SwitchMsg{nil}` a review hands back with) into a
     quit rather than a walk home, and any other keystroke clears it — the user
     stayed, so a later save must go home as usual.
+    **A wizard save is picked up without a relaunch** (`configSaved`, run when
+    an embedded `FormModel` reports `Done()` without an abort or an error):
+    `a.reloadConfig` re-resolves the settings, and a scan still running has its
+    workflow retargeted through `wf.UpdateConfig` — which is why `shellModel`
+    keeps the `*workflow.Workflow` the scan tab was built with, and why
+    `newScanScreen` returns it alongside the screen. That is the whole reason
+    the settings tab is worth having *during* a scan: the folders the run ends
+    up proposing are the ones just asked for, with no rebuild prompt
+    afterwards. Changing the output path mid-session is the exception — it
+    surfaces as `reloadConfig`'s note on the home screen's error line.
   - `config.go` — `config` cmd: **the settings wizard** (there is no `setup`
     command — dependency downloads belong to `scan`). `buildConfigForm` +
     `tui.FormModel`: a top-down stacked form (answered fields collapse to
@@ -256,13 +275,37 @@ one scan ever runs against it at a time (see "Conventions" below):
     `workflow` and `cli/review`) made it. `user_labels`' `SAVED_PLACE` kind is
     legacy: nothing writes it, the CHECK constraint just still allows it.
   - `review.go` — `review` cmd: cobra wiring only (db-exists check, output
-    lock, the `--rebuild` guard via `approvedCount`, `vfs.BuildTree`), then
+    lock, the `--rebuild` guard via `vfs.ApprovedCount`, `vfs.BuildTree`), then
     hands off to `internal/review`. There is no session lookup before
     `BuildTree` — `virtual_fs_entries` always holds exactly one proposal
     batch (the VFS phase deletes-then-reinserts wholesale every run), so an
     empty tree from `BuildTree` alone means "nothing to review yet". It also
     holds `newReviewScreen`, which builds the embedded screen `scan` swaps into.
     **The TUI itself lives in `internal/review/`** — see below.
+    It also owns the **rebuild prompt**: `settingsChanged(outputDir)` compares
+    the `.wandersort.cfg` stamp against `vfs.ConfigStamp(vfs.ConfigFor(a.Config))`
+    (see `pkg/core/vfs/snapshot.go`). Nothing re-proposes on its own, so this
+    comparison is the only way a settings change ever becomes visible. **The
+    CLI does not ask the question itself** — it hands the answer to the review
+    as `review.Options.SettingsChanged` and the rebuild itself as
+    `Options.Rebuild` (`a.rebuildTree` = `vfs.Propose` + `BuildTree`), and the
+    review raises its own full-screen yes/no over the tree. One asking place,
+    three entry points (the `review` cmd, the shell opening review, and a
+    settings save while a review is already on screen), instead of an
+    interstitial screen per entry point — the earlier version had a pre-load
+    `review.Prompt` *and* a `tui.ConfirmModel` interstitial in
+    `newReviewScreen` *and* a banner, and they could each fire for the same
+    change. `--yes`/`--plain`/non-TTY has nobody to ask: one `UserKey` warning
+    naming `review --rebuild`, then the existing tree.
+    **The comparison is of the settings, not of "did the wizard run"** — a
+    reported bug: a trip through the wizard that changes something and changes
+    it back has the same stamp, and must not raise a question about nothing.
+    `shell.configSaved` therefore calls `settingsChanged` before forwarding
+    `review.SettingsChangedMsg`, rather than forwarding on every save.
+    **A build-time check alone can never be enough**, which is the other half
+    of the same reported bug: in the shell the settings can move while the
+    review is on screen, and no check that runs when a screen is *built* will
+    see it. That is what `SettingsChangedMsg` is for.
 
 - `internal/review/` — the bubbletea **full-tree view** TUI over the VFS
   proposal (issue #8), extracted from `internal/cli` because it was 60% of that
@@ -403,6 +446,27 @@ one scan ever runs against it at a time (see "Conventions" below):
   re-proposes the hierarchy without a re-scan or re-hash (editing
   `config.yaml` alone, without `--rebuild`, changes nothing until the next
   `wandersort scan`).
+  **`R` is `--rebuild` from inside the review** — the same thing without
+  quitting and relaunching, which is the only form of it the shell can offer at
+  all (there is no command line to add a flag to once the app is open). Capital
+  `R` because `r` is rename. It does not rebuild: it raises `askRebuild`, a
+  **full-screen yes/no drawn as `tui.ConfirmModel`** (the dialog `reset` asks
+  with), which is also what `SettingsChangedMsg` and `Options.SettingsChanged`
+  raise. Three ways in, one question. It was a dim line above the key bar
+  first, and the reported verdict was the obvious one — **nobody reads that**;
+  a plan that no longer matches the settings is worth the screen. The modal
+  owns the keyboard until answered (only `ctrl+c` falls through, so the app is
+  never trapped), and **`y` rebuilds on that press** — an earlier
+  warn-once-then-act on `[R]` meant pressing it twice, which read as "the first
+  press only dismissed the message". The modal *is* the warning: its text
+  names the unsaved edits and the already-approved files
+  (`vfs.ApprovedCount`) a rebuild would re-propose.
+  The rebuild itself runs `Options.Rebuild` (the caller's hook: this package
+  has neither the settings nor the vfs phase, and must not grow either) off the
+  UI goroutine behind the same spinner `[p]` uses, then replaces the tree
+  wholesale — undo stack, cursor and selection with it, since they all describe
+  folders that may no longer exist. A nil `Options.Rebuild` hides the key and
+  never raises the question, rather than offering something the host can't do.
   **The screen is built from `pkg/tui`, like scan and config** — it used to
   hand-roll its own chrome and looked like a different program: `tui.Screen`
   pins the footer to the terminal's last row, `header()` is banner + one
@@ -483,7 +547,8 @@ Back in `internal/cli/`:
     step after `scan` now.
   - `issue.go` — `issue` cmd: zips the log (renamed
     `wandersort.log`) + `about.txt`; db opt-in via `--include-db` (holds paths/GPS).
-  - `reset.go` — wipe scan data (confirm prompt unless `--yes`).
+  - `reset.go` — wipe scan data (confirm prompt unless `--yes`), plus the
+    `.wandersort.cfg` stamp, which describes a proposal that no longer exists.
   - `help.go` — custom lipgloss-styled help renderer. Kept in `cli` (unlike
     `lock.go`) since it's a one-off cobra `SetHelpFunc`, not reusable
     logic another entry point would need.
@@ -565,7 +630,18 @@ reads it straight via `config.Load`.
   phase closures, calling `deps.Exiftool()`/`deps.Location()` right before
   running, so a first-ever TUI scan walks and hashes while the downloads are
   still going. Plain-console scans, which install everything up front, wrap
-  the values in `workflow.ReadyDeps`. **There is no `scan_sessions` table and
+  the values in `workflow.ReadyDeps`. **`appCfg` is swappable while the
+  pipeline runs** (`UpdateConfig`, mutex-guarded, plus a dirty flag): the shell
+  hosts the settings wizard and the scan in one program, so a save can land
+  mid-run. Only the vfs phase re-reads it — every phase above it has already
+  used what it needed — and it does so in a small loop: `takeConfig` for a
+  pass, then re-run if `configChanged` reports a save arrived *during* it.
+  Let-it-finish-then-re-run rather than cancel mid-flight: `vfs.Propose`
+  replaces the proposal wholesale and is idempotent, so a second pass costs one
+  pass and needs no context surgery or half-written state. It is also what
+  keeps `BuildAnchors` (which replaces `r.Anchors` in place and is read
+  lock-free from the parallel `Lookup`) strictly sequential — never call
+  `vfs.Propose` concurrently with itself. **There is no `scan_sessions` table and
   no in-memory run-overlap guard either** — `RunScan` takes no ID and returns
   none; two scans can never race against the same output dir because
   `lock.AcquireOutput`'s exclusive PID lock already serializes at the process
@@ -659,7 +735,23 @@ reads it straight via `config.Load`.
   the same four-line ritual (load the config file again, build anchors, copy
   `resolver.Anchors` onto the `Config`, `New(...).Run`) and either could drift
   from the other. `New` stays for a test, or a caller that wants to state the
-  `Config` itself. `Config.Rules` (below Year/Month)
+  `Config` itself. **`Propose` also writes the config stamp** on success
+  (`snapshot.go`: `ConfigStamp`/`WriteStamp`/`ReadStamp`, `.wandersort.cfg` in
+  the output directory) — the same argument, one rung up: every path to a fresh
+  proposal goes through `Propose`, and only `Propose` holds both the `Config`
+  and the output directory, so neither caller has to remember. A failed stamp
+  write warns and lets the proposal stand; a *missing* stamp is never a
+  settings change (`ReadStamp` reports `ok=false`), so a pre-stamp library
+  never prompts. **The stamp hashes a subset, not the config file**: `Rules`,
+  the three folder toggles and `SavedPlaces` — the settings that can move a
+  file. `Workers` is deliberately out (it cannot change a target path, and
+  `workers: 8→16` is exactly the false rebuild prompt the subset exists to
+  avoid), and saved places are hashed as **typed names, not resolved anchors**,
+  so the check never needs the location database. `Config.SavedPlaces` exists
+  for that reason alone — `ConfigFor` copies it beside the anchors.
+  One output folder has one rule set, which is why the stamp is a file in it
+  rather than a database row: it outlives re-scans and new source folders.
+  `Config.Rules` (below Year/Month)
   is `location`/`orientation`/`device`/`media` in any order, or empty for a
   flat `Year/Month` — set via `config.yaml`'s `rules` key (`wandersort config`
   wizard only, no CLI flag). `date` is a Day level, so the full
@@ -755,6 +847,9 @@ reads it straight via `config.Load`.
   `captureDirs` skips videos so a Live Photo `.MOV` isn't forced across the
   Photos/Videos split — so it falls back to its own mtime (12 files in one real
   15k library).
+  `ApprovedCount` lives here too — what a status means is this package's
+  business, and both the `--rebuild` guard and the review's rebuild question
+  ask the same thing of the same column.
   `review.go` (issue #8's reconcile core, read by the CLI TUI) exposes the
   proposal as a directory tree the reviewer edits
   before `Confirm` writes it back: `BuildTree` also carries one exemplar
@@ -835,6 +930,11 @@ reads it straight via `config.Load`.
   **`ctrl+c` is the one quit key on every screen** — the post-scan prompt's
   `[n] quit` was the last holdout and is gone; `[y]` still opens the review.
   (`ConfirmModel`'s `y`/`n` stays: that is a yes/no question, not a way out.)
+  `ConfirmModel` quits its own program on an answer, which is right for
+  `reset`; a screen that wants the question *inside* itself — the review's
+  rebuild modal — drives its own keys and uses `ConfirmModel` for the layout
+  only, built per frame (a bubbletea model copied by value can't safely hold a
+  pointer into its own fields, which is what its `Value` is).
   Design rules live in `pkg/tui/README.md` — new screens compose from this
   kit, never invent colours/markers. The pipeline feeds it through the logger
   only (`pkg/logger/stream.go`: `StreamKey` per-file lines — logged at **Info**,

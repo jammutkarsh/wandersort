@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -38,23 +39,23 @@ func TestApprovedCount(t *testing.T) {
 	seedVFSEntry(t, d, 2, db.StatusApproved)
 	seedVFSEntry(t, d, 3, db.StatusApproved)
 
-	n, err := approvedCount(context.Background(), d)
+	n, err := vfs.ApprovedCount(context.Background(), d)
 	if err != nil {
-		t.Fatalf("approvedCount: %v", err)
+		t.Fatalf("ApprovedCount: %v", err)
 	}
 	if n != 2 {
-		t.Errorf("approvedCount = %d, want 2", n)
+		t.Errorf("ApprovedCount = %d, want 2", n)
 	}
 }
 
 func TestApprovedCountEmpty(t *testing.T) {
 	d := dbtest.New(t)
-	n, err := approvedCount(context.Background(), d)
+	n, err := vfs.ApprovedCount(context.Background(), d)
 	if err != nil {
-		t.Fatalf("approvedCount: %v", err)
+		t.Fatalf("ApprovedCount: %v", err)
 	}
 	if n != 0 {
-		t.Errorf("approvedCount(empty) = %d, want 0", n)
+		t.Errorf("ApprovedCount(empty) = %d, want 0", n)
 	}
 }
 
@@ -126,5 +127,30 @@ func TestReportReviewOutcome(t *testing.T) {
 	}
 	if !strings.Contains(note, "approved") {
 		t.Errorf("confirmed note = %q, want it to say so", note)
+	}
+}
+
+// TestSettingsChanged pins the three answers the rebuild prompt hangs on: no
+// stamp is never a change (a proposal from before stamping must not prompt),
+// a matching stamp is not a change, and a settings edit is.
+func TestSettingsChanged(t *testing.T) {
+	cfg := testConfig(t)
+	a := &app{Config: cfg, Log: logger.NewNoopLogger()}
+	outputDir := t.TempDir()
+
+	if a.settingsChanged(outputDir) {
+		t.Error("no stamp file must never read as a settings change")
+	}
+
+	if err := vfs.WriteStamp(outputDir, vfs.ConfigStamp(vfs.ConfigFor(cfg))); err != nil {
+		t.Fatal(err)
+	}
+	if a.settingsChanged(outputDir) {
+		t.Error("the stamp the current settings produce must not read as a change")
+	}
+
+	a.Config.Rules = []string{vfs.RuleDevice, vfs.RuleMedia}
+	if !a.settingsChanged(outputDir) {
+		t.Error("changed rules must read as a settings change")
 	}
 }

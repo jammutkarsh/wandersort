@@ -58,13 +58,17 @@ Flags take precedence over environment variables.`,
 			return a.runRoot(cmd)
 		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			cfg, warning, err := config.Resolve(config.Overrides{
+			// Kept on the app: the shell re-resolves after its own settings
+			// wizard rewrites config.yaml mid-session, and the flag layer must
+			// still win over what was just written.
+			a.overrides = config.Overrides{
 				OutputPath:            flagStr(cmd, flagOutputPath),
 				Workers:               flagInt(cmd, flagWorkers),
 				CollapseLevels:        flagBool(cmd, flagCollapse),
 				SavedPlacesDateOnly:   flagBool(cmd, flagSPDateOnly),
 				MergeSameLocationDays: flagBool(cmd, flagMergeDays),
-			})
+			}
+			cfg, warning, err := config.Resolve(a.overrides)
 			if err != nil {
 				return err
 			}
