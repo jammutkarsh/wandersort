@@ -8,11 +8,12 @@ package install
 
 import (
 	"archive/tar"
-	"compress/gzip"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -99,9 +100,9 @@ func TestFindExiftoolNotFound(t *testing.T) {
 	}
 }
 
-// buildTarGz writes a tar.gz at dest containing files (name -> content),
+// buildTarZst writes a tar.zst at dest containing files (name -> content),
 // mirroring the flat layout publish-r2.yml produces.
-func buildTarGz(t *testing.T, dest string, files map[string]string) {
+func buildTarZst(t *testing.T, dest string, files map[string]string) {
 	t.Helper()
 	f, err := os.Create(dest)
 	if err != nil {
@@ -109,8 +110,11 @@ func buildTarGz(t *testing.T, dest string, files map[string]string) {
 	}
 	defer f.Close()
 
-	gz := gzip.NewWriter(f)
-	tw := tar.NewWriter(gz)
+	zw, err := zstd.NewWriter(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(zw)
 	for name, content := range files {
 		hdr := &tar.Header{Name: name, Mode: 0o755, Size: int64(len(content))}
 		if err := tw.WriteHeader(hdr); err != nil {
@@ -123,22 +127,22 @@ func buildTarGz(t *testing.T, dest string, files map[string]string) {
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := gz.Close(); err != nil {
+	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestExtractTarGz(t *testing.T) {
+func TestExtractTarZst(t *testing.T) {
 	dir := t.TempDir()
-	archive := filepath.Join(dir, "exiftool.tar.gz")
-	buildTarGz(t, archive, map[string]string{
+	archive := filepath.Join(dir, "exiftool.tar.zst")
+	buildTarZst(t, archive, map[string]string{
 		"exiftool":     "#!/bin/sh\necho fake\n",
 		"lib/data.txt": "some bundled data",
 	})
 
 	destDir := t.TempDir()
-	if err := extractTarGz(archive, destDir); err != nil {
-		t.Fatalf("extractTarGz() error = %v", err)
+	if err := extractTarZst(archive, destDir); err != nil {
+		t.Fatalf("extractTarZst() error = %v", err)
 	}
 
 	got, err := os.ReadFile(filepath.Join(destDir, "exiftool"))
@@ -151,18 +155,18 @@ func TestExtractTarGz(t *testing.T) {
 	}
 }
 
-func TestExtractTarGzBadArchive(t *testing.T) {
-	bad := filepath.Join(t.TempDir(), "not-a-tar-gz")
-	if err := os.WriteFile(bad, []byte("not gzip data"), 0o644); err != nil {
+func TestExtractTarZstBadArchive(t *testing.T) {
+	bad := filepath.Join(t.TempDir(), "not-a-tar-zst")
+	if err := os.WriteFile(bad, []byte("not zst data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := extractTarGz(bad, t.TempDir()); err == nil {
-		t.Error("extractTarGz() on a non-gzip file = nil error, want one")
+	if err := extractTarZst(bad, t.TempDir()); err == nil {
+		t.Error("extractTarZst() on a non-zst file = nil error, want one")
 	}
 }
 
-func TestExtractTarGzMissingFile(t *testing.T) {
-	if err := extractTarGz(filepath.Join(t.TempDir(), "missing.tar.gz"), t.TempDir()); err == nil {
-		t.Error("extractTarGz() on a missing archive = nil error, want one")
+func TestExtractTarZstMissingFile(t *testing.T) {
+	if err := extractTarZst(filepath.Join(t.TempDir(), "missing.tar.zst"), t.TempDir()); err == nil {
+		t.Error("extractTarZst() on a missing archive = nil error, want one")
 	}
 }

@@ -16,7 +16,7 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip libarchive-tools cpio
+          sudo apt-get install -y unzip libarchive-tools cpio zstd
 
       - name: Install AWS CLI
         run: |
@@ -28,13 +28,17 @@ jobs:
       - name: Extract exiftool version
         id: version
         run: |
-          VERSION=$(grep -oP 'exiftoolVersion = "\K[0-9.]+' pkg/exiftool/verify.go)
+          VERSION=$(grep -oP 'exiftoolVersion = "\K[0-9.]+' pkg/install/exiftool_setup.go)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       # Repackages each platform's upstream archive into a common flat
-      # tar.gz (contents = binDir layout, no wrapping directory, launcher
-      # already renamed) so pkg/exiftool/verify.go needs one generic
-      # extractor instead of a zip/pkg/tar.gz-specific one per platform.
+      # tar.zst (contents = binDir layout, no wrapping directory, launcher
+      # already renamed) so pkg/install/exiftool_setup.go needs one generic
+      # extractor instead of a zip/pkg/tar-specific one per platform. zstd,
+      # not gzip — the location database ships zstd too, both through the
+      # same shared decoder call (pkg/install's openZstd), so wandersort's
+      # two downloadable dependencies share one compression format and one
+      # decoder dependency instead of two.
       - name: Repackage windows zip
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -43,9 +47,9 @@ jobs:
           unzip -q archive.zip -d extracted-windows
           dir=$(ls extracted-windows)
           mv "extracted-windows/$dir/exiftool(-k).exe" "extracted-windows/$dir/exiftool.exe"
-          tar czf "exiftool-${VERSION}-windows.tar.gz" -C "extracted-windows/$dir" .
+          tar --zstd -cf "exiftool-${VERSION}-windows.tar.zst" -C "extracted-windows/$dir" .
 
-      - name: Repackage linux tar.gz
+      - name: Repackage linux tar.zst
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -53,7 +57,7 @@ jobs:
           mkdir extracted-linux
           tar xzf archive.tar.gz -C extracted-linux
           dir=$(ls extracted-linux)
-          tar czf "exiftool-${VERSION}-linux.tar.gz" -C "extracted-linux/$dir" .
+          tar --zstd -cf "exiftool-${VERSION}-linux.tar.zst" -C "extracted-linux/$dir" .
 
       # .pkg is a xar archive (bsdtar/libarchive reads it directly — the `xar`
       # package itself was dropped from Ubuntu's repos); Payload is a gzip'd
@@ -69,17 +73,17 @@ jobs:
           mkdir payload-darwin
           gzip -dc Payload | (cd payload-darwin && cpio -idm)
           find payload-darwin -name '._*' -delete
-          tar czf "exiftool-${VERSION}-darwin.tar.gz" -C payload-darwin/usr/local/bin .
+          tar --zstd -cf "exiftool-${VERSION}-darwin.tar.zst" -C payload-darwin/usr/local/bin .
 
-      # pkg/exiftool/verify.go trusts this manifest's sha256 over the R2
-      # bucket contents themselves, so a compromised bucket alone can't
+      # pkg/install/exiftool_setup.go trusts this manifest's sha256 over the
+      # R2 bucket contents themselves, so a compromised bucket alone can't
       # swap an archive out unnoticed
       - name: Generate checksums metadata
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           file_entry() {
-            name="exiftool-${VERSION}-$1.tar.gz"
+            name="exiftool-${VERSION}-$1.tar.zst"
             sha=$(sha256sum "$name" | awk '{print $1}')
             size=$(stat -c%s "$name")
             printf '"%s":{"name":"%s","sha256":"%s","size":%s}' "$1" "$name" "$sha" "$size"
@@ -105,7 +109,23 @@ jobs:
           AWS_DEFAULT_REGION: auto
           AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
-          aws s3 cp "exiftool-${VERSION}-windows.tar.gz" "s3://wandersort/files/exiftool-${VERSION}-windows.tar.gz"
-          aws s3 cp "exiftool-${VERSION}-linux.tar.gz" "s3://wandersort/files/exiftool-${VERSION}-linux.tar.gz"
-          aws s3 cp "exiftool-${VERSION}-darwin.tar.gz" "s3://wandersort/files/exiftool-${VERSION}-darwin.tar.gz"
+          aws s3 cp "exiftool-${VERSION}-windows.tar.zst" "s3://wandersort/files/exiftool-${VERSION}-windows.tar.zst"
+          aws s3 cp "exiftool-${VERSION}-linux.tar.zst" "s3://wandersort/files/exiftool-${VERSION}-linux.tar.zst"
+          aws s3 cp "exiftool-${VERSION}-darwin.tar.zst" "s3://wandersort/files/exiftool-${VERSION}-darwin.tar.zst"
           aws s3 cp exiftool.json "s3://wandersort/files/exiftool.json"
+
+      - name: Purge Cloudflare cache
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          curl -sf -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/purge_cache" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "{\"files\":[
+              \"https://wandersort.utkarshchourasia.in/files/exiftool-${VERSION}-windows.tar.zst\",
+              \"https://wandersort.utkarshchourasia.in/files/exiftool-${VERSION}-linux.tar.zst\",
+              \"https://wandersort.utkarshchourasia.in/files/exiftool-${VERSION}-darwin.tar.zst\",
+              \"https://wandersort.utkarshchourasia.in/files/exiftool.json\"
+            ]}"

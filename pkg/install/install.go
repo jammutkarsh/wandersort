@@ -23,6 +23,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
+
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
@@ -426,6 +428,25 @@ func fileSHA256(path string) (string, error) {
 	}
 
 	return fmt.Sprintf("%x", hasher.Sum(nil)), nil
+}
+
+// openZstd opens path and wraps it in a zstd decoder — the one place either
+// downloadable dependency's archive gets decompressed, so exiftool
+// (extractTarZst) and the location database (decompressZstd) share one
+// compression format and one decoder call instead of each carrying their
+// own. Callers must call the returned close func once done reading, which
+// releases the decoder's goroutines as well as the file handle.
+func openZstd(path string) (io.Reader, func(), error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	zr, err := zstd.NewReader(f)
+	if err != nil {
+		f.Close()
+		return nil, nil, fmt.Errorf("zstd reader: %w", err)
+	}
+	return zr, func() { zr.Close(); f.Close() }, nil
 }
 
 // progressReader reports cumulative bytes read to onProgress as they flow.

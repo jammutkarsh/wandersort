@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/jmoiron/sqlx v1.4.0
+	github.com/klauspost/compress v1.19.2
 	github.com/samber/slog-multi v1.8.0
 	github.com/spf13/cobra v1.10.2
 	go.yaml.in/yaml/v3 v3.0.4

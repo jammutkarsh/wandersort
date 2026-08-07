@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -29,9 +30,21 @@ const (
 
 	LocationDBFileName = "location.db"
 
+	// locationDBArchiveSuffix is appended to LocationDBFileName for the
+	// remote asset name and the local download target: the DB now ships
+	// zstd-compressed (fuzzy search needs the bigger geonames_trigrams
+	// table, see pkg/location's SearchByName, and that only stays a
+	// reasonable download size compressed). zstd over xz: decode speed
+	// barely moves with compression level and a pure-Go decoder
+	// (klauspost/compress) still runs orders of magnitude faster than a
+	// pure-Go xz decoder — a real difference for a ~400MB database decoded
+	// on every install. There is no uncompressed .db file on the remote any
+	// more.
+	locationDBArchiveSuffix = ".zst"
+
 	// LocationMetaFileName is the metadata JSON published alongside the
 	// location database: version, date, and the checksum/row-counts
-	// verifyLocationDB checks a downloaded copy against.
+	// verifyLocationDB checks a downloaded (and decompressed) copy against.
 	LocationMetaFileName = "location.json"
 )
 
@@ -58,10 +71,26 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 		logger.PhaseKey, "location", logger.EventKey, "start",
 		"dir", path.New().RelativeToHome(dbPath))
 
-	// no digest here: the expected hash ships in the metadata file downloaded
-	// next, and verifyLocationDB checks against it once both are on disk
-	if err := downloadFile(ctx, log, dbPath, LocationDownloadBaseURL+"/"+LocationDBFileName, "", onProgress); err != nil {
-		return fmt.Errorf("download %s: %w", LocationDBFileName, err)
+	archiveName := LocationDBFileName + locationDBArchiveSuffix
+	archivePath := dbPath + locationDBArchiveSuffix
+	// no digest here: the expected hash is of the decompressed db and ships
+	// in the metadata file downloaded next, which verifyLocationDB checks
+	// against once both are on disk
+	if err := downloadFile(ctx, log, archivePath, LocationDownloadBaseURL+"/"+archiveName, "", onProgress); err != nil {
+		return fmt.Errorf("download %s: %w", archiveName, err)
+	}
+	// zstd decodes this in low single-digit seconds even in pure Go, but
+	// still logged (unlike exiftool's much smaller archive) since nothing
+	// else reports progress between the download bar finishing and this
+	// step's own completion.
+	log.Info("Decompressing location database", logger.UserKey, true,
+		logger.PhaseKey, "location", logger.EventKey, "decompress")
+	if err := decompressZstd(archivePath, dbPath); err != nil {
+		os.Remove(archivePath)
+		return fmt.Errorf("decompress %s: %w", archiveName, err)
+	}
+	if err := os.Remove(archivePath); err != nil {
+		log.Warn("failed to remove downloaded archive", "path", archivePath, "error", err)
 	}
 
 	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
@@ -71,6 +100,39 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 
 	log.Info("location database downloaded", logger.UserKey, true,
 		logger.PhaseKey, "location", logger.EventKey, "done")
+	return nil
+}
+
+// decompressZstd streams archivePath through openZstd into dest, writing
+// through a temp file in dest's own directory so a crash mid-decompress
+// never leaves a truncated location.db behind — same atomic
+// temp-file-then-rename pattern downloadFile itself uses.
+func decompressZstd(archivePath, dest string) error {
+	zr, closeZr, err := openZstd(archivePath)
+	if err != nil {
+		return err
+	}
+	defer closeZr()
+
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".dl-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpName) // no-op if Rename succeeded
+	}()
+
+	if _, err := io.Copy(tmp, zr); err != nil {
+		return fmt.Errorf("write %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, dest); err != nil {
+		return fmt.Errorf("rename %s -> %s: %w", tmpName, dest, err)
+	}
 	return nil
 }
 
@@ -98,16 +160,21 @@ func verifyLocationDB(dbPath string, locationDB *db.DB, log logger.Logger) error
 	}
 	log.Info("location db checksum verified", "path", dbPath, "hash", sum)
 
-	var count int
-	if err := locationDB.QueryRowContext(context.Background(),
-		`SELECT COUNT(*) FROM geonames_cities`).Scan(&count); err != nil {
-		return fmt.Errorf("verifying location database: %w", err)
+	// Every table meta.Rows names gets checked, not just geonames_cities —
+	// this is what makes geonames_trigrams (the fuzzy-search index) verified
+	// too the moment the published meta grows that key, with no further
+	// change needed here.
+	for table, want := range meta.Rows {
+		var count int
+		if err := locationDB.QueryRowContext(context.Background(),
+			fmt.Sprintf(`SELECT COUNT(*) FROM %q`, table)).Scan(&count); err != nil {
+			return fmt.Errorf("verifying location database table %s: %w", table, err)
+		}
+		if count != want {
+			return fmt.Errorf("row count mismatch in %s: db has %d, meta expects %d", table, count, want)
+		}
+		log.Info("location db table verified", "path", dbPath, "table", table, "rows", count)
 	}
-	if count != meta.Rows["geonames_cities"] {
-		return fmt.Errorf("row count mismatch: db has %d, meta expects %d", count, meta.Rows["geonames_cities"])
-	}
-
-	log.Info("location db verified", "path", dbPath, "rows", count)
 	return nil
 }
 

@@ -8,7 +8,6 @@ package install
 
 import (
 	"archive/tar"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -42,7 +41,7 @@ const (
 // releaseMeta is published by .github/workflows/publish-r2.yml alongside
 // the mirrored archives, e.g.:
 //
-//	{"version":"13.59","updated":"...","files":{"darwin":{"name":"exiftool-13.59-darwin.tar.gz","sha256":"...","size":123}}}
+//	{"version":"13.59","updated":"...","files":{"darwin":{"name":"exiftool-13.59-darwin.tar.zst","sha256":"...","size":123}}}
 type releaseMeta struct {
 	Version string                     `json:"version"`
 	Files   map[string]releaseMetaFile `json:"files"`
@@ -177,7 +176,7 @@ func downloadAndExtractExiftool(ctx context.Context, binDir string, log logger.L
 		log.Info("exiftool checksum verified", "path", archiveName, "hash", fileMeta.SHA256)
 	}
 
-	if err := extractTarGz(archiveName, binDir); err != nil {
+	if err := extractTarZst(archiveName, binDir); err != nil {
 		return fmt.Errorf("extract: %w", err)
 	}
 	log.Info("extracted exiftool", "dir", binDir)
@@ -188,24 +187,22 @@ func downloadAndExtractExiftool(ctx context.Context, binDir string, log logger.L
 	return nil
 }
 
-// extractTarGz extracts a tar.gz produced by publish-r2.yml directly into
+// extractTarZst extracts a tar.zst produced by publish-r2.yml directly into
 // destDir. CI already normalizes every platform's upstream archive to this
 // layout (contents flat at the root, launcher pre-renamed), so extraction
-// needs no per-platform unwrapping or renaming step.
-func extractTarGz(tgzPath, destDir string) error {
-	f, err := os.Open(tgzPath)
+// needs no per-platform unwrapping or renaming step. zstd, not gzip — the
+// location database (pkg/install/location_setup.go) ships zstd too, both
+// through the shared openZstd (install.go), so the two downloadable
+// dependencies share one compression format and one decoder call instead of
+// each carrying their own.
+func extractTarZst(tzstPath, destDir string) error {
+	zr, closeZr, err := openZstd(tzstPath)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", tgzPath, err)
+		return err
 	}
-	defer f.Close()
+	defer closeZr()
 
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("gzip reader: %w", err)
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
+	tr := tar.NewReader(zr)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {

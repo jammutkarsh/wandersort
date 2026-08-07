@@ -8,6 +8,7 @@ package location
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math"
@@ -144,6 +145,20 @@ const candidateFetchLimit = 32
 // duplicate filtering runs after the query — limiting in SQL could return a
 // page made entirely of rows that don't survive it.
 const searchOverfetchFactor = 8
+
+// minFuzzyPrefix is the shortest typed prefix the fuzzy fallback runs for —
+// below this, a trigram or 2-char scan is too broad to rank meaningfully.
+const minFuzzyPrefix = 2
+
+// fuzzyFetchLimit bounds both fuzzy fallbacks' broad scan so a short prefix
+// doesn't pull tens of thousands of rows into Go for ranking.
+const fuzzyFetchLimit = 500
+
+// maxLevenshteinDist is the Levenshtein fallback's max edit distance for a
+// typo-tolerant match: ≤2 covers "katmandu"→"Kathmandu" (1) and
+// "kathmendo"→"Kathmandu" (2), while "mumbai"→"Mombasa" (4) is correctly
+// excluded.
+const maxLevenshteinDist = 2
 
 // candidateQuery is shared by Candidates and queryNearest.
 var candidateQuery = `
@@ -446,6 +461,17 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+
+	// The exact prefix query found nothing — try a typo-tolerant match
+	// before giving up, so "katmandu" still finds "Kathmandu".
+	if len(raw) == 0 && len(city) >= minFuzzyPrefix {
+		fuzzy, err := r.fuzzySearch(ctx, city, qualifiers, limit)
+		if err != nil {
+			return nil, err
+		}
+		raw = fuzzy
+	}
+
 	if err := r.fillNames(ctx, raw); err != nil {
 		return nil, err
 	}
@@ -461,6 +487,180 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 		})
 	}
 	return out, nil
+}
+
+// fuzzySearch is SearchByName's typo-tolerant fallback: a trigram match
+// against geonames_trigrams (the external DB's own pg_trgm-style index),
+// falling back to a Go-side Levenshtein scan when that table doesn't exist
+// yet — a location.db downloaded before the trigram index shipped.
+func (r *Resolver) fuzzySearch(ctx context.Context, city string, qualifiers []string, limit int) ([]geoRow, error) {
+	rows, err := r.fuzzySearchTrigram(ctx, city, qualifiers, limit)
+	if err == nil {
+		return rows, nil
+	}
+	if !strings.Contains(err.Error(), "no such table") {
+		return nil, fmt.Errorf("locationResolver: fuzzy search: %w", err)
+	}
+	return r.fuzzySearchLevenshtein(ctx, city, qualifiers, limit)
+}
+
+// fuzzySearchTrigram narrows to geonames_trigrams matches sharing at least
+// one 3-char window with city — the same idea pg_trgm uses to touch only
+// rows that could plausibly match, instead of scanning the whole table —
+// then ranks that pool by real edit distance (rankByDistance): trigram
+// overlap alone is a recall signal, not a precision one (a long garbage
+// string can share several trigrams with a short real city purely by
+// coincidence), so the edit-distance cutoff is still what decides a match.
+func (r *Resolver) fuzzySearchTrigram(ctx context.Context, city string, qualifiers []string, limit int) ([]geoRow, error) {
+	grams := trigrams(city)
+	if len(grams) == 0 {
+		return nil, nil
+	}
+	args := make([]any, len(grams)+1)
+	for i, g := range grams {
+		args[i] = g
+	}
+	args[len(grams)] = fuzzyFetchLimit
+
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT gc.city, gc.latitude, gc.longitude,
+		        COALESCE(gc.state, ''), COALESCE(gc.country, ''), COALESCE(gc.country_code, '')
+		 FROM geonames_trigrams gt
+		 JOIN geonames_cities gc ON gt.city_id = gc.rowid
+		 WHERE gt.trigram IN (?`+strings.Repeat(",?", len(grams)-1)+`)
+		 GROUP BY gt.city_id
+		 ORDER BY COUNT(*) DESC
+		 LIMIT ?`,
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cands, err := scanFuzzyRows(rows, qualifiers, 0) // no limit yet: rankByDistance needs the whole pool
+	if err != nil {
+		return nil, err
+	}
+	return rankByDistance(cands, city, limit), nil
+}
+
+// fuzzySearchLevenshtein is the safety net from before the trigram index
+// existed: widen to the first 2 chars of city, then rank every hit by edit
+// distance. Broader and slower than the trigram query (no index to narrow
+// the scan), but needs nothing from the database beyond geonames_cities
+// itself, so it still works against a location.db downloaded before the
+// trigram table shipped.
+func (r *Resolver) fuzzySearchLevenshtein(ctx context.Context, city string, qualifiers []string, limit int) ([]geoRow, error) {
+	fuzzyPrefix := city[:min(2, len(city))]
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT gc.city, gc.latitude, gc.longitude,
+		        COALESCE(gc.state, ''), COALESCE(gc.country, ''), COALESCE(gc.country_code, '')
+		 FROM geonames_cities gc
+		 WHERE gc.city LIKE ? || '%' COLLATE NOCASE
+		 ORDER BY gc.city LIMIT ?`,
+		fuzzyPrefix, fuzzyFetchLimit)
+	if err != nil {
+		return nil, fmt.Errorf("locationResolver: fuzzy search: %w", err)
+	}
+	defer rows.Close()
+
+	cands, err := scanFuzzyRows(rows, qualifiers, 0) // no limit yet: rankByDistance needs the whole pool
+	if err != nil {
+		return nil, err
+	}
+	return rankByDistance(cands, city, limit), nil
+}
+
+// rankByDistance orders cands by Levenshtein distance to city and keeps only
+// those within maxLevenshteinDist, capped at limit (0 = unbounded).
+func rankByDistance(cands []geoRow, city string, limit int) []geoRow {
+	want := strings.ToLower(city)
+	sort.SliceStable(cands, func(i, j int) bool {
+		return levenshtein(strings.ToLower(cands[i].plain), want) < levenshtein(strings.ToLower(cands[j].plain), want)
+	})
+	out := cands[:0]
+	for _, c := range cands {
+		if levenshtein(strings.ToLower(c.plain), want) > maxLevenshteinDist {
+			continue
+		}
+		out = append(out, c)
+		if limit > 0 && len(out) == limit {
+			break
+		}
+	}
+	return out
+}
+
+// scanFuzzyRows reads the common (city, lat, lon, state, country, code) shape
+// both fuzzy queries select, applying the same qualifier filter and
+// full-name dedup the exact-prefix query uses. limit == 0 means unbounded.
+func scanFuzzyRows(rows *sql.Rows, qualifiers []string, limit int) ([]geoRow, error) {
+	var out []geoRow
+	seen := map[string]bool{}
+	for rows.Next() {
+		var name, state, country, code string
+		var lat, lon float64
+		if err := rows.Scan(&name, &lat, &lon, &state, &country, &code); err != nil {
+			return nil, fmt.Errorf("locationResolver: scan fuzzy: %w", err)
+		}
+		if !matchesQualifiers(state, country, qualifiers) {
+			continue
+		}
+		plain := stripDiacritics(name)
+		if full := fullName(plain, state, country); seen[full] {
+			continue
+		} else {
+			seen[full] = true
+		}
+		out = append(out, geoRow{city: name, state: state, country: country, code: code, plain: plain, lat: lat, lon: lon})
+		if limit > 0 && len(out) == limit {
+			break
+		}
+	}
+	return out, rows.Err()
+}
+
+// trigrams slides a 3-char window over city, lowercased/diacritic-stripped
+// and padded with a space on each side so the first and last characters
+// participate in at least one trigram — the same shape the external
+// locationDB build indexes into geonames_trigrams.
+func trigrams(city string) []string {
+	r := []rune(" " + strings.ToLower(stripDiacritics(city)) + " ")
+	if len(r) < 3 {
+		return nil
+	}
+	out := make([]string, 0, len(r)-2)
+	for i := 0; i+3 <= len(r); i++ {
+		out = append(out, string(r[i:i+3]))
+	}
+	return out
+}
+
+// levenshtein returns the edit distance between a and b (Wagner-Fischer,
+// two rows instead of a full matrix — O(len(a)*len(b)) time, O(min) space).
+func levenshtein(a, b string) int {
+	if len(a) == 0 {
+		return len(b)
+	}
+	if len(b) == 0 {
+		return len(a)
+	}
+	prev := make([]int, len(b)+1)
+	curr := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(b)]
 }
 
 // canonicalSearchLimit is how many rows Canonical looks through for an exact
