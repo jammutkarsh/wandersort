@@ -22,6 +22,9 @@ bin/
 # Cache directories
 .wandersort/
 
+# make test's pre-downloaded exiftool/location.db (scripts/fetchtestdeps)
+/test/deps/
+
 # Dependency directories
 vendor/
 
@@ -38,3 +41,4 @@ Thumbs.db
 log.json
 .tickets
 .claude
+.wandersort-install.lock

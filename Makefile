@@ -4,12 +4,18 @@ BINARY := bin/wandersort
 GO_MAIN := .
 GOOS_LIST := linux darwin windows
 
-.PHONY: help build build-all install lint test race run
+# Absolute, not relative: go test runs each package with that package's own
+# directory as cwd, so a relative test/deps would resolve differently (or
+# not at all) depending which package is under test.
+TEST_DEPS_DIR := $(CURDIR)/test/deps
+
+.PHONY: help build build-all install lint test test-deps race run
 
 help:
 	@printf "Usage:\n"
 	@printf "  make run               Run wandersort (builds if binary not found)\n"
 	@printf "  make test              Run all tests\n"
+	@printf "  make test-deps         Pre-download exiftool/location.db into test/deps\n"
 	@printf "  make race         Run all tests with the race detector (CI)\n"
 	@printf "  make build             Build the binary locally\n"
 	@printf "  make build-all         Cross-build binary for linux/darwin/windows\n"
@@ -29,13 +35,17 @@ build-all:
 		GOOS=$$goos go build -ldflags='-s -w' -o $(BINARY)-$$goos$$ext $(GO_MAIN) || exit 1; \
 	done
 
-test:
-	go test -v ./...
+test-deps:
+	@mkdir -p $(TEST_DEPS_DIR)
+	go run ./scripts/fetchtestdeps $(TEST_DEPS_DIR)
+
+test: test-deps
+	WANDERSORT_TEST_DEPS_DIR=$(TEST_DEPS_DIR) go test -v ./...
 
 # -count=1 defeats the test cache so races are actually re-detected each run
-race:
+race: test-deps
 	go vet ./...
-	go test -race -count=1 ./...
+	WANDERSORT_TEST_DEPS_DIR=$(TEST_DEPS_DIR) go test -race -count=1 ./...
 
 install:
 	go install ./...
@@ -48,6 +58,6 @@ run:
 	@if [ ! -f $(BINARY) ]; then $(MAKE) build; fi
 	@./$(BINARY)
 
-cover:
-	go test -coverprofile=coverage.out -coverpkg=./... ./...
+cover: test-deps
+	WANDERSORT_TEST_DEPS_DIR=$(TEST_DEPS_DIR) go test -coverprofile=coverage.out -coverpkg=./... ./...
 	go tool cover -func=coverage.out | grep total | awk '{print "Total coverage: " $$3}'
