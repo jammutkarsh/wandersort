@@ -51,6 +51,21 @@ func TestClassifyName(t *testing.T) {
 		// Ignored
 		{".DS_Store", MediaTypeUnknown, false, true},
 		{"Thumbs.db", MediaTypeUnknown, false, true},
+		{"/Volumes/Backups/Pictures/.DS_Store", MediaTypeUnknown, false, true},
+
+		// AppleDouble sidecars: they carry the shadowed file's extension, so
+		// every one of these would classify as real media without the prefix rule
+		{"._IMG_20180106_211920.jpg", MediaTypeUnknown, false, true},
+		{"._photo.HEIC", MediaTypeUnknown, false, true},
+		{"._raw.cr2", MediaTypeUnknown, false, true},
+		{"._clip.mov", MediaTypeUnknown, false, true},
+		{"._sidecar.aae", MediaTypeUnknown, false, true},
+		{"/Volumes/Backups/Family/._IMG_0001.jpg", MediaTypeUnknown, false, true},
+		{"._", MediaTypeUnknown, false, true},
+		// a leading dot alone is not AppleDouble, and a "._" anywhere but the
+		// start is an ordinary filename
+		{".hidden.jpg", MediaTypeImage, true, false},
+		{"my._photo.jpg", MediaTypeImage, true, false},
 
 		// Unsupported
 		{"readme.txt", MediaTypeUnknown, false, false},
@@ -70,6 +85,44 @@ func TestClassifyName(t *testing.T) {
 			if mediaType != tt.wantType || processed != tt.wantProcessed || ignored != tt.wantIgnored {
 				t.Errorf("ClassifyName(%q) = (%q, %v, %v), want (%q, %v, %v)",
 					tt.path, mediaType, processed, ignored, tt.wantType, tt.wantProcessed, tt.wantIgnored)
+			}
+		})
+	}
+}
+
+func TestShouldIgnoreDir(t *testing.T) {
+	fc := NewFileClassifier()
+
+	tests := []struct {
+		dir  string
+		want bool
+	}{
+		{".git", true},
+		{".svn", true},
+		{"node_modules", true},
+		{".Trash", true},
+		{"$RECYCLE.BIN", true},
+		{"System Volume Information", true},
+
+		// macOS volume metadata — these hold the index shards that produced
+		// almost every "Unsupported file type" warning on the 107k-file run
+		{".Spotlight-V100", true},
+		{".fseventsd", true},
+		{".DocumentRevisions-V100", true},
+		{".TemporaryItems", true},
+		{".Trashes", true},
+
+		// real directories a library actually uses
+		{"DCIM", false},
+		{"Camera", false},
+		{"WhatsApp Images", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.dir, func(t *testing.T) {
+			if got := fc.ShouldIgnoreDir(tt.dir); got != tt.want {
+				t.Errorf("ShouldIgnoreDir(%q) = %v, want %v", tt.dir, got, tt.want)
 			}
 		})
 	}

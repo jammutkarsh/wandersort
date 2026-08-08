@@ -57,13 +57,44 @@ func NewFileClassifier() *FileClassifier {
 			".Trash":                    true,
 			"$RECYCLE.BIN":              true,
 			"System Volume Information": true,
+
+			// macOS writes these onto any volume it indexes, including the
+			// exFAT/NTFS externals a photo library usually lives on. Their
+			// contents are index shards (.shadow, .buckets, .offsets,
+			// .indexArrays, …), none of which is media, and there are enough of
+			// them to dominate the scan's warning output — 4,417 of 4,424
+			// "Unsupported file type" warnings on a 107k-file run came from
+			// .Spotlight-V100 alone. Skipping the directory skips the subtree.
+			// Note .Trash above is the home-directory one; .Trashes is the
+			// per-volume one an external drive carries, and is a different name.
+			".Spotlight-V100":         true,
+			".fseventsd":              true,
+			".DocumentRevisions-V100": true,
+			".TemporaryItems":         true,
+			".Trashes":                true,
 		},
 	}
 }
 
 // ClassifyName combines ignore and media checks so callers make one decision.
 func (fc *FileClassifier) ClassifyName(name string) (mediaType string, shouldProcess bool, shouldIgnore bool) {
-	if fc.ignoredFiles[name] {
+	base := filepath.Base(name)
+
+	if fc.ignoredFiles[base] {
+		return MediaTypeUnknown, false, true
+	}
+
+	// AppleDouble sidecars: copying an APFS/HFS+ file to a filesystem with no
+	// native resource forks (exFAT, FAT32, NTFS, SMB) makes macOS write the
+	// fork and Finder metadata to a companion "._<name>" file. It carries the
+	// shadowed file's extension, so the media check below would otherwise admit
+	// it as a photo. They are also byte-identical to each other whenever the
+	// original had no resource fork, which collapses them into one enormous
+	// bogus duplicate group — 10,174 of them in a single group on a 107k-file
+	// run. Name is enough to identify them; the AppleDouble magic (0x00051607)
+	// would confirm it but costs an open+read per candidate, which is the
+	// expense this check exists to avoid.
+	if strings.HasPrefix(base, "._") {
 		return MediaTypeUnknown, false, true
 	}
 
