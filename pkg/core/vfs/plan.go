@@ -31,6 +31,7 @@ func Plan(ctx context.Context, masters []masterFile, cfg Config, geo *location.R
 	resolveLocations(ctx, masters, cfg, geo, log)
 	clusterAndSpill(masters, cfg.ClusterGap)
 	applyNameCase(ctx, masters, cfg.Workers)
+	unsuppressMixedSavedPlaces(masters, cfg)
 	markUnknownLocations(masters, cfg)
 	mergeSameLocationDays(masters, cfg)
 	buildTargets(ctx, masters, cfg)
@@ -73,6 +74,7 @@ func PreviewPaths(cfg Config, samples []Sample) []string {
 			dayOverride:  s.DayOverride,
 		}
 	}
+	unsuppressMixedSavedPlaces(masters, cfg)
 	markUnknownLocations(masters, cfg)
 	skip := uninformativeLevels(masters, cfg)
 	paths := make([]string, len(masters))
@@ -236,6 +238,40 @@ func markUnknownLocations(masters []masterFile, cfg Config) {
 	}
 }
 
+// unsuppressMixedSavedPlaces gives a saved-place file its location folder back
+// when the day it lands in also holds files from somewhere else.
+//
+// SavedPlacesDateOnly drops the city folder for everyday shots, which is right
+// when the whole day is everyday shots — the folder would repeat the same name
+// and say nothing. It is wrong the moment that day holds anything else: the
+// saved-place files sit loose in the day folder while their neighbours are
+// nested one level down, so the day reads as half-sorted. A real report:
+// `02/` holding a bare pile of home-town photos next to `02/Unknown/`.
+//
+// Runs before markUnknownLocations on purpose: the lifted city is what makes
+// the GPS-less files' Unknown folder appear beside it, rather than both piles
+// sitting loose together.
+func unsuppressMixedSavedPlaces(masters []masterFile, cfg Config) {
+	if !cfg.SavedPlacesDateOnly || !slices.Contains(cfg.Rules, RuleLocation) {
+		return
+	}
+	skip := uninformativeLevels(masters, cfg)
+	// parent folder → does anything in it come from somewhere that isn't a
+	// saved place (a resolved city, or nothing resolved at all)
+	mixed := map[string]bool{}
+	for i := range masters {
+		if m := &masters[i]; hasLocationLevel(m) && !m.atSavedPlace {
+			mixed[locationParent(m, skip, cfg)] = true
+		}
+	}
+	for i := range masters {
+		m := &masters[i]
+		if m.atSavedPlace && hasLocationLevel(m) && mixed[locationParent(m, skip, cfg)] {
+			m.keepLocationFolder = true
+		}
+	}
+}
+
 // hasLocationLevel reports whether dirFor emits a location level for m at all
 // — an undated file goes straight to Fallback and a screenshot to Screenshots.
 func hasLocationLevel(m *masterFile) bool {
@@ -249,10 +285,7 @@ func hasLocationLevel(m *masterFile) bool {
 // later lifts into a day *range* leaves the Unknown behind alone in its day.
 // Order the two passes properly if that shows up in practice.
 func locationParent(m *masterFile, skip map[string]bool, cfg Config) string {
-	parts := []string{
-		strconv.Itoa(m.takenAt.Year()),
-		m.takenAt.Format("01_January"),
-	}
+	parts := monthParts(m)
 	for _, level := range cfg.Rules {
 		if level == RuleLocation {
 			break
@@ -265,6 +298,48 @@ func locationParent(m *masterFile, skip map[string]bool, cfg Config) string {
 		}
 	}
 	return strings.Join(parts, "/")
+}
+
+// monthKey is the Year/Month folder pair a file lands in — from folderTime, so
+// a cluster that crosses a boundary counts as the month it started in.
+type monthKey struct {
+	year int
+	mon  time.Month
+}
+
+// dayKey is the date folder a file lands in before any merging: its month plus
+// its own day-of-month. Every file of one dayKey ends up in one folder, which
+// is the invariant mergeSameLocationDays has to keep.
+type dayKey struct {
+	monthKey
+	day int
+}
+
+// runKey is one place's presence in one month — what a merge run is computed
+// over, since only same-location days fold together.
+type runKey struct {
+	monthKey
+	loc string
+}
+
+func (m *masterFile) monthKey() monthKey {
+	t := m.folderTime()
+	return monthKey{t.Year(), t.Month()}
+}
+
+func (m *masterFile) dayKey() dayKey {
+	return dayKey{m.monthKey(), m.takenAt.Day()}
+}
+
+// crossesFolderMonth reports whether m was shot in a different month from the
+// one its cluster filed it under — a New Year's Eve trip shot on Jan 01 and
+// filed under December. Its bare day-of-month is a lie inside that folder
+// ("01" there reads as Dec 01, and lands on top of the real Dec 01 files), so
+// it gets a month-qualified day folder and stays out of the day-merge, whose
+// runs and dayKey space are both day-of-month ints within one month.
+func crossesFolderMonth(m *masterFile) bool {
+	t, f := m.takenAt, m.folderTime()
+	return t.Year() != f.Year() || t.Month() != f.Month()
 }
 
 // mergeSameLocationDays collapses runs of consecutive same-location days into
@@ -282,61 +357,104 @@ func mergeSameLocationDays(masters []masterFile, cfg Config) {
 		return
 	}
 
-	type key struct {
-		year int
-		mon  time.Month
-		loc  string
-	}
-	// (year, month, location) → set of day-of-month present
-	days := map[key]map[int]bool{}
+	// (year, month, location) → set of day-of-month present. The month is the
+	// *folder's* (folderTime), so a run is grouped by where the days land, not
+	// by where they were shot. A file whose own month differs from that folder
+	// month is left out entirely (see crossesFolderMonth): its day-of-month
+	// isn't a day of this month.
+	//
+	// ponytail: so a cluster crossing a month boundary gives sibling `31` and
+	// `Jan_01` folders under the start month rather than a `31_01` range.
+	// Number days relative to folderTime if that turns up.
+	days := map[runKey]map[int]bool{}
 	for i := range masters {
 		m := &masters[i]
-		if m.takenAt.IsZero() || m.location == "" {
+		if m.takenAt.IsZero() || m.location == "" || crossesFolderMonth(m) {
 			continue
 		}
-		k := key{m.takenAt.Year(), m.takenAt.Month(), m.location}
+		k := runKey{m.monthKey(), m.location}
 		if days[k] == nil {
 			days[k] = map[int]bool{}
 		}
 		days[k][m.takenAt.Day()] = true
 	}
 
-	// label every day inside a run of 2 or more consecutive days
-	label := map[key]map[int]string{}
-	for k, set := range days {
-		ds := make([]int, 0, len(set))
-		for d := range set {
-			ds = append(ds, d)
-		}
-		sort.Ints(ds)
-		for start := 0; start < len(ds); {
-			end := start
-			for end+1 < len(ds) && ds[end+1] == ds[end]+1 {
-				end++
-			}
-			if end > start {
-				lo, hi := ds[start], ds[end]
-				rng := fmt.Sprintf("%02d_%02d", lo, hi)
-				if label[k] == nil {
-					label[k] = map[int]string{}
-				}
-				for d := lo; d <= hi; d++ {
-					label[k][d] = rng
+	// A day lives in exactly one date folder, so every file of a day has to
+	// agree on the label — one location's run cannot pull half a day into a
+	// range and leave the rest behind as a sibling `02`. Disagreeing days are
+	// dropped from merging and act as breaks, which can settle the runs around
+	// them, so this repeats until nothing new disagrees. Each pass only ever
+	// adds a broken day, so it terminates.
+	broken := map[dayKey]bool{}
+	var label map[runKey]map[int]string
+	for {
+		label = map[runKey]map[int]string{}
+		for k, set := range days {
+			ds := make([]int, 0, len(set))
+			for d := range set {
+				if !broken[dayKey{k.monthKey, d}] {
+					ds = append(ds, d)
 				}
 			}
-			start = end + 1
+			sort.Ints(ds)
+			// label every day inside a run of 2 or more consecutive days
+			for start := 0; start < len(ds); {
+				end := start
+				for end+1 < len(ds) && ds[end+1] == ds[end]+1 {
+					end++
+				}
+				if end > start {
+					lo, hi := ds[start], ds[end]
+					rng := fmt.Sprintf("%02d_%02d", lo, hi)
+					if label[k] == nil {
+						label[k] = map[int]string{}
+					}
+					for d := lo; d <= hi; d++ {
+						label[k][d] = rng
+					}
+				}
+				start = end + 1
+			}
 		}
-	}
 
-	for i := range masters {
-		m := &masters[i]
-		if m.takenAt.IsZero() || m.location == "" {
-			continue
+		// one label per day, or the day breaks. A file with no location of its
+		// own votes for "no range" — it would be left behind in a plain day
+		// folder while its neighbours moved into one.
+		seen := map[dayKey]string{}
+		found := false
+		for i := range masters {
+			m := &masters[i]
+			if m.takenAt.IsZero() || crossesFolderMonth(m) {
+				continue
+			}
+			dk := m.dayKey()
+			if broken[dk] {
+				continue
+			}
+			lbl := label[runKey{dk.monthKey, m.location}][dk.day]
+			if prev, ok := seen[dk]; ok && prev != lbl {
+				broken[dk] = true
+				found = true
+				continue
+			}
+			seen[dk] = lbl
 		}
-		k := key{m.takenAt.Year(), m.takenAt.Month(), m.location}
-		if rng, ok := label[k][m.takenAt.Day()]; ok {
-			m.dayOverride = rng
+		if found {
+			continue // a broken day can settle the runs around it — go again
 		}
+
+		for i := range masters {
+			m := &masters[i]
+			if m.takenAt.IsZero() || m.location == "" || crossesFolderMonth(m) {
+				continue
+			}
+			dk := m.dayKey()
+			if broken[dk] {
+				continue
+			}
+			m.dayOverride = label[runKey{dk.monthKey, m.location}][dk.day]
+		}
+		return
 	}
 }
 
@@ -526,6 +644,20 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 	return dirs
 }
 
+// monthParts is the Year and Month folder pair, from folderTime — so every
+// file of a boundary-crossing cluster gets its cluster's month, and the two
+// places that need this pair (dirFor and locationParent) can never disagree
+// about which folder a file is in.
+func monthParts(m *masterFile) []string {
+	t := m.folderTime()
+	return []string{
+		strconv.Itoa(t.Year()),
+		// number-first so months sort chronologically in the review tree,
+		// Finder and ls; bare names put December above November
+		t.Format("01_January"),
+	}
+}
+
 // dirFor derives the directory segments for one master, honouring Rules
 // order. skip names the levels uninformativeLevels found nothing to say with.
 func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
@@ -533,12 +665,7 @@ func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 		return path.SanitizeSegment(cfg.Fallback)
 	}
 
-	parts := []string{
-		strconv.Itoa(m.takenAt.Year()),
-		// number-first so months sort chronologically in the review tree,
-		// Finder and ls; bare names put December above November
-		m.takenAt.Format("01_January"),
-	}
+	parts := monthParts(m)
 
 	// A screenshot has no location/device/orientation worth a folder of its
 	// own — group every screenshot in the month together instead of letting
@@ -572,8 +699,9 @@ func segmentFor(m *masterFile, level string, cfg Config) string {
 	case RuleLocation:
 		// SavedPlacesDateOnly: an everyday place gets no location folder, just
 		// the (possibly merged) date range — m.location itself stays real,
-		// it's only the folder that's suppressed.
-		if m.atSavedPlace && cfg.SavedPlacesDateOnly {
+		// it's only the folder that's suppressed. Unless the day holds files
+		// from elsewhere too; see unsuppressMixedSavedPlaces.
+		if m.atSavedPlace && cfg.SavedPlacesDateOnly && !m.keepLocationFolder {
 			return ""
 		}
 		// ladder: resolved city → dated event segment → nothing. No device or
@@ -592,6 +720,11 @@ func segmentFor(m *masterFile, level string, cfg Config) string {
 	case RuleDate:
 		if m.dayOverride != "" {
 			return m.dayOverride // merged consecutive same-location day range
+		}
+		if crossesFolderMonth(m) {
+			// the cluster filed this file under another month; a bare "02"
+			// would read as that month's day and collide with it
+			return m.takenAt.Format("Jan_02")
 		}
 		return m.takenAt.Format("02")
 	case RuleDevice:

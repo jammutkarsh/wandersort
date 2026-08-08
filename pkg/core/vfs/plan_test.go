@@ -83,16 +83,67 @@ func TestPlanSavedPlacesDateOnlySuppressesLocationSegment(t *testing.T) {
 	cfg.SavedPlacesDateOnly = true
 	cfg.CollapseLevels = false
 
+	// a day that is nothing but everyday shots: the city folder would repeat
+	// one name and say nothing, so it stays suppressed
+	masters := runPlan(t, []masterFile{
+		{FileDir: "/src", FileName: "home1.jpg", DBDateTaken: new("2024:08:02 10:00:00"), location: "Indore", atSavedPlace: true},
+		{FileDir: "/src", FileName: "home2.jpg", DBDateTaken: new("2024:08:02 11:00:00"), location: "Indore", atSavedPlace: true},
+	}, cfg)
+	for _, m := range masters {
+		if want := "2024/08_August/02/" + m.FileName; m.targetPath != want {
+			t.Errorf("saved-place file: got %q, want %q (location folder should be suppressed)", m.targetPath, want)
+		}
+	}
+}
+
+// TestPlanSavedPlacesDateOnlyLiftsOnAMixedDay is the reported bug: the day held
+// a loose pile of home-town photos *and* a nested folder for everything else,
+// so it read as half-sorted. A day either nests its locations or it doesn't.
+func TestPlanSavedPlacesDateOnlyLiftsOnAMixedDay(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	cfg.SavedPlacesDateOnly = true
+	cfg.CollapseLevels = false
+
 	masters := runPlan(t, []masterFile{
 		{FileDir: "/src", FileName: "home.jpg", DBDateTaken: new("2024:08:02 10:00:00"), location: "Indore", atSavedPlace: true},
 		{FileDir: "/src", FileName: "trip.jpg", DBDateTaken: new("2024:08:02 10:00:00"), location: "Goa", atSavedPlace: false},
 	}, cfg)
 
-	if want := "2024/08_August/02/home.jpg"; masters[0].targetPath != want {
-		t.Errorf("saved-place file: got %q, want %q (location folder should be suppressed)", masters[0].targetPath, want)
+	if want := "2024/08_August/02/Indore/home.jpg"; masters[0].targetPath != want {
+		t.Errorf("saved-place file: got %q, want %q (its city comes back beside the other folder)", masters[0].targetPath, want)
 	}
 	if want := "2024/08_August/02/Goa/trip.jpg"; masters[1].targetPath != want {
 		t.Errorf("trip file: got %q, want %q (location folder should render)", masters[1].targetPath, want)
+	}
+}
+
+// TestPlanMergeKeepsOneFolderPerDay is the reported bug in its plainest form:
+// `01_02` sat next to a `02`, so the 2nd of the month was in two date folders
+// at once. A day belongs to exactly one, so a location's run has to break
+// where the rest of that day disagrees with it.
+func TestPlanMergeKeepsOneFolderPerDay(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	cfg.CollapseLevels = false
+	cfg.ClusterGap = time.Minute // keep the days in their own clusters
+
+	got := runPlan(t, []masterFile{
+		{FileDir: "/src", FileName: "home01.jpg", DBDateTaken: new("2024:08:01 10:00:00"), location: "Indore", atSavedPlace: true},
+		{FileDir: "/src", FileName: "home02.jpg", DBDateTaken: new("2024:08:02 10:00:00"), location: "Indore", atSavedPlace: true},
+		{FileDir: "/src", FileName: "other02.jpg", DBDateTaken: new("2024:08:02 20:00:00"), location: "Goa"},
+	}, cfg)
+	want := []string{
+		// day 01 is home-only, so no city folder and — with day 02 out of the
+		// run — no range either
+		"2024/08_August/01/home01.jpg",
+		"2024/08_August/02/Indore/home02.jpg",
+		"2024/08_August/02/Goa/other02.jpg",
+	}
+	for i, m := range got {
+		if m.targetPath != want[i] {
+			t.Errorf("%s: got %q, want %q", m.FileName, m.targetPath, want[i])
+		}
 	}
 }
 
@@ -125,6 +176,76 @@ func TestPlanMergeSameLocationDays(t *testing.T) {
 		if m.targetPath != want[i] {
 			t.Errorf("interleaved day %d: got %q, want %q (no merge across a different location)", i, m.targetPath, want[i])
 		}
+	}
+}
+
+// TestPlanClusterStartAnchorsYearAndMonth pins the calendar fix: one event
+// that runs over midnight on New Year's Eve is one folder, not two Year trees.
+func TestPlanClusterStartAnchorsYearAndMonth(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	cfg.CollapseLevels = false
+	cfg.MergeSameLocationDays = false
+
+	// 6h apart, so all three sit in one cluster starting 2023-12-31
+	got := runPlan(t, []masterFile{
+		{FileDir: "/src", FileName: "a.jpg", DBDateTaken: new("2023:12:31 20:00:00"), location: "Goa"},
+		{FileDir: "/src", FileName: "b.jpg", DBDateTaken: new("2024:01:01 02:00:00"), location: "Goa"},
+		{FileDir: "/src", FileName: "c.jpg", DBDateTaken: new("2024:01:01 08:00:00"), location: "Goa"},
+	}, cfg)
+	want := []string{
+		"2023/12_December/31/Goa/a.jpg",
+		// the day is the file's own, but qualified with its own month: a bare
+		// "01" under 12_December reads as (and collides with) Dec 01
+		"2023/12_December/Jan_01/Goa/b.jpg",
+		"2023/12_December/Jan_01/Goa/c.jpg",
+	}
+	for i, m := range got {
+		if m.targetPath != want[i] {
+			t.Errorf("%s: got %q, want %q", m.FileName, m.targetPath, want[i])
+		}
+	}
+}
+
+// TestPlanBoundaryDayDoesNotCollideWithRealDay is the reported bug: Jan 01
+// files pulled into December by their cluster landed in "12_December/01",
+// which is where the library's real Dec 01 files already live.
+func TestPlanBoundaryDayDoesNotCollideWithRealDay(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	cfg.CollapseLevels = false
+	cfg.MergeSameLocationDays = true
+
+	got := runPlan(t, []masterFile{
+		{FileDir: "/src", FileName: "dec01.jpg", DBDateTaken: new("2023:12:01 10:00:00"), location: "Banjar"},
+		{FileDir: "/src", FileName: "nye.jpg", DBDateTaken: new("2023:12:31 20:00:00"), location: "Banjar"},
+		{FileDir: "/src", FileName: "jan01.jpg", DBDateTaken: new("2024:01:01 02:00:00"), location: "Banjar"},
+	}, cfg)
+	want := []string{
+		"2023/12_December/01/Banjar/dec01.jpg",
+		"2023/12_December/31/Banjar/nye.jpg",
+		"2023/12_December/Jan_01/Banjar/jan01.jpg",
+	}
+	for i, m := range got {
+		if m.targetPath != want[i] {
+			t.Errorf("%s: got %q, want %q", m.FileName, m.targetPath, want[i])
+		}
+	}
+}
+
+// TestPlanScreenshotFollowsClusterMonth covers the short-circuit path: a
+// screenshot skips Rules entirely, so it has to pick up the cluster's month
+// before that happens or it lands in a different Year to its own event.
+func TestPlanScreenshotFollowsClusterMonth(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+
+	got := runPlan(t, []masterFile{
+		{FileDir: "/src", FileName: "a.jpg", DBDateTaken: new("2023:12:31 20:00:00"), location: "Goa"},
+		{FileDir: "/src", FileName: "shot.png", DBDateTaken: new("2024:01:01 02:00:00"), IsScreenshot: true},
+	}, cfg)
+	if want := "2023/12_December/Screenshots/shot.png"; got[1].targetPath != want {
+		t.Errorf("screenshot: got %q, want %q", got[1].targetPath, want)
 	}
 }
 

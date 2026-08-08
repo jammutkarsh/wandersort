@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
@@ -25,7 +24,6 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
-	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
@@ -76,59 +74,11 @@ func (a *app) runConfig(cmd *cobra.Command) error {
 		return nil
 	}
 
-	switch err := a.runConfigTUI(context.Background()); {
-	case errors.Is(err, errConfigCancelled):
-		fmt.Println("Cancelled — nothing saved.")
-		return nil
-	case err != nil:
-		return err
-	}
-	fmt.Printf("config saved in %s\n", configPath)
-	return nil
-}
-
-// errConfigCancelled signals the user quit the wizard (ctrl+c), so runConfig
-// reports "nothing saved" instead of a bogus "config saved".
-var errConfigCancelled = errors.New("config cancelled")
-
-// runConfigTUI runs the settings wizard as one alt-screen program, downloading
-// the location database in the background — no install screen here, that's scan's job.
-func (a *app) runConfigTUI(ctx context.Context) error {
-	// Console logging off for the run: the alt-screen owns the terminal and
-	// the background download's log lines would draw over it. The file log
-	// still captures everything.
-	a.Log = logger.NewTUI(a.Config.LogLevel, a.Config.LogFile, func(logger.Event) {})
-
-	// Non-blocking peek on every keystroke: install.ErrPending while the
-	// database is still downloading, the resolver or a permanent failure once
-	// it isn't. The wizard must never block on it — see townValidator.
-	var coordinator *install.Coordinator
-	geonames := func() (*location.Resolver, error) { return coordinator.LocationNow() }
-
-	fields, save := a.buildConfigForm(ctx, geonames)
-	prog := tea.NewProgram(tui.NewFormModel(fields, save), tea.WithAltScreen(), tea.WithOutput(os.Stderr))
-
-	// Reports into the form's own progress row; a no-op install (already on disk)
-	// reports no bytes and just sends Finished, so nothing shows on screen for it.
-	coordinator = a.newDeps(func(_ string, done, total int64) {
-		prog.Send(tui.DownloadMsg{Label: "Location database", Done: done, Total: total})
-	})
-	a.Deps = coordinator
-	coordinator.StartLocationOnly(ctx, func(error) {
-		prog.Send(tui.DownloadMsg{Finished: true})
-	})
-
-	final, err := prog.Run()
-	if err != nil {
-		return fmt.Errorf("config ui: %w", err)
-	}
-	if fm, ok := final.(tui.FormModel); ok {
-		if fm.IsAborted() {
-			return errConfigCancelled
-		}
-		return fm.Error()
-	}
-	return nil
+	// The wizard is a tab of the one app shell, so answering the settings and
+	// then scanning with them is one session rather than two invocations. The
+	// shell reports the save on screen; there is no process ending here to
+	// print a receipt after.
+	return a.runShell(shellStart{tab: tabConfig})
 }
 
 // buildConfigForm builds the wizard's fields (seeded with the current effective
@@ -144,6 +94,10 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 	groupBy := append([]string{}, a.Config.Rules...)
 	if len(groupBy) == 0 {
 		groupBy = []string{vfs.RuleDate, vfs.RuleLocation} // sensible default
+	}
+	segment := "auto"
+	if a.Config.SegmentMonths > 0 {
+		segment = strconv.Itoa(a.Config.SegmentMonths)
 	}
 	collapse := a.Config.CollapseLevels
 	mergeDays := a.Config.MergeSameLocationDays
@@ -257,6 +211,15 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 		},
 		rulesField,
 		{
+			Kind:  tui.FieldInput,
+			Title: "Review segment size",
+			Description: "Big libraries are reviewed in time slices, saved one at a time.\n" +
+				"  auto = years when your photos span more than 3 years, else half-years.\n" +
+				"  Or set the months per slice: 3, 6 or 12.",
+			Value:     &segment,
+			Validator: segmentValidator,
+		},
+		{
 			Kind:        tui.FieldGroup,
 			Title:       "Saved places",
 			Description: "The everyday places you shoot from, and how their photos are foldered.",
@@ -324,6 +287,7 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 		if w, err := strconv.Atoi(strings.TrimSpace(workers)); err == nil {
 			g.Workers = w
 		}
+		g.SegmentMonths, _ = strconv.Atoi(strings.TrimSpace(segment)) // "auto" → 0
 		// Canonicalize towns to the exact geonames spelling before saving.
 		g.SavedPlaces = []string{canonicalTownOrTyped(home), canonicalTownOrTyped(work)}
 		if err := a.Config.Save(g); err != nil {
@@ -332,6 +296,17 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 		return nil
 	}
 	return fields, save
+}
+
+// segmentValidator accepts the review's slice sizes: "auto", or one of the
+// calendar-aligned month counts vfs.Segments buckets by. Anything else would
+// silently save as 0 (auto) and look like the field did nothing.
+func segmentValidator(s string) error {
+	switch strings.TrimSpace(s) {
+	case "auto", "3", "6", "12":
+		return nil
+	}
+	return fmt.Errorf("must be auto, 3, 6 or 12")
 }
 
 // configExamples renders the wizard's live tree previews and their paired description text.

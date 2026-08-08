@@ -438,13 +438,13 @@ func TestSavedPlacesDateOnly(t *testing.T) {
 	}
 }
 
-// TestSavedPlacesDateOnlySpilloverStaysSuppressed covers a reported bug: a
-// GPS-less file clustered with GPS-tagged home photos (an indoor shot with no
-// fix, taken minutes after ones that resolved to the home anchor) inherited
-// the anchor's location string via clusterAndSpill's spillover but not the
-// atSavedPlace flag, so it alone leaked a location folder SavedPlacesDateOnly was
-// supposed to suppress for the whole cluster.
-func TestSavedPlacesDateOnlySpilloverStaysSuppressed(t *testing.T) {
+// TestSavedPlacesDateOnlyMixedDayNestsBothWays covers a GPS-less file
+// clustered with GPS-tagged home photos (an indoor shot with no fix, minutes
+// after ones that resolved to the home anchor). It used to leak a lone
+// location folder next to loose siblings; the day now nests both sides —
+// SavedPlacesDateOnly's suppression is for a day that is *only* everyday
+// shots, and this one isn't.
+func TestSavedPlacesDateOnlyMixedDayNestsBothWays(t *testing.T) {
 	h := newHarness(t)
 	withGPS := h.addFile(t, "d/h1.HEIC", "IMAGE", metaWith("2024:12:01 10:00:00", 22.7196, 75.8577, 3024, 4032))
 	noGPS := h.addFile(t, "d/h2.HEIC", "IMAGE", metaWith("2024:12:01 10:05:00", 0, 0, 3024, 4032))
@@ -455,10 +455,13 @@ func TestSavedPlacesDateOnlySpilloverStaysSuppressed(t *testing.T) {
 	cfg.Rules = []string{RuleDate, RuleLocation}
 	rows := h.build(t, cfg, geo)
 
-	for _, id := range []int64{withGPS, noGPS} {
-		want := "2024/12_December/01/" + filepath.Base(rows[id].TargetPath)
-		if got := rows[id].TargetPath; got != want {
-			t.Errorf("target = %q, want %q (spillover file should stay date-only too)", got, want)
+	want := map[int64]string{
+		withGPS: "2024/12_December/01/Indore/h1.HEIC",
+		noGPS:   "2024/12_December/01/Unknown/h2.HEIC",
+	}
+	for id, w := range want {
+		if got := rows[id].TargetPath; got != w {
+			t.Errorf("target = %q, want %q (a mixed day nests every side of it)", got, w)
 		}
 	}
 }
@@ -504,14 +507,19 @@ func TestMergeSameLocationDays(t *testing.T) {
 	cfg.Rules = []string{RuleDate, RuleLocation} // date above location
 	rows := h.build(t, cfg, geo)
 
-	for _, id := range []int64{g2, g3, g4} {
-		want := "2024/08_August/02_04/Calangute/" + filepath.Base(rows[id].TargetPath)
-		if rows[id].TargetPath != want {
-			t.Errorf("Calangute target = %q, want %q (consecutive Calangute days should merge)", rows[id].TargetPath, want)
-		}
+	// The 3rd is in Pune as well as Calangute, and a day lives in exactly one
+	// date folder — so the run breaks there rather than pulling half the 3rd
+	// into a range and leaving the Pune half behind as a sibling `03`.
+	want := map[int64]string{
+		g2: "2024/08_August/02/Calangute/g2.HEIC",
+		g3: "2024/08_August/03/Calangute/g3.HEIC",
+		g4: "2024/08_August/04/Calangute/g4.HEIC",
+		p3: "2024/08_August/03/Pune/p3.HEIC",
 	}
-	if got := rows[p3].TargetPath; got != "2024/08_August/03/Pune/p3.HEIC" {
-		t.Errorf("Pune target = %q, want 2024/08_August/03/Pune/p3.HEIC (interleaving location keeps its own day)", got)
+	for id, w := range want {
+		if got := rows[id].TargetPath; got != w {
+			t.Errorf("target = %q, want %q (a day the run disagrees about keeps its own folder)", got, w)
+		}
 	}
 }
 

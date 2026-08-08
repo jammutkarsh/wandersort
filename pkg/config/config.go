@@ -65,6 +65,9 @@ type Configuration struct {
 	// SavedPlaces is positional: index 0 is home, 1 is work, everything else
 	// is another frequently-stayed-at place — all anchored the same way.
 	SavedPlaces []string `yaml:"saved-places,omitempty"`
+	// SegmentMonths is how big a time slice the review works through at once.
+	// 0 = pick from the span the library covers. See vfs.Segments.
+	SegmentMonths int `yaml:"segment-months,omitempty"`
 
 	// Computed at runtime, never persisted.
 	AppDBPath      string `yaml:"-"`
@@ -84,6 +87,7 @@ type Overrides struct {
 	SavedPlacesDateOnly   TriBool  `yaml:"saved-places-date-only,omitempty"`
 	MergeSameLocationDays TriBool  `yaml:"merge-same-location-days,omitempty"`
 	SavedPlaces           []string `yaml:"saved-places,omitempty"`
+	SegmentMonths         int      `yaml:"segment-months,omitempty"`
 }
 
 // pick returns the first non-zero-value layer, in priority order
@@ -176,6 +180,8 @@ func Resolve(o Overrides) (cfg *Configuration, warning string, err error) {
 
 	outputPath := pick("", o.OutputPath, envStr("OUTPUT_PATH"), global.OutputPath)
 	cfg.Workers = pick(cfg.Workers, o.Workers, envInt("WORKERS"), global.Workers)
+	// 0 is the real default here ("auto"), not a missing value.
+	cfg.SegmentMonths = pick(0, o.SegmentMonths, envInt("SEGMENT_MONTHS"), global.SegmentMonths)
 
 	// Bools from file only apply when the file went through the wizard
 	// (carries an output-path). An unconfigured file's bools are the Go

@@ -86,12 +86,27 @@ one scan ever runs against it at a time (see "Conventions" below):
     fix it. The root cmd's own `RunE` is `shell.go`'s `runRoot`: bare
     `wandersort` opens the unified app, and `--plain` / a piped stderr still
     prints help.
-  - `shell.go` — the **unified TUI shell** behind a bare `wandersort`: a
-    tab bar plus one live screen per tab (`shellModel`), so scan, the settings
-    wizard and review are one invocation instead of three. **It is not
-    `tui.Shell`** — `Shell` hosts exactly one screen, and mode-cycling with a
-    live background scan needs the scan model to keep receiving its log events
-    while a form is on top of it. Routing: `ctrl+t` cycles (skipping review
+  - `shell.go` — the **unified TUI shell**, and **the only full-screen entry
+    point there is**: a tab bar plus one live screen per tab (`shellModel`), so
+    scan, the settings wizard and review are one session instead of three
+    programs. `runShell(shellStart)` takes which tab to open on, and *every*
+    interactive command goes through it — bare `wandersort` (the folder input),
+    `scan -p …` (`shellStart.paths`, so the run starts without asking),
+    `config`, and `review` (`shellStart.rebuild` for `--rebuild`). **A
+    subcommand is a starting point, not a smaller app**: each one used to build
+    its own `tea.Program` around a single screen, so `wandersort scan` could
+    not reach the settings and `wandersort config` could not start a scan —
+    `ctrl+t` existed only where this file drew the tab bar, and naming a
+    subcommand was enough to lose it (a reported bug). `Init` asks for the
+    opening tab by *message* (`tui.StartScanMsg` / `openConfigMsg` /
+    `tui.OpenReviewMsg`) rather than placing the screen itself, because
+    bubbletea calls `Init` on a copy and any container mutation there is
+    discarded. `shellStart.rebuild` is consumed by the first `openReview` and
+    cleared: after that the reviewer is inside the app, where `[R]` is how they
+    ask, and silently re-proposing on every later `ctrl+t` would discard edits
+    nobody chose to lose. Keeping all three screens alive at once is the whole
+    point — the scan model has to go on receiving its log events while a form
+    is on top of it. Routing: `ctrl+t` cycles (skipping review
     only when `canReview` says there is nothing there); every other key goes to
     the **active** tab only;
     `WindowSizeMsg` goes to all screens at `Height-1` (the container owns the
@@ -103,8 +118,8 @@ one scan ever runs against it at a time (see "Conventions" below):
     `tui.SwitchMsg` is intercepted rather than forwarded: a non-nil `Next` is
     the scan's prefetched review, opened straight away only if the user is
     watching the scan (never yanked out of a half-answered form — the tab bar
-    says `Review ✓ ready` instead); a **nil `Next` does not quit** the way it
-    does in `tui.Shell` — the review handing back means one plan is settled,
+    says `Review ✓ ready` instead); a **nil `Next` does not quit** — the review
+    handing back means one plan is settled,
     not that the session is over, so the scan tab goes back to a fresh
     `tui.HomeModel` carrying the finished scan's stage summaries
     (`ScanModel.Summary`) and the review's outcome line. **`scanTabHome` does
@@ -126,14 +141,14 @@ one scan ever runs against it at a time (see "Conventions" below):
     database file on disk, since nothing else writes one) **and not while a
     scan is running** — that run replaces the proposal wholesale, so the tree
     on disk is about to be stale. `ctrl+t` into a reviewable-but-unprefetched
-    tab runs `openReview` (the same `ensureOutput` + `newReviewScreen` cmd
-    `ctrl+r` on the home screen uses) and **leaves the tab where it is until
+    tab runs `openReview` (the same `ensureOutput` + optional rebuild +
+    `newReviewScreen` cmd `ctrl+r` on the home screen and `wandersort review`
+    use) and **leaves the tab where it is until
     the screen lands**, so there is never a blank frame. The tab bar's
     `✓ ready` follows `canReview`, not `reviewReady`, for the same reason: a
     plan left on disk is as ready as one this session prefetched, and a plain
     dim tab says nothing about it being there at all.
-    **`ctrl+c` anywhere quits the app**, matching the standalone `config` and
-    `review` commands, which both end the process on it — being dropped back on
+    **`ctrl+c` anywhere quits the app** — being dropped back on
     the folder input instead was a reported bug. While a scan is running it
     goes to the scan screen so the cancel guard gets a say. Otherwise it is
     still *forwarded* to the active screen first, so the review's
@@ -150,15 +165,28 @@ one scan ever runs against it at a time (see "Conventions" below):
     the settings tab is worth having *during* a scan: the folders the run ends
     up proposing are the ones just asked for, with no rebuild prompt
     afterwards. Changing the output path mid-session is the exception — it
-    surfaces as `reloadConfig`'s note on the home screen's error line.
+    surfaces as `reloadConfig`'s note on the home screen's error line, which is
+    also where a plain `Settings saved in <path>` goes when there is no note:
+    the wizard closes back into the shell instead of ending a process, so a
+    printed receipt has nowhere to land and the home screen's line is the only
+    confirmation the save gets.
   - `config.go` — `config` cmd: **the settings wizard** (there is no `setup`
     command — dependency downloads belong to `scan`). `buildConfigForm` +
     `tui.FormModel`: a top-down stacked form (answered fields collapse to
     summary rows, StageList-style) written by `config.SaveGlobal` — one
     whole-file marshal, since the wizard always submits every setting and the
-    file has no comments to preserve. On success it prints exactly
-    `config saved in <path>`. Step order is **output path, workers, rules,
-    collapse, then one Saved places step** whose sub-fields are home town, work
+    file has no comments to preserve. The command itself is four lines —
+    `--print`/non-TTY dumps the file, everything else is
+    `runShell(shellStart{tab: tabConfig})`; the wizard is a shell tab
+    (`newConfigScreen`), so answering the settings and then scanning with them
+    is one session. The **download progress row** works there because
+    `runShell` reports `install.PhaseLocation` bytes as `tui.DownloadMsg` as
+    well as `InstallProgressMsg` (the form knows nothing about install phases,
+    the scan screen knows nothing about `DownloadMsg`), and settles it with a
+    `Finished` off the blocking `Deps.Location()` getter. Step order is
+    **output path, workers, rules,
+    review segment size, collapse, then one Saved places step** whose
+    sub-fields are home town, work
     town, "group saved-place photos by date only?" and "merge consecutive
     same-location days?" — both folder questions live *after* the towns
     because their examples name the town the user just typed.
@@ -187,11 +215,11 @@ one scan ever runs against it at a time (see "Conventions" below):
     as and how that spelling is found again, so a saved town always resolves.
     The wizard keeps only the "did you mean" message.
     **The location DB downloads in the background, with no install screen**:
-    `runConfigTUI` builds a `pkg/install.Coordinator` (`a.newDeps`) and calls
-    `StartLocationOnly`, feeding its byte progress into the form's own row
-    above the footer (`tui.DownloadMsg`, in the same block the examples pin
-    to) and its completion into a `Finished` message. The wizard's `geonames`
-    closure is `coord.LocationNow` — the **non-blocking** getter, which reports
+    `runShell` starts the `pkg/install.Coordinator` for the whole session and
+    feeds its byte progress into the form's own row above the footer
+    (`tui.DownloadMsg`, in the same block the examples pin to), settling it
+    with a `Finished` message. The wizard's `geonames`
+    closure is `a.Deps.LocationNow` — the **non-blocking** getter, which reports
     `install.ErrPending` while the download runs and the resolver (or a
     permanent failure) once it doesn't. Used by
     `townValidator`/`canonicalTownOrTyped`/`suggestTown`, all of which take the
@@ -214,12 +242,21 @@ one scan ever runs against it at a time (see "Conventions" below):
     typed, in both `townValidator` and `canonicalTownOrTyped`. Blocking there
     would trap the user on a pre-filled field they could only escape by
     clearing it, and would silently drop the towns they already had. `a.Log`
-    is swapped to a sink-less TUI logger for the run so the download's log
+    is swapped to a TUI logger for the whole session so the download's log
     lines can't draw over the alt-screen. Prints the raw file to stdout
     instead of running the wizard when `--print`/`-p` is given or
     stdout/stderr isn't a terminal (`wandersort config | grep …`, `> file`) —
     launching a full-screen wizard into a pipe is never what the caller meant.
-  - `scan.go` — `scan` cmd (the pipeline). Runs **synchronously** in the
+  - `scan.go` — `scan` cmd (the pipeline). Two functions and a helper: the
+    interactive path is `runShell(shellStart{tab: tabScan, paths: paths})` —
+    the same session a bare `wandersort` opens, just landing on the scan tab —
+    and `runScanPlain` is everything else. **`--paths` is not
+    `MarkFlagRequired`**: without it the scan tab opens on its own folder
+    input, which is the answer, and refusing to open the app over a question it
+    is about to ask made `scan` the one command that couldn't just be run. The
+    plain path is the one place it really is required, and says so there —
+    there is no screen to ask on. Runs
+    **synchronously** in the
     foreground (`Workflow.RunScan`, which canonicalizes and prunes the roots
     itself and returns the ones actually walked) so the user watches
     progress and the exit code reflects pipeline success; logs total elapsed
@@ -227,8 +264,9 @@ one scan ever runs against it at a time (see "Conventions" below):
     immediately and missing dependencies download in the background**, with
     each pipeline phase waiting only on its own dependency (`workflow.Deps`) —
     scan/hash need nothing, exif blocks on exiftool, vfs blocks on the
-    location DB. `runScanTUI` builds a `pkg/install.Coordinator` (`a.newDeps`,
-    stored on `a.Deps`) and calls `Start`, then wires `workflow.Deps.Exiftool`/
+    location DB. `runShell` builds a `pkg/install.Coordinator` (`a.newDeps`,
+    stored on `a.Deps`) and calls `Start` once for the session;
+    `newScanScreen` wires `workflow.Deps.Exiftool`/
     `Location` to `a.Deps.Exiftool`/`Location` — each logs a
     "Waiting for …" `UserKey` line only when that phase actually stalls behind
     its own still-running download, and returns immediately once ready with no
@@ -274,12 +312,24 @@ one scan ever runs against it at a time (see "Conventions" below):
     `BuildAnchors`-then-copy-`resolver.Anchors` ritual (duplicated in
     `workflow` and `cli/review`) made it. `user_labels`' `SAVED_PLACE` kind is
     legacy: nothing writes it, the CHECK constraint just still allows it.
-  - `review.go` — `review` cmd: cobra wiring only (db-exists check, output
-    lock, the `--rebuild` guard via `vfs.ApprovedCount`, `vfs.BuildTree`), then
-    hands off to `internal/review`. There is no session lookup before
+  - `review.go` — `review` cmd: a three-way switch and nothing else.
+    `--yes` is `confirmReviewAll` (its own lock, DB, `vfs.BuildTree` and
+    `review.ConfirmAll`, all inline — no TUI to defer any of it to, and the
+    only place a missing `.wandersort.db` is a hard error: the interactive
+    path opens the app and says so on the home screen instead, since that user
+    has a scan tab one `ctrl+t` away and refusing to start hides it);
+    interactive is `runShell(shellStart{tab: tabReview, rebuild: rebuild})`, so
+    a reviewer who finds the folders wrong can fix the settings and come back
+    without relaunching; **a non-TTY without `--yes` is now an error** naming
+    `--yes`, rather than drawing an alt-screen into a pipe. There is no session
+    lookup before
     `BuildTree` — `virtual_fs_entries` always holds exactly one proposal
-    batch (the VFS phase deletes-then-reinserts wholesale every run), so an
-    empty tree from `BuildTree` alone means "nothing to review yet". It also
+    batch (the VFS phase replaces every unapproved row every run), so an
+    empty tree from `BuildTree` alone means "nothing to review yet".
+    **`--rebuild` has no approved-plan guard any more** (and `ApprovedCount`
+    is gone with it): `persist` keeps approved rows, so a rebuild has no
+    confirmed work left to discard — it re-proposes what nobody signed off.
+    It also
     holds `newReviewScreen`, which builds the embedded screen `scan` swaps into.
     **The TUI itself lives in `internal/review/`** — see below.
     It also owns the **rebuild prompt**: `settingsChanged(outputDir)` compares
@@ -290,12 +340,12 @@ one scan ever runs against it at a time (see "Conventions" below):
     as `review.Options.SettingsChanged` and the rebuild itself as
     `Options.Rebuild` (`a.rebuildTree` = `vfs.Propose` + `BuildTree`), and the
     review raises its own full-screen yes/no over the tree. One asking place,
-    three entry points (the `review` cmd, the shell opening review, and a
-    settings save while a review is already on screen), instead of an
+    two entry points (the shell opening review — however it was asked for —
+    and a settings save while a review is already on screen), instead of an
     interstitial screen per entry point — the earlier version had a pre-load
     `review.Prompt` *and* a `tui.ConfirmModel` interstitial in
     `newReviewScreen` *and* a banner, and they could each fire for the same
-    change. `--yes`/`--plain`/non-TTY has nobody to ask: one `UserKey` warning
+    change. `--yes` has nobody to ask: one `UserKey` warning
     naming `review --rebuild`, then the existing tree.
     **The comparison is of the settings, not of "did the wizard run"** — a
     reported bug: a trip through the wizard that changes something and changes
@@ -310,18 +360,42 @@ one scan ever runs against it at a time (see "Conventions" below):
 - `internal/review/` — the bubbletea **full-tree view** TUI over the VFS
   proposal (issue #8), extracted from `internal/cli` because it was 60% of that
   package's lines while cobra wiring is the rest. Its whole exported surface is
-  four functions in `review.go`:
-  - `Run(ctx, Options)` — standalone full-screen review; writes the approved
-    plan and runs the free-space check.
+  three functions in `review.go`:
+  - `Screen(ctx, Options) tea.Model` — the review as an app-shell screen, and
+    **the only interactive entry point** (`screen.go`, which finalizes
+    in-program: on save it runs `vfs.Confirm` and the free-space check itself,
+    then `tui.Switch(nil)` hands back to the shell).
   - `ConfirmAll(ctx, Options)` — `--yes`: write the proposal as-is, no TUI.
-  - `Screen(ctx, Options) tea.Model` — the same review as an app-shell screen,
-    so `scan` can swap into it inside its own program (`screen.go`, which
-    finalizes in-program: on save it runs `vfs.Confirm` itself, then
-    `tui.Switch(nil)` quits the shell).
   - `Outcome(m tea.Model) (confirmed, err, ok)` — how an embedded review ended.
 
+  There is **no standalone `Run` and no loading screen** any more: every
+  full-screen command is the same shell opened on a different tab, so a review
+  is always hosted, and the shell's own `openReview` already does the slow work
+  (lock, DB, optional rebuild, `BuildTree`) off the UI goroutine with the tab
+  bar saying `opening…`. `Options.Load` went with them.
+
   `Options` carries `DB`/`Tree`/`Resolver`/`Log`/`OutputDir`; a nil
-  `Resolver` just disables rename autocomplete. `copy.go` holds the unexported
+  `Resolver` just disables rename autocomplete.
+
+  **A big library opens on the segment picker, not the tree** (`segments.go`,
+  `pickerModel`): `vfs.Segments` decides (nil = one slice, so go straight to
+  the tree as every review did before), and `segmentsFor` runs that check in
+  both entry points — `Screen` and the loading screen's `treeLoadedMsg`.
+  `[enter]` builds that slice's tree in a **fresh query** off the UI goroutine
+  (a segment is a `taken_at` range, which is what the database is for — not a
+  filter over an already-loaded tree), `[R]` re-opens a saved one, `[q]` warns
+  once while slices are still unreviewed. The per-slice screen is the ordinary
+  `screen` wrapper carrying `seg` (what `Confirm` approves) and `host` (the
+  picker snapshot it returns to on save, via `reenter`) — which is also where
+  `Outcome`/`Run` read `saved` from, since a segmented review confirms as it
+  goes rather than once at the end. **`host` is also what `[q]` inside a slice
+  goes back to** (`Model.hosted`/`back` → `screen`'s `Switch(*s.host)`): a
+  reported bug — leaving a slice unsaved used to `Switch(nil)` and end the whole
+  review, so a reviewer who opened the wrong year had no way back to the list
+  and the remaining slices were unreachable. `open` clears `opening` on the
+  snapshot it takes, since that snapshot is taken mid-open and would otherwise
+  come back showing a spinner that never stops. `--yes` never segments: `ConfirmAll` is a
+  decision about the whole library. `copy.go` holds the unexported
   `copyFiles`/`copyFile` the peek feature uses (same atomic
   temp-file-then-rename pattern `pkg/install` downloads with); it moved here
   with the TUI because the preview is its only caller.
@@ -394,9 +468,9 @@ one scan ever runs against it at a time (see "Conventions" below):
   share a parent, since the final path is parent-path + name. **The
   folded-away leaves leave the tree entirely** — their IDs ride along on
   `vfs.Node.MergedIDs`, which is what `Confirm` remaps their files by
-  (`remapUnderMerged` also covers anything *below* a merged node, which the
-  TUI never produces itself but the tree-splice logic in `vfs.Confirm` still
-  guards against). An earlier version
+  (`prefixRewriter` also covers anything *below* a merged node, since it
+  rewrites on the longest remapped ancestor rather than on an exact path
+  match). An earlier version
   left them in place as same-named siblings and let `Confirm`'s
   same-path-collapses-to-one-folder behavior sort it out at write time —
   correct on disk, but the reviewer saw three "Canon EOS 700D" rows next to
@@ -435,7 +509,7 @@ one scan ever runs against it at a time (see "Conventions" below):
 
   Both record the removed IDs (plus anything already folded into them) on
   the surviving node's `MergedIDs`, so files sitting directly in a removed
-  folder remap onto it — same machinery as merge, with `remapUnderMerged`
+  folder remap onto it — same machinery as merge, with `prefixRewriter`
   covering anything deeper. Both undo via `[u]`.
   `c` **save & exit** (the only thing that writes — `q` discards, so `q`
   with pending edits warns once and needs a second `q`; `hasEdits` is just
@@ -446,10 +520,16 @@ one scan ever runs against it at a time (see "Conventions" below):
   re-proposes the hierarchy without a re-scan or re-hash (editing
   `config.yaml` alone, without `--rebuild`, changes nothing until the next
   `wandersort scan`).
-  **`R` is `--rebuild` from inside the review** — the same thing without
+  **`R` is `--rebuild` from inside the review, and the screen calls it
+  "reset the plan"** — the same thing without
   quitting and relaunching, which is the only form of it the shell can offer at
   all (there is no command line to add a flag to once the app is open). Capital
-  `R` because `r` is rename. It does not rebuild: it raises `askRebuild`, a
+  `R` because `r` is rename. **One verb, two reasons**: the settings moved
+  under the plan, or the reviewer simply wants their edits thrown away and the
+  folders proposed again — the same act either way, so `raiseRebuildAsk` takes
+  only a `settingsMoved` bool and it picks the wording
+  (`rebuildAskTitle`/`rebuildAskText`), nothing else. It does not reset on the
+  keypress: it raises `askRebuild`, a
   **full-screen yes/no drawn as `tui.ConfirmModel`** (the dialog `reset` asks
   with), which is also what `SettingsChangedMsg` and `Options.SettingsChanged`
   raise. Three ways in, one question. It was a dim line above the key bar
@@ -459,14 +539,19 @@ one scan ever runs against it at a time (see "Conventions" below):
   never trapped), and **`y` rebuilds on that press** — an earlier
   warn-once-then-act on `[R]` meant pressing it twice, which read as "the first
   press only dismissed the message". The modal *is* the warning: its text
-  names the unsaved edits and the already-approved files
-  (`vfs.ApprovedCount`) a rebuild would re-propose.
+  names the unsaved edits it discards. It no longer names an approved-file
+  count — a reset keeps approved rows now, so there was nothing to warn about.
   The rebuild itself runs `Options.Rebuild` (the caller's hook: this package
   has neither the settings nor the vfs phase, and must not grow either) off the
   UI goroutine behind the same spinner `[p]` uses, then replaces the tree
   wholesale — undo stack, cursor and selection with it, since they all describe
   folders that may no longer exist. A nil `Options.Rebuild` hides the key and
   never raises the question, rather than offering something the host can't do.
+  **`Rebuild` takes the screen's `*vfs.Segment`**: re-proposing is always
+  library-wide (`vfs.Propose` replaces every unapproved row), but the tree it
+  hands back has to stay scoped, or a reset inside the 2017 slice replaces it
+  with every year at once — a reported bug, and one that fired on entry too,
+  since a settings change raises the same modal.
   **The screen is built from `pkg/tui`, like scan and config** — it used to
   hand-roll its own chrome and looked like a different program: `tui.Screen`
   pins the footer to the terminal's last row, `header()` is banner + one
@@ -613,7 +698,12 @@ only read from the file once `output-path` is present, since a `bool` field
 can't otherwise tell "key absent" from "explicit false" the way `Resolve`'s
 flag/env layers can (a nil pointer vs. a real value). `saved-places` has no
 flag or env of its own — `Resolve` doesn't touch it at all; `app.syncAnchors`
-reads it straight via `config.Load`.
+reads it straight via `config.Load`. `segment-months` (0 = auto, else 3/6/12 —
+the review's time-slice size, see `vfs.Segments`) is an int, so it goes through
+`pick` like `workers` and needs no wizard gate; it has an env var
+(`SEGMENT_MONTHS`) and no flag. It is deliberately **not** in `ConfigStamp`:
+it changes how a plan is reviewed, never where a file lands, so it must not
+raise the reset prompt.
 
 ## Core pipeline (`pkg/core/`)
 
@@ -725,10 +815,20 @@ reads it straight via `config.Load`.
   shift the video away from siblings that never had one applied.
 - `scorer/` — phase 4. Elects master via folder-naming heuristics over live
   (`deleted_at IS NULL`) rows; re-promotes solo survivors of shrunken groups.
-- `vfs/` — phase 5. Proposes destinations for every live master in the library
-  from the persisted metadata (never re-reads files); each run replaces the
-  proposal set wholesale (safe to call again mid-review — see `review.go`'s
-  `--rebuild` flag). **`vfs.Propose` is the phase as one call** — it builds its
+- `vfs/` — phase 5. **`docs/vfs-pipeline.md` is the long-form walkthrough of
+  this package** — every SQL query, all eight `Plan` passes in call order, the
+  concurrency patterns, and an edge-case catalogue naming the bug behind each
+  rule. Read it before changing anything here; the notes below are the map,
+  that document is the territory.
+  Proposes destinations for every live master in the library
+  from the persisted metadata (never re-reads files); each run replaces every
+  *unapproved* row and leaves an approved plan alone (safe to call again
+  mid-review — see `review.go`'s
+  `--rebuild` flag). `persist` **flushes the writer before returning**: the
+  writer is an async FIFO, and every caller reads the rows straight back
+  (`[R]` re-proposes then calls `BuildTree` immediately), so without it the
+  review redrew the proposal this run had just replaced — a reported
+  "rebuild doesn't rebuild" bug. **`vfs.Propose` is the phase as one call** — it builds its
   own `Config` via `ConfigFor` and resolves the saved-place anchors via
   `BuildAnchors` before running. Assembling those is part of the phase, not of
   its callers: `workflow`'s vfs phase and `cli/review --rebuild` used to run
@@ -799,6 +899,31 @@ reads it straight via `config.Load`.
   un-merged. Known ceiling (marked `ponytail:` in the source): the sibling
   test is pre-merge, so a located sibling that the day-merge later lifts into
   a range folder leaves its `Unknown` behind alone in the single day.
+  **One day, one date folder** — the invariant `mergeSameLocationDays` exists
+  under, and the one it used to break. Runs are computed per
+  `(year, month, location)`, but the *folder* is per day, so one location's run
+  could pull half a day into a range and leave the rest behind as a sibling: a
+  real 15k library had `01_02` next to `02`, and day 28 in **four** different
+  date folders (`26_31`, `28`, `28_30`, `28_31`) — 37 torn days in all. The
+  merge now labels, then checks that every file of a day agrees on that label
+  (a file with no location votes "no range"); a day that disagrees is dropped
+  from merging and **acts as a break**, which can settle the runs around it, so
+  it repeats to a fixed point (each pass only adds a broken day, so it
+  terminates). Cost: on a trip where each day holds several places with
+  different runs, most days stay unmerged — that is what `[V]`/`[m]` in the
+  review is for. `dayKey`/`runKey`/`monthKey` (plan.go) name the three
+  groupings so the difference between "the folder a file lands in" and "the run
+  it belongs to" is in the type, not in the reader's head.
+  **`SavedPlacesDateOnly`'s suppression is per day, not per file**
+  (`unsuppressMixedSavedPlaces`, which runs *before* `markUnknownLocations` so
+  the lifted city is what makes the neighbouring `Unknown` appear at all):
+  dropping the city folder is right when the day is nothing but everyday shots
+  and wrong the moment it holds anything else — the saved-place files sit loose
+  while their neighbours are nested one level down, and the day reads as
+  half-sorted. A day holding both gets `02/Indore` *and* `02/Goa` (or
+  `02/Unknown`), never a bare pile next to a folder. The lift is a separate
+  field (`keepLocationFolder`), not a mutation of `atSavedPlace`: where the
+  file was taken is a fact, whether its folder shows is a decision.
   `resolveLocations` folds a directly-resolved GPS city
   into a *confirmed* `ANCHOR_HOME`/`ANCHOR_WORK` label when within
   `location.MaxDistSquared` (~50km) of it, so a metro's suburbs land in one
@@ -847,9 +972,37 @@ reads it straight via `config.Load`.
   `captureDirs` skips videos so a Live Photo `.MOV` isn't forced across the
   Photos/Videos split — so it falls back to its own mtime (12 files in one real
   15k library).
-  `ApprovedCount` lives here too — what a status means is this package's
-  business, and both the `--rebuild` guard and the review's rebuild question
-  ask the same thing of the same column.
+  **A file's folder date is a stored fact, not a folder name**
+  (`segments.go` + `virtual_fs_entries.taken_at`): `masterFile.folderDate` is
+  the *cluster's* start, written to every member by `clusterAndSpill` before
+  either early-continue, so one event that runs over a month or New Year
+  boundary lands in one Year/Month folder instead of being torn in two. Read it
+  through `masterFile.folderTime()` (folderDate, falling back to takenAt for
+  the unclustered `PreviewPaths` samples) — `monthParts` (the Year/Month pair
+  `dirFor` and `locationParent` share), `mergeSameLocationDays`' month key and
+  `persist`'s `taken_at` column all go through it, so nothing can disagree
+  about which month a file is in. Known ceiling (`ponytail:` in `plan.go`): the
+  merge's *day* is still the file's own day-of-month, and 31 and 01 aren't
+  consecutive ints, so a boundary-crossing run gives sibling `31` and `Jan_01`
+  folders rather than a `31_01` range. **A file whose own month differs from
+  its cluster's month gets a month-qualified day folder** (`crossesFolderMonth`
+  → `Jan_01`, matching `eventSegment`'s cross-month shape) and is left out of
+  `mergeSameLocationDays` entirely — a bare `01` under `12_December` reads as
+  Dec 01 *and lands on top of the real Dec 01 files*, which was a reported bug
+  (Jan 1 videos filed under `12_December/01/Banjar`).
+  `Segments(ctx, db, months)` buckets the reviewable rows by that column —
+  calendar-aligned (years / Jan–Jun / quarters), `months <= 0` picking years
+  over a >3-year span and half-years otherwise, undated rows last in their own
+  `Undated` bucket, and **nil for "don't segment"** (one bucket, or nothing
+  dated). Because every cluster member shares a folder date, **a segment
+  boundary can never split one event**. Segmenting on `taken_at` rather than on
+  the path is the whole point: a path is what the reviewer renames.
+  `BuildTree(ctx, db, seg)` and `Confirm(ctx, db, roots, seg)` take a `nil`
+  segment for the whole library. `Confirm` scopes only the *approval*: the
+  renames go through `prefixRewriter` (longest remapped ancestor wins), so a
+  Year renamed in one slice's tree carries onto the rows of every other slice
+  under it — otherwise one year would become two folders on disk. `ReopenSegment`
+  puts a saved slice back to PROPOSED.
   `review.go` (issue #8's reconcile core, read by the CLI TUI) exposes the
   proposal as a directory tree the reviewer edits
   before `Confirm` writes it back: `BuildTree` also carries one exemplar
@@ -866,8 +1019,8 @@ reads it straight via `config.Load`.
   leader's `locationDir` onto every member: `buildTargets` short-circuits
   `dirFor` for a grouped file, so without that copy the file wrote a NULL
   `location_dir` and its folder silently lost GPS-radius renames (8185 of
-  15024 entries in one real library). `location_dir` is a column of
-  **003's `CREATE TABLE`**, not its own migration — the pre-tag rule (no tag
+  15024 entries in one real library). `location_dir` and `taken_at` are columns of
+  **003's `CREATE TABLE`**, not their own migrations — the pre-tag rule (no tag
   yet, so no users) says edit the existing migration rather than stack an
   `ALTER` on it. The cost is that `migrations.Run` tracks versions
   individually: a database where 003 is already recorded will never get the
@@ -879,8 +1032,12 @@ reads it straight via `config.Load`.
   turning out to be the same place) — this used to be an error before a real
   user hit exactly that case. `Node.MergedIDs` is the other merge path: nodes
   the review TUI folded away are absent from the submitted tree entirely, so
-  their IDs — and, via `remapUnderMerged`, anything below them — remap onto
-  the survivor's path from there.
+  their IDs — and, via `prefixRewriter`, anything below them — remap onto
+  the survivor's path from there. `prefixRewriter` is one function doing two
+  jobs on purpose: a merged node's descendants and a segment's out-of-slice
+  rows are the same question ("this directory sits under a path that moved"),
+  so a longest-ancestor-wins rewriter answers both and there is no second
+  remap pass that could disagree with the first.
 
 ## Supporting packages (`pkg/`)
 
@@ -888,8 +1045,10 @@ reads it straight via `config.Load`.
   (`theme.go`), the Docker-buildkit-style `StageList` step stack shared by
   scan and its dependency install (`stagelist.go` — stage rows with right-aligned
   elapsed times, a progress bar and a live per-file tail nested under the
-  running stage), the app `Shell` (one alt-screen program, `Switch` swaps
-  screens without a terminal-restore flash), the `config` wizard
+  running stage), the `SwitchMsg`/`Switch` pair a screen hands control on with
+  (`shell.go` — the one-screen `Shell` host that used to live beside them is
+  gone: `internal/cli`'s tab container is the only host now, and a kit type
+  with zero implementations is flexibility nobody asked for), the `config` wizard
   (`form.go` — `Field.Example` blocks above the footer, `Field.Describe` for a
     description that depends on the answer under the cursor — prose belongs
     there, not in the example, which renders in a narrow column and truncates;
@@ -923,9 +1082,10 @@ reads it straight via `config.Load`.
   filesystem, so the wizard's debounce would buy nothing), and shared chrome
   (`Banner`/`Footer`/`KeyHint`/`Screen`).
   `ScanConfig.AutoReview` switches straight into the prefetched review instead
-  of asking (the shell scans in order to review, and the session continues
-  afterwards); the `scan` subcommand, which exits after the review, keeps
-  asking. Mid-scan `ctrl+c` is warn-once-then-act: the first press cancels and
+  of asking: a scan is run in order to review it, and the session continues
+  afterwards either way, so the y/n prompt was one keypress between the user
+  and the thing they asked for. Every scan is a shell tab now, so it is always
+  on — `wandersort scan -p …` lands in the review too. Mid-scan `ctrl+c` is warn-once-then-act: the first press cancels and
   says what that costs, a second gives up on a pipeline that won't unwind.
   **`ctrl+c` is the one quit key on every screen** — the post-scan prompt's
   `[n] quit` was the last holdout and is gone; `[y]` still opens the review.

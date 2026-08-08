@@ -388,6 +388,76 @@ func TestShellModel(t *testing.T) {
 				t.Errorf("exitStatus() = %v, want a cancellation", err)
 			}
 		}},
+		// The reported bug: `wandersort scan` (and config, and review) hosted
+		// one screen with no tab bar, so ctrl+t did nothing and a subcommand
+		// was a strictly smaller app than a bare `wandersort`. Each one is now
+		// the same session opened on its own tab, which is this routing.
+		{"SubcommandStartsOpenTheirOwnTab", func(t *testing.T) {
+			for _, tc := range []struct {
+				name  string
+				start shellStart
+				want  tea.Msg
+			}{
+				{
+					"scan",
+					shellStart{tab: tabScan, paths: []string{"/pics"}},
+					tui.StartScanMsg{Paths: []string{"/pics"}},
+				},
+				{"config", shellStart{tab: tabConfig}, openConfigMsg{}},
+				{"review", shellStart{tab: tabReview}, tui.OpenReviewMsg{}},
+			} {
+				m := testShell(t)
+				m.start = tc.start
+				msgs := flattenTeaCmd(m.Init())
+				if !slices.ContainsFunc(msgs, func(got tea.Msg) bool {
+					return reflect.DeepEqual(got, tc.want)
+				}) {
+					t.Errorf("%s: Init() = %v, want it to ask for %#v", tc.name, msgs, tc.want)
+				}
+			}
+		}},
+		// …and the tab it asks for is the tab it lands on. Config is the one
+		// the container opens itself; scan and review land via their own
+		// ready/open messages, so all three are checked through Update.
+		{"SubcommandStartsLandOnTheirOwnTab", func(t *testing.T) {
+			for _, tc := range []struct {
+				name string
+				msg  tea.Msg
+				want int
+			}{
+				{"config", openConfigMsg{}, tabConfig},
+				{"review", reviewOpenMsg{model: &probe{name: "review"}}, tabReview},
+				{"scan", scanReadyMsg{paths: []string{"/pics"}}, tabScan},
+			} {
+				m := testShell(t)
+				m.tab = tabConfig // somewhere else, so landing is observable
+				next, _ := m.Update(tc.msg)
+				if got := next.(shellModel).tab; got != tc.want {
+					t.Errorf("%s: landed on tab %d, want %d", tc.name, got, tc.want)
+				}
+			}
+		}},
+		// A bare `wandersort` opens on the folder input and asks for nothing.
+		{"BareStartOpensTheHomeScreenOnly", func(t *testing.T) {
+			m := testShell(t)
+			for _, msg := range flattenTeaCmd(m.Init()) {
+				switch msg.(type) {
+				case tui.StartScanMsg, openConfigMsg, tui.OpenReviewMsg:
+					t.Errorf("a bare start should open no tab, got %#v", msg)
+				}
+			}
+		}},
+		// `review --rebuild` re-proposes on the way into the first review only.
+		// Every later ctrl+t into the tab opens what is on disk: silently
+		// re-proposing again would throw away edits nobody asked to lose.
+		{"RebuildAppliesToTheFirstReviewOnly", func(t *testing.T) {
+			m := testShell(t)
+			m.rebuild = true
+			m.openReview()
+			if m.rebuild {
+				t.Error("openReview should consume the --rebuild request")
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)

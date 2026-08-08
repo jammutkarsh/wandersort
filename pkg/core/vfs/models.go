@@ -46,6 +46,10 @@ type Config struct {
 	// resolution. Anchors can't stand in for them in ConfigStamp: resolving
 	// needs the location database, and the stamp check must work without it.
 	SavedPlaces []string
+	// SegmentMonths is the review's time-slice size (0 = auto). Deliberately
+	// absent from ConfigStamp: it changes how the plan is *reviewed*, never
+	// where a single file lands, so it must not raise the rebuild prompt.
+	SegmentMonths int
 	// Workers sizes the pool every per-master pass fans out over — deriveAll,
 	// resolveLocations, applyNameCase and buildTargets (see forEachMaster).
 	// 0 or 1 runs them inline.
@@ -80,6 +84,7 @@ func ConfigFor(appCfg *config.Configuration) Config {
 	cfg.MergeSameLocationDays = appCfg.MergeSameLocationDays
 	cfg.Workers = appCfg.Workers
 	cfg.SavedPlaces = appCfg.SavedPlaces
+	cfg.SegmentMonths = appCfg.SegmentMonths
 	switch {
 	// empty Rules keeps the defaults; RuleNone is interpreted only here, so
 	// every caller sees the sentinel resolved the same way
@@ -114,19 +119,40 @@ type masterFile struct {
 	DBCreationDate *string  `db:"exif_creation_date"`
 	IsScreenshot   bool     `db:"is_screenshot"`
 
-	absPath       string
-	takenAt       time.Time
+	absPath string
+	takenAt time.Time
+	// folderDate is the capture time the Year/Month folders come from: the
+	// *cluster's* start, so a trip running Dec 30 → Jan 2 lands in one month
+	// folder instead of being torn across two Year trees. Zero until
+	// clusterAndSpill runs (PreviewPaths never clusters) — read it through
+	// folderTime, never directly.
+	folderDate    time.Time
 	width, height int64
 	hasGPS        bool
 	lat, lon      float64
 	device        string
 	location      string // resolved city; "" when unknown
 	atSavedPlace  bool   // GPS at a confirmed saved-place place; suppresses the location level (SavedPlacesDateOnly)
-	clusterID     string // set when the location decision came from cluster logic
-	eventSegment  string // dated segment for unresolved clusters, e.g. "03-05"
-	dayOverride   string // date-level range label from mergeSameLocationDays, e.g. "02_04"
-	targetPath    string
+	// keepLocationFolder overrides that suppression for this file because its
+	// day holds files from somewhere else too. See unsuppressMixedSavedPlaces.
+	keepLocationFolder bool
+	clusterID          string // set when the location decision came from cluster logic
+	eventSegment       string // dated segment for unresolved clusters, e.g. "03-05"
+	dayOverride        string // date-level range label from mergeSameLocationDays, e.g. "02_04"
+	targetPath         string
 	// the folder the location level emitted, recorded by dirFor so the review
 	// tree can hang this file's GPS off the right node without guessing a depth
 	locationDir string
+}
+
+// folderTime is the instant every dated folder decision is made from — the
+// cluster's start where there is one, the file's own capture time otherwise.
+// One accessor, so no caller has to remember the fallback (and none of them
+// can disagree about it: dirFor, locationParent, mergeSameLocationDays and
+// persist all have to land the file in the same month).
+func (m *masterFile) folderTime() time.Time {
+	if m.folderDate.IsZero() {
+		return m.takenAt
+	}
+	return m.folderDate
 }

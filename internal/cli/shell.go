@@ -18,6 +18,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
+	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
@@ -36,10 +37,33 @@ const (
 
 var tabNames = [numTabs]string{"Scan", "Config", "Review"}
 
-// shellModel is the routing container behind a bare `wandersort`: a tab bar
-// plus one live screen per tab. It is not tui.Shell — Shell hosts exactly one
-// screen, and a scan has to keep receiving its log events while the user is
-// answering the settings wizard on top of it.
+// shellStart is which tab a session opens on, and with what. Every full-screen
+// entry point goes through the shell — bare `wandersort` (an empty start, the
+// folder input), and the `scan`/`config`/`review` subcommands, which are the
+// same session opened on their own tab. They used to be three separate
+// bubbletea programs hosting one screen each, which meant `wandersort scan`
+// could not reach the settings and `wandersort config` could not start a scan:
+// the tab bar the shell draws was the only place ctrl+t existed, and naming a
+// subcommand was enough to lose it. A subcommand is a starting point now, not
+// a smaller app.
+type shellStart struct {
+	tab     int
+	paths   []string // tabScan: scan these immediately instead of asking
+	rebuild bool     // tabReview: re-propose before building the tree (--rebuild)
+}
+
+// openConfigMsg opens the settings tab. A message rather than a direct call so
+// Init can ask for it: Init runs on a copy of the model, so anything that has
+// to mutate the container (the tab, the placed screen) must go through Update.
+type openConfigMsg struct{}
+
+// msgCmd delivers an already-built message on the next Update tick.
+func msgCmd(msg tea.Msg) tea.Cmd { return func() tea.Msg { return msg } }
+
+// shellModel is the routing container behind every full-screen command: a tab
+// bar plus one live screen per tab. It keeps all three screens alive at once,
+// which is the point — a scan has to go on receiving its log events while the
+// user answers the settings wizard on top of it.
 type shellModel struct {
 	a      *app
 	ctx    context.Context
@@ -47,6 +71,12 @@ type shellModel struct {
 
 	screens [numTabs]tea.Model
 	tab     int
+	start   shellStart
+
+	// rebuild re-proposes on the way into the *first* review this session —
+	// `review --rebuild`. It clears itself, so ctrl+t back into a review later
+	// opens what is on disk rather than silently re-proposing again.
+	rebuild bool
 
 	// wf is the running scan's workflow, kept so a settings save can retarget
 	// its vfs phase while it is still going (see configSaved).
@@ -78,8 +108,9 @@ type reviewOpenMsg struct {
 
 // runShell is the unified entry point: one full-screen program hosting the
 // scan, the settings wizard and the review, so organizing a library is one
-// invocation instead of three.
-func (a *app) runShell() error {
+// invocation instead of three. start says which tab it opens on — every
+// full-screen command lands here, so ctrl+t works from all of them.
+func (a *app) runShell(start shellStart) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -99,7 +130,7 @@ func (a *app) runShell() error {
 	a.Log = tuiLog
 	defer func() { a.Log = origLog }()
 
-	m := shellModel{a: a, ctx: ctx, cancel: cancel}
+	m := shellModel{a: a, ctx: ctx, cancel: cancel, start: start, rebuild: start.rebuild}
 	m.screens[tabScan] = a.newHomeScreen(nil)
 
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
@@ -107,8 +138,22 @@ func (a *app) runShell() error {
 	// only ever be started once — every scan in this session reuses it.
 	a.Deps = a.newDeps(func(phase string, done, total int64) {
 		prog.Send(tui.InstallProgressMsg{Phase: phase, Done: done, Total: total})
+		// The settings wizard renders its own progress row and knows nothing
+		// about install phases, so the location download is reported to it in
+		// its own vocabulary. Without this the config tab is the one screen
+		// that never says why the saved-places step is waiting.
+		if phase == install.PhaseLocation {
+			prog.Send(tui.DownloadMsg{Label: "Location database", Done: done, Total: total})
+		}
 	})
 	a.Deps.Start(ctx)
+	// The blocking getter is the completion hook: it returns the moment the
+	// database resolves, success or failure, which is exactly when the wizard's
+	// bar should settle into its dim "✓ done" line.
+	go func() {
+		_, _ = a.Deps.Location()
+		prog.Send(tui.DownloadMsg{Finished: true})
+	}()
 	go func() {
 		for e := range events {
 			prog.Send(tui.LogEventMsg{Event: e})
@@ -126,7 +171,7 @@ func (a *app) runShell() error {
 }
 
 // exitStatus is how the session ended, read off the screens the container kept
-// — the scan model lives inside it, so tui.Shell.Current() has nothing to say.
+// — a session has three of them, so "the current screen" is not the answer.
 // Review outcomes are reported as each review finishes (see handleSwitch).
 func (m shellModel) exitStatus() error {
 	if m.exitErr != nil {
@@ -143,7 +188,23 @@ func (m shellModel) exitStatus() error {
 	return nil
 }
 
-func (m shellModel) Init() tea.Cmd { return m.screens[tabScan].Init() }
+// Init boots the home screen, then asks for whatever tab the command that
+// launched this session named. It asks by message rather than doing it here:
+// Init runs on a copy, so a screen placed from inside it would be thrown away.
+func (m shellModel) Init() tea.Cmd {
+	cmd := m.screens[tabScan].Init()
+	switch {
+	case len(m.start.paths) > 0:
+		// `wandersort scan -p …`: the paths are already answered, so skip the
+		// folder input and go straight into the run.
+		return tea.Batch(cmd, msgCmd(tui.StartScanMsg{Paths: m.start.paths}))
+	case m.start.tab == tabConfig:
+		return tea.Batch(cmd, msgCmd(openConfigMsg{}))
+	case m.start.tab == tabReview:
+		return tea.Batch(cmd, msgCmd(tui.OpenReviewMsg{}))
+	}
+	return cmd
+}
 
 func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -165,6 +226,9 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tui.OpenReviewMsg:
 		return m, m.openReview()
+
+	case openConfigMsg:
+		return m, m.openConfig()
 
 	case scanReadyMsg:
 		if msg.err != nil {
@@ -208,9 +272,7 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tab = next
 		switch {
 		case m.tab == tabConfig && m.screens[tabConfig] == nil:
-			// Built fresh on every entry, so it re-seeds from the file the last
-			// visit wrote.
-			return m, m.place(tabConfig, m.a.newConfigScreen(m.ctx))
+			return m, m.openConfig()
 		case m.tab == tabScan:
 			if cmd := m.scanTabHome(); cmd != nil {
 				return m, cmd
@@ -281,17 +343,23 @@ func (m *shellModel) configSaved() tea.Cmd {
 	if m.a.settingsChanged(filepath.Dir(m.a.Config.AppDBPath)) {
 		cmd = m.forward(tabReview, review.SettingsChangedMsg{})
 	}
-	if note != "" {
-		// ponytail: shown on the home screen's error line, so it's lost if a
-		// scan is on screen instead. Give HomeModel a note line if that matters.
-		cmd = tea.Batch(cmd, m.forward(tabScan, tui.HomeErrMsg{Err: errors.New(note)}))
+	// Confirming the save is the wizard's only receipt now that it closes back
+	// into the shell instead of ending the process with a printed line.
+	if note == "" {
+		note = "Settings saved"
+		if p, err := m.a.Config.Exists(); err == nil {
+			note = "Settings saved in " + p
+		}
 	}
+	// ponytail: shown on the home screen's error line, so it's lost if a scan
+	// is on screen instead. Give HomeModel a note line if that matters.
+	cmd = tea.Batch(cmd, m.forward(tabScan, tui.HomeErrMsg{Err: errors.New(note)}))
 	return cmd
 }
 
 // handleSwitch intercepts the screen-swap message the scan and review screens
-// send. Unlike tui.Shell, a nil Next does not quit here: the review handing
-// back means one plan is settled, not that the session is over.
+// send. A nil Next does not quit: the review handing back means one plan is
+// settled, not that the session is over.
 func (m shellModel) handleSwitch(msg tui.SwitchMsg) (tea.Model, tea.Cmd) {
 	if msg.Next != nil {
 		// The scan's prefetched review screen. Jumping to it is right when the
@@ -377,19 +445,39 @@ func (m shellModel) canReview() bool {
 	return m.reviewReady || m.a.hasProposal()
 }
 
+// openConfig places the settings wizard. Built fresh on every entry, so it
+// re-seeds from the file the last visit wrote.
+func (m *shellModel) openConfig() tea.Cmd {
+	m.tab = tabConfig
+	return m.place(tabConfig, m.a.newConfigScreen(m.ctx))
+}
+
 // openReview builds the review over whatever is in the database, off the UI
-// goroutine — the lock, the DB open and BuildTree are all too slow to run in
-// Update. Shared by [ctrl+r] on the home screen and [ctrl+t] into an
-// unprefetched review tab.
+// goroutine — the lock, the DB open, an eventual --rebuild and BuildTree are
+// all too slow to run in Update. Shared by [ctrl+r] on the home screen,
+// [ctrl+t] into an unprefetched review tab, and `wandersort review`.
 func (m *shellModel) openReview() tea.Cmd {
 	if m.opening {
 		return nil // a second ctrl+t while the first is still building
 	}
 	m.opening = true
+	// `review --rebuild` re-proposes on the way into the first review only:
+	// after that the reviewer is inside the app, where [R] is how they ask
+	// for it — silently re-proposing on every later visit would throw away
+	// edits they never asked to lose.
+	rebuild := m.rebuild
+	m.rebuild = false
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
 		if err := a.ensureOutput(ctx); err != nil {
 			return reviewOpenMsg{err: err}
+		}
+		if rebuild {
+			// The tree is discarded: newReviewScreen segments and builds its
+			// own. What's wanted here is the re-proposal it reads back.
+			if _, err := a.rebuildTree(ctx, nil); err != nil {
+				return reviewOpenMsg{err: err}
+			}
 		}
 		model, err := a.newReviewScreen(ctx)
 		return reviewOpenMsg{model: model, err: err}
@@ -510,5 +598,5 @@ func (a *app) runRoot(cmd *cobra.Command) error {
 	if !a.isTuiEnabled(cmd) {
 		return cmd.Help()
 	}
-	return a.runShell()
+	return a.runShell(shellStart{tab: tabScan})
 }

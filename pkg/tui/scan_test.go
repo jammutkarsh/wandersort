@@ -14,6 +14,23 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// stubScreen is a minimal tea.Model that records what it was sent, standing
+// in for a real screen the scan hands control to.
+type stubScreen struct {
+	view    string
+	initCmd tea.Cmd
+	msgs    []tea.Msg
+}
+
+func (s *stubScreen) Init() tea.Cmd { return s.initCmd }
+
+func (s *stubScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	s.msgs = append(s.msgs, msg)
+	return s, nil
+}
+
+func (s *stubScreen) View() string { return s.view }
+
 // switchTarget returns the model a cmd switches to, or nil.
 func switchTarget(cmd tea.Cmd) tea.Model {
 	for _, msg := range flattenCmd(cmd) {

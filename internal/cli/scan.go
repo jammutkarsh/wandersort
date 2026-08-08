@@ -8,22 +8,17 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/spf13/cobra"
 
-	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/tui"
-	"github.com/spf13/cobra"
 )
 
 // waitForDeps blocks until both downloadable dependencies are ready, so no
@@ -58,13 +53,20 @@ func (a *app) newScanCmd() *cobra.Command {
 		Long: `Scans the given paths for photos and videos, hashes them, and scores
 duplicates so you can keep only the best copy.
 
-Requires --paths (-p) to specify which directories to scan. The scan runs in
-the foreground and reports progress until it finishes.
+Opens WanderSort on the scan tab — the same app a bare 'wandersort' opens, so
+ctrl+t still reaches the settings and the review. With --paths (-p) the run
+starts straight away; without it you are asked which folders to scan.
+
+--paths is required with --plain (or a non-terminal stderr): there is no
+screen to ask on.
 
 Runs on defaults if you haven't run 'wandersort config' yet. Run it later and
 'wandersort review --rebuild' to re-propose the folder structure from your
 settings without re-scanning.`,
-		Example: `# Scan a single directory
+		Example: `# Pick the folders on screen
+wandersort scan
+
+# Scan a single directory
 wandersort scan --paths ~/Pictures
 
 # Scan multiple directories (repeat -p or comma-separate)
@@ -79,15 +81,25 @@ wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
 		},
 	}
 
-	cmd.Flags().StringSliceP(flagPaths, "p", nil, "Directories to scan (repeatable, or comma-separated)")
+	cmd.Flags().StringSliceP(flagPaths, "p", nil,
+		"Directories to scan (repeatable, or comma-separated). Asked for on screen if omitted")
 	cmd.Flags().IntP(flagWorkers, "w", 0, "Concurrent worker count")
-	cmd.MarkFlagRequired(flagPaths)
+	// Deliberately not MarkFlagRequired: the scan tab's own folder input is the
+	// answer when it's missing, and refusing to open the app over a question it
+	// is about to ask makes `scan` the one command that can't just be run.
 	return cmd
 }
 
+// runScan opens the app on the scan tab — the same session a bare `wandersort`
+// gives, so ctrl+t still reaches the settings and the review. Paths given on
+// the command line skip the folder question; without them the tab opens on it.
 func (a *app) runScan(cmd *cobra.Command, paths []string) error {
 	if a.isTuiEnabled(cmd) {
-		return a.runScanTUI(paths)
+		return a.runShell(shellStart{tab: tabScan, paths: paths})
+	}
+	if len(paths) == 0 {
+		// No screen to ask on, so this is the one place the flag is required.
+		return fmt.Errorf("--paths (-p) is required without a terminal to ask on")
 	}
 	return a.runScanPlain(paths)
 }
@@ -130,82 +142,5 @@ func (a *app) runScanPlain(paths []string) error {
 	}
 	a.Log.Info(fmt.Sprintf("Scan complete in %s. Run '%s' to review the proposed folders.", time.Since(start).Round(time.Millisecond), hint),
 		logger.UserKey, true, "scanPaths", scanPaths)
-	return nil
-}
-
-// runScanTUI is the full-screen path: dependencies download first (their
-// progress renders as rows under the banner, same as before), and no pipeline
-// phase starts until both are ready.
-func (a *app) runScanTUI(paths []string) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := a.initAppDB(ctx); err != nil {
-		return err
-	}
-	l, err := a.lockOutput()
-	if err != nil {
-		a.closeDBs()
-		return err
-	}
-	defer a.closeDBs()
-	defer l.Unlock()
-
-	// Events flow to the program; forwarding goroutine outlives Run() and exits
-	// with the process — the send never deadlocks since the program always drains it.
-	events := make(chan logger.Event, 4096)
-	tuiLog := logger.NewTUI(a.Config.LogLevel, a.Config.LogFile, func(e logger.Event) { events <- e })
-	origLog := a.Log
-	a.Log = tuiLog // swapped so dependency-install milestones land in the TUI too
-	defer func() { a.Log = origLog }()
-
-	wf := workflow.NewWorkflow(ctx, a.AppDB, tuiLog, a.Config, a.workflowDeps())
-	first := tui.NewScanModel(tui.ScanConfig{
-		Pipeline: func() error {
-			// a.Deps is set below, before prog.Run() ever invokes this closure.
-			if err := waitForDeps(a.Deps); err != nil {
-				return &tui.DepsErr{Err: err}
-			}
-			_, err := wf.RunScan(paths)
-			return err
-		},
-		Cancel: cancel,
-		// Swap straight into review in the same program, reusing the open DB
-		// and held lock. The scan screen calls this on the post-scan prompt.
-		ReviewNext: func() (tea.Model, error) {
-			return a.newReviewScreen(ctx)
-		},
-	})
-
-	prog := tea.NewProgram(tui.NewShell(first), tea.WithAltScreen(), tea.WithOutput(os.Stderr))
-	a.Deps = a.newDeps(func(phase string, done, total int64) {
-		prog.Send(tui.InstallProgressMsg{Phase: phase, Done: done, Total: total})
-	})
-	a.Deps.Start(ctx)
-	go func() {
-		for e := range events {
-			prog.Send(tui.LogEventMsg{Event: e})
-		}
-	}()
-
-	final, runErr := prog.Run()
-	if runErr != nil {
-		return runErr
-	}
-
-	if shell, ok := final.(tui.Shell); ok {
-		if scan, ok := shell.Current().(tui.ScanModel); ok {
-			if err := scan.DepsFailure(); err != nil {
-				return err
-			}
-			if scan.Cancelled() {
-				return errors.New("scan cancelled")
-			}
-		}
-		if confirmed, saveErr, ok := review.Outcome(shell.Current()); ok {
-			_, err := a.reportReviewOutcome(confirmed, saveErr)
-			return err
-		}
-	}
 	return nil
 }

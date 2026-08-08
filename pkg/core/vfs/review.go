@@ -28,6 +28,29 @@ import (
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 )
 
+// prefixRewriter turns a remap of old-dir → new-dir into a function over any
+// directory: the longest remapped ancestor wins, and the rest of the path
+// rides along behind the new prefix.
+//
+// A whole-tree confirm never needs this — every leaf directory is its own
+// remap key. A segment's tree only holds the rows of one time slice, so the
+// Year node the reviewer renamed there is the *only* entry that covers the
+// other slices' rows sitting under it.
+func prefixRewriter(remap map[string]string) func(dir string) string {
+	olds := slices.SortedFunc(maps.Keys(remap), func(a, b string) int { return len(b) - len(a) })
+	return func(dir string) string {
+		for _, old := range olds {
+			if dir == old {
+				return remap[old]
+			}
+			if strings.HasPrefix(dir, old+"/") {
+				return remap[old] + dir[len(old):]
+			}
+		}
+		return dir
+	}
+}
+
 // ErrInvalidTree wraps every rejection of a submitted review tree (unknown node
 // id, unsafe name, colliding rename).
 var ErrInvalidTree = errors.New("invalid review tree")
@@ -59,9 +82,10 @@ type Node struct {
 const maxSamples = 3
 
 // BuildTree reads the still-reviewable entries (executed/failed rows are past
-// reviewing) and returns the proposed directory tree, folders only. An empty
+// reviewing) and returns the proposed directory tree, folders only. A nil seg
+// is the whole proposal; a segment narrows it to one time slice. An empty
 // result means no proposal exists — the caller decides if that's a 404.
-func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
+func BuildTree(ctx context.Context, database *db.DB, seg *Segment) ([]Node, error) {
 	var rows []struct {
 		TargetPath  string   `db:"target_path"`
 		SourcePath  string   `db:"source_path"`
@@ -69,13 +93,17 @@ func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 		GPSLat      *float64 `db:"exif_gps_latitude"`
 		GPSLon      *float64 `db:"exif_gps_longitude"`
 	}
+	where, args := seg.clause("vfe.taken_at")
+	if where != "" {
+		where = " AND " + where
+	}
 	if err := database.SQL.SelectContext(ctx, &rows,
 		`SELECT vfe.target_path, vfe.source_path, vfe.location_dir,
 		        fm.exif_gps_latitude, fm.exif_gps_longitude
 		 FROM virtual_fs_entries vfe
 		 LEFT JOIN file_metadata fm ON fm.file_id = vfe.file_id
-		 WHERE vfe.status IN (?, ?)`,
-		db.StatusProposed, db.StatusApproved); err != nil {
+		 WHERE vfe.status IN (?, ?)`+where,
+		append([]any{db.StatusProposed, db.StatusApproved}, args...)...); err != nil {
 		return nil, fmt.Errorf("query vfs entries: %w", err)
 	}
 
@@ -184,27 +212,16 @@ func Labels(ctx context.Context, database *db.DB, log logger.Logger) []string {
 	return labels
 }
 
-// ApprovedCount is how many entries the reviewer already confirmed — the size
-// of the plan a rebuild would throw away. Lives here rather than in each
-// caller: what a status means is this package's business, and both the
-// `--rebuild` guard and the review's rebuild question ask the same question.
-func ApprovedCount(ctx context.Context, database *db.DB) (int, error) {
-	if database == nil {
-		return 0, nil
-	}
-	var n int
-	if err := database.SQL.GetContext(ctx, &n,
-		`SELECT COUNT(*) FROM virtual_fs_entries WHERE status = ?`, db.StatusApproved); err != nil {
-		return 0, fmt.Errorf("count approved entries: %w", err)
-	}
-	return n, nil
-}
-
 // Confirm applies the (possibly edited) tree back onto the proposal's
 // entries, flips PROPOSED rows to APPROVED, and remembers every name the
 // reviewer typed in user_labels, so the next review's rename completions
 // offer it. The write is synchronous: a nil return means committed.
-func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
+//
+// seg scopes the *approval* to one time slice (nil = the whole proposal). The
+// renames are not scoped: a Year the reviewer renamed in this segment's tree
+// has to carry onto the rows of every other segment sitting under it, or the
+// same year would end up as two differently-named folders on disk.
+func Confirm(ctx context.Context, database *db.DB, roots []Node, seg *Segment) error {
 	var targets []string
 	if err := database.SQL.SelectContext(ctx, &targets,
 		`SELECT DISTINCT target_path FROM virtual_fs_entries`); err != nil {
@@ -289,10 +306,11 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 			oldPath string
 		}
 		var moves []move
+		rewrite := prefixRewriter(remap)
 		for _, e := range entries {
 			dir := path.Dir(e.TargetPath)
-			newDir, ok := remap[dir]
-			if !ok || newDir == dir {
+			newDir := rewrite(dir)
+			if newDir == dir {
 				taken[strings.ToLower(e.TargetPath)] = true
 				continue
 			}
@@ -319,9 +337,13 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 				return err
 			}
 		}
+		where, args := seg.clause("taken_at")
+		if where != "" {
+			where = " AND " + where
+		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE virtual_fs_entries SET status = ? WHERE status = ?`,
-			db.StatusApproved, db.StatusProposed); err != nil {
+			`UPDATE virtual_fs_entries SET status = ? WHERE status = ?`+where,
+			append([]any{db.StatusApproved, db.StatusProposed}, args...)...); err != nil {
 			return err
 		}
 		for _, name := range slices.Sorted(maps.Keys(learned)) {

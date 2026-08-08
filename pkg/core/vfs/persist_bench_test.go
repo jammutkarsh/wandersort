@@ -53,7 +53,7 @@ func BenchmarkPersist(b *testing.B) {
 	}
 
 	for b.Loop() {
-		if _, err := v.persist(masters); err != nil {
+		if _, err := v.persist(context.Background(), masters); err != nil {
 			b.Fatal(err)
 		}
 		d.Writer.Flush()

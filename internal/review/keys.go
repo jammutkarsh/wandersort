@@ -30,7 +30,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
 	case SettingsChangedMsg:
-		m.raiseRebuildAsk()
+		m.raiseRebuildAsk(true)
 		return m, nil
 	case rebuiltMsg:
 		return m.rebuilt(msg), nil
@@ -76,9 +76,9 @@ func (m Model) startRebuild() (tea.Model, tea.Cmd) {
 	m.askRebuild = false
 	m.rebuilding = true
 	m.statusMsg, m.statusIsErr = "", false
-	rebuild, ctx := m.rebuild, m.ctx
+	rebuild, ctx, seg := m.rebuild, m.ctx, m.seg
 	return m, tea.Batch(m.spin.Tick, func() tea.Msg {
-		tree, err := rebuild(ctx)
+		tree, err := rebuild(ctx, seg)
 		return rebuiltMsg{tree: tree, err: err}
 	})
 }
@@ -143,8 +143,21 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	m.quitWarned = m.quitWarned && key.String() == "ctrl+c"
+	m.quitWarned = m.quitWarned && (key.String() == "ctrl+c" || key.String() == "q")
 	switch key.String() {
+	case "q":
+		// Only meaningful with a picker underneath: leaving one time slice is
+		// going back to the list, not ending the review.
+		if !m.hosted {
+			break
+		}
+		if m.hasEdits() && !m.quitWarned {
+			m.quitWarned = true
+			m.statusMsg, m.statusIsErr = "unsaved edits — [c] saves this slice, press q again to discard them", true
+			break
+		}
+		m.back, m.done = true, true
+		return m, nil
 	case "ctrl+c":
 		if m.hasEdits() && !m.quitWarned {
 			m.quitWarned = true
@@ -203,7 +216,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = true
 	case "R":
 		if !m.rebuilding {
-			m.raiseRebuildAsk()
+			m.raiseRebuildAsk(false) // the reviewer asked, nothing moved under them
 		}
 	case "u":
 		if n := len(m.undo); n > 0 {

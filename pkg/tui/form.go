@@ -743,7 +743,7 @@ func (m FormModel) renderFooter() string {
 		return ""
 	}
 	if m.awaitReason() != "" {
-		return Footer(KeyHint("ctrl+c", "quit")+"   "+KeyHint("c", "save & exit"), m.w)
+		return Footer(KeyHint("c", "save & exit")+"   "+KeyHint("ctrl+c", "discard & exit"), m.w)
 	}
 	field := m.active()
 	if field == nil {
@@ -773,7 +773,9 @@ func (m FormModel) renderFooter() string {
 			hints = append([]string{KeyHint("↑↓", "pick"), KeyHint("tab", "complete")}, hints...)
 		}
 	}
-	hints = append(hints, KeyHint("c", "save & exit"))
+	// ctrl+c aborts without writing anything — the wizard's only exit that
+	// isn't a save, and one nothing on screen said out loud until now.
+	hints = append(hints, KeyHint("c", "save & exit"), KeyHint("ctrl+c", "discard & exit"))
 	return Footer(strings.Join(hints, "   "), m.w)
 }
 

@@ -66,10 +66,11 @@ type ScanConfig struct {
 	// nil (or an error) means no in-program review — the screen just exits.
 	ReviewNext func() (tea.Model, error)
 	// AutoReview switches into the review screen the moment it's ready instead
-	// of asking. The unified shell scans in order to review, and the shell
-	// keeps the session alive afterwards, so the y/n prompt is one keypress
-	// between the user and the thing they asked for. The scan subcommand,
-	// which exits after the review, keeps asking.
+	// of asking. A scan is run in order to review it, and the shell keeps the
+	// session alive afterwards, so the y/n prompt is one keypress between the
+	// user and the thing they asked for. Every scan is hosted by the shell now,
+	// so this is always true; false still means the y/n prompt, which is also
+	// what a failed review prefetch falls back to.
 	AutoReview bool
 }
 

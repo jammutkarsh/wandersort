@@ -1479,7 +1479,7 @@ func TestRebuildAsk(t *testing.T) {
 
 	rebuildable := func() Model {
 		return newModel(sampleTree(), context.Background(), nil, nil, nil).withHost(Options{
-			Rebuild: func(context.Context) ([]vfs.Node, error) { return rebuilt, nil },
+			Rebuild: func(context.Context, *vfs.Segment) ([]vfs.Node, error) { return rebuilt, nil },
 		})
 	}
 

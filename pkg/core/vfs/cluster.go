@@ -52,6 +52,15 @@ func clusterAndSpill(masters []masterFile, gap time.Duration) {
 	for ci := range clusters {
 		c := &clusters[ci]
 
+		// Every member takes the cluster's Year/Month, whatever is decided
+		// below — a trip that runs across a month or New Year boundary is one
+		// event and belongs in one folder, not torn in two. Unconditional and
+		// before both early-continues: a single-day cluster is unaffected
+		// (start is its own day) and a located cluster needs it just as much.
+		for _, i := range c.members {
+			masters[i].folderDate = c.start
+		}
+
 		located := 0
 		for _, i := range c.members {
 			if masters[i].location != "" {

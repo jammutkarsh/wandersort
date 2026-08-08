@@ -17,7 +17,6 @@ import (
 
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
-	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -43,11 +42,41 @@ wandersort review --rebuild`,
 
 	cmd.Flags().Bool(flagYes, false, "Skip the interactive review: confirm the proposed hierarchy as-is")
 	cmd.Flags().Bool(flagRebuild, false,
-		"Re-run the VFS proposal with the current config.yaml rules before reviewing (no re-scan or re-hash)")
+		"Re-propose the unapproved folders with the current config.yaml rules before reviewing "+
+			"(no re-scan or re-hash); already-saved time slices are kept — re-open one in review to redo it")
 	return cmd
 }
 
 func (a *app) runReview(cmd *cobra.Command) error {
+	rebuild, _ := cmd.Flags().GetBool(flagRebuild)
+	yes, _ := cmd.Flags().GetBool(flagYes)
+
+	// No guard on --rebuild any more: a rebuild re-proposes what nobody has
+	// approved and leaves the approved plan alone (see vfs.persist), so there
+	// is no confirmed work left for it to discard.
+	switch {
+	case yes:
+		return a.confirmReviewAll(rebuild)
+	case a.isTuiEnabled(cmd):
+		// Opens the app on the review tab — the same session a bare
+		// `wandersort` gives, so a reviewer who finds the folders wrong can fix
+		// the settings and come back without relaunching. The shell opens the
+		// lock, the database and the tree itself, and reports a library with
+		// nothing to review on screen rather than refusing to start: there is a
+		// scan tab one ctrl+t away, which is exactly what that user needs.
+		return a.runShell(shellStart{tab: tabReview, rebuild: rebuild})
+	default:
+		// An alt-screen review in a pipe was never usable; say so instead of
+		// drawing one into a file.
+		return fmt.Errorf("review needs an interactive terminal — use 'wandersort review --yes' to confirm the proposal as-is")
+	}
+}
+
+// confirmReviewAll is `review --yes`: no TUI, so the lock, the database and
+// the proposal work all run inline here, a missing library is a hard error
+// rather than a screen, and a settings change is a warning rather than a
+// question — there is nobody to ask.
+func (a *app) confirmReviewAll(rebuild bool) error {
 	if _, err := os.Stat(a.Config.AppDBPath); os.IsNotExist(err) {
 		return fmt.Errorf("no database found — run 'wandersort scan' first")
 	}
@@ -64,87 +93,42 @@ func (a *app) runReview(cmd *cobra.Command) error {
 	}
 	defer a.closeDBs()
 
-	rebuild, _ := cmd.Flags().GetBool(flagRebuild)
-	yes, _ := cmd.Flags().GetBool(flagYes)
-
-	// --rebuild re-proposes from metadata already in the DB: a changed rules
-	// setting applies without a re-scan or re-hash. vfs.Run wipes every entry,
-	// including an already-confirmed plan — the names survive in user_labels
-	// as rename completions, but dropping confirmed work needs saying out loud.
-	if rebuild {
-		approved, err := vfs.ApprovedCount(ctx, a.AppDB)
-		if err != nil {
-			return err
-		}
-		if approved > 0 && !yes {
-			return fmt.Errorf("--rebuild would discard the confirmed plan (%d approved files).\n"+
-				"The names you typed are remembered as rename completions; re-run with --yes to rebuild and confirm the new plan non-interactively", approved)
-		}
-	}
 	// rebuild only re-runs the vfs phase — no exif phase, so no exiftool
 	// needed; ask only for what this command needs.
 	a.Deps = a.newDeps(nil)
 	a.Deps.StartLocationOnly(ctx, nil)
 
 	outputDir := filepath.Dir(a.Config.AppDBPath)
-
-	// Nothing re-proposes on its own, so a settings change since this plan was
-	// built is only visible here. The interactive review asks about it itself
-	// (a full-screen yes/no over the tree); the non-interactive paths can't
-	// ask anyone, so they say it once and carry on.
-	settingsChanged := !rebuild && a.settingsChanged(outputDir)
-	if settingsChanged && (yes || !a.isTuiEnabled(cmd)) {
+	if !rebuild && a.settingsChanged(outputDir) {
 		a.Log.Warn("Settings changed since this proposal — run 'wandersort review --rebuild' to apply them",
 			logger.UserKey, true)
-		settingsChanged = false
 	}
 
-	// load is the proposal work (location resolver, --rebuild's vfs.Propose,
-	// vfs.BuildTree) that used to run before the terminal showed anything.
-	load := func(ctx context.Context) ([]vfs.Node, *location.Resolver, error) {
-		resolver, err := a.Deps.Location()
-		if err != nil && !rebuild {
-			a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
-			err = nil
-		} else if err != nil {
-			return nil, nil, fmt.Errorf("dependencies: %w", err)
-		}
-		if rebuild {
-			a.Log.Info("Rebuilding folder proposal", logger.UserKey, true)
-			if _, err := vfs.Propose(ctx, a.AppDB, resolver, a.Config, a.Log); err != nil {
-				return nil, nil, fmt.Errorf("rebuild proposal: %w", err)
-			}
-		}
-		tree, err := vfs.BuildTree(ctx, a.AppDB)
-		if err != nil {
-			return nil, nil, err
-		}
-		if len(tree) == 0 {
-			return nil, nil, fmt.Errorf("no proposal to review — run 'wandersort scan' first")
-		}
-		return tree, resolver, nil
+	resolver, err := a.Deps.Location()
+	if err != nil && !rebuild {
+		a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
+	} else if err != nil {
+		return fmt.Errorf("dependencies: %w", err)
 	}
-
-	if yes {
-		// no TUI either way — do the load inline and confirm.
-		tree, _, err := load(ctx)
-		if err != nil {
-			return err
-		}
-		if err := review.ConfirmAll(ctx, review.Options{
-			DB: a.AppDB, Tree: tree, Log: a.Log, OutputDir: outputDir,
-		}); err != nil {
-			return err
-		}
-	} else {
-		if err := review.Run(ctx, review.Options{
-			DB: a.AppDB, Log: a.Log, OutputDir: outputDir, Load: load,
-			Rebuild: a.rebuildTree, SettingsChanged: settingsChanged,
-		}); err != nil {
-			return err
+	if rebuild {
+		a.Log.Info("Rebuilding folder proposal", logger.UserKey, true)
+		if _, err := vfs.Propose(ctx, a.AppDB, resolver, a.Config, a.Log); err != nil {
+			return fmt.Errorf("rebuild proposal: %w", err)
 		}
 	}
+	tree, err := vfs.BuildTree(ctx, a.AppDB, nil)
+	if err != nil {
+		return err
+	}
+	if len(tree) == 0 {
+		return fmt.Errorf("no proposal to review — run 'wandersort scan' first")
+	}
 
+	if err := review.ConfirmAll(ctx, review.Options{
+		DB: a.AppDB, Tree: tree, Log: a.Log, OutputDir: outputDir,
+	}); err != nil {
+		return err
+	}
 	fmt.Fprintln(os.Stderr, "Folder structure approved.")
 	return nil
 }
@@ -167,7 +151,11 @@ func (a *app) settingsChanged(outputDir string) bool {
 // right now and returns the new tree — the "yes" arm of the review's rebuild
 // question. `a.Config` is re-resolved on every wizard save (see
 // app.reloadConfig), so "right now" really is what the user last saved.
-func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
+//
+// Re-proposing is always library-wide (vfs.Propose replaces every unapproved
+// row); seg only scopes the tree handed back, so a reset inside one time slice
+// returns that slice, not the whole library.
+func (a *app) rebuildTree(ctx context.Context, seg *vfs.Segment) ([]vfs.Node, error) {
 	resolver, err := a.Deps.Location()
 	if err != nil {
 		return nil, fmt.Errorf("dependencies: %w", err)
@@ -176,7 +164,7 @@ func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
 	if _, err := vfs.Propose(ctx, a.AppDB, resolver, a.Config, a.Log); err != nil {
 		return nil, fmt.Errorf("rebuild proposal: %w", err)
 	}
-	return vfs.BuildTree(ctx, a.AppDB)
+	return vfs.BuildTree(ctx, a.AppDB, seg)
 }
 
 // newReviewScreen builds the review screen over the current proposal, reusing
@@ -191,7 +179,7 @@ func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	if err != nil {
 		a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
 	}
-	tree, err := vfs.BuildTree(ctx, a.AppDB)
+	tree, err := vfs.BuildTree(ctx, a.AppDB, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -206,6 +194,7 @@ func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 		OutputDir:       filepath.Dir(a.Config.AppDBPath),
 		Rebuild:         a.rebuildTree,
 		SettingsChanged: a.settingsChanged(filepath.Dir(a.Config.AppDBPath)),
+		SegmentMonths:   a.Config.SegmentMonths,
 	}), nil
 }
 

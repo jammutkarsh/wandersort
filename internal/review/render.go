@@ -50,8 +50,12 @@ func (m Model) header() string {
 	for i := range m.tree {
 		files += m.tree[i].FileCount
 	}
+	left := "Edit the proposed folders — nothing moves until you save."
+	if m.segLabel != "" {
+		left = m.segLabel + " — " + left
+	}
 	return tui.Banner("review") + "\n" +
-		tui.Row(tui.DimText.Render("Edit the proposed folders — nothing moves until you save."),
+		tui.Row(tui.DimText.Render(left),
 			tui.FaintTxt.Render(fmt.Sprintf("%d folders  %d files", len(m.rows), files)), m.width)
 }
 
@@ -161,40 +165,63 @@ func (m Model) keyHelp() string {
 	}
 	hints = append(hints, tui.KeyHint("u", "undo"))
 	if m.rebuild != nil {
-		hints = append(hints, tui.KeyHint("R", "rebuild"))
+		hints = append(hints, tui.KeyHint("R", "reset plan"))
 	}
-	hints = append(hints, tui.KeyHint("c", "save & exit"), tui.KeyHint("ctrl+c", "discard"),
-		tui.KeyHint("?", "help"))
+	hints = append(hints, tui.KeyHint("c", "save & exit"))
+	// With a picker underneath, [q] and ctrl+c are different exits — one steps
+	// back a screen, the other ends the review — so the labels have to say which.
+	if m.hosted {
+		hints = append(hints,
+			tui.KeyHint("q", "back to time slices"),
+			tui.KeyHint("ctrl+c", "quit review"))
+	} else {
+		hints = append(hints, tui.KeyHint("ctrl+c", "discard & exit"))
+	}
+	hints = append(hints, tui.KeyHint("?", "help"))
 	return strings.Join(hints, "   ")
 }
 
-// rebuildAskView is the rebuild question, drawn as the same full-screen yes/no
+// rebuildAskView is the reset question, drawn as the same full-screen yes/no
 // dialog `wandersort reset` asks with — a settings change invalidates the whole
 // plan on screen, so it gets the screen, not a line above the key bar that a
 // reviewer reading the tree will never look at.
+//
+// "Reset the plan" rather than "rebuild": re-proposing from the current
+// settings is what the key does whether the settings just moved or the
+// reviewer simply wants their edits thrown away, and one verb covers both.
 //
 // The ConfirmModel is built per frame rather than stored: it is pure layout,
 // and a bubbletea model copied by value can't safely hold a pointer into its
 // own fields, which is what its Value is.
 func (m Model) rebuildAskView() string {
 	choice := m.rebuildChoice
-	c := tui.NewConfirmModel("Settings changed since this plan was proposed", m.rebuildAskText(), &choice)
+	c := tui.NewConfirmModel(m.rebuildAskTitle(), m.rebuildAskText(), &choice)
 	sized, _ := c.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 	return sized.View()
 }
 
-// rebuildAskText spells out what a rebuild costs. A stamp is a hash, so it
-// can't name which setting moved — only the two kinds that can.
+// rebuildAskTitle names the reason the question is up: the settings moved
+// under the plan, or the reviewer asked to start over.
+func (m Model) rebuildAskTitle() string {
+	if m.askedBySettings {
+		return "Settings changed since this plan was proposed"
+	}
+	return "Reset this plan?"
+}
+
+// rebuildAskText spells out what a reset costs. A stamp is a hash, so it
+// can't name which setting moved — only the two kinds that can. It doesn't
+// mention approved files: a reset re-proposes what nobody signed off and
+// leaves saved slices exactly as they are (vfs.persist).
 func (m Model) rebuildAskText() string {
-	text := "Your folder rules or saved places changed, so this plan no longer matches them.\n" +
-		"Rebuild re-proposes every folder from the new settings. No keeps the plan as it is — [R] asks again."
-	switch {
-	case m.hasEdits() && m.approvedFiles > 0:
-		text += fmt.Sprintf("\n\nYour unsaved edits and %d already-approved files will be re-proposed.", m.approvedFiles)
-	case m.hasEdits():
+	text := "Reset throws this plan away and proposes the folders again from your current settings.\n"
+	if m.askedBySettings {
+		text = "Your folder rules or saved places changed, so this plan no longer matches them.\n" +
+			"Reset proposes every folder you haven't saved yet again, from the new settings.\n"
+	}
+	text += "No keeps the plan as it is — [R] asks again."
+	if m.hasEdits() {
 		text += "\n\nYour unsaved edits will be discarded."
-	case m.approvedFiles > 0:
-		text += fmt.Sprintf("\n\n%d already-approved files will be re-proposed.", m.approvedFiles)
 	}
 	return text
 }
@@ -220,13 +247,17 @@ func (m Model) helpView() string {
 			{"d", "drop the folder — its contents move up one level, the folder goes away"},
 			{"D", "flatten — everything below moves directly into the folder"},
 			{"u", "undo the last reshape; press again to walk further back"},
-			{"R", "rebuild — re-propose every folder from your current settings, discarding your edits"},
+			{"R", "reset the plan — propose every unsaved folder again from your current settings, discarding your edits"},
 		}},
 		{"Leaving", []key{
 			{"p", "peek — copies a sample of the folder's files and opens them (read-only)"},
 			{"c", "save the plan and exit — the only key that writes anything"},
 			{"ctrl+c", "exit without saving (warns once if you have unsaved edits)"},
 		}},
+	}
+	if m.hosted {
+		sections[len(sections)-1].keys = append(sections[len(sections)-1].keys,
+			key{"q", "back to the time slices, without saving this one"})
 	}
 
 	var b strings.Builder

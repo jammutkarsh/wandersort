@@ -31,6 +31,14 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
+// The phase names Options.OnProgress reports under. Exported because a caller
+// routing progress to more than one screen has to tell them apart — the shell
+// reports the location download to the settings wizard as well as to the scan.
+const (
+	PhaseExiftool = "exiftool"
+	PhaseLocation = "location"
+)
+
 // Options configures a Coordinator. Log and OnProgress may be nil.
 type Options struct {
 	ExecutablePath string // directory exiftool installs into
@@ -82,7 +90,7 @@ func (c *Coordinator) Start(ctx context.Context) {
 
 		// exiftool first: it's the small download the earlier exif phase
 		// waits on; the location DB has the whole pipeline to hide behind.
-		c.exifPath, c.exifErr = setupExiftool(ctx, c.opts.Log, c.opts.ExecutablePath, c.progressFor("exiftool"))
+		c.exifPath, c.exifErr = setupExiftool(ctx, c.opts.Log, c.opts.ExecutablePath, c.progressFor(PhaseExiftool))
 		if c.exifErr != nil {
 			c.exifErr = fmt.Errorf("exiftool: %w", c.exifErr)
 		}
@@ -92,7 +100,7 @@ func (c *Coordinator) Start(ctx context.Context) {
 			return
 		}
 
-		c.resolver, c.locationDB, c.locErr = OpenLocationResolver(ctx, c.opts.Log, c.opts.LocationDBPath, c.progressFor("location"))
+		c.resolver, c.locationDB, c.locErr = OpenLocationResolver(ctx, c.opts.Log, c.opts.LocationDBPath, c.progressFor(PhaseLocation))
 		close(c.locReady)
 	}()
 }
@@ -115,7 +123,7 @@ func (c *Coordinator) StartLocationOnly(ctx context.Context, onReady func(error)
 		}
 		defer l.Unlock()
 
-		c.resolver, c.locationDB, c.locErr = OpenLocationResolver(ctx, c.opts.Log, c.opts.LocationDBPath, c.progressFor("location"))
+		c.resolver, c.locationDB, c.locErr = OpenLocationResolver(ctx, c.opts.Log, c.opts.LocationDBPath, c.progressFor(PhaseLocation))
 		close(c.locReady)
 		if onReady != nil {
 			onReady(c.locErr)

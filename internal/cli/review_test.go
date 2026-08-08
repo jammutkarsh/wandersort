@@ -33,32 +33,6 @@ func seedVFSEntry(t *testing.T, d *db.DB, fileID int64, status string) {
 	}
 }
 
-func TestApprovedCount(t *testing.T) {
-	d := dbtest.New(t)
-	seedVFSEntry(t, d, 1, db.StatusProposed)
-	seedVFSEntry(t, d, 2, db.StatusApproved)
-	seedVFSEntry(t, d, 3, db.StatusApproved)
-
-	n, err := vfs.ApprovedCount(context.Background(), d)
-	if err != nil {
-		t.Fatalf("ApprovedCount: %v", err)
-	}
-	if n != 2 {
-		t.Errorf("ApprovedCount = %d, want 2", n)
-	}
-}
-
-func TestApprovedCountEmpty(t *testing.T) {
-	d := dbtest.New(t)
-	n, err := vfs.ApprovedCount(context.Background(), d)
-	if err != nil {
-		t.Fatalf("ApprovedCount: %v", err)
-	}
-	if n != 0 {
-		t.Errorf("ApprovedCount(empty) = %d, want 0", n)
-	}
-}
-
 func TestRunReviewNoDatabase(t *testing.T) {
 	dir := t.TempDir()
 	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{

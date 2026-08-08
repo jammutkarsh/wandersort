@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS virtual_fs_entries (
     -- path instead of guessing a depth (which broke as soon as location wasn't
     -- the first rules level).
     location_dir TEXT,
+    -- the capture time this file's Year/Month folder came from (the cluster's
+    -- start, not necessarily the file's own). Stored so review can slice the
+    -- proposal into time segments without parsing folder names — a name the
+    -- reviewer renames, and a fallback folder has no date in it at all. NULL
+    -- for an undated file.
+    taken_at TEXT,
     created_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
 );
 
@@ -39,6 +45,8 @@ CREATE TABLE IF NOT EXISTS virtual_fs_entries (
 -- the whole table, so there is never more than one live batch to disambiguate
 CREATE UNIQUE INDEX IF NOT EXISTS idx_vfs_file ON virtual_fs_entries(file_id);
 CREATE INDEX IF NOT EXISTS idx_vfs_status ON virtual_fs_entries(status);
+-- review's segment slicing ranges over taken_at
+CREATE INDEX IF NOT EXISTS idx_vfs_taken_at ON virtual_fs_entries(taken_at);
 -- lets Confirm's "SELECT DISTINCT target_path" (no WHERE) walk a sorted
 -- index instead of a full table scan + temp b-tree for DISTINCT
 CREATE INDEX IF NOT EXISTS idx_vfs_target_path ON virtual_fs_entries(target_path);
