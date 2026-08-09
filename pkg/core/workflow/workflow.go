@@ -16,8 +16,7 @@ import (
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
-	"github.com/jammutkarsh/wandersort/pkg/core/exif"
-	"github.com/jammutkarsh/wandersort/pkg/core/hasher"
+	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/core/scorer"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
@@ -29,15 +28,15 @@ import (
 )
 
 // Deps supplies the two downloadable dependencies, blocking until each
-// exists — only the exif and vfs phases call these, so scan/hash can start
+// exists — only the metadata and vfs phases call these, so the walk can start
 // while the downloads are still running.
 type Deps struct {
 	Exiftool func() (string, error)             // path to the exiftool binary
 	Location func() (*location.Resolver, error) // open geonames resolver
 }
 
-// Workflow orchestrates the phases of one scan session. Scanning and hashing
-// run in bounded batches to keep memory stable on very large roots.
+// Workflow orchestrates the phases of one scan session. Scanning and metadata
+// extraction run in bounded batches to keep memory stable on very large roots.
 type Workflow struct {
 	ctx     context.Context
 	db      *db.DB
@@ -58,7 +57,6 @@ type Workflow struct {
 	outputDir string
 
 	scanner *scanner.Scanner
-	hasher  *hasher.Hasher
 	scorer  *scorer.Scorer
 }
 
@@ -75,20 +73,20 @@ type workflowPhase struct {
 type workflowPhaseKind string
 
 const (
-	workflowPhaseScan  workflowPhaseKind = "scan"
-	workflowPhaseHash  workflowPhaseKind = "hash"
-	workflowPhaseExif  workflowPhaseKind = "exif"
-	workflowPhaseScore workflowPhaseKind = "score"
-	workflowPhaseVFS   workflowPhaseKind = "vfs"
+	workflowPhaseScan workflowPhaseKind = "scan"
+	// hashing and EXIF are one phase: reading each file twice cost a second
+	// trip to disk once the page cache had evicted it (see pkg/core/metadata)
+	workflowPhaseMetadata workflowPhaseKind = "metadata"
+	workflowPhaseScore    workflowPhaseKind = "score"
+	workflowPhaseVFS      workflowPhaseKind = "vfs"
 )
 
 // phaseMessageByKind is the one user-facing line logged when a phase starts.
 var phaseMessageByKind = map[workflowPhaseKind]string{
-	workflowPhaseScan:  "Scanning your files…",
-	workflowPhaseHash:  "Looking for duplicate files…",
-	workflowPhaseExif:  "Reading photo details…",
-	workflowPhaseScore: "Selecting the best copy of each duplicate…",
-	workflowPhaseVFS:   "Proposing an organized folder structure…",
+	workflowPhaseScan:     "Scanning your files…",
+	workflowPhaseMetadata: "Reading your files…",
+	workflowPhaseScore:    "Selecting the best copy of each duplicate…",
+	workflowPhaseVFS:      "Proposing an organized folder structure…",
 }
 
 func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.Configuration, deps Deps) *Workflow {
@@ -109,7 +107,6 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 		deps:      deps,
 		appCfg:    cfg,
 		scanner:   scanner.New(db, log, cfg.Workers),
-		hasher:    hasher.New(db, log, cfg.Workers),
 		scorer:    scorer.New(db, log),
 		workers:   cfg.Workers,
 		log:       log,
@@ -187,7 +184,7 @@ func (wf *Workflow) runSession(paths []string) (finalStatus string, finalErr *st
 		wf.finalizeSession(finalStatus, finalErr)
 	}()
 
-	wf.log.Info("Workflow started", "phases", "scanning → hashing → extracting → scoring → organizing")
+	wf.log.Info("Workflow started", "phases", "scanning → extracting → scoring → organizing")
 
 	phases := wf.workflowPhases(paths)
 
@@ -217,24 +214,17 @@ func (wf *Workflow) workflowPhases(paths []string) []workflowPhase {
 			summary: func(count int) string { return fmt.Sprintf("Scanned %d files", count) },
 		},
 		{
-			kind: workflowPhaseHash,
-			run: func() (int, error) {
-				return wf.hasher.Run(wf.ctx)
-			},
-			summary: func(count int) string { return fmt.Sprintf("Checked %d files for duplicates", count) },
-		},
-		{
-			kind: workflowPhaseExif,
+			kind: workflowPhaseMetadata,
 			run: func() (int, error) {
 				// blocks here (not at construction) if exiftool is still
-				// downloading — scan and hash have already run meanwhile
+				// downloading — the walk has already run meanwhile
 				exiftoolPath, err := wf.deps.Exiftool()
 				if err != nil {
 					return 0, fmt.Errorf("exiftool: %w", err)
 				}
-				return exif.New(wf.db, wf.log, exiftoolPath, wf.workers).Run(wf.ctx)
+				return metadata.New(wf.db, wf.log, exiftoolPath, wf.workers).Run(wf.ctx)
 			},
-			summary: func(count int) string { return fmt.Sprintf("Read details from %d files", count) },
+			summary: func(count int) string { return fmt.Sprintf("Read %d files", count) },
 		},
 		{
 			kind: workflowPhaseScore,

@@ -7,7 +7,7 @@
 Ordered easiest/most-independent → hardest/most-dependent. `[H]` = human tester,
 `[A]` = AI agent. One line each: **command → expected**.
 
-Only what's built today is listed (scan → hash → exif → score → vfs → review). The
+Only what's built today is listed (scan → metadata → score → vfs → review). The
 Execute/move stage isn't written yet, so it isn't here.
 
 ## 0. Smoke & help (no side effects)
@@ -50,7 +50,7 @@ Execute/move stage isn't written yet, so it isn't here.
 26. `[A]` `wandersort scan` *(no `-p`)* → usage error asking for paths, non-zero exit.
 27. `[A]` scan nested roots `-p /photos -p /photos/2024` → nested root pruned, files counted once.
 28. `[H]` `wandersort scan -p <dir> -w 1` vs `-w 8` → same final counts, both exit 0.
-29. `[A]` `wandersort scan -p <dir>` → console shows a "phase took" line for each of scan/hash/exif/score/vfs, not just their result-count lines.
+29. `[A]` `wandersort scan -p <dir>` → console shows a "phase took" line for each of scan/metadata/score/vfs, not just their result-count lines.
 
 ## 4. Hash phase (depends on scan)
 
@@ -61,7 +61,7 @@ Execute/move stage isn't written yet, so it isn't here.
 
 ## 4a. EXIF phase (depends on hash)
 
-34. `[A]` scan a photo with GPS EXIF → lat/lon/timestamp extracted and persisted onto the row the hash phase created (one `file_metadata` row per file, not two).
+34. `[A]` scan a photo with GPS EXIF → lat/lon/timestamp extracted and persisted onto the row the metadata phase wrote (one `file_metadata` row per file, not two).
 35. `[A]` scan a file with stripped/absent EXIF → hashes fine, empty metadata, no crash.
 36. `[A]` scan an iOS video with both `CreateDate` and `CreationDate` tags → both persisted (`exif_create_date`, `exif_creation_date`).
 37. `[A]` scan a dir containing `.AAE` sidecars → no ExifTool run for them; they stay at `scan_status = 'HASHED'` while media files end at `'ANALYZED'`.

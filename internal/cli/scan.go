@@ -23,9 +23,9 @@ import (
 
 // waitForDeps blocks until both downloadable dependencies are ready, so no
 // pipeline phase starts until they are: dependencies used to download in the
-// background while scan/hash ran, and a failed download surfaced through
+// background while the walk ran, and a failed download surfaced through
 // whichever phase happened to be running when it gave up — "pipeline
-// cancelled during exif phase" for an ordinary network failure, not a
+// cancelled during metadata phase" for an ordinary network failure, not a
 // cancellation. Downloading first trades that overlap for a single, clear
 // failure before any file is touched.
 func waitForDeps(deps *install.Coordinator) error {

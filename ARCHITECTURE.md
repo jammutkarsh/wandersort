@@ -39,7 +39,7 @@ relocated — is not built yet.
 main.go            entry point — build config, hand off to the CLI
 internal/cli/      cobra commands (one file per subcommand)
 internal/review/   the full-screen review TUI over the VFS proposal
-pkg/core/          the pipeline: scanner, hasher, exif, scorer, vfs, workflow
+pkg/core/          the pipeline: scanner, metadata, scorer, vfs, workflow
 pkg/               supporting packages (db, config, location, logger, tui, …)
 ```
 
@@ -58,7 +58,7 @@ main
  └── internal/cli ──────── internal/review
        │                        │
        ├── core/workflow ───────┤
-       │     └── core/{scanner,hasher,exif,scorer,vfs}
+       │     └── core/{scanner,metadata,scorer,vfs}
        │                        │
        ├── install             │
        └────────────────┬──────┘
@@ -96,7 +96,7 @@ database handles, and the dependency `Coordinator`) and `root.go`:
 | Command | Purpose |
 | --- | --- |
 | `config` | Full-screen settings wizard. Downloads the location database in the background. Prints the file instead when `--print` or a non-interactive terminal. |
-| `scan` | Run the pipeline synchronously in the foreground. `--paths/-p` is repeatable and comma-friendly. Missing dependencies download in the background while the walk and hash phases run. |
+| `scan` | Run the pipeline synchronously in the foreground. `--paths/-p` is repeatable and comma-friendly. Missing dependencies download in the background while the walk runs. |
 | `review` | Review and confirm the proposed folder tree. `--rebuild` re-proposes from the current settings without a re-scan; `--yes` confirms as-is. |
 | `reset` | Wipe all scan data (prompts unless `--yes`). |
 | `issue` | Zip up logs (and optionally the DB) for a bug report. |
@@ -115,22 +115,23 @@ enforced by an exclusive OS advisory lock (`pkg/lock`).
 - **`workflow/`** — the orchestrator. `RunScan` canonicalizes and prunes the
   scan roots, then runs the phase loop synchronously on the calling goroutine,
   so a CLI invocation streams progress and blocks until the scan finishes. Each
-  phase waits only on its *own* downloadable dependency (`Deps`): scan and hash
-  need nothing, exif blocks on ExifTool, vfs blocks on the location database.
+  phase waits only on its *own* downloadable dependency (`Deps`): scan needs
+  nothing, metadata blocks on ExifTool, vfs blocks on the location database.
 - **`scanner/`** — phase 1. Bounded-worker directory walk; files are identified
   by absolute `(dir, name)`. Rows not re-seen in a clean walk are *soft-deleted*
   and hard-deleted after 30 days, so unplugged drives and transient errors
   self-heal instead of vanishing permanently.
-- **`hasher/`** — phase 2. BLAKE3 over full file bytes. Inserts each file's
-  metadata row holding only the hash. *Known gap:* full-byte hashing means two
-  pixel-identical files with different metadata land in separate groups.
-- **`exif/`** — phase 3. One ExifTool run per file, filling in the row phase 2
-  inserted. It claims its own rows (`HASHED → ANALYZING → ANALYZED`), so an
-  interrupted run resumes without re-hashing anything. Sidecars (`.AAE`) are
-  skipped — they carry no EXIF.
-- **`scorer/`** — phase 4. Elects a master within each duplicate group over the
+- **`metadata/`** — phase 2. One read pass per file: BLAKE3 over the full bytes,
+  then one ExifTool run over the same file while those bytes are still in the
+  page cache, both persisted as a single `file_metadata` row. Claims its own
+  rows (`DISCOVERED → ANALYZING → ANALYZED`); an interrupted run leaves nothing
+  half-written, so the scanner resets those rows to `DISCOVERED`. Sidecars
+  (`.AAE`) are hashed but never handed to ExifTool — they carry no EXIF.
+  *Known gap:* full-byte hashing means two pixel-identical files with different
+  metadata land in separate groups.
+- **`scorer/`** — phase 3. Elects a master within each duplicate group over the
   live (non-deleted) rows; re-promotes the lone survivor when a group shrinks.
-- **`vfs/`** — phase 5. Proposes destinations for every live master from the
+- **`vfs/`** — phase 4. Proposes destinations for every live master from the
   persisted metadata (never re-reads the files). Each run replaces the whole
   proposal set. `vfs.Propose` is the phase as one call: it builds its own
   `Config` from the user's settings and resolves the saved-place anchors, so

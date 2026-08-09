@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS file_registry (
     file_origin TEXT NOT NULL DEFAULT 'SOURCE',
 
     CHECK (media_type  IN ('IMAGE', 'VIDEO', 'SIDECAR', 'RAW', 'UNKNOWN')),
-    CHECK (scan_status IN ('DISCOVERED', 'HASHING', 'HASHED', 'ANALYZING', 'ANALYZED', 'ERROR'))
+    CHECK (scan_status IN ('DISCOVERED', 'ANALYZING', 'ANALYZED', 'ERROR'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_registry_dir_name ON file_registry(file_dir, file_name);

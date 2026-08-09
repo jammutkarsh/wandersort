@@ -102,20 +102,18 @@ Auto-created by the migration runner. Tracks which migrations have been applied.
 
 ```sql
     scan_status TEXT NOT NULL DEFAULT 'DISCOVERED'
-        CHECK(scan_status IN ('DISCOVERED','HASHING','HASHED','ANALYZING','ANALYZED','ERROR')),
+        CHECK(scan_status IN ('DISCOVERED','ANALYZING','ANALYZED','ERROR')),
 ```
 
 **The "workflow state" column:**
 
 - `scan_status`: State machine. **Why?** The processing pipeline happens in stages:
   1. `DISCOVERED` → File found during walk
-  2. `HASHING` → Currently being hashed (in-progress marker)
-  3. `HASHED` → BLAKE3 computed
-  4. `ANALYZING` → Metadata extraction in progress
-  5. `ANALYZED` → Metadata extracted
-  6. `ERROR` → Something failed (permission denied, corrupt file)
+  2. `ANALYZING` → Metadata extraction in progress (in-progress marker)
+  3. `ANALYZED` → BLAKE3 hash and EXIF both persisted
+  4. `ERROR` → Something failed (permission denied, corrupt file)
 
-  This lets you **resume interrupted work**: "Hash all files where `scan_status = 'DISCOVERED'`". The `HASHING`/`ANALYZING` in-progress states prevent two workers from processing the same file.
+  This lets you **resume interrupted work**: "Read all files where `scan_status = 'DISCOVERED'`". The `ANALYZING` in-progress state prevents two workers from processing the same file; because the hash and the EXIF are written together, an interrupted run has nothing half-persisted and the scanner just resets those rows to `DISCOVERED`.
 
 ```sql
     path_type TEXT NOT NULL DEFAULT 'RELATIVE' CHECK(path_type IN ('RELATIVE','ABSOLUTE')),
@@ -177,7 +175,7 @@ This yields duplicate hashes. For each hash, the scorer JOINs `file_registry` to
 ```
 
 - `file_hash`: BLAKE3 content hash. One row per hashed file — multiple files with the same hash form a duplicate group.
-- `file_id`: The file_registry row this metadata belongs to. Set by the hasher on INSERT. Updated by the scorer to point to the master copy for each duplicate group.
+- `file_id`: The file_registry row this metadata belongs to. Set by the metadata phase on INSERT. Updated by the scorer to point to the master copy for each duplicate group.
 
 ```sql
     exif_image_width        INTEGER,
@@ -190,22 +188,11 @@ This yields duplicate hashes. For each hash, the scorer JOINs `file_registry` to
     exif_create_date        TEXT,
 ```
 
-- EXIF columns: Cached per file during hashing. `date_time_original` and `create_date` are used by the scorer (+10 base signal). `image_width`/`image_height` and `gps_latitude`/`gps_longitude` are available for the VFS phase.
+- EXIF columns: Read in the same pass as the hash. `date_time_original` and `create_date` are used by the scorer (+10 base signal). `image_width`/`image_height` and `gps_latitude`/`gps_longitude` are available for the VFS phase.
 
 ```sql
     created_at TEXT DEFAULT (datetime('now'))
 ```
-
-**Trigger:**
-```sql
-CREATE TRIGGER trg_file_metadata_hashed
-AFTER INSERT ON file_metadata
-FOR EACH ROW
-BEGIN
-    UPDATE file_registry SET scan_status = 'HASHED' WHERE id = NEW.file_id;
-END;
-```
-When the hasher inserts a row, the trigger automatically marks the corresponding `file_registry` row as `HASHED`.
 
 **Indexes:**
 - `idx_file_metadata_hash_file` (UNIQUE): Prevents duplicate (hash, file) entries and serves hash-only lookups via the leftmost column.

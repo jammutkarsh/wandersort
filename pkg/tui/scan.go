@@ -144,14 +144,13 @@ func (m ScanModel) Failed() bool { return m.failErr != nil }
 // history block once the session moves on from this scan.
 func (m ScanModel) Summary() []string { return m.sl.Summary() }
 
-// NewScanModel builds the scan screen. The five stages mirror the workflow
-// phases (keys match logger.PhaseKey: scan/hash/exif/score/vfs).
+// NewScanModel builds the scan screen. The four stages mirror the workflow
+// phases (keys match logger.PhaseKey: scan/metadata/score/vfs).
 func NewScanModel(cfg ScanConfig) ScanModel {
 	sl := NewStageList(
 		nil,
 		&Stage{Key: "scan", Name: "Scan"},
-		&Stage{Key: "hash", Name: "Hash", HasBar: true},
-		&Stage{Key: "exif", Name: "Metadata", HasBar: true},
+		&Stage{Key: "metadata", Name: "Metadata", HasBar: true},
 		&Stage{Key: "score", Name: "Score"},
 		&Stage{Key: "vfs", Name: "Organize"},
 	)
@@ -298,9 +297,9 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Stream — per-file feed line; the hash and exif phases also carry the
-	// running count, so the bar advances one file at a time instead of in
-	// throttled jumps.
+	// Stream — per-file feed line; the metadata phase also carries the running
+	// count, so the bar advances one file at a time instead of in throttled
+	// jumps.
 	if e.Stream {
 		if f, ok := e.Attrs["file"].(string); ok {
 			m.sl.AddTail(f)
@@ -334,17 +333,14 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 }
 
 // progressCmd drives the running phase's bar from any event carrying
-// hashed|extracted + total counts; events without them are a no-op, as is a
-// phase with no bar (SetProgress ignores an unknown key).
+// extracted + total counts; events without them are a no-op, as is a phase
+// with no bar (SetProgress ignores an unknown key).
 func (m *ScanModel) progressCmd(e logger.Event) tea.Cmd {
 	total, ok := toInt(e.Attrs["total"])
 	if !ok || total <= 0 {
 		return nil
 	}
-	cur, has := toInt(e.Attrs["hashed"])
-	if !has {
-		cur, has = toInt(e.Attrs["extracted"])
-	}
+	cur, has := toInt(e.Attrs["extracted"])
 	if !has {
 		return nil
 	}

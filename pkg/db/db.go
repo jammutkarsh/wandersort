@@ -33,10 +33,9 @@ const (
 // StatusCompleted/StatusFailed/StatusCancelled are workflow's in-memory
 // result sentinels — nothing persists them, they just classify how a run ended.
 const (
-	StatusHashing = "HASHING"
-	StatusHashed  = "HASHED"
-	// A file is ANALYZING while the exif phase holds it and ANALYZED once its
-	// metadata row is filled in.
+	// A file is ANALYZING while the metadata phase holds it and ANALYZED once
+	// its hash + EXIF row is written. There is no separate hashed state: one
+	// phase reads the file once and persists both in a single row.
 	StatusAnalyzing  = "ANALYZING"
 	StatusAnalyzed   = "ANALYZED"
 	StatusCompleted  = "COMPLETED"

@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package hasher
+package metadata
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -27,9 +28,20 @@ const (
 	concurrentLargeFileCount        = 4
 )
 
-// helperHasher returns a *Hasher with nil DB (HashFile doesn't touch DB)
-func helperHasher() *Hasher {
-	return &Hasher{}
+// missingExiftool is a path no binary lives at, so every extraction fails and
+// the phase falls back to persisting the hash with empty metadata
+func missingExiftool(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "missing-exiftool")
+}
+
+func status(t *testing.T, d *db.DB, id int64) string {
+	t.Helper()
+	var s string
+	if err := d.SQL.Get(&s, `SELECT scan_status FROM file_registry WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 // helperWritePatternFile writes a deterministic file of the requested size
@@ -80,31 +92,30 @@ func runHashingSubprocess(t *testing.T, testName string) {
 	}
 }
 
-func TestHasher(t *testing.T) {
+func TestHashFile(t *testing.T) {
 	tests := []struct {
 		name string
 		fn   func(t *testing.T)
 	}{
-		{"HashFile_LargeFile", func(t *testing.T) {
+		{"LargeFile", func(t *testing.T) {
 			// 8 MiB is large enough to exercise the streaming path while remaining a fast
 			// unit test. The resource-constrained cases below cover files larger than the
 			// configured memory limit
 			path := helperWritePatternFile(t, largeFileSizeBytes, 0x11)
 			copyPath := helperWritePatternFile(t, largeFileSizeBytes, 0x11)
 			mutatedPath := helperWritePatternFile(t, largeFileSizeBytes, 0x12)
-			h := helperHasher()
 
-			originalHash, err := h.hashFile(path)
+			originalHash, err := hashFile(path)
 			if err != nil {
-				t.Fatalf("HashFile(%d bytes): %v", largeFileSizeBytes, err)
+				t.Fatalf("hashFile(%d bytes): %v", largeFileSizeBytes, err)
 			}
-			copyHash, err := h.hashFile(copyPath)
+			copyHash, err := hashFile(copyPath)
 			if err != nil {
-				t.Fatalf("HashFile(copy %d bytes): %v", largeFileSizeBytes, err)
+				t.Fatalf("hashFile(copy %d bytes): %v", largeFileSizeBytes, err)
 			}
-			mutatedHash, err := h.hashFile(mutatedPath)
+			mutatedHash, err := hashFile(mutatedPath)
 			if err != nil {
-				t.Fatalf("HashFile(mutated %d bytes): %v", largeFileSizeBytes, err)
+				t.Fatalf("hashFile(mutated %d bytes): %v", largeFileSizeBytes, err)
 			}
 
 			if originalHash != copyHash {
@@ -114,26 +125,19 @@ func TestHasher(t *testing.T) {
 				t.Errorf("mutated %d-byte file should hash differently: %s", largeFileSizeBytes, originalHash)
 			}
 		}},
-		{"HashFile_ResourceConstrainedSingleFile", func(t *testing.T) {
+		{"ResourceConstrainedSingleFile", func(t *testing.T) {
 			runHashingSubprocess(t, "TestHashFile_ResourceConstrainedSingleFileHelper")
 		}},
-		// ---------------------------------------------------------------------------
-		// Concurrent hashing
-		// ---------------------------------------------------------------------------
-		{"HashFile_ConcurrentLargeFilesUnderMemoryLimit", func(t *testing.T) {
+		{"ConcurrentLargeFilesUnderMemoryLimit", func(t *testing.T) {
 			runHashingSubprocess(t, "TestHashFile_ConcurrentLargeFilesUnderMemoryLimitHelper")
 		}},
-		// ---------------------------------------------------------------------------
-		// Directory-level hashing behavior
-		// ---------------------------------------------------------------------------
-		{"HashFile_WithRealTempDir", func(t *testing.T) {
+		{"WithRealTempDir", func(t *testing.T) {
 			root := t.TempDir()
 			files := map[string]string{
 				"img1.jpg":  "JPEG content 1",
 				"img2.jpg":  "JPEG content 1",
 				"video.mp4": "MP4 content",
 			}
-			h := helperHasher()
 			hashes := map[string]string{}
 
 			for name, content := range files {
@@ -141,7 +145,7 @@ func TestHasher(t *testing.T) {
 				if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				hash, err := h.hashFile(p)
+				hash, err := hashFile(p)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -155,9 +159,97 @@ func TestHasher(t *testing.T) {
 				t.Errorf("files with different content should hash differently: %q", hashes["img1.jpg"])
 			}
 		}},
-		// ---------------------------------------------------------------------------
-		// Run — stale metadata replacement on re-hash
-		// ---------------------------------------------------------------------------
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.fn)
+	}
+}
+
+func TestExtractor(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func(t *testing.T)
+	}{
+		// A file exiftool cannot read is still a usable file: the pipeline knows
+		// its hash and its folder, so the phase persists empty metadata, marks it
+		// ANALYZED, and never fails the session
+		{"RunToleratesExtractionFailure", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "photo.jpg"), []byte("bytes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dbtest.SeedFile(t, d, 1, root, "photo.jpg", 5)
+
+			e := New(d, logger.NewNoopLogger(), missingExiftool(t), 1)
+			count, err := e.Run(ctx)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if count != 1 {
+				t.Fatalf("Run read %d files, want 1", count)
+			}
+			d.Writer.Flush()
+
+			if got := status(t, d, 1); got != db.StatusAnalyzed {
+				t.Errorf("scan_status = %s, want %s", got, db.StatusAnalyzed)
+			}
+			// the hash is still persisted; only the exif columns stay NULL
+			var rows int
+			if err := d.SQL.Get(&rows,
+				`SELECT count(*) FROM file_metadata
+				 WHERE file_id = 1 AND file_hash != '' AND exif_make IS NULL`); err != nil {
+				t.Fatal(err)
+			}
+			if rows != 1 {
+				t.Errorf("failed extraction should leave one hashed row with NULL exif columns, got %d", rows)
+			}
+		}},
+		// Sidecars (.AAE) carry no EXIF of their own, so running exiftool on them
+		// is wasted work — they are still hashed and marked ANALYZED
+		{"RunHashesSidecarsWithoutExiftool", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "IMG_0001.AAE"), []byte("plist"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dbtest.SeedFile(t, d, 1, root, "IMG_0001.AAE", 5)
+			if _, err := d.ExecContext(ctx,
+				`UPDATE file_registry SET media_type = ? WHERE id = 1`, classifier.MediaTypeSidecar); err != nil {
+				t.Fatal(err)
+			}
+
+			e := New(d, logger.NewNoopLogger(), missingExiftool(t), 1)
+			count, err := e.Run(ctx)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if count != 1 {
+				t.Fatalf("Run read %d sidecars, want 1", count)
+			}
+			d.Writer.Flush()
+
+			if got := status(t, d, 1); got != db.StatusAnalyzed {
+				t.Errorf("sidecar scan_status = %s, want %s", got, db.StatusAnalyzed)
+			}
+			var hash string
+			if err := d.SQL.Get(&hash, `SELECT file_hash FROM file_metadata WHERE file_id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			want, err := hashFile(filepath.Join(root, "IMG_0001.AAE"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hash != want {
+				t.Errorf("sidecar file_hash = %s, want %s", hash, want)
+			}
+		}},
+		// A re-read file must end up with exactly one metadata row carrying the
+		// current bytes' hash, not a second row next to the stale one
 		{"RunReplacesStaleMetadata", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
@@ -168,25 +260,18 @@ func TestHasher(t *testing.T) {
 			}
 
 			dbtest.SeedFile(t, d, 1, root, "photo.jpg", 13)
-			// Stale metadata from a previous pipeline run; the insert trigger flips
-			// scan_status to HASHED, so reset it to DISCOVERED as the scanner's
-			// change detection would after the file was modified
 			if _, err := d.ExecContext(ctx,
 				`INSERT INTO file_metadata (file_hash, file_id, is_master) VALUES ('stale-hash', 1, 0)`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := d.ExecContext(ctx,
-				`UPDATE file_registry SET scan_status = 'DISCOVERED' WHERE id = 1`); err != nil {
-				t.Fatal(err)
-			}
 
-			h := New(d, logger.NewNoopLogger(), 1)
-			count, err := h.Run(ctx)
+			e := New(d, logger.NewNoopLogger(), missingExiftool(t), 1)
+			count, err := e.Run(ctx)
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 			if count != 1 {
-				t.Fatalf("Run hashed %d files, want 1", count)
+				t.Fatalf("Run read %d files, want 1", count)
 			}
 			d.Writer.Flush()
 
@@ -198,30 +283,24 @@ func TestHasher(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(rows) != 1 {
-				t.Fatalf("file has %d metadata rows after re-hash, want exactly 1", len(rows))
+				t.Fatalf("file has %d metadata rows after re-read, want exactly 1", len(rows))
 			}
-			wantHash, err := h.hashFile(filepath.Join(root, "photo.jpg"))
+			wantHash, err := hashFile(filepath.Join(root, "photo.jpg"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if rows[0].FileHash != wantHash {
-				t.Errorf("re-hashed metadata hash = %s, want %s", rows[0].FileHash, wantHash)
+				t.Errorf("re-read metadata hash = %s, want %s", rows[0].FileHash, wantHash)
 			}
 			if !rows[0].IsMaster {
-				t.Error("re-hashed metadata should return to the is_master default (1)")
+				t.Error("re-read metadata should return to the is_master default (1)")
 			}
-
-			var status string
-			if err := d.SQL.Get(&status, `SELECT scan_status FROM file_registry WHERE id = 1`); err != nil {
-				t.Fatal(err)
-			}
-			if status != db.StatusHashed {
-				t.Errorf("scan_status = %s, want HASHED", status)
+			if got := status(t, d, 1); got != db.StatusAnalyzed {
+				t.Errorf("scan_status = %s, want %s", got, db.StatusAnalyzed)
 			}
 		}},
-		// TestRunHashFailureClearsStaleMetadata: a file whose re-hash fails must not
-		// keep its previous metadata row — the content is unknown, so the old hash
-		// would keep feeding the scorer and VFS stale data
+		// A file whose hash fails must not keep its previous metadata row — the
+		// content is unknown, so the old hash would keep feeding the scorer and VFS
 		{"RunHashFailureClearsStaleMetadata", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
@@ -232,13 +311,9 @@ func TestHasher(t *testing.T) {
 				`INSERT INTO file_metadata (file_hash, file_id) VALUES ('stale-hash', 1)`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := d.ExecContext(ctx,
-				`UPDATE file_registry SET scan_status = 'DISCOVERED' WHERE id = 1`); err != nil {
-				t.Fatal(err)
-			}
 
-			h := New(d, logger.NewNoopLogger(), 1)
-			if _, err := h.Run(ctx); err != nil {
+			e := New(d, logger.NewNoopLogger(), missingExiftool(t), 1)
+			if _, err := e.Run(ctx); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 			d.Writer.Flush()
@@ -250,12 +325,69 @@ func TestHasher(t *testing.T) {
 			if metadataRows != 0 {
 				t.Errorf("failed hash left %d stale metadata rows, want 0", metadataRows)
 			}
-			var status string
-			if err := d.SQL.Get(&status, `SELECT scan_status FROM file_registry WHERE id = 1`); err != nil {
+			if got := status(t, d, 1); got != db.StatusError {
+				t.Errorf("scan_status = %s, want ERROR", got)
+			}
+		}},
+		// The write itself: hash and extracted values land on one row
+		{"StoreWritesHashAndExifTogether", func(t *testing.T) {
+			d := dbtest.New(t)
+			dbtest.SeedFile(t, d, 1, t.TempDir(), "photo.jpg", 13)
+
+			e := New(d, logger.NewNoopLogger(), "exiftool", 1)
+			if !d.Writer.Write(e.store(1, "hash-of-photo.jpg", classifier.CommonMetadata{
+				ImageWidth:       "4032",
+				ImageHeight:      "3024",
+				Orientation:      "6",
+				GPSLatitude:      "22.7196",
+				GPSLongitude:     "75.8577",
+				Make:             "Apple",
+				Model:            "iPhone 13",
+				DateTimeOriginal: "2024:03:05 11:22:33",
+			})) {
+				t.Fatal("bulk writer refused the metadata write")
+			}
+			d.Writer.Flush()
+
+			var row struct {
+				Hash        string   `db:"file_hash"`
+				Width       *int     `db:"exif_image_width"`
+				Lat         *float64 `db:"exif_gps_latitude"`
+				Model       *string  `db:"exif_model"`
+				Original    *string  `db:"exif_date_time_original"`
+				CreateDate  *string  `db:"exif_create_date"`
+				Orientation *int     `db:"exif_orientation"`
+			}
+			if err := d.SQL.Get(&row, `
+				SELECT file_hash, exif_image_width, exif_gps_latitude, exif_model,
+					exif_date_time_original, exif_create_date, exif_orientation
+				FROM file_metadata WHERE file_id = 1`); err != nil {
 				t.Fatal(err)
 			}
-			if status != db.StatusError {
-				t.Errorf("scan_status = %s, want ERROR", status)
+			if row.Hash != "hash-of-photo.jpg" {
+				t.Errorf("file_hash = %s, want the hash the worker computed", row.Hash)
+			}
+			if row.Width == nil || *row.Width != 4032 {
+				t.Errorf("exif_image_width = %v, want 4032", row.Width)
+			}
+			if row.Orientation == nil || *row.Orientation != 6 {
+				t.Errorf("exif_orientation = %v, want 6", row.Orientation)
+			}
+			if row.Lat == nil || *row.Lat != 22.7196 {
+				t.Errorf("exif_gps_latitude = %v, want 22.7196", row.Lat)
+			}
+			if row.Model == nil || *row.Model != "iPhone 13" {
+				t.Errorf("exif_model = %v, want iPhone 13", row.Model)
+			}
+			if row.Original == nil || *row.Original != "2024:03:05 11:22:33" {
+				t.Errorf("exif_date_time_original = %v", row.Original)
+			}
+			// absent tags must stay NULL, not become ""
+			if row.CreateDate != nil {
+				t.Errorf("exif_create_date = %v, want NULL for an absent tag", *row.CreateDate)
+			}
+			if got := status(t, d, 1); got != db.StatusAnalyzed {
+				t.Errorf("scan_status = %s, want %s", got, db.StatusAnalyzed)
 			}
 		}},
 	}
@@ -269,15 +401,14 @@ func TestHashFile_ResourceConstrainedSingleFileHelper(t *testing.T) {
 		t.Skip("helper subprocess")
 	}
 
-	h := helperHasher()
 	underLimitPath := helperWritePatternFile(t, fileFitsWithinMemoryBytes, 0x21)
 	overLimitPath := helperWritePatternFile(t, fileExceedsMemoryBytes, 0x22)
 
-	underLimitHash, err := h.hashFile(underLimitPath)
+	underLimitHash, err := hashFile(underLimitPath)
 	if err != nil {
 		t.Fatalf("hashing %d-byte file below memory limit %s failed: %v", fileFitsWithinMemoryBytes, constrainedMemoryLimit, err)
 	}
-	overLimitHash, err := h.hashFile(overLimitPath)
+	overLimitHash, err := hashFile(overLimitPath)
 	if err != nil {
 		t.Fatalf("hashing %d-byte file above memory limit %s failed: %v", fileExceedsMemoryBytes, constrainedMemoryLimit, err)
 	}
@@ -295,7 +426,6 @@ func TestHashFile_ConcurrentLargeFilesUnderMemoryLimitHelper(t *testing.T) {
 		t.Skip("helper subprocess")
 	}
 
-	h := helperHasher()
 	paths := make([]string, concurrentLargeFileCount)
 	for i := range concurrentLargeFileCount {
 		paths[i] = helperWritePatternFile(t, fileExceedsMemoryBytes, byte(0x30+i))
@@ -313,7 +443,7 @@ func TestHashFile_ConcurrentLargeFilesUnderMemoryLimitHelper(t *testing.T) {
 		wg.Add(1)
 		go func(index int, filePath string) {
 			defer wg.Done()
-			hash, err := h.hashFile(filePath)
+			hash, err := hashFile(filePath)
 			results <- result{index: index, hash: hash, err: err}
 		}(i, path)
 	}

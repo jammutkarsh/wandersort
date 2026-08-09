@@ -55,11 +55,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_file_metadata_hash_file ON file_metadata(f
 -- back to a full table scan per outer row. That's the actual gap between
 -- "the proposal is already finalized" and "review takes forever to open".
 CREATE INDEX IF NOT EXISTS idx_file_metadata_file_id ON file_metadata(file_id);
-
-CREATE TRIGGER IF NOT EXISTS trg_file_metadata_hashed
-AFTER INSERT ON file_metadata
-FOR EACH ROW
-BEGIN
-    UPDATE file_registry SET scan_status = 'HASHED' WHERE id = NEW.file_id;
-END;
 `

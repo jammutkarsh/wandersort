@@ -18,11 +18,12 @@ and `lock.AcquireOutput`'s exclusive PID lock is what already guarantees only
 one scan ever runs against it at a time (see "Conventions" below):
 
 1. **Scan** — walk roots, build a file index.
-2. **Hash** — content-hash for duplicate detection.
-3. **EXIF** — extract metadata for later.
-4. **Score** — within a duplicate group, elect one master copy (same bytes,
+2. **Metadata** — one read pass per file: content-hash for duplicate detection
+   and EXIF extraction, back to back so exiftool's read hits the page cache the
+   hash just warmed.
+3. **Score** — within a duplicate group, elect one master copy (same bytes,
    different storage context — e.g. folder named `Goa Trip 2024`).
-5. **VFS** — propose a destination hierarchy for every live master in the
+4. **VFS** — propose a destination hierarchy for every live master in the
    library (not just this run's), using the user's prior folder-naming as
    context when EXIF is absent. Nothing on disk is touched.
 
@@ -263,7 +264,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     time on completion. **There is no install screen: the scan starts
     immediately and missing dependencies download in the background**, with
     each pipeline phase waiting only on its own dependency (`workflow.Deps`) —
-    scan/hash need nothing, exif blocks on exiftool, vfs blocks on the
+    scan needs nothing, metadata blocks on exiftool, vfs blocks on the
     location DB. `runShell` builds a `pkg/install.Coordinator` (`a.newDeps`,
     stored on `a.Deps`) and calls `Start` once for the session;
     `newScanScreen` wires `workflow.Deps.Exiftool`/
@@ -287,7 +288,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     which install exiftool *then* the location DB when both are asked for —
     the small download unblocks the earlier phase; the big one has the whole
     pipeline to hide behind — and each command asks only for what it needs:
-    `review --rebuild` never runs the exif phase, so it starts the location
+    `review --rebuild` never runs the metadata phase, so it starts the location
     database alone).
     **`scan` never requires `wandersort config` to have run first** — an
     unconfigured first scan just builds its folder proposal (output path,
@@ -569,7 +570,7 @@ one scan ever runs against it at a time (see "Conventions" below):
   let a wrapped help bar push the bottom tree rows off the screen.
   Rows are drawn with real box-drawing guides (`reviewRow.guide`, computed in
   `flattenTree` because a row can't tell it's a last child from its depth) —
-  the old two-space indent plus a `└ ` on every level made sibling and child
+  the old two-space indent plus a `└` on every level made sibling and child
   look alike.
   **A rename is written straight onto `Node.Name`** (`applyRename`, an
   `applyEdit` like merge and drop) — there is no pending-rename layer, no
@@ -624,26 +625,26 @@ one scan ever runs against it at a time (see "Conventions" below):
 
 Back in `internal/cli/`:
 
-  - **There is no `report` command.** It used to print per-session
+- **There is no `report` command.** It used to print per-session
     scanned/hashed/duplicate counts read from `scan_sessions`; once that
     table was dropped (no persisted session/run record — see "What
     WanderSort is" above), there was nothing left for it to read, so it was
     deleted rather than rewritten. `wandersort review` is the natural next
     step after `scan` now.
-  - `issue.go` — `issue` cmd: zips the log (renamed
+- `issue.go` — `issue` cmd: zips the log (renamed
     `wandersort.log`) + `about.txt`; db opt-in via `--include-db` (holds paths/GPS).
-  - `reset.go` — wipe scan data (confirm prompt unless `--yes`), plus the
+- `reset.go` — wipe scan data (confirm prompt unless `--yes`), plus the
     `.wandersort.cfg` stamp, which describes a proposal that no longer exists.
-  - `help.go` — custom lipgloss-styled help renderer. Kept in `cli` (unlike
+- `help.go` — custom lipgloss-styled help renderer. Kept in `cli` (unlike
     `lock.go`) since it's a one-off cobra `SetHelpFunc`, not reusable
     logic another entry point would need.
-  - `internal/cli` holds **only** `app.go` + `root.go` + `shell.go` + one file
+- `internal/cli` holds **only** `app.go` + `root.go` + `shell.go` + one file
     per subcommand (plus the `help.go` exception above). **No single-function
     files**: the old `tui.go` (just `tuiEnabled`) and `anchor.go` were folded
     into `app.go` and `core/vfs` respectively. Everything else that
     used to live here moved
     out to its own package so a future TUI entry point can reuse it:
-    - `pkg/lock/` — all wandersort file locking: generic acquire mechanics
+  - `pkg/lock/` — all wandersort file locking: generic acquire mechanics
       (`acquire`, `Lock`, `ErrHeld`) plus the two domain wrappers —
       `AcquireOutput` (one scan per output dir) and `AcquireInstall` (install coordination across
       scan/review — see `pkg/install` below, the one caller) — and the lock
@@ -666,7 +667,7 @@ Back in `internal/cli/`:
       in-progress install just looks hung. Only `cli` (via `pkg/install`)
       uses locking today, but the mechanics are generic, so it lives in
       `pkg/` for reuse by other entry points.
-    - Styling (help renderer, lock messages, error output) comes from
+  - Styling (help renderer, lock messages, error output) comes from
       `pkg/tui`'s theme — there is no separate `pkg/style` any more; the old
       one was folded into `pkg/tui/theme.go` so full-screen and plain output
       share one palette.
@@ -708,7 +709,7 @@ raise the reset prompt.
 ## Core pipeline (`pkg/core/`)
 
 - `workflow/` — orchestrator. `RunScan` runs the `runSession` phase loop
-  (scan→hash→exif→score→vfs) synchronously on the calling goroutine, so a CLI
+  (scan→metadata→score→vfs) synchronously on the calling goroutine, so a CLI
   invocation streams progress and blocks until the scan finishes. It runs
   `scanRoots` first — canonicalize, drop duplicates, prune any root nested under
   another (O(n) after a lex sort) — returning the roots actually walked. That
@@ -716,10 +717,11 @@ raise the reset prompt.
   now a single-entry-point CLI), which meant `wandersort scan` reached through
   `internal/api` to get at it. `NewWorkflow` takes a `Deps` — two blocking
   getters for the downloadable dependencies — instead of a resolver and
-  exiftool path: the exif and vfs components are built lazily inside their
+  exiftool path: the metadata and vfs components are built lazily inside their
   phase closures, calling `deps.Exiftool()`/`deps.Location()` right before
-  running, so a first-ever TUI scan walks and hashes while the downloads are
-  still going. Plain-console scans, which install everything up front, wrap
+  running, so a first-ever TUI scan walks while the downloads are still going.
+  The metadata phase is the first to block on exiftool now that hashing no
+  longer runs ahead of it — the walk is all the cover the download gets. Plain-console scans, which install everything up front, wrap
   the values in `workflow.ReadyDeps`. **`appCfg` is swappable while the
   pipeline runs** (`UpdateConfig`, mutex-guarded, plus a dirty flag): the shell
   hosts the settings wizard and the scan in one program, so a save can land
@@ -780,30 +782,32 @@ raise the reset prompt.
   (`vfs.go`'s `dirFor`, per file) — a real Live Photo pair still lands
   together because its members genuinely share GPS/timestamp, not because of
   stem-matching.
-- `hasher/` — phase 2. BLAKE3 over full bytes, nothing else. Inserts the
-  `file_metadata` row with the hash and **NULL exif columns** — the row exists
-  so the exif phase has something to fill in, and the `trg_file_metadata_hashed`
-  trigger flips the file to `HASHED` on that insert. A failed hash clears the
-  file's stale metadata row. **Known gap:** full-byte hash means
-  pixel-identical files with differing metadata land in separate groups.
-- `exif/` — phase 3. Runs exiftool once per file (the full tag set the VFS
-  needs) and `UPDATE`s the row the hash phase inserted. **Split from `hasher`
-  deliberately**: one worker pool doing BLAKE3-then-exiftool made the two costs
-  one number, and anything that wants to sit between them (or replace one) had
-  to be threaded through the hash loop. Now each claims its own rows, times
-  itself, and owns a TUI stage.
-  The per-file state machine is what makes it a real phase, not a sub-step:
-  `HASHED → ANALYZING → ANALYZED`, using the `ANALYZING`/`ANALYZED` values
-  `file_registry`'s CHECK constraint already declared (no migration).
-  `scanner`'s upsert resets a stuck `ANALYZING` back to `HASHED`, not to
-  `DISCOVERED` — an interrupted extraction shouldn't cost a re-hash; changed
-  bytes are checked first and still win. Sidecars (`.AAE`) are filtered out in
-  the claim SQL by `media_type` and stay at `HASHED` — they carry no EXIF, so
-  spawning exiftool on them is pure waste. **An extraction failure is not a
-  file failure**: it warns, persists empty metadata, and marks the file
-  `ANALYZED` (the hash and folder context are still enough for the VFS to place
-  it). Workers write straight through `db.Writer` — it already serializes every
-  operation, so the hasher's separate store goroutine would only add a channel.
+- `metadata/` — phase 2, **the pipeline's only pass that reads file bytes**.
+  One worker BLAKE3-hashes a file and then runs exiftool over that same file,
+  back to back, and persists both as a single `file_metadata` row. Hashing and
+  EXIF were **two phases once** — each claiming its own rows, each with its own
+  TUI stage — and the reason they are one again is the page cache: the hash
+  streams every byte of every file, then the exif phase came back for the same
+  files thousands of files later, by which point the cache had evicted them and
+  the header read went to disk a second time. Reading each file once, with the
+  two consumers adjacent, is the entire point of this package; **don't split
+  them again for tidiness**. A merged phase also collapses the state machine to
+  `DISCOVERED → ANALYZING → ANALYZED`: there is no `HASHING`/`HASHED` any more
+  (dropped from `file_registry`'s CHECK constraint, along with 002's
+  `trg_file_metadata_hashed` trigger, which existed to flip a file to `HASHED`
+  on the hash-only insert). Nothing is half-persisted, so `scanner`'s upsert
+  resets a stuck `ANALYZING` straight back to `DISCOVERED` — an interrupted run
+  re-reads the file rather than resuming from a hash it never wrote. A failed
+  hash clears the file's stale metadata row and parks it at `ERROR`.
+  **Known gap:** full-byte hash means pixel-identical files with differing
+  metadata land in separate groups.
+  Sidecars (`.AAE`) are claimed and hashed like anything else but never handed
+  to exiftool (`fileRecord.mediaType`, checked in the worker) — they carry no
+  EXIF, so spawning exiftool on them is pure waste. **An extraction failure is
+  not a file failure**: it warns, persists empty EXIF columns, and marks the
+  file `ANALYZED` (the hash and folder context are still enough for the VFS to
+  place it). Workers write straight through `db.Writer` — it already serializes
+  every operation, so a separate store goroutine would only add a channel.
   Persists `exif_creation_date` alongside `exif_create_date` — a real
   reported bug: a QuickTime video's `CreateDate` is the raw UTC timestamp with
   no offset, while a photo's `DateTimeOriginal` is local wall-clock; for the
@@ -813,9 +817,9 @@ raise the reset prompt.
   parsing (see `deriveAll`'s `takenAt` comment), because every *other*
   timestamp here is naive local wall-clock and applying the real offset would
   shift the video away from siblings that never had one applied.
-- `scorer/` — phase 4. Elects master via folder-naming heuristics over live
+- `scorer/` — phase 3. Elects master via folder-naming heuristics over live
   (`deleted_at IS NULL`) rows; re-promotes solo survivors of shrunken groups.
-- `vfs/` — phase 5. **`docs/vfs-pipeline.md` is the long-form walkthrough of
+- `vfs/` — phase 4. **`docs/vfs-pipeline.md` is the long-form walkthrough of
   this package** — every SQL query, all eight `Plan` passes in call order, the
   concurrency patterns, and an edge-case catalogue naming the bug behind each
   rule. Read it before changing anything here; the notes below are the map,
@@ -1272,7 +1276,7 @@ raise the reset prompt.
     here too, moved from the old `pkg/location/setup.go`.
 
   On top of that, `Coordinator` owns the install
-  order (exiftool first — the small download the earlier exif phase waits on;
+  order (exiftool first — the small download the earlier metadata phase waits on;
   the location database behind it, since only the last phase, vfs, needs it),
   the shared install lock, download byte-progress fan-out (`Options.OnProgress`,
   phase `"exiftool"`/`"location"`), and readiness. `Start` installs both;

@@ -55,7 +55,7 @@ func TestWorkflowRunPhaseError(t *testing.T) {
 	wf, _ := newTestWorkflow(t, context.Background())
 
 	phase := workflowPhase{
-		kind: workflowPhaseHash,
+		kind: workflowPhaseMetadata,
 		run:  func() (int, error) { return 0, errors.New("disk full") },
 	}
 
@@ -69,7 +69,7 @@ func TestWorkflowRunPhaseError(t *testing.T) {
 	if errStr == nil {
 		t.Fatal("expected non-nil error string")
 	}
-	if want := "hash phase failed: disk full"; *errStr != want {
+	if want := "metadata phase failed: disk full"; *errStr != want {
 		t.Errorf("errStr: got %q, want %q", *errStr, want)
 	}
 }
@@ -78,7 +78,7 @@ func TestWorkflowRunPhaseCanceled(t *testing.T) {
 	wf, _ := newTestWorkflow(t, context.Background())
 
 	phase := workflowPhase{
-		kind: workflowPhaseExif,
+		kind: workflowPhaseMetadata,
 		run:  func() (int, error) { return 0, context.Canceled },
 	}
 
@@ -89,8 +89,8 @@ func TestWorkflowRunPhaseCanceled(t *testing.T) {
 	if status != db.StatusCancelled {
 		t.Errorf("status: got %q, want %q", status, db.StatusCancelled)
 	}
-	if errStr == nil || *errStr != "pipeline cancelled during exif phase" {
-		t.Errorf("errStr: got %v, want %q", errStr, "pipeline cancelled during exif phase")
+	if errStr == nil || *errStr != "pipeline cancelled during metadata phase" {
+		t.Errorf("errStr: got %v, want %q", errStr, "pipeline cancelled during metadata phase")
 	}
 }
 
@@ -109,7 +109,7 @@ func TestRunScanReturnsContextCanceledWithoutRunning(t *testing.T) {
 }
 
 // TestWorkflowPhasesOrderAndMessages pins the phase pipeline order
-// (scan→hash→exif→score→vfs) and that every phase kind has a start message —
+// (scan→metadata→score→vfs) and that every phase kind has a start message —
 // a phase with no entry in phaseMessageByKind silently falls back to the
 // generic "Working…" line, which would go unnoticed without this check.
 func TestWorkflowPhasesOrderAndMessages(t *testing.T) {
@@ -118,7 +118,7 @@ func TestWorkflowPhasesOrderAndMessages(t *testing.T) {
 	phases := wf.workflowPhases([]string{"/root"})
 
 	wantKinds := []workflowPhaseKind{
-		workflowPhaseScan, workflowPhaseHash, workflowPhaseExif, workflowPhaseScore, workflowPhaseVFS,
+		workflowPhaseScan, workflowPhaseMetadata, workflowPhaseScore, workflowPhaseVFS,
 	}
 	if len(phases) != len(wantKinds) {
 		t.Fatalf("phase count: got %d, want %d", len(phases), len(wantKinds))
@@ -144,11 +144,10 @@ func TestPhaseSummaryFormatting(t *testing.T) {
 	phases := wf.workflowPhases([]string{"/root"})
 
 	want := map[workflowPhaseKind]string{
-		workflowPhaseScan:  "Scanned 3 files",
-		workflowPhaseHash:  "Checked 3 files for duplicates",
-		workflowPhaseExif:  "Read details from 3 files",
-		workflowPhaseScore: "Reviewed 3 duplicate groups",
-		workflowPhaseVFS:   "Proposed destinations for 3 files",
+		workflowPhaseScan:     "Scanned 3 files",
+		workflowPhaseMetadata: "Read 3 files",
+		workflowPhaseScore:    "Reviewed 3 duplicate groups",
+		workflowPhaseVFS:      "Proposed destinations for 3 files",
 	}
 	for _, p := range phases {
 		got := p.summary(3)
@@ -158,33 +157,33 @@ func TestPhaseSummaryFormatting(t *testing.T) {
 	}
 }
 
-// TestExifPhaseWrapsExiftoolDepsError pins the "exiftool: %w" wrapping the
-// exif phase applies when the download dependency never became ready — the
-// phase must fail rather than run exif.New with an empty path.
-func TestExifPhaseWrapsExiftoolDepsError(t *testing.T) {
+// TestMetadataPhaseWrapsExiftoolDepsError pins the "exiftool: %w" wrapping the
+// metadata phase applies when the download dependency never became ready — the
+// phase must fail rather than run metadata.New with an empty path.
+func TestMetadataPhaseWrapsExiftoolDepsError(t *testing.T) {
 	wf, _ := newTestWorkflow(t, context.Background())
 	wf.deps = Deps{
 		Exiftool: func() (string, error) { return "", errors.New("download failed") },
 	}
 
 	phases := wf.workflowPhases([]string{"/root"})
-	var exifPhase *workflowPhase
+	var metaPhase *workflowPhase
 	for i := range phases {
-		if phases[i].kind == workflowPhaseExif {
-			exifPhase = &phases[i]
+		if phases[i].kind == workflowPhaseMetadata {
+			metaPhase = &phases[i]
 		}
 	}
-	if exifPhase == nil {
-		t.Fatal("no exif phase found")
+	if metaPhase == nil {
+		t.Fatal("no metadata phase found")
 	}
 
-	_, err := exifPhase.run()
+	_, err := metaPhase.run()
 	if err == nil || err.Error() != "exiftool: download failed" {
 		t.Errorf("got %v, want wrapped \"exiftool: download failed\"", err)
 	}
 }
 
-// TestVFSPhaseWrapsLocationDepsError mirrors the exif case for the vfs
+// TestVFSPhaseWrapsLocationDepsError mirrors the metadata case for the vfs
 // phase's "location resolver: %w" wrap.
 func TestVFSPhaseWrapsLocationDepsError(t *testing.T) {
 	wf, _ := newTestWorkflow(t, context.Background())

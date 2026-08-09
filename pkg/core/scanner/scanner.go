@@ -362,14 +362,14 @@ func (s *Scanner) storeScan(ctx context.Context, dbWritesWG *sync.WaitGroup, sto
 			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid),
 			deleted_at = NULL,
 			scan_status = CASE
+				-- ANALYZING means an interrupted metadata phase left this row
+				-- claimed with nothing persisted for it — one phase writes the
+				-- hash and the EXIF together, so there is no partial result to
+				-- resume from. Read it again
 				WHEN file_registry.file_size != excluded.file_size
 					OR file_registry.file_modified_at != excluded.file_modified_at
-					OR file_registry.scan_status IN ('HASHING','ERROR')
+					OR file_registry.scan_status IN ('ANALYZING','ERROR')
 					THEN 'DISCOVERED'
-				-- an interrupted exif phase left this row claimed; its hash is
-				-- still good, so resume from there instead of re-hashing.
-				-- Changed bytes are checked first and win
-				WHEN file_registry.scan_status = 'ANALYZING' THEN 'HASHED'
 				ELSE file_registry.scan_status END
 		RETURNING id`
 

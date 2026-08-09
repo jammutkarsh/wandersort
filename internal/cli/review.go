@@ -93,7 +93,7 @@ func (a *app) confirmReviewAll(rebuild bool) error {
 	}
 	defer a.closeDBs()
 
-	// rebuild only re-runs the vfs phase — no exif phase, so no exiftool
+	// rebuild only re-runs the vfs phase — no metadata phase, so no exiftool
 	// needed; ask only for what this command needs.
 	a.Deps = a.newDeps(nil)
 	a.Deps.StartLocationOnly(ctx, nil)

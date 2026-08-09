@@ -16,7 +16,7 @@ The `pkg/` directory contains the core packages that power WanderSort's file dis
 | --- | --- |
 | `pkg/core/scanner` | Discovers files on disk, classifies them, derives capture groups, and registers everything in PostgreSQL. |
 | `pkg/core/classifier` | Determines file types by extension. Houses per-format EXIF structs (one per supported extension), the `Metadata` interface, `CommonMetadata` (all-string normalized struct), and generic `ParseFromBytes` / `ParseFromFile` functions. |
-| `pkg/core/hasher` | Computes BLAKE3 hashes, groups identical files into content groups, and scores master-file candidates. |
+| `pkg/core/metadata` | One read pass per file: BLAKE3 hash + EXIF extraction, persisted together. |
 | `pkg/exiftool` | Runs the `exiftool` CLI as a subprocess, parses JSON output into typed classifier structs, and converts them to `CommonMetadata`. Supports concurrent extraction via a worker pool. |
 
 ---

@@ -190,11 +190,15 @@ func TestScanner(t *testing.T) {
 				t.Fatalf("first scan indexed %d files, want 3", len(rows))
 			}
 
-			// Simulate a completed pipeline: metadata rows flip scan_status to HASHED
-			// via the trg_file_metadata_hashed trigger
+			// Simulate a completed pipeline: the metadata phase writes the row
+			// and marks the file ANALYZED
 			for _, name := range []string{"keep.jpg", "modify.jpg", "delete.jpg"} {
 				if _, err := d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES (?, ?)`,
 					"hash-"+name, rows[name].ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := d.ExecContext(ctx, `UPDATE file_registry SET scan_status = ? WHERE id = ?`,
+					db.StatusAnalyzed, rows[name].ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -223,11 +227,11 @@ func TestScanner(t *testing.T) {
 			if len(rows) != 4 {
 				t.Fatalf("re-scan left %d rows, want 4 (keep, modify, new + soft-deleted delete)", len(rows))
 			}
-			if got := rows["keep.jpg"].Status; got != db.StatusHashed {
-				t.Errorf("unchanged file scan_status = %s, want HASHED", got)
+			if got := rows["keep.jpg"].Status; got != db.StatusAnalyzed {
+				t.Errorf("unchanged file scan_status = %s, want ANALYZED", got)
 			}
 			if got := rows["modify.jpg"].Status; got != db.StatusDiscovered {
-				t.Errorf("modified file scan_status = %s, want DISCOVERED (re-hash)", got)
+				t.Errorf("modified file scan_status = %s, want DISCOVERED (re-read)", got)
 			}
 			if got := rows["new.jpg"].Status; got != db.StatusDiscovered {
 				t.Errorf("added file scan_status = %s, want DISCOVERED", got)

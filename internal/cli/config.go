@@ -200,7 +200,7 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 		{
 			Kind:        tui.FieldInput,
 			Title:       "Worker count",
-			Description: "Parallel hashing/EXIF workers.",
+			Description: "Parallel metadata-extraction workers.",
 			Value:       &workers,
 			Validator: func(s string) error {
 				if _, err := strconv.Atoi(strings.TrimSpace(s)); err != nil {
