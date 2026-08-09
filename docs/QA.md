@@ -15,7 +15,7 @@ Execute/move stage isn't written yet, so it isn't here.
 1. `[H]` `wandersort --help` → prints styled help, lists all subcommands, exit 0.
 2. `[A]` `wandersort --version` → prints a version string, exit 0.
 3. `[A]` `wandersort bogus-cmd` → unknown-command error, non-zero exit.
-4. `[A]` `wandersort scan --help` → shows `--paths/-p`, `--workers/-w`, `--group-by`, exit 0.
+4. `[A]` `wandersort scan --help` → shows `--paths/-p`, `--force`, exit 0, and **no** `--workers/-w`.
 
 ## 1. Dependency install (network, idempotent, scan-driven)
 
@@ -23,7 +23,7 @@ Execute/move stage isn't written yet, so it isn't here.
 7. `[A]` `wandersort scan -p <dir>` *(run again)* → no install screen at all, the scan screen appears immediately.
 8. `[A]` dependencies already installed → no checksum line on the console; the verification is still in the log file. Same for `scan`/`serve`/`review`.
 9. `[A]` `wandersort scan -p <dir>` → **one** console line per phase carrying both the count and the time (`Scanned N files in 1.996s`), not a separate count line and timing line.
-10. `[A]` `wandersort scan -p <dir>` → before the first phase, one line reports the resolved `workers`, `output` directory and `groupBy` (`Year/Month/location, orientation, media`, or `Year/Month/none (flat Year/Month)`); changing any of them via flag, env or `config.yaml` is reflected there.
+10. `[A]` `wandersort scan -p <dir>` → before the first phase, one line reports the resolved `workers` (derived from the CPU — not a setting), `output` directory and `groupBy` (`Year/Month/location, orientation, media`, or `Year/Month/none (flat Year/Month)`); changing `output`/`groupBy` via flag, env or `config.yaml` is reflected there.
 11. `[H]` scan into an output volume smaller than the library → the "Output volume may be too small" warning appears **at the end**, immediately before the "Run 'wandersort review'" line, not in the middle of the pipeline.
 12. `[H]` `wandersort review` on that same library → the same warning is printed once the review is confirmed, before "Folder structure approved".
 13. `[A]` delete exiftool binary, then `wandersort scan -p <dir>` → auto-reinstalls missing dep mid-run, exit 0.
@@ -176,12 +176,13 @@ Execute/move stage isn't written yet, so it isn't here.
 
 ## 13. Config precedence & global config file (cross-cutting)
 
-129. `[A]` `WORKERS=2 wandersort scan -p <dir> -w 8` → flag wins (8 workers), env ignored.
+129. `[A]` `WORKERS=2 wandersort scan -p <dir>` → env ignored (worker count is not a setting); `-w 8` is rejected as an unknown flag.
+129a. `[H]` `wandersort scan -p <dir>` on an external spinning disk → one `Storage detected` line per volume names `class=rotational` and `concurrentReads=1`; on the internal SSD it names `solid-state` and the full budget. A library spanning both reads the SSD's files first.
 130. `[A]` `OUTPUT_PATH=/tmp/ws wandersort scan -p <dir>` → DB + logs written under `/tmp/ws`.
 131. `[A]` `wandersort scan -p <dir> --plain` → console shows the plain line log; the JSON log file holds the full developer detail either way.
 132. `[A]` any command on a machine with no `~/.wandersort/config.yaml` → the file is created with the commented template before the command does anything else.
 133. `[H]` `wandersort config` *(`$EDITOR` set)* → opens the file in `$EDITOR`.
-134. `[H]` `wandersort config` *(interactive TTY)* → full-screen wizard, in order: output path, workers, rules, collapse, then one Home & work step holding home town, work town, "group home/work photos by date only?" and "merge consecutive same-location days?"; completing it prints exactly `config saved in ~/.wandersort/config.yaml`, ctrl+c prints "Cancelled — nothing saved." and writes nothing.
+134. `[H]` `wandersort config` *(interactive TTY)* → full-screen wizard, in order: output path, rules, collapse, then one Home & work step holding home town, work town, "group home/work photos by date only?" and "merge consecutive same-location days?"; completing it prints exactly `config saved in ~/.wandersort/config.yaml`, ctrl+c prints "Cancelled — nothing saved." and writes nothing.
 135. `[A]` `wandersort config --print` / `-p` → prints the saved file to stdout, no wizard, exit 0.
 136. `[A]` `wandersort config | cat` → prints the file instead of launching the wizard into the pipe; `wandersort config > out.yaml` writes the file's contents.
 137. `[A]` add `output-path: /tmp/ws-cfg` to `config.yaml`, then `wandersort scan -p <dir>` *(no `-o` flag)* → DB + logs written under `/tmp/ws-cfg`; `-o` on the command line still overrides it.

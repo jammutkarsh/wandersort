@@ -84,9 +84,9 @@ wandersort scan --paths ~/Pictures,/Volumes/SD
 wandersort review
 ```
 
-> Want to change the defaults (output folder, workers, folder rules, home/work towns)? Run `wandersort config` for a full-screen settings wizard; it writes `~/.wandersort/config.yaml`.
+> Want to change the defaults (output folder, folder rules, home/work towns)? Run `wandersort config` for a full-screen settings wizard; it writes `~/.wandersort/config.yaml`.
 
-Run `wandersort --help`, or `wandersort <command> --help`, for the full command and flag reference. Any flag can also be set through an environment variable (e.g. `OUTPUT_PATH`, `WORKERS`).
+Run `wandersort --help`, or `wandersort <command> --help`, for the full command and flag reference. Any flag can also be set through an environment variable (e.g. `OUTPUT_PATH`).
 
 ---
 

@@ -31,7 +31,7 @@ func FreeBytes(path string) (uint64, error) {
 // prefix from /proc/self/mounts, then matches that device against the
 // /dev/disk/by-uuid symlink table
 func uuidForPath(path string) (string, error) {
-	device, err := deviceForPath(path)
+	device, _, err := deviceForPath(path)
 	if err != nil {
 		return "", err
 	}
@@ -50,35 +50,122 @@ func uuidForPath(path string) (string, error) {
 	return "", fmt.Errorf("no by-uuid entry for device %q", device)
 }
 
-// deviceForPath returns the source device of the longest mount point that is
-// a prefix of path
-func deviceForPath(path string) (string, error) {
+// deviceForPath returns the source device and filesystem type of the longest
+// mount point that is a prefix of path
+func deviceForPath(path string) (device, fstype string, err error) {
 	data, err := os.ReadFile("/proc/self/mounts")
 	if err != nil {
-		return "", fmt.Errorf("read mounts: %w", err)
+		return "", "", fmt.Errorf("read mounts: %w", err)
 	}
 
-	device, bestLen := "", -1
-	for _, line := range strings.Split(string(data), "\n") {
+	bestLen := -1
+	for line := range strings.SplitSeq(string(data), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		if len(fields) < 3 {
 			continue
 		}
 		mount := unescapeMount(fields[1])
 		if !coversPath(mount, path) || len(mount) <= bestLen {
 			continue
 		}
-		device, bestLen = fields[0], len(mount)
+		device, fstype, bestLen = fields[0], fields[2], len(mount)
 	}
 	if device == "" {
-		return "", fmt.Errorf("no mount covers %q", path)
+		return "", "", fmt.Errorf("no mount covers %q", path)
 	}
 
 	resolved, err := filepath.EvalSymlinks(device)
 	if err != nil {
-		return device, nil // virtual sources (tmpfs, overlay) aren't symlinks
+		return device, fstype, nil // virtual sources (tmpfs, overlay) aren't symlinks
 	}
-	return resolved, nil
+	return resolved, fstype, nil
+}
+
+// classForPath asks sysfs whether the backing block device seeks. The fstype
+// is checked first: a network mount's backing device is unknowable from here
+func classForPath(path string) (Class, error) {
+	device, fstype, err := deviceForPath(path)
+	if err != nil {
+		return ClassUnknown, err
+	}
+	if networkFilesystems[fstype] {
+		return ClassNetwork, nil
+	}
+
+	name := strings.TrimPrefix(device, "/dev/")
+	if name == "" || strings.Contains(name, "/") {
+		return ClassUnknown, nil // tmpfs, overlay, anything not a block device
+	}
+
+	// A whole disk has its own queue/; a partition does not, so a failed read
+	// is the signal to retry on the disk the partition belongs to. Asking
+	// sysfs beats pattern-matching the name — /dev/loop0 and /dev/sda1 look
+	// alike to a stripping rule and are not alike at all
+	rotational, err := sysfsFlag(name, "queue/rotational")
+	if err != nil {
+		base := blockBase(name)
+		if base == "" {
+			return ClassUnknown, nil
+		}
+		if rotational, err = sysfsFlag(base, "queue/rotational"); err != nil {
+			return ClassUnknown, err
+		}
+		name = base
+	}
+	if rotational {
+		return ClassRotational, nil
+	}
+	// rotational=0 cannot separate an NVMe from a USB 2.0 thumb drive; the
+	// removable flag is the closest linux gets to darwin's BusProtocol
+	if removable, err := sysfsFlag(name, "removable"); err == nil && removable {
+		return ClassRemovable, nil
+	}
+	return ClassSolidState, nil
+}
+
+// sysfsFlag reads a /sys/block/<base>/<attr> file holding "0" or "1"
+func sysfsFlag(base, attr string) (bool, error) {
+	name := filepath.Join("/sys/block", base, attr)
+	data, err := os.ReadFile(name)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", name, err)
+	}
+	return strings.TrimSpace(string(data)) == "1", nil
+}
+
+// blockBase strips a partition suffix to the whole-disk name sysfs is keyed
+// by: sda1 -> sda, nvme0n1p2 -> nvme0n1, mmcblk0p1 -> mmcblk0. Only called
+// once the name has already failed to be a whole disk, so a name that ends in
+// no partition at all ("") means "stop guessing"
+func blockBase(name string) string {
+	// device-mapper (LVM, LUKS) numbers whole devices, not partitions, so
+	// stripping the digits would name something that does not exist
+	if strings.HasPrefix(name, "dm-") {
+		return ""
+	}
+	// nvme0n1p2 and mmcblk0p1 mark the partition with a "p" after a digit;
+	// sda1 just appends the number
+	if i := strings.LastIndex(name, "p"); i > 0 && allDigits(name[i+1:]) && isDigit(name[i-1]) {
+		return name[:i]
+	}
+	if base := strings.TrimRight(name, "0123456789"); base != name {
+		return base
+	}
+	return ""
+}
+
+func isDigit(b byte) bool { return b >= '0' && b <= '9' }
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // coversPath reports whether mount is "/", equal to path, or an ancestor of it

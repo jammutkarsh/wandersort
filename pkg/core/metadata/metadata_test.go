@@ -8,16 +8,21 @@ package metadata
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
+
+	"golang.org/x/sync/semaphore"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 const (
@@ -390,9 +395,136 @@ func TestExtractor(t *testing.T) {
 				t.Errorf("scan_status = %s, want %s", got, db.StatusAnalyzed)
 			}
 		}},
+		// The read budget throttles concurrency; it must never strand a file.
+		// A rotational volume charges the whole budget for one read, so every
+		// worker but one waits — the case a wrong clamp turns into a deadlock
+		{"RunDrainsEveryFileUnderASingleReadBudget", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+
+			root := t.TempDir()
+			const files = 5
+			for i := 1; i <= files; i++ {
+				name := fmt.Sprintf("photo-%d.jpg", i)
+				if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				dbtest.SeedFile(t, d, int64(i), root, name, int64(len(name)))
+			}
+
+			e := New(d, logger.NewNoopLogger(), missingExiftool(t), 4)
+			// pretend every file sits on a spinning disk: one read at a time,
+			// four workers waiting behind it
+			e.budget = 1
+			e.reads = semaphore.NewWeighted(1)
+
+			count, err := e.Run(ctx)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if count != files {
+				t.Fatalf("Run read %d files, want %d", count, files)
+			}
+			d.Writer.Flush()
+			for i := 1; i <= files; i++ {
+				if got := status(t, d, int64(i)); got != db.StatusAnalyzed {
+					t.Errorf("file %d scan_status = %s, want %s", i, got, db.StatusAnalyzed)
+				}
+			}
+		}},
+		// Files spanning two volumes are drained one volume at a time, fastest
+		// first. Nothing may be stranded by the per-volume scoping — the bug a
+		// naive "empty uuid means no filter" would cause
+		{"RunOrdersVolumesFastestFirst", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+
+			root := t.TempDir()
+			seed := func(id int64, name, uuid string) {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				dbtest.SeedFile(t, d, id, root, name, int64(len(name)))
+				if _, err := d.ExecContext(ctx,
+					`UPDATE file_registry SET volume_uuid = ? WHERE id = ?`, uuid, id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// the uuids sort the *opposite* way to their speed, so an
+			// unsorted drain (or one that fell back on the GROUP BY's own
+			// order) produces a different sequence and fails
+			seed(1, "slow-a.jpg", "aaa-spinning")
+			seed(2, "slow-b.jpg", "aaa-spinning")
+			seed(3, "fast-a.jpg", "zzz-nvme")
+			seed(4, "fast-b.jpg", "zzz-nvme")
+			// a file whose volume never resolved is its own group, not a
+			// wildcard: scoping to it must not drain the other two
+			seed(5, "orphan.jpg", "")
+
+			e := New(d, logger.NewNoopLogger(), missingExiftool(t), 8)
+			// classes are pre-seeded so the test never touches real hardware
+			e.classes["aaa-spinning"] = volume.ClassRotational
+			e.classes["zzz-nvme"] = volume.ClassSolidState
+
+			var claimed []int64
+			toRead := make(chan fileRecord)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for f := range toRead {
+					claimed = append(claimed, f.id)
+				}
+			}()
+			ctxWithCancel, cancel := context.WithCancel(ctx)
+			defer cancel()
+			producerErr := make(chan error, 1)
+			e.producer(ctxWithCancel, cancel, toRead, producerErr)
+			<-done
+
+			if err := <-producerErr; err != nil {
+				t.Fatalf("producer: %v", err)
+			}
+			// solid-state (cost 1), then the unresolved volume's conservative
+			// quarter-budget (cost 2), then the spinning disk (whole budget)
+			want := []int64{3, 4, 5, 1, 2}
+			if !reflect.DeepEqual(claimed, want) {
+				t.Errorf("claim order = %v, want %v (fastest volume first)", claimed, want)
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
+	}
+}
+
+func TestReadCost(t *testing.T) {
+	tests := []struct {
+		class  volume.Class
+		budget int64
+		want   int64
+	}{
+		// a spinning disk pays the whole budget: one read at a time
+		{volume.ClassRotational, 16, 16},
+		{volume.ClassRotational, 10, 10},
+		{volume.ClassRemovable, 16, 8},
+		{volume.ClassUnknown, 16, 4},
+		{volume.ClassSolidState, 16, 1},
+		{volume.ClassNetwork, 16, 1},
+		// a budget smaller than the class' target must not price a file above
+		// the budget — Acquire would block on it forever
+		{volume.ClassRotational, 1, 1},
+		{volume.ClassRemovable, 1, 1},
+		{volume.ClassUnknown, 2, 1},
+		{volume.ClassUnknown, 3, 1},
+	}
+	for _, tt := range tests {
+		got := readCost(tt.class, tt.budget)
+		if got != tt.want {
+			t.Errorf("readCost(%v, %d) = %d, want %d", tt.class, tt.budget, got, tt.want)
+		}
+		if got < 1 || got > tt.budget {
+			t.Errorf("readCost(%v, %d) = %d, outside [1, %d]", tt.class, tt.budget, got, tt.budget)
+		}
 	}
 }
 

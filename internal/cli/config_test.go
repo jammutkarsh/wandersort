@@ -53,7 +53,6 @@ func TestConfig(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.Workers = 3
 			cfg.Rules = []string{"date", "device"}
 			cfg.CollapseLevels = false
 			a := &app{Config: cfg}
@@ -137,7 +136,6 @@ func TestConfig(t *testing.T) {
 			}
 			want := &config.Configuration{
 				OutputPath:          filepath.Dir(cfg.AppDBPath),
-				Workers:             3,
 				Rules:               []string{"date", "device"},
 				CollapseLevels:      false,
 				SavedPlacesDateOnly: false, // the example checks above left it off
@@ -145,7 +143,7 @@ func TestConfig(t *testing.T) {
 				MergeSameLocationDays: cfg.MergeSameLocationDays,
 			}
 			// YAML-tagged fields must match exactly; computed fields are not persisted.
-			if got.OutputPath != want.OutputPath || got.Workers != want.Workers || !reflect.DeepEqual(got.Rules, want.Rules) ||
+			if got.OutputPath != want.OutputPath || !reflect.DeepEqual(got.Rules, want.Rules) ||
 				(got.CollapseLevels == config.True) != want.CollapseLevels ||
 				(got.SavedPlacesDateOnly == config.True) != want.SavedPlacesDateOnly ||
 				(got.MergeSameLocationDays == config.True) != want.MergeSameLocationDays {
@@ -235,7 +233,7 @@ func TestConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(home, ".wandersort", "config.yaml")
-			if err := os.WriteFile(path, []byte("workers: 4\n\tbad: [unclosed\n"), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte("segment-months: 4\n\tbad: [unclosed\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 
@@ -257,7 +255,7 @@ func TestConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(home, ".wandersort", "config.yaml"),
-				[]byte("workers: 7\n"), 0o644); err != nil {
+				[]byte("segment-months: 6\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 
@@ -265,8 +263,8 @@ func TestConfig(t *testing.T) {
 			if err != nil || warning != "" {
 				t.Fatalf("valid config: err=%v warning=%q", err, warning)
 			}
-			if cfg.Workers != 7 {
-				t.Errorf("workers = %d, want 7 from the config file", cfg.Workers)
+			if cfg.SegmentMonths != 6 {
+				t.Errorf("segment-months = %d, want 6 from the config file", cfg.SegmentMonths)
 			}
 		}},
 		// TestTreeExample covers the wizard's example renderer: sibling paths must

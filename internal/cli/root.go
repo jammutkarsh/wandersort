@@ -16,7 +16,6 @@ const (
 	// CLI flags
 	flagOutputPath = "output-path"
 	flagPaths      = "paths"
-	flagWorkers    = "workers"
 	flagYes        = "yes"
 	flagVertical   = "vertical"
 	flagRebuild    = "rebuild"
@@ -50,7 +49,7 @@ wandersort scan --paths ~/Pictures,/Volumes/SD
 wandersort review`,
 		Annotations: map[string]string{
 			"env": `All flags can also be set via environment variables, using the uppercased
-flag name (--output-path becomes OUTPUT_PATH, --workers becomes WORKERS).
+flag name (--output-path becomes OUTPUT_PATH).
 Flags take precedence over environment variables.`,
 		},
 		SilenceErrors: true,
@@ -64,7 +63,6 @@ Flags take precedence over environment variables.`,
 			// still win over what was just written.
 			a.overrides = config.Overrides{
 				OutputPath:            flagStr(cmd, flagOutputPath),
-				Workers:               flagInt(cmd, flagWorkers),
 				CollapseLevels:        flagBool(cmd, flagCollapse),
 				SavedPlacesDateOnly:   flagBool(cmd, flagSPDateOnly),
 				MergeSameLocationDays: flagBool(cmd, flagMergeDays),
@@ -117,14 +115,6 @@ func flagStr(cmd *cobra.Command, name string) string {
 	}
 	s, _ := cmd.Flags().GetString(name)
 	return s
-}
-
-func flagInt(cmd *cobra.Command, name string) int {
-	if !cmd.Flags().Changed(name) {
-		return 0
-	}
-	n, _ := cmd.Flags().GetInt(name)
-	return n
 }
 
 // flagBool returns the bool flag as a TriBool, or Unset when not passed.

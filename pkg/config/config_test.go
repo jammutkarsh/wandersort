@@ -8,6 +8,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -76,7 +77,6 @@ func TestGlobal(t *testing.T) {
 			}
 			want := &Configuration{
 				OutputPath:            "/tmp/lib",
-				Workers:               8,
 				Rules:                 []string{"date", "location"},
 				CollapseLevels:        false,
 				SavedPlacesDateOnly:   false,
@@ -102,7 +102,6 @@ func TestGlobal(t *testing.T) {
 
 func overridesEqual(o Overrides, c *Configuration) bool {
 	return o.OutputPath == c.OutputPath &&
-		o.Workers == c.Workers &&
 		reflect.DeepEqual(o.Rules, c.Rules) &&
 		triToBool(o.CollapseLevels) == c.CollapseLevels &&
 		triToBool(o.SavedPlacesDateOnly) == c.SavedPlacesDateOnly &&
@@ -140,7 +139,7 @@ func TestResolve(t *testing.T) {
 			if err != nil {
 				t.Fatalf("defaults: %v", err)
 			}
-			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file", Workers: 3}); err != nil {
+			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file"}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -151,8 +150,10 @@ func TestResolve(t *testing.T) {
 			if !cfg.Configured {
 				t.Error("file set output-path — Configured must be true")
 			}
-			if cfg.Workers != 3 {
-				t.Errorf("workers = %d, want 3 from the file", cfg.Workers)
+			// Resolve never stores OutputPath itself — it derives the paths
+			// under it, which is what every caller actually reads.
+			if got := filepath.Dir(cfg.AppDBPath); got != "/tmp/from-file" {
+				t.Errorf("output-path = %q, want /tmp/from-file from the file", got)
 			}
 		}},
 		{"EnvOverridesFile", func(t *testing.T) {
@@ -161,17 +162,19 @@ func TestResolve(t *testing.T) {
 			if err != nil {
 				t.Fatalf("defaults: %v", err)
 			}
-			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file", Workers: 3}); err != nil {
+			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file"}); err != nil {
 				t.Fatal(err)
 			}
-			t.Setenv("WORKERS", "9")
+			t.Setenv("OUTPUT_PATH", "/tmp/from-env")
 
 			cfg, _, err := Resolve(Overrides{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.Workers != 9 {
-				t.Errorf("workers = %d, want 9 from the env var", cfg.Workers)
+			// Resolve never stores OutputPath itself — it derives the paths
+			// under it, which is what every caller actually reads.
+			if got := filepath.Dir(cfg.AppDBPath); got != "/tmp/from-env" {
+				t.Errorf("output-path = %q, want /tmp/from-env from the env var", got)
 			}
 		}},
 		{"FlagOverridesEnvAndFile", func(t *testing.T) {
@@ -180,17 +183,19 @@ func TestResolve(t *testing.T) {
 			if err != nil {
 				t.Fatalf("defaults: %v", err)
 			}
-			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file", Workers: 3}); err != nil {
+			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file"}); err != nil {
 				t.Fatal(err)
 			}
-			t.Setenv("WORKERS", "9")
+			t.Setenv("OUTPUT_PATH", "/tmp/from-env")
 
-			cfg, _, err := Resolve(Overrides{Workers: 5})
+			cfg, _, err := Resolve(Overrides{OutputPath: "/tmp/from-flag"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.Workers != 5 {
-				t.Errorf("workers = %d, want 5 from the flag", cfg.Workers)
+			// Resolve never stores OutputPath itself — it derives the paths
+			// under it, which is what every caller actually reads.
+			if got := filepath.Dir(cfg.AppDBPath); got != "/tmp/from-flag" {
+				t.Errorf("output-path = %q, want /tmp/from-flag from the flag", got)
 			}
 		}},
 		{"FlagOutputPathAloneIsConfigured", func(t *testing.T) {
@@ -238,7 +243,7 @@ func TestResolve(t *testing.T) {
 			if err != nil {
 				t.Fatalf("defaults: %v", err)
 			}
-			if err := c.Save(&Configuration{Workers: 4}); err != nil {
+			if err := c.Save(&Configuration{SegmentMonths: 6}); err != nil {
 				t.Fatal(err)
 			}
 

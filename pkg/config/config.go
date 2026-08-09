@@ -57,7 +57,6 @@ type Configuration struct {
 	appConfig string `yaml:"-"`
 	// The following fields are persisted in ~/.wandersort/config.yaml, and
 	OutputPath            string   `yaml:"output-path,omitempty"`
-	Workers               int      `yaml:"workers,omitempty"`
 	Rules                 []string `yaml:"rules,omitempty"`
 	CollapseLevels        bool     `yaml:"collapse-levels"`
 	SavedPlacesDateOnly   bool     `yaml:"saved-places-date-only"`
@@ -70,6 +69,13 @@ type Configuration struct {
 	SegmentMonths int `yaml:"segment-months,omitempty"`
 
 	// Computed at runtime, never persisted.
+	//
+	// Workers is not a setting. It sizes the goroutine and exiftool pools,
+	// both CPU-bound, so the CPU's own number is the right one — while the
+	// only disk-bound thing in the pipeline (the metadata phase's byte reads)
+	// is throttled by the storage class instead, in pkg/core/metadata. A
+	// hand-set count could only make one of those two worse.
+	Workers        int    `yaml:"-"`
 	AppDBPath      string `yaml:"-"`
 	LocationDBPath string `yaml:"-"`
 	LogLevel       string `yaml:"-"`
@@ -81,7 +87,6 @@ type Configuration struct {
 
 type Overrides struct {
 	OutputPath            string   `yaml:"output-path,omitempty"`
-	Workers               int      `yaml:"workers,omitempty"`
 	Rules                 []string `yaml:"rules,omitempty"`
 	CollapseLevels        TriBool  `yaml:"collapse-levels,omitempty"`
 	SavedPlacesDateOnly   TriBool  `yaml:"saved-places-date-only,omitempty"`
@@ -179,7 +184,6 @@ func Resolve(o Overrides) (cfg *Configuration, warning string, err error) {
 	}
 
 	outputPath := pick("", o.OutputPath, envStr("OUTPUT_PATH"), global.OutputPath)
-	cfg.Workers = pick(cfg.Workers, o.Workers, envInt("WORKERS"), global.Workers)
 	// 0 is the real default here ("auto"), not a missing value.
 	cfg.SegmentMonths = pick(0, o.SegmentMonths, envInt("SEGMENT_MONTHS"), global.SegmentMonths)
 

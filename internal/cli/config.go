@@ -33,7 +33,7 @@ func (a *app) newConfigCmd() *cobra.Command {
 		Use:   "config",
 		Short: "Configure WanderSort",
 		Long: `Opens a full-screen wizard for every global setting — output folder,
-workers, folder rules, and your saved-place towns. They apply to every
+folder rules, and your saved-place towns. They apply to every
 scan unless overridden by a flag or environment variable, and are saved
 to ~/.wandersort/config.yaml.
 
@@ -90,7 +90,6 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 	if out == "" {
 		out = filepath.Dir(a.Config.AppDBPath)
 	}
-	workers := strconv.Itoa(a.Config.Workers)
 	groupBy := append([]string{}, a.Config.Rules...)
 	if len(groupBy) == 0 {
 		groupBy = []string{vfs.RuleDate, vfs.RuleLocation} // sensible default
@@ -197,18 +196,6 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 			Placeholder: filepath.Join(homeDir, "WanderSortLibrary"),
 			Suggest:     suggestOut,
 		},
-		{
-			Kind:        tui.FieldInput,
-			Title:       "Worker count",
-			Description: "Parallel metadata-extraction workers.",
-			Value:       &workers,
-			Validator: func(s string) error {
-				if _, err := strconv.Atoi(strings.TrimSpace(s)); err != nil {
-					return fmt.Errorf("must be a number")
-				}
-				return nil
-			},
-		},
 		rulesField,
 		{
 			Kind:  tui.FieldInput,
@@ -283,9 +270,6 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 			CollapseLevels:        collapse,
 			SavedPlacesDateOnly:   spDateOnly,
 			MergeSameLocationDays: mergeDays,
-		}
-		if w, err := strconv.Atoi(strings.TrimSpace(workers)); err == nil {
-			g.Workers = w
 		}
 		g.SegmentMonths, _ = strconv.Atoi(strings.TrimSpace(segment)) // "auto" → 0
 		// Canonicalize towns to the exact geonames spelling before saving.

@@ -15,6 +15,14 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// classForPath is unimplemented on Windows: the seek-penalty query is
+// DeviceIoControl(IOCTL_STORAGE_QUERY_PROPERTY) with
+// StorageDeviceSeekPenaltyProperty, whose structs are not in x/sys and would
+// have to be declared here. CI runs ubuntu-latest only, so there is no machine
+// to test that on — and ClassUnknown's conservative read budget is the right
+// behaviour for an untested platform anyway.
+func classForPath(string) (Class, error) { return ClassUnknown, nil }
+
 // uuidForPath resolves the Windows volume GUID for path: GetVolumePathName
 // finds the mount point (drive letter or mounted folder — both can change
 // between sessions), and GetVolumeNameForVolumeMountPoint returns the stable

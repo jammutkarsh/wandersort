@@ -73,8 +73,8 @@ wandersort scan --paths ~/Pictures
 wandersort scan -p ~/Pictures -p /Volumes/SD
 wandersort scan -p ~/Pictures,/Volumes/SD
 
-# Use 8 workers and a custom output directory
-wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
+# Scan into a custom output directory
+wandersort scan -p ~/Pictures -o ~/wandersort-out`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths, _ := cmd.Flags().GetStringSlice(flagPaths)
 			force, _ := cmd.Flags().GetBool(flagForce)
@@ -84,7 +84,6 @@ wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
 
 	cmd.Flags().StringSliceP(flagPaths, "p", nil,
 		"Directories to scan (repeatable, or comma-separated). Asked for on screen if omitted")
-	cmd.Flags().IntP(flagWorkers, "w", 0, "Concurrent worker count")
 	cmd.Flags().Bool(flagForce, false,
 		"Re-read every already-scanned file from disk instead of skipping unchanged ones")
 	// Deliberately not MarkFlagRequired: the scan tab's own folder input is the

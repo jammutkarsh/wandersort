@@ -49,7 +49,7 @@ func TestSection(t *testing.T) {
 }
 
 func TestRenderFlags(t *testing.T) {
-	usage := "  -o, --output-path string   Output directory   \n  --workers int          Worker count\n"
+	usage := "  -o, --output-path string   Output directory   \n  --force          Re-read every file\n"
 	got := renderFlags(usage)
 	lines := strings.Split(got, "\n")
 	if len(lines) != 2 {

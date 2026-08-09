@@ -21,7 +21,6 @@ func TestFlagHelpers(t *testing.T) {
 	newCmd := func() *cobra.Command {
 		cmd := &cobra.Command{Use: "x"}
 		cmd.Flags().String("output-path", "", "")
-		cmd.Flags().Int("workers", 0, "")
 		cmd.Flags().Bool("collapse-levels", false, "")
 		return cmd
 	}
@@ -30,9 +29,6 @@ func TestFlagHelpers(t *testing.T) {
 		cmd := newCmd()
 		if got := flagStr(cmd, "output-path"); got != "" {
 			t.Errorf("flagStr(unset) = %q, want empty", got)
-		}
-		if got := flagInt(cmd, "workers"); got != 0 {
-			t.Errorf("flagInt(unset) = %d, want 0", got)
 		}
 		if got := flagBool(cmd, "collapse-levels"); got != config.Unset {
 			t.Errorf("flagBool(unset) = %v, want config.Unset", got)
@@ -44,17 +40,11 @@ func TestFlagHelpers(t *testing.T) {
 		if err := cmd.Flags().Set("output-path", "/tmp/out"); err != nil {
 			t.Fatal(err)
 		}
-		if err := cmd.Flags().Set("workers", "4"); err != nil {
-			t.Fatal(err)
-		}
 		if err := cmd.Flags().Set("collapse-levels", "false"); err != nil {
 			t.Fatal(err)
 		}
 		if got := flagStr(cmd, "output-path"); got != "/tmp/out" {
 			t.Errorf("flagStr(changed) = %q, want /tmp/out", got)
-		}
-		if got := flagInt(cmd, "workers"); got != 4 {
-			t.Errorf("flagInt(changed) = %d, want 4", got)
 		}
 		// explicit false must resolve to config.False, not config.Unset — an
 		// explicit "--collapse-levels=false" must be able to override a

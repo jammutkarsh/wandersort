@@ -21,27 +21,39 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 
 	"github.com/jmoiron/sqlx"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/volume"
 	"lukechampine.com/blake3"
 )
 
 // hashOutputSize is the output length of BLAKE3-256 in bytes
 const hashOutputSize = 32
 
+// maxReadBudget caps concurrent byte reads regardless of how many cores the
+// machine has. NVMe queues are deep, but random-read IOPS plateau somewhere
+// around 16-32 outstanding requests — past that it is the same throughput at
+// worse latency. The cap is on reads only: exiftool is a CPU-bound Perl
+// process, and a 64-core box genuinely wants 64 of those.
+const maxReadBudget = 16
+
 // fileRecord is what the claim query hands a worker: mediaType is carried so a
-// sidecar can be hashed without paying for an exiftool call it has no tags for
+// sidecar can be hashed without paying for an exiftool call it has no tags
+// for, and cost is what reading it charges the shared read budget
 type fileRecord struct {
 	id        int64
 	absPath   string
 	mediaType string
+	cost      int64
 }
 
 // Extractor hashes discovered files and reads their EXIF in one pass
@@ -50,6 +62,22 @@ type Extractor struct {
 	log     logger.Logger
 	pool    *exiftool.Pool
 	workers int
+
+	// reads is admission control over the one thing the storage actually
+	// limits: bytes coming off the platter. Same idea as Postgres' per-device
+	// random_page_cost — a spinning disk charges the whole budget for one
+	// file, an SSD charges 1 — except it throttles rather than plans.
+	//
+	// ponytail: one shared budget couples physically independent devices, so
+	// an HDD read in flight also throttles an idle SSD. Only reachable at a
+	// volume boundary, since the producer drains one volume at a time;
+	// per-volume budgets are the upgrade path if a mixed library measures
+	// badly.
+	reads  *semaphore.Weighted
+	budget int64
+	// classes caches the storage class per volume UUID. Producer-only, so it
+	// needs no lock.
+	classes map[string]volume.Class
 }
 
 func New(database *db.DB, log logger.Logger, exiftoolPath string, workers int) *Extractor {
@@ -60,12 +88,40 @@ func New(database *db.DB, log logger.Logger, exiftoolPath string, workers int) *
 		log.Warn("Exiftool unavailable; metadata will be empty", "error", err)
 	}
 
+	budget := int64(min(max(workers, 1), maxReadBudget))
 	return &Extractor{
 		db:      database,
 		log:     log,
 		pool:    pool,
 		workers: workers,
+		reads:   semaphore.NewWeighted(budget),
+		budget:  budget,
+		classes: map[string]volume.Class{},
 	}
+}
+
+// readTargets is how many files of a class may be read at once when the budget
+// is fully available. The class flips the sign of the concurrency term rather
+// than scaling it: on a spinning disk, eight readers drag the head across the
+// platter between reads and the interleave costs far more than the seeks it
+// was meant to overlap.
+var readTargets = map[volume.Class]int64{
+	volume.ClassRotational: 1, // seek interleave is the whole cost
+	volume.ClassRemovable:  2, // flash controllers stall on deep queues
+	volume.ClassUnknown:    4, // conservative, never a guess
+	// SolidState and Network take the whole budget: one has no seek penalty,
+	// the other is latency-bound, so in-flight requests hide round trips.
+}
+
+// readCost charges a file of this class against a budget of B. Clamped to
+// [1, budget] — a cost above the budget would block forever
+func readCost(class volume.Class, budget int64) int64 {
+	target, ok := readTargets[class]
+	if !ok || target >= budget {
+		return 1
+	}
+	cost := (budget + target - 1) / target // ceil
+	return min(max(cost, 1), budget)
 }
 
 // Run claims every DISCOVERED file one at a time and reads it in a bounded
@@ -117,37 +173,126 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 	return persisted, nil
 }
 
-// producer claims discovered files one at a time and feeds them to the workers
+// producer drains one volume at a time, fastest first, and feeds the workers.
+// Ordering by device does not change total wall time — the same bytes are read
+// either way — but it front-loads progress, so an interrupted run has the cheap
+// files done and the progress bar moves early instead of crawling behind an
+// HDD. Within a volume the claim order is untouched: id is discovery order is
+// walk order is roughly directory order, which is as seek-friendly as a claim
+// order gets.
 func (e *Extractor) producer(ctx context.Context, cancel context.CancelFunc, toRead chan<- fileRecord, producerErr chan<- error) {
 	defer close(toRead)
 
-	for {
-		record, ok, err := e.getFile(ctx)
-		if err != nil {
-			producerErr <- err
-			cancel()
-			return
-		}
-		if !ok {
-			producerErr <- nil
-			return
-		}
+	fail := func(err error) {
+		producerErr <- err
+		cancel()
+	}
 
-		select {
-		case toRead <- record:
-		case <-ctx.Done():
-			producerErr <- ctx.Err()
-			return
+	volumes, err := e.pendingVolumes(ctx)
+	if err != nil {
+		fail(err)
+		return
+	}
+
+	// The final pass is unscoped: it catches anything the grouping missed, so
+	// no row can be stranded by an edge case in the query above.
+	for _, v := range append(volumes, pendingVolume{all: true}) {
+		for {
+			record, ok, err := e.getFile(ctx, v)
+			if err != nil {
+				fail(err)
+				return
+			}
+			if !ok {
+				break // this volume is drained; move to the next
+			}
+
+			select {
+			case toRead <- record:
+			case <-ctx.Done():
+				producerErr <- ctx.Err()
+				return
+			}
 		}
 	}
+	producerErr <- nil
 }
 
-// getFile atomically claims the next discovered file. The ANALYZING stamp is
-// what makes an interrupted phase resumable: the scanner's upsert resets those
-// rows to DISCOVERED, since nothing was persisted for them
-func (e *Extractor) getFile(ctx context.Context) (fileRecord, bool, error) {
+// pendingVolume is one volume's share of the work still to read. all is the
+// closing sweep, and is not the same thing as an empty uuid — files whose
+// volume never resolved are a real group of their own, and scoping to them
+// with "no filter" would drain every other volume out of order
+type pendingVolume struct {
+	uuid string
+	cost int64
+	all  bool
+}
+
+// pendingVolumes groups the unread files by volume and prices each one. The
+// scan phase has already finished by the time this runs, so no new volume can
+// appear underneath it
+func (e *Extractor) pendingVolumes(ctx context.Context) ([]pendingVolume, error) {
+	rows, err := e.db.QueryContext(ctx, `
+		SELECT COALESCE(volume_uuid, ''), MIN(file_dir)
+		FROM live_files
+		WHERE scan_status = ?
+		GROUP BY COALESCE(volume_uuid, '')
+	`, db.StatusDiscovered)
+	if err != nil {
+		return nil, fmt.Errorf("group pending files by volume: %w", err)
+	}
+	defer rows.Close()
+
+	var volumes []pendingVolume
+	for rows.Next() {
+		var uuid, sampleDir string
+		if err := rows.Scan(&uuid, &sampleDir); err != nil {
+			return nil, fmt.Errorf("scan pending volume: %w", err)
+		}
+		class := e.classOf(uuid, sampleDir)
+		cost := readCost(class, e.budget)
+		e.log.Info("Storage detected", logger.UserKey, true,
+			"path", sampleDir, "class", class.String(), "concurrentReads", e.budget/cost)
+		volumes = append(volumes, pendingVolume{uuid: uuid, cost: cost})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("group pending files by volume: %w", err)
+	}
+
+	// cheapest cost first == fastest device first; uuid breaks ties so the
+	// order is deterministic run to run
+	sort.Slice(volumes, func(i, j int) bool {
+		if volumes[i].cost != volumes[j].cost {
+			return volumes[i].cost < volumes[j].cost
+		}
+		return volumes[i].uuid < volumes[j].uuid
+	})
+	return volumes, nil
+}
+
+// classOf resolves and caches a volume's storage class. An unresolved UUID is
+// not worth a lookup: the same platform machinery produces both, so if the
+// UUID failed the class would too — and keying the cache on the directory
+// instead would spawn a resolution per directory
+func (e *Extractor) classOf(uuid, sampleDir string) volume.Class {
+	if uuid == "" {
+		return volume.ClassUnknown
+	}
+	if class, ok := e.classes[uuid]; ok {
+		return class
+	}
+	class := volume.ClassForPath(sampleDir)
+	e.classes[uuid] = class
+	return class
+}
+
+// getFile atomically claims the next discovered file on one volume, or on any
+// volume during the closing sweep. The ANALYZING stamp is what makes an
+// interrupted phase resumable: the scanner's upsert resets those rows to
+// DISCOVERED, since nothing was persisted for them
+func (e *Extractor) getFile(ctx context.Context, v pendingVolume) (fileRecord, bool, error) {
 	var id int64
-	var fileDir, fileName, mediaType string
+	var fileDir, fileName, mediaType, uuid string
 	query := `
 	UPDATE file_registry
 	SET scan_status = ?
@@ -155,14 +300,15 @@ func (e *Extractor) getFile(ctx context.Context) (fileRecord, bool, error) {
 		SELECT id
 		FROM live_files
 		WHERE scan_status = ?
+		  AND (? OR COALESCE(volume_uuid, '') = ?)
 		ORDER BY id
 		LIMIT 1
 	)
-	RETURNING id, file_dir, file_name, COALESCE(media_type, '')`
+	RETURNING id, file_dir, file_name, COALESCE(media_type, ''), COALESCE(volume_uuid, '')`
 
 	err := e.db.
-		QueryRowContext(ctx, query, db.StatusAnalyzing, db.StatusDiscovered).
-		Scan(&id, &fileDir, &fileName, &mediaType)
+		QueryRowContext(ctx, query, db.StatusAnalyzing, db.StatusDiscovered, v.all, v.uuid).
+		Scan(&id, &fileDir, &fileName, &mediaType, &uuid)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fileRecord{}, false, nil
 	}
@@ -170,7 +316,18 @@ func (e *Extractor) getFile(ctx context.Context) (fileRecord, bool, error) {
 		return fileRecord{}, false, fmt.Errorf("claim next metadata row: %w", err)
 	}
 
-	return fileRecord{id: id, absPath: filepath.Join(fileDir, fileName), mediaType: mediaType}, true, nil
+	cost := v.cost
+	if v.all {
+		// the closing sweep has no price of its own: charge the straggler by
+		// whatever volume it turned out to be on
+		cost = readCost(e.classOf(uuid, fileDir), e.budget)
+	}
+	return fileRecord{
+		id:        id,
+		absPath:   filepath.Join(fileDir, fileName),
+		mediaType: mediaType,
+		cost:      cost,
+	}, true, nil
 }
 
 // worker hashes one file, reads its EXIF while the bytes are still cached, and
@@ -181,8 +338,14 @@ func (e *Extractor) worker(ctx context.Context, toRead <-chan fileRecord, extrac
 			return
 		}
 
-		hash, err := hashFile(file.absPath)
+		hash, err := e.readFile(ctx, file)
 		if err != nil {
+			// A cancelled pipeline aborts the budget wait rather than the
+			// read; that is shutdown, not a bad file, so don't park it at
+			// ERROR on the way out.
+			if ctx.Err() != nil {
+				return
+			}
 			e.log.Error("Failed to hash file", "fileId", file.id, "path", file.absPath, "error", err)
 			e.db.Writer.Write(storeFailure(file.id))
 			continue
@@ -221,6 +384,19 @@ func (e *Extractor) worker(ctx context.Context, toRead <-chan fileRecord, extrac
 			return
 		}
 	}
+}
+
+// readFile gates the byte read on the storage's weighted budget. exiftool is
+// deliberately left outside the gate: it reads a header the hash just warmed
+// in the page cache, and it is a CPU-bound Perl process rather than a seek —
+// throttling it to the disk's concurrency would trade the hash win straight
+// back for an exif loss
+func (e *Extractor) readFile(ctx context.Context, file fileRecord) (string, error) {
+	if err := e.reads.Acquire(ctx, file.cost); err != nil {
+		return "", err // cancelled
+	}
+	defer e.reads.Release(file.cost)
+	return hashFile(file.absPath)
 }
 
 // hashFile computes the BLAKE3 hash of a file

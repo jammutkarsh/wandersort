@@ -185,7 +185,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     well as `InstallProgressMsg` (the form knows nothing about install phases,
     the scan screen knows nothing about `DownloadMsg`), and settles it with a
     `Finished` off the blocking `Deps.Location()` getter. Step order is
-    **output path, workers, rules,
+    **output path, rules,
     review segment size, collapse, then one Saved places step** whose
     sub-fields are home town, work
     town, "group saved-place photos by date only?" and "merge consecutive
@@ -676,10 +676,10 @@ Config precedence: **flag > env > config file > default**, entirely inside
 `config.Resolve` (`pkg/config/config.go`) — the single place all four layers
 meet. `internal/cli/root.go`'s `flagOverridesFrom` builds the flag layer from
 cobra's `cmd.Flags()` (only for the settings `Resolve` knows about:
-`output-path`, `workers`, `collapse-levels`, `saved-places-date-only`,
+`output-path`, `collapse-levels`, `saved-places-date-only`,
 `merge-same-location-days` — checking `.Changed` so an unset flag reads as
 `nil`, not its zero value); `Resolve` reads the env layer itself via
-`os.Getenv` (`OUTPUT_PATH`, `WORKERS`, …) and the file layer via
+`os.Getenv` (`OUTPUT_PATH`, `SEGMENT_MONTHS`, …) and the file layer via
 `LoadGlobal`. There is no viper anywhere in this codebase — every other
 command's own flags (`--yes`, `--plain`, …) are read straight off `cmd.Flags()`
 in their own `RunE`, no env-var fallback for those (never documented, so
@@ -701,7 +701,7 @@ flag/env layers can (a nil pointer vs. a real value). `saved-places` has no
 flag or env of its own — `Resolve` doesn't touch it at all; `app.syncAnchors`
 reads it straight via `config.Load`. `segment-months` (0 = auto, else 3/6/12 —
 the review's time-slice size, see `vfs.Segments`) is an int, so it goes through
-`pick` like `workers` and needs no wizard gate; it has an env var
+`pick` and needs no wizard gate; it has an env var
 (`SEGMENT_MONTHS`) and no flag. It is deliberately **not** in `ConfigStamp`:
 it changes how a plan is reviewed, never where a file lands, so it must not
 raise the reset prompt.
@@ -746,8 +746,15 @@ raise the reset prompt.
   actionable. It fires **at the end of the run**, next to the "run wandersort
   review" hint, not after the scan phase where it used to scroll past
   mid-pipeline. `NewWorkflow` logs the resolved `workers`/`output`/`groupBy`
-  as a `UserKey` line: all three come from flag/env/config.yaml, so showing
-  the resolved values up front is the only way to see which source won.
+  as a `UserKey` line: `output` and `groupBy` come from flag/env/config.yaml,
+  so showing the resolved values up front is the only way to see which source
+  won. **`Workers` is not a setting** — there is no `--workers` flag, no
+  `WORKERS` env var, no `workers` key and no wizard step. It sizes the
+  goroutine and exiftool pools, both CPU-bound, so `runtime.NumCPU()` is the
+  right number; the one disk-bound thing in the pipeline (the metadata phase's
+  byte reads) is throttled by the storage class instead (see
+  `pkg/core/metadata`). One hand-set number could only ever be wrong for one
+  of the two.
   Each phase reports **one** user-facing line: `workflowPhase.summary(count)`
   with the elapsed time appended (`Scanned 15481 files in 1.996s`). It used to
   be two — a count line from `onSuccess` plus a separate `"%s phase took %s"`
@@ -801,6 +808,28 @@ raise the reset prompt.
   hash clears the file's stale metadata row and parks it at `ERROR`.
   **Known gap:** full-byte hash means pixel-identical files with differing
   metadata land in separate groups.
+  **The byte read is throttled by the storage class, the worker pool is not**
+  (`readCost`/`readTargets`/`readFile`, `semaphore.Weighted`). A budget of
+  `min(workers, maxReadBudget=16)` is charged per file by the class of the
+  volume it lives on: rotational costs the whole budget (1 read at a time),
+  removable half (2), unknown a quarter (4), solid-state and network 1 each
+  (the full budget). Same idea as Postgres' per-device `random_page_cost`,
+  except it throttles rather than plans. **Only `hashFile` is inside the
+  gate.** Shrinking `workers` instead would shrink the exiftool process pool
+  with it (`exiftool.NewPool(path, workers)`), and exiftool is CPU-bound Perl
+  reading a header the hash just warmed in the page cache — on the measured
+  100k-file run that trade would have cost more in the exif half than the
+  hash half could win. The cap is on reads for the same reason: a 64-core box
+  wants 64 exiftool processes and never wants 64 concurrent reads. The
+  producer drains **one volume at a time, fastest first**
+  (`pendingVolumes`/`pendingVolume`), which does not change total wall time
+  but front-loads progress so an interrupted run has the cheap files done;
+  **`ORDER BY id` within a volume is untouched**, because id is discovery
+  order is walk order is roughly directory order, which is as seek-friendly as
+  a claim order gets — don't "improve" it. A closing unscoped pass
+  (`pendingVolume.all`, which is *not* the same as an empty `uuid`) catches
+  any straggler the grouping missed. `readCost` clamps to `[1, budget]`: a
+  cost above the budget would block forever.
   Sidecars (`.AAE`) are claimed and hashed like anything else but never handed
   to exiftool (`fileRecord.mediaType`, checked in the worker) — they carry no
   EXIF, so spawning exiftool on them is pure waste. **An extraction failure is
@@ -848,9 +877,8 @@ raise the reset prompt.
   settings change (`ReadStamp` reports `ok=false`), so a pre-stamp library
   never prompts. **The stamp hashes a subset, not the config file**: `Rules`,
   the three folder toggles and `SavedPlaces` — the settings that can move a
-  file. `Workers` is deliberately out (it cannot change a target path, and
-  `workers: 8→16` is exactly the false rebuild prompt the subset exists to
-  avoid), and saved places are hashed as **typed names, not resolved anchors**,
+  file. `Workers` is not in it because it is not a setting at all any more,
+  and saved places are hashed as **typed names, not resolved anchors**,
   so the check never needs the location database. `Config.SavedPlaces` exists
   for that reason alone — `ConfigFor` copies it beside the anchors.
   One output folder has one rule set, which is why the stamp is a file in it
@@ -1131,7 +1159,25 @@ raise the reset prompt.
   darwin, /dev/disk/by-uuid on linux, volume GUID via winapi on windows —
   cross-compiled only, untested on real hardware), cached per path; also
   `FreeBytes` for the post-scan output-volume space preflight (warn-only,
-  `workflow.warnIfLowSpace`).
+  `workflow.warnIfLowSpace`). Also `Class`/`ClassForPath` (`class.go`) — how a
+  volume behaves under concurrent reads (`ClassRotational`/`SolidState`/
+  `Removable`/`Network`/`Unknown`), read by `pkg/core/metadata` to size its
+  read budget. Same best-effort contract as `ForPath`: **`ClassUnknown` is a
+  first-class answer, not a failure**, and the consumer maps it to a
+  conservative default. Deliberately a package-level function rather than a
+  `Resolver` method — it is called once per volume per run, so the second
+  `diskutil` spawn is not worth a cache rewrite; the consumer caches by volume
+  UUID instead. darwin reads `SolidState`/`BusProtocol`/`RAIDMaster` out of the
+  plist `uuidForPath` already fetches (`classFromDiskutil`, pure); linux reads
+  `/sys/block/<disk>/queue/rotational` and `removable`, falling back from a
+  partition name to its whole disk by *asking sysfs*, not by pattern-matching
+  (`/dev/loop0` and `/dev/sda1` look alike to a stripping rule and are not);
+  windows returns `ClassUnknown` — the `IOCTL_STORAGE_QUERY_PROPERTY` structs
+  are not in `x/sys` and CI is ubuntu-only, so there is no machine to test it
+  on. Detection is the initial guess, not the answer: a RAID can be mixed
+  (treated as rotational, the safe read), a NAS says nothing about its backing
+  store, and `rotational=0` cannot separate an NVMe from a USB 2.0 stick
+  everywhere.
 - `logger/` — slog-based `Logger` interface; fans out to two handlers. The
   **console** handler (`console.go`) is deliberately minimal for CLI users: a
   coloured level tag + message + dimmed `key=value` attrs, no timestamp/source.
