@@ -18,6 +18,14 @@ const fileMetadata = `
 CREATE TABLE IF NOT EXISTS file_metadata (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_hash TEXT NOT NULL,
+    -- 'content' = a real BLAKE3 digest of every byte. 'size' = the file was
+    -- never read, because its byte length occurs exactly once in the library
+    -- and nothing can therefore share its content; file_hash then holds a
+    -- per-file-unique stand-in so the scorer's GROUP BY can never pair two of
+    -- them. That claim is only true of the library as it stood at the time,
+    -- which is what makes this column necessary rather than cosmetic: a later
+    -- scan adding a same-size file has to find these rows and re-read them.
+    hash_kind TEXT NOT NULL DEFAULT 'content' CHECK (hash_kind IN ('content', 'size')),
     file_id INTEGER REFERENCES file_registry(id) ON DELETE SET NULL,
 
     exif_image_width        INTEGER,

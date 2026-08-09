@@ -9,6 +9,7 @@ package metadata
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -223,6 +224,12 @@ func TestExtractor(t *testing.T) {
 				t.Fatal(err)
 			}
 			dbtest.SeedFile(t, d, 1, root, "IMG_0001.AAE", 5)
+			// a same-size sibling keeps the sidecar out of the size-unique
+			// prefilter, so this still exercises a real hash
+			if err := os.WriteFile(filepath.Join(root, "other.jpg"), []byte("bytes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dbtest.SeedFile(t, d, 2, root, "other.jpg", 5)
 			if _, err := d.ExecContext(ctx,
 				`UPDATE file_registry SET media_type = ? WHERE id = 1`, classifier.MediaTypeSidecar); err != nil {
 				t.Fatal(err)
@@ -233,8 +240,8 @@ func TestExtractor(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
-			if count != 1 {
-				t.Fatalf("Run read %d sidecars, want 1", count)
+			if count != 2 {
+				t.Fatalf("Run read %d files, want 2 (the sidecar and its size sibling)", count)
 			}
 			d.Writer.Flush()
 
@@ -265,6 +272,12 @@ func TestExtractor(t *testing.T) {
 			}
 
 			dbtest.SeedFile(t, d, 1, root, "photo.jpg", 13)
+			// same-size sibling: a size-unique file is never read, and this
+			// case is about the re-read
+			if err := os.WriteFile(filepath.Join(root, "other.jpg"), []byte("thirteen byte"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dbtest.SeedFile(t, d, 2, root, "other.jpg", 13)
 			if _, err := d.ExecContext(ctx,
 				`INSERT INTO file_metadata (file_hash, file_id, is_master) VALUES ('stale-hash', 1, 0)`); err != nil {
 				t.Fatal(err)
@@ -275,8 +288,8 @@ func TestExtractor(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
-			if count != 1 {
-				t.Fatalf("Run read %d files, want 1", count)
+			if count != 2 {
+				t.Fatalf("Run read %d files, want 2", count)
 			}
 			d.Writer.Flush()
 
@@ -310,8 +323,15 @@ func TestExtractor(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
 
-			// Registry points at a file that does not exist, so hashing fails
-			dbtest.SeedFile(t, d, 1, t.TempDir(), "gone.jpg", 13)
+			// Registry points at a file that does not exist, so hashing fails.
+			// The same-size sibling is what forces the read to be attempted at
+			// all — a size-unique file is never opened for hashing.
+			root := t.TempDir()
+			dbtest.SeedFile(t, d, 1, root, "gone.jpg", 13)
+			if err := os.WriteFile(filepath.Join(root, "present.jpg"), []byte("thirteen byte"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dbtest.SeedFile(t, d, 2, root, "present.jpg", 13)
 			if _, err := d.ExecContext(ctx,
 				`INSERT INTO file_metadata (file_hash, file_id) VALUES ('stale-hash', 1)`); err != nil {
 				t.Fatal(err)
@@ -340,7 +360,7 @@ func TestExtractor(t *testing.T) {
 			dbtest.SeedFile(t, d, 1, t.TempDir(), "photo.jpg", 13)
 
 			e := New(d, logger.NewNoopLogger(), "exiftool", 1)
-			if !d.Writer.Write(e.store(1, "hash-of-photo.jpg", classifier.CommonMetadata{
+			if !d.Writer.Write(e.store(1, "hash-of-photo.jpg", db.HashContent, classifier.CommonMetadata{
 				ImageWidth:       "4032",
 				ImageHeight:      "3024",
 				Orientation:      "6",
@@ -491,10 +511,180 @@ func TestExtractor(t *testing.T) {
 				t.Errorf("claim order = %v, want %v (fastest volume first)", claimed, want)
 			}
 		}},
+		// A file whose byte length occurs exactly once cannot share content
+		// with anything, so it is never opened for hashing. Proven by pointing
+		// the registry at a file that does not exist: reading it would fail
+		// and park it at ERROR
+		{"RunSkipsTheReadForAUniqueSize", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+
+			dbtest.SeedFile(t, d, 1, t.TempDir(), "never-opened.jpg", 4242)
+
+			e := New(d, logger.NewNoopLogger(), missingExiftool(t), 1)
+			if _, err := e.Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			d.Writer.Flush()
+
+			if got := status(t, d, 1); got != db.StatusAnalyzed {
+				t.Fatalf("scan_status = %s, want %s — a unique size must not be read", got, db.StatusAnalyzed)
+			}
+			var row struct {
+				Hash string `db:"file_hash"`
+				Kind string `db:"hash_kind"`
+			}
+			if err := d.SQL.Get(&row,
+				`SELECT file_hash, hash_kind FROM file_metadata WHERE file_id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if row.Kind != db.HashSize {
+				t.Errorf("hash_kind = %q, want %q", row.Kind, db.HashSize)
+			}
+			if row.Hash != sizeDerivedHash(1) {
+				t.Errorf("file_hash = %q, want the size-derived stand-in %q", row.Hash, sizeDerivedHash(1))
+			}
+		}},
+		// The stand-in must be unique per file: the scorer groups duplicates by
+		// file_hash alone, so a shared sentinel would report every unread file
+		// as a copy of every other one
+		{"SizeDerivedHashesNeverGroupTogether", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+
+			root := t.TempDir()
+			for i, body := range []string{"one", "two-two"} { // different lengths
+				name := fmt.Sprintf("solo-%d.jpg", i)
+				if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				dbtest.SeedFile(t, d, int64(i+1), root, name, int64(len(body)))
+			}
+
+			e := New(d, logger.NewNoopLogger(), missingExiftool(t), 1)
+			if _, err := e.Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			d.Writer.Flush()
+
+			var groups int
+			if err := d.SQL.Get(&groups, `
+				SELECT COUNT(*) FROM (
+					SELECT file_hash FROM file_metadata GROUP BY file_hash HAVING COUNT(*) > 1
+				)`); err != nil {
+				t.Fatal(err)
+			}
+			if groups != 0 {
+				t.Errorf("size-derived hashes formed %d duplicate group(s), want 0", groups)
+			}
+		}},
+		// The case the prefilter can silently corrupt: a file skipped as
+		// size-unique in one scan stops being size-unique in the next. Both
+		// must end up with real content hashes, in one duplicate group —
+		// otherwise two identical files are reported as distinct
+		{"ASecondScanRehashesAFileThatIsNoLongerAUniqueSize", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+
+			root := t.TempDir()
+			const body = "identical bytes"
+			if err := os.WriteFile(filepath.Join(root, "first.jpg"), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dbtest.SeedFile(t, d, 1, root, "first.jpg", int64(len(body)))
+
+			// scan 1: nothing else is this long, so it is never read
+			if _, err := New(d, logger.NewNoopLogger(), missingExiftool(t), 1).Run(ctx); err != nil {
+				t.Fatalf("first Run: %v", err)
+			}
+			d.Writer.Flush()
+			var kind string
+			if err := d.SQL.Get(&kind, `SELECT hash_kind FROM file_metadata WHERE file_id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if kind != db.HashSize {
+				t.Fatalf("after scan 1 hash_kind = %q, want %q", kind, db.HashSize)
+			}
+
+			// scan 2: an identical twin arrives
+			if err := os.WriteFile(filepath.Join(root, "second.jpg"), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dbtest.SeedFile(t, d, 2, root, "second.jpg", int64(len(body)))
+
+			if _, err := New(d, logger.NewNoopLogger(), missingExiftool(t), 1).Run(ctx); err != nil {
+				t.Fatalf("second Run: %v", err)
+			}
+			d.Writer.Flush()
+
+			var rows []struct {
+				FileID int64  `db:"file_id"`
+				Hash   string `db:"file_hash"`
+				Kind   string `db:"hash_kind"`
+			}
+			if err := d.SQL.Select(&rows,
+				`SELECT file_id, file_hash, hash_kind FROM file_metadata ORDER BY file_id`); err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 2 {
+				t.Fatalf("got %d metadata rows, want 2", len(rows))
+			}
+			for _, r := range rows {
+				if r.Kind != db.HashContent {
+					t.Errorf("file %d hash_kind = %q, want %q — the size claim expired", r.FileID, r.Kind, db.HashContent)
+				}
+			}
+			if rows[0].Hash != rows[1].Hash {
+				t.Errorf("identical files hashed differently (%q vs %q): they must form one duplicate group",
+					rows[0].Hash, rows[1].Hash)
+			}
+			if got := status(t, d, 1); got != db.StatusAnalyzed {
+				t.Errorf("re-read file scan_status = %s, want %s", got, db.StatusAnalyzed)
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
 	}
+}
+
+// TestHashReadsThroughThePooledBuffer pins the readerOnly wrapper. Without it
+// io.CopyBuffer silently ignores the buffer, because *os.File implements
+// io.WriterTo and CopyBuffer prefers that path — the change would look applied
+// and do nothing.
+func TestHashReadsThroughThePooledBuffer(t *testing.T) {
+	path := helperWritePatternFile(t, 4<<20, 0x33)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	if _, ok := any(f).(io.WriterTo); !ok {
+		t.Skip("*os.File no longer implements io.WriterTo — the readerOnly wrapper may be dead weight")
+	}
+	if _, ok := any(readerOnly{f}).(io.WriterTo); ok {
+		t.Fatal("readerOnly must hide WriteTo, or io.CopyBuffer ignores the pooled buffer")
+	}
+
+	var w chunkRecorder
+	buf := make([]byte, hashBufferSize)
+	if _, err := io.CopyBuffer(&w, readerOnly{f}, buf); err != nil {
+		t.Fatal(err)
+	}
+	if w.largest != hashBufferSize {
+		t.Errorf("largest chunk = %d bytes, want %d — the pooled buffer is not being used",
+			w.largest, hashBufferSize)
+	}
+}
+
+type chunkRecorder struct{ largest int }
+
+func (c *chunkRecorder) Write(p []byte) (int, error) {
+	if len(p) > c.largest {
+		c.largest = len(p)
+	}
+	return len(p), nil
 }
 
 func TestReadCost(t *testing.T) {

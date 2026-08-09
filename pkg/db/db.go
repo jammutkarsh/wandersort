@@ -49,6 +49,20 @@ const (
 	StatusApproved = "APPROVED"
 )
 
+// file_metadata.hash_kind: whether file_hash was computed from the file's
+// bytes or stood in for them.
+const (
+	// HashContent is a real BLAKE3 digest of every byte.
+	HashContent = "content"
+	// HashSize means the file was never read: its byte length occurs exactly
+	// once in the library, so nothing can share its content and the hash
+	// exists only to fill the column. The value is unique per file so the
+	// scorer's GROUP BY can never pair two of them. This is only true of the
+	// library as it stood when it was written — a later scan that adds a
+	// same-size file must send both back to be hashed properly.
+	HashSize = "size"
+)
+
 // TimeLayout is RFC3339 with fixed-width nanoseconds. Fixed width keeps
 // lexicographic string comparison in SQL consistent with time order; values
 // are always stored in UTC via FormatTime and shown in the user's local zone

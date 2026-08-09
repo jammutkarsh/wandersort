@@ -54,6 +54,9 @@ type fileRecord struct {
 	absPath   string
 	mediaType string
 	cost      int64
+	// sizeUnique means no other live file is this many bytes long, so nothing
+	// can share its content and the read would decide nothing
+	sizeUnique bool
 }
 
 // Extractor hashes discovered files and reads their EXIF in one pass
@@ -78,6 +81,10 @@ type Extractor struct {
 	// classes caches the storage class per volume UUID. Producer-only, so it
 	// needs no lock.
 	classes map[string]volume.Class
+	// uniqueSize holds every byte length that occurs exactly once across the
+	// live library. Filled before the producer starts and read-only after, so
+	// it needs no lock either.
+	uniqueSize map[int64]struct{}
 }
 
 func New(database *db.DB, log logger.Logger, exiftoolPath string, workers int) *Extractor {
@@ -98,6 +105,14 @@ func New(database *db.DB, log logger.Logger, exiftoolPath string, workers int) *
 		budget:  budget,
 		classes: map[string]volume.Class{},
 	}
+}
+
+// sizeDerivedHash stands in for the content hash of a file that was never
+// read. **It must be unique per file**: the scorer groups duplicates purely by
+// file_hash, so a shared sentinel would report every unread file as a copy of
+// every other one
+func sizeDerivedHash(fileID int64) string {
+	return fmt.Sprintf("size:%d", fileID)
 }
 
 // readTargets is how many files of a class may be read at once when the budget
@@ -140,6 +155,19 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 	defer cancel()
 
 	e.log.Info("Extracting metadata")
+
+	// before anything is counted or claimed: a file skipped as size-unique by
+	// an earlier run may not be size-unique any more
+	if err := e.rehashOutdatedSizeHashes(ctx); err != nil {
+		return 0, err
+	}
+
+	sizes, err := e.uniqueSizes(ctx)
+	if err != nil {
+		return 0, err
+	}
+	// written before the producer goroutine starts and read-only after
+	e.uniqueSize = sizes
 
 	var total int
 	if err := e.db.QueryRowContext(ctx, `
@@ -218,6 +246,72 @@ func (e *Extractor) producer(ctx context.Context, cancel context.CancelFunc, toR
 	producerErr <- nil
 }
 
+// uniqueSizes returns every byte length that occurs exactly once across the
+// live library. A file of such a length cannot share content with anything,
+// so reading it decides nothing the size did not already decide — that is the
+// whole prefilter. Measured on a 107k-file library: 15,246 files, 187.5 GiB,
+// 23.9% of the bytes, never read.
+//
+// Computed once because nothing changes it mid-phase: the scan phase has
+// finished, and claiming a file only moves its status
+func (e *Extractor) uniqueSizes(ctx context.Context) (map[int64]struct{}, error) {
+	rows, err := e.db.QueryContext(ctx, `
+		SELECT file_size FROM live_files GROUP BY file_size HAVING COUNT(*) = 1
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("find unique file sizes: %w", err)
+	}
+	defer rows.Close()
+
+	sizes := map[int64]struct{}{}
+	for rows.Next() {
+		var size int64
+		if err := rows.Scan(&size); err != nil {
+			return nil, fmt.Errorf("scan unique file size: %w", err)
+		}
+		sizes[size] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("find unique file sizes: %w", err)
+	}
+	return sizes, nil
+}
+
+// rehashOutdatedSizeHashes sends back for a real read every file that was
+// skipped as size-unique and is not size-unique any more.
+//
+// **Do not remove this, and do not move it after the claim.** Tier 1's claim —
+// "nothing else in the library is this long, so nothing can share its
+// content" — is only true of the library as it stood when the file was
+// skipped. A later scan adding a same-size file makes it false, and the
+// failure mode is silent: two identical files reported as distinct, which is
+// worse than the read it saved. The newcomer is DISCOVERED already; this is
+// what fetches the incumbent back
+func (e *Extractor) rehashOutdatedSizeHashes(ctx context.Context) error {
+	res, err := e.db.ExecContext(ctx, `
+		UPDATE file_registry
+		SET scan_status = ?
+		WHERE id IN (
+			SELECT m.file_id
+			FROM file_metadata m
+			JOIN live_files f ON f.id = m.file_id
+			WHERE m.hash_kind = ?
+			  AND f.file_size IN (
+				SELECT file_size FROM live_files GROUP BY file_size HAVING COUNT(*) > 1
+			  )
+		)`, db.StatusDiscovered, db.HashSize)
+	if err != nil {
+		return fmt.Errorf("re-queue outdated size-derived hashes: %w", err)
+	}
+	// the stale metadata row is left alone: store() deletes it before writing
+	// the real one, the same way it handles any other re-read
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		e.log.Info("Re-reading files that are no longer a unique size", logger.UserKey, true,
+			"files", n)
+	}
+	return nil
+}
+
 // pendingVolume is one volume's share of the work still to read. all is the
 // closing sweep, and is not the same thing as an empty uuid — files whose
 // volume never resolved are a real group of their own, and scoping to them
@@ -291,7 +385,7 @@ func (e *Extractor) classOf(uuid, sampleDir string) volume.Class {
 // interrupted phase resumable: the scanner's upsert resets those rows to
 // DISCOVERED, since nothing was persisted for them
 func (e *Extractor) getFile(ctx context.Context, v pendingVolume) (fileRecord, bool, error) {
-	var id int64
+	var id, fileSize int64
 	var fileDir, fileName, mediaType, uuid string
 	query := `
 	UPDATE file_registry
@@ -304,11 +398,11 @@ func (e *Extractor) getFile(ctx context.Context, v pendingVolume) (fileRecord, b
 		ORDER BY id
 		LIMIT 1
 	)
-	RETURNING id, file_dir, file_name, COALESCE(media_type, ''), COALESCE(volume_uuid, '')`
+	RETURNING id, file_dir, file_name, COALESCE(media_type, ''), COALESCE(volume_uuid, ''), file_size`
 
 	err := e.db.
 		QueryRowContext(ctx, query, db.StatusAnalyzing, db.StatusDiscovered, v.all, v.uuid).
-		Scan(&id, &fileDir, &fileName, &mediaType, &uuid)
+		Scan(&id, &fileDir, &fileName, &mediaType, &uuid, &fileSize)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fileRecord{}, false, nil
 	}
@@ -322,11 +416,13 @@ func (e *Extractor) getFile(ctx context.Context, v pendingVolume) (fileRecord, b
 		// whatever volume it turned out to be on
 		cost = readCost(e.classOf(uuid, fileDir), e.budget)
 	}
+	_, sizeUnique := e.uniqueSize[fileSize]
 	return fileRecord{
-		id:        id,
-		absPath:   filepath.Join(fileDir, fileName),
-		mediaType: mediaType,
-		cost:      cost,
+		id:         id,
+		absPath:    filepath.Join(fileDir, fileName),
+		mediaType:  mediaType,
+		cost:       cost,
+		sizeUnique: sizeUnique,
 	}, true, nil
 }
 
@@ -338,17 +434,24 @@ func (e *Extractor) worker(ctx context.Context, toRead <-chan fileRecord, extrac
 			return
 		}
 
-		hash, err := e.readFile(ctx, file)
-		if err != nil {
-			// A cancelled pipeline aborts the budget wait rather than the
-			// read; that is shutdown, not a bad file, so don't park it at
-			// ERROR on the way out.
-			if ctx.Err() != nil {
-				return
+		// Nothing in the library is this file's length, so nothing can share
+		// its bytes: the read would confirm a duplicate group of one. exiftool
+		// still runs below — the folder proposal needs the tags either way.
+		hash, hashKind := sizeDerivedHash(file.id), db.HashSize
+		if !file.sizeUnique {
+			var err error
+			if hash, err = e.readFile(ctx, file); err != nil {
+				// A cancelled pipeline aborts the budget wait rather than the
+				// read; that is shutdown, not a bad file, so don't park it at
+				// ERROR on the way out.
+				if ctx.Err() != nil {
+					return
+				}
+				e.log.Error("Failed to hash file", "fileId", file.id, "path", file.absPath, "error", err)
+				e.db.Writer.Write(storeFailure(file.id))
+				continue
 			}
-			e.log.Error("Failed to hash file", "fileId", file.id, "path", file.absPath, "error", err)
-			e.db.Writer.Write(storeFailure(file.id))
-			continue
+			hashKind = db.HashContent
 		}
 
 		// A failed extraction is not a failed file: the pipeline still knows the
@@ -358,6 +461,7 @@ func (e *Extractor) worker(ctx context.Context, toRead <-chan fileRecord, extrac
 		// Sidecars (iPhone .AAE edit files) carry no EXIF of their own, so
 		// spawning exiftool on them is pure waste — hash them and move on
 		if file.mediaType != classifier.MediaTypeSidecar {
+			var err error
 			if e.pool != nil {
 				meta, err = e.pool.Extract(ctx, file.absPath)
 			} else {
@@ -379,7 +483,7 @@ func (e *Extractor) worker(ctx context.Context, toRead <-chan fileRecord, extrac
 		e.log.Info("Reading", logger.StreamKey, true,
 			"file", filepath.Base(file.absPath), "extracted", extracted.Add(1), "total", total)
 
-		if !e.db.Writer.Write(e.store(file.id, hash, meta)) {
+		if !e.db.Writer.Write(e.store(file.id, hash, hashKind, meta)) {
 			e.log.Warn("Bulk writer closed; dropping metadata write", "fileId", file.id)
 			return
 		}
@@ -399,8 +503,32 @@ func (e *Extractor) readFile(ctx context.Context, file fileRecord) (string, erro
 	return hashFile(file.absPath)
 }
 
-// hashFile computes the BLAKE3 hash of a file
-// Uses streaming to handle files of any size with constant memory (~32KB buffer)
+// hashBufferSize is how much of a file is pulled per read syscall. io.Copy's
+// default is 32 KiB, which on a 783 GiB library is ~25.6 million syscalls and
+// gives the kernel a small window to read ahead into. 1 MiB is 32× fewer,
+// and small enough that a full pool of them is a rounding error next to the
+// exiftool processes running beside it.
+const hashBufferSize = 1 << 20
+
+// hashBuffers keeps one buffer per in-flight read alive rather than
+// allocating a megabyte per file
+var hashBuffers = sync.Pool{
+	New: func() any {
+		buf := make([]byte, hashBufferSize)
+		return &buf
+	},
+}
+
+// readerOnly hides every method but Read. Without it io.CopyBuffer **silently
+// ignores the buffer**: *os.File implements io.WriterTo, CopyBuffer prefers
+// that, and its generic fallback allocates its own 32 KiB — so the whole
+// change would be a no-op that still looks correct. Nothing is lost by hiding
+// it, since File.WriteTo only has a fast path when the destination is a
+// socket, and this destination is a hasher.
+type readerOnly struct{ io.Reader }
+
+// hashFile computes the BLAKE3 hash of a file, streaming it through a pooled
+// buffer so memory stays flat whatever the file size
 func hashFile(filePath string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -410,7 +538,9 @@ func hashFile(filePath string) (string, error) {
 
 	hasher := blake3.New(hashOutputSize, nil)
 
-	if _, err := io.Copy(hasher, file); err != nil {
+	buf := hashBuffers.Get().(*[]byte)
+	defer hashBuffers.Put(buf)
+	if _, err := io.CopyBuffer(hasher, readerOnly{file}, *buf); err != nil {
 		return "", fmt.Errorf("failed to hash file: %w", err)
 	}
 
@@ -419,7 +549,7 @@ func hashFile(filePath string) (string, error) {
 }
 
 // store writes the hash and the EXIF columns as one row and marks the file read
-func (e *Extractor) store(fileID int64, hash string, meta classifier.CommonMetadata) db.DBOperation {
+func (e *Extractor) store(fileID int64, hash, hashKind string, meta classifier.CommonMetadata) db.DBOperation {
 	isScreenshot := 0
 	if meta.IsScreenshot {
 		isScreenshot = 1
@@ -435,14 +565,15 @@ func (e *Extractor) store(fileID int64, hash string, meta classifier.CommonMetad
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO file_metadata (
-				file_hash, file_id,
+				file_hash, hash_kind, file_id,
 				exif_image_width, exif_image_height, exif_orientation,
 				exif_gps_latitude, exif_gps_longitude,
 				exif_make, exif_model,
 				exif_date_time_original, exif_create_date, exif_creation_date, exif_media_create_date,
 				is_screenshot
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			hash,
+			hashKind,
 			fileID,
 			db.IntOrNil(meta.ImageWidth),
 			db.IntOrNil(meta.ImageHeight),
