@@ -49,6 +49,7 @@ var tabNames = [numTabs]string{"Scan", "Config", "Review"}
 type shellStart struct {
 	tab     int
 	paths   []string // tabScan: scan these immediately instead of asking
+	force   bool     // tabScan: re-read every file from disk (--force)
 	rebuild bool     // tabReview: re-propose before building the tree (--rebuild)
 }
 
@@ -96,6 +97,7 @@ type shellModel struct {
 // so a lock held by another process never blocks the render loop.
 type scanReadyMsg struct {
 	paths []string
+	force bool
 	err   error
 }
 
@@ -197,7 +199,7 @@ func (m shellModel) Init() tea.Cmd {
 	case len(m.start.paths) > 0:
 		// `wandersort scan -p …`: the paths are already answered, so skip the
 		// folder input and go straight into the run.
-		return tea.Batch(cmd, msgCmd(tui.StartScanMsg{Paths: m.start.paths}))
+		return tea.Batch(cmd, msgCmd(tui.StartScanMsg{Paths: m.start.paths, Force: m.start.force}))
 	case m.start.tab == tabConfig:
 		return tea.Batch(cmd, msgCmd(openConfigMsg{}))
 	case m.start.tab == tabReview:
@@ -220,9 +222,9 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSwitch(msg)
 
 	case tui.StartScanMsg:
-		paths := msg.Paths
+		paths, force := msg.Paths, msg.Force
 		a, ctx := m.a, m.ctx
-		return m, func() tea.Msg { return scanReadyMsg{paths: paths, err: a.ensureOutput(ctx)} }
+		return m, func() tea.Msg { return scanReadyMsg{paths: paths, force: force, err: a.ensureOutput(ctx)} }
 
 	case tui.OpenReviewMsg:
 		return m, m.openReview()
@@ -239,7 +241,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screens[tabReview], m.reviewReady = nil, false
 		m.tab = tabScan
 		var screen tui.ScanModel
-		m.wf, screen = m.a.newScanScreen(m.ctx, m.cancel, msg.paths)
+		m.wf, screen = m.a.newScanScreen(m.ctx, m.cancel, msg.paths, msg.force)
 		return m, m.place(tabScan, screen)
 
 	case reviewOpenMsg:
@@ -563,14 +565,14 @@ func (a *app) newHomeScreen(lastScan []string) tui.HomeModel {
 // newScanScreen wires a scan of paths into the shell, gated behind the same
 // upfront dependency download the scan subcommand uses. The workflow comes
 // back with the screen: a settings save mid-run retargets it (configSaved).
-func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, paths []string) (*workflow.Workflow, tui.ScanModel) {
+func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, paths []string, force bool) (*workflow.Workflow, tui.ScanModel) {
 	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, a.workflowDeps())
 	return wf, tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {
 			if err := waitForDeps(a.Deps); err != nil {
 				return &tui.DepsErr{Err: err}
 			}
-			_, err := wf.RunScan(paths)
+			_, err := wf.RunScan(paths, force)
 			return err
 		},
 		Cancel:     cancel,

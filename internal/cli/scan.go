@@ -77,13 +77,16 @@ wandersort scan -p ~/Pictures,/Volumes/SD
 wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths, _ := cmd.Flags().GetStringSlice(flagPaths)
-			return a.runScan(cmd, paths)
+			force, _ := cmd.Flags().GetBool(flagForce)
+			return a.runScan(cmd, paths, force)
 		},
 	}
 
 	cmd.Flags().StringSliceP(flagPaths, "p", nil,
 		"Directories to scan (repeatable, or comma-separated). Asked for on screen if omitted")
 	cmd.Flags().IntP(flagWorkers, "w", 0, "Concurrent worker count")
+	cmd.Flags().Bool(flagForce, false,
+		"Re-read every already-scanned file from disk instead of skipping unchanged ones")
 	// Deliberately not MarkFlagRequired: the scan tab's own folder input is the
 	// answer when it's missing, and refusing to open the app over a question it
 	// is about to ask makes `scan` the one command that can't just be run.
@@ -93,21 +96,23 @@ wandersort scan -p ~/Pictures -w 8 -o ~/wandersort-out`,
 // runScan opens the app on the scan tab — the same session a bare `wandersort`
 // gives, so ctrl+t still reaches the settings and the review. Paths given on
 // the command line skip the folder question; without them the tab opens on it.
-func (a *app) runScan(cmd *cobra.Command, paths []string) error {
+func (a *app) runScan(cmd *cobra.Command, paths []string, force bool) error {
 	if a.isTuiEnabled(cmd) {
-		return a.runShell(shellStart{tab: tabScan, paths: paths})
+		return a.runShell(shellStart{tab: tabScan, paths: paths, force: force})
 	}
 	if len(paths) == 0 {
 		// No screen to ask on, so this is the one place the flag is required.
 		return fmt.Errorf("--paths (-p) is required without a terminal to ask on")
 	}
-	return a.runScanPlain(paths)
+	return a.runScanPlain(paths, force)
 }
 
 // runScanPlain is the non-TUI path: synchronous pipeline, progress via the
 // console logger's line output. Used with --plain or a non-terminal
-// stderr. Behaviour is unchanged from before the TUI existed.
-func (a *app) runScanPlain(paths []string) error {
+// stderr. Behaviour is unchanged from before the TUI existed. force is
+// --force's explicit consent to re-read every already-scanned file — no
+// confirmation prompt, same as --rebuild.
+func (a *app) runScanPlain(paths []string, force bool) error {
 	start := time.Now()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -131,7 +136,7 @@ func (a *app) runScanPlain(paths []string) error {
 
 	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, a.workflowDeps())
 
-	scanPaths, err := wf.RunScan(paths)
+	scanPaths, err := wf.RunScan(paths, force)
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}

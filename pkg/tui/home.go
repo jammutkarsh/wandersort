@@ -20,8 +20,12 @@ import (
 )
 
 // StartScanMsg asks the shell to scan Paths — enter on an empty input with at
-// least one folder collected.
-type StartScanMsg struct{ Paths []string }
+// least one folder collected. Force re-reads every already-scanned file from
+// disk instead of skipping unchanged ones (ctrl+g, confirmed).
+type StartScanMsg struct {
+	Paths []string
+	Force bool
+}
 
 // OpenReviewMsg asks the shell to review the proposal already in the database.
 type OpenReviewMsg struct{}
@@ -65,6 +69,11 @@ type HomeModel struct {
 	sel  int
 	err  error
 	w, h int
+
+	// confirmForce is a full-screen y/n asking before a force re-scan — the
+	// modal owns the keyboard except ctrl+c, same as the review package's
+	// rebuild ask.
+	confirmForce bool
 }
 
 func NewHomeModel(cfg HomeConfig) HomeModel {
@@ -92,6 +101,19 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.Err
 		return m, nil
 	case tea.KeyMsg:
+		if m.confirmForce {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "y", "enter", "left", "h":
+				m.confirmForce = false
+				paths := slices.Clone(m.added)
+				return m, func() tea.Msg { return StartScanMsg{Paths: paths, Force: true} }
+			case "n", "esc", "right", "l":
+				m.confirmForce = false
+			}
+			return m, nil
+		}
 		// Every letter is ordinary input here — the input is always focused —
 		// so the screen's own commands are all ctrl-chorded.
 		switch msg.String() {
@@ -102,6 +124,11 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, func() tea.Msg { return OpenReviewMsg{} }
+		case "ctrl+g":
+			if len(m.added) > 0 {
+				m.confirmForce = true
+			}
+			return m, nil
 		case "ctrl+x":
 			// The selected folder, or the last one added when the cursor is
 			// still in the input — one key means "remove" either way.
@@ -252,6 +279,20 @@ func (m *HomeModel) refresh() {
 }
 
 func (m HomeModel) View() string {
+	if m.confirmForce {
+		// "yes" is the default highlight — enter/y confirms, matching the
+		// modal's own key handling above, not ConfirmModel's own Update (only
+		// its View is used here; see the review package's rebuild ask for the
+		// same built-per-frame pattern).
+		yes := true
+		cm := NewConfirmModel("Force re-scan?",
+			"Re-reads every already-scanned file from disk instead of skipping "+
+				"unchanged ones. Slower — use after upgrading WanderSort, or if "+
+				"a file's metadata looks wrong.", &yes)
+		cm.w, cm.h = m.w, m.h
+		return cm.View()
+	}
+
 	var b strings.Builder
 	b.WriteString(Banner("scan"))
 	b.WriteString("\n")
@@ -336,6 +377,7 @@ func (m HomeModel) footer() string {
 			hints = append(hints, KeyHint("↑", "edit a folder"))
 		}
 		hints = append(hints, KeyHint("ctrl+x", "remove last"))
+		hints = append(hints, KeyHint("ctrl+g", "force re-scan"))
 	}
 	if m.cfg.HasProposal {
 		hints = append(hints, KeyHint("ctrl+r", "review existing plan"))

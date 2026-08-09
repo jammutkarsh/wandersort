@@ -20,6 +20,7 @@ const (
 	flagYes        = "yes"
 	flagVertical   = "vertical"
 	flagRebuild    = "rebuild"
+	flagForce      = "force"
 	flagPrint      = "print"
 	flagCollapse   = "collapse-levels"
 	flagPlain      = "plain"

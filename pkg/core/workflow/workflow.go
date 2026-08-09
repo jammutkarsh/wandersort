@@ -146,8 +146,11 @@ func (wf *Workflow) configChanged() bool {
 // RunScan canonicalizes and prunes nested scan roots, then runs the pipeline
 // synchronously on the calling goroutine, so a CLI invocation streams progress
 // and blocks until the scan finishes. Returns the roots actually walked, and
-// an error if the run did not complete.
-func (wf *Workflow) RunScan(paths []string) ([]string, error) {
+// an error if the run did not complete. force re-reads every file from disk
+// (re-hash + re-exiftool) even when its size/mtime haven't changed — for
+// picking up a change to WanderSort's own extraction logic without deleting
+// the database.
+func (wf *Workflow) RunScan(paths []string, force bool) ([]string, error) {
 	select {
 	case <-wf.ctx.Done():
 		return nil, context.Canceled
@@ -166,7 +169,7 @@ func (wf *Workflow) RunScan(paths []string) ([]string, error) {
 	}
 	wf.log.Info("Starting scan", logger.UserKey, true, "paths", storedPaths)
 
-	status, errStr := wf.runSession(roots)
+	status, errStr := wf.runSession(roots, force)
 	if status != db.StatusCompleted {
 		if errStr != nil {
 			return roots, errors.New(*errStr)
@@ -179,14 +182,14 @@ func (wf *Workflow) RunScan(paths []string) ([]string, error) {
 
 // runSession runs the phases in order and finalizes the run. Returns the
 // terminal status and error so RunScan can surface failure.
-func (wf *Workflow) runSession(paths []string) (finalStatus string, finalErr *string) {
+func (wf *Workflow) runSession(paths []string, force bool) (finalStatus string, finalErr *string) {
 	defer func() {
 		wf.finalizeSession(finalStatus, finalErr)
 	}()
 
 	wf.log.Info("Workflow started", "phases", "scanning → extracting → scoring → organizing")
 
-	phases := wf.workflowPhases(paths)
+	phases := wf.workflowPhases(paths, force)
 
 	for _, phase := range phases {
 		_, status, errStr, ok := wf.run(phase)
@@ -204,12 +207,12 @@ func (wf *Workflow) runSession(paths []string) (finalStatus string, finalErr *st
 	return
 }
 
-func (wf *Workflow) workflowPhases(paths []string) []workflowPhase {
+func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 	return []workflowPhase{
 		{
 			kind: workflowPhaseScan,
 			run: func() (int, error) {
-				return wf.scanner.Run(wf.ctx, paths)
+				return wf.scanner.Run(wf.ctx, paths, force)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Scanned %d files", count) },
 		},

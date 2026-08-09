@@ -51,10 +51,12 @@ func New(db *db.DB, log logger.Logger, workers int) *Scanner {
 	}
 }
 
-// Run orchestrates concurrent directory scans across all paths
+// Run orchestrates concurrent directory scans across all paths. force resets
+// every touched file back to DISCOVERED regardless of size/mtime, so a later
+// phase re-reads it from disk instead of skipping it as unchanged.
 // It returns the total number of files discovered (new + previously seen) and
 // any first error encountered
-func (s *Scanner) Run(ctx context.Context, paths []string) (int, error) {
+func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, error) {
 	s.log.Info("Scanner Phase: Processing all paths", "pathCount", len(paths))
 
 	// storeScan stamps last_seen_at after this; sweep uses the gap to tell
@@ -94,7 +96,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string) (int, error) {
 				}
 
 				volumeUUID := s.volumes.ForPath(absRoot)
-				discoveredChan, walkErr := s.scan(ctx, absRoot, volumeUUID)
+				discoveredChan, walkErr := s.scan(ctx, absRoot, volumeUUID, force)
 
 				count := 0
 				// Drain the channel to both count stored discoveries and wait until
@@ -152,7 +154,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string) (int, error) {
 
 // scan walks absRoot and returns a discovery channel plus a single-shot
 // error channel that resolves once the discovery channel is drained.
-func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string) (<-chan FileDiscovery, <-chan error) {
+func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, force bool) (<-chan FileDiscovery, <-chan error) {
 	s.log.Info("Scanning path", "path", absRoot)
 	fileDiscoveryChannel := make(chan FileDiscovery, 2*s.workers)
 	scanResultsChannel := make(chan FileDiscovery, 2*s.workers)
@@ -174,7 +176,7 @@ func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string) (<-chan 
 
 	// Consumer
 	go func() {
-		s.store(ctx, scanResultsChannel, fileDiscoveryChannel)
+		s.store(ctx, scanResultsChannel, fileDiscoveryChannel, force)
 	}()
 
 	return fileDiscoveryChannel, walkErr
@@ -324,7 +326,7 @@ func (s *Scanner) purgeExpired(ctx context.Context) error {
 }
 
 // store drains the discovery channel and enqueues each file to the BulkWriter
-func (s *Scanner) store(ctx context.Context, discoveries <-chan FileDiscovery, storedFiles chan<- FileDiscovery) {
+func (s *Scanner) store(ctx context.Context, discoveries <-chan FileDiscovery, storedFiles chan<- FileDiscovery, force bool) {
 	var dbWritesWG sync.WaitGroup
 
 	defer func() {
@@ -334,7 +336,7 @@ func (s *Scanner) store(ctx context.Context, discoveries <-chan FileDiscovery, s
 
 	for file := range discoveries {
 		dbWritesWG.Add(1)
-		operation := s.storeScan(ctx, &dbWritesWG, storedFiles, file)
+		operation := s.storeScan(ctx, &dbWritesWG, storedFiles, file, force)
 		enqueued := s.db.Writer.Write(operation)
 		if !enqueued {
 			dbWritesWG.Done()
@@ -346,7 +348,7 @@ func (s *Scanner) store(ctx context.Context, discoveries <-chan FileDiscovery, s
 // storeScan builds the DB callback consumed by BulkWriter.Write. The
 // db.DBOperation shape (func(ctx, tx) error) has no return value, so fileID
 // is written into the local file copy and sent downstream during execution.
-func (s *Scanner) storeScan(ctx context.Context, dbWritesWG *sync.WaitGroup, storedFiles chan<- FileDiscovery, file FileDiscovery) db.DBOperation {
+func (s *Scanner) storeScan(ctx context.Context, dbWritesWG *sync.WaitGroup, storedFiles chan<- FileDiscovery, file FileDiscovery, force bool) db.DBOperation {
 	const query = `
 		INSERT INTO file_registry (
 			file_dir, file_name, file_size, file_modified_at,
@@ -365,13 +367,21 @@ func (s *Scanner) storeScan(ctx context.Context, dbWritesWG *sync.WaitGroup, sto
 				-- ANALYZING means an interrupted metadata phase left this row
 				-- claimed with nothing persisted for it — one phase writes the
 				-- hash and the EXIF together, so there is no partial result to
-				-- resume from. Read it again
+				-- resume from. Read it again. force (--force / ctrl+f) resets an
+				-- unchanged file too, for re-reading files after an upgrade to
+				-- WanderSort's own extraction logic.
 				WHEN file_registry.file_size != excluded.file_size
 					OR file_registry.file_modified_at != excluded.file_modified_at
 					OR file_registry.scan_status IN ('ANALYZING','ERROR')
+					OR ? = 1
 					THEN 'DISCOVERED'
 				ELSE file_registry.scan_status END
 		RETURNING id`
+
+	forceInt := 0
+	if force {
+		forceInt = 1
+	}
 
 	queryFileState := func(dbCtx context.Context, tx *sqlx.Tx) (int64, error) {
 		var fileID int64
@@ -390,6 +400,7 @@ func (s *Scanner) storeScan(ctx context.Context, dbWritesWG *sync.WaitGroup, sto
 			FileOriginSource,
 			now,
 			now,
+			forceInt,
 		).Scan(&fileID)
 		return fileID, err
 	}

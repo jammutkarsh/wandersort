@@ -60,13 +60,14 @@ func (h *harness) addFile(t *testing.T, relPath, mediaType string, meta classifi
 		INSERT INTO file_metadata (file_hash, file_id,
 			exif_image_width, exif_image_height, exif_orientation,
 			exif_gps_latitude, exif_gps_longitude, exif_make, exif_model,
-			exif_date_time_original, exif_create_date, exif_creation_date)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			exif_date_time_original, exif_create_date, exif_creation_date, exif_media_create_date)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		fmt.Sprintf("hash-%d", id), id,
 		db.IntOrNil(meta.ImageWidth), db.IntOrNil(meta.ImageHeight), db.IntOrNil(meta.Orientation),
 		db.FloatOrNil(meta.GPSLatitude), db.FloatOrNil(meta.GPSLongitude),
 		db.StrOrNil(meta.Make), db.StrOrNil(meta.Model),
-		db.StrOrNil(meta.DateTimeOriginal), db.StrOrNil(meta.CreateDate), db.StrOrNil(meta.CreationDate)); err != nil {
+		db.StrOrNil(meta.DateTimeOriginal), db.StrOrNil(meta.CreateDate), db.StrOrNil(meta.CreationDate),
+		db.StrOrNil(meta.MediaCreateDate)); err != nil {
 		t.Fatal(err)
 	}
 	return id

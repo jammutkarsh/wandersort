@@ -140,7 +140,7 @@ func deriveAll(ctx context.Context, masters []masterFile, workers int) {
 		// CreationDate (iOS video) carries a timezone offset; applying it as-is
 		// would shift the video away from same-moment photos, which are all
 		// naive local wall-clock, so stripOffset drops the offset first.
-		m.takenAt = firstTime(deref(m.DBDateTaken), stripOffset(deref(m.DBCreationDate)), deref(m.DBCreateDate), m.ModifiedAt)
+		m.takenAt = firstTime(deref(m.DBDateTaken), stripOffset(deref(m.DBCreationDate)), deref(m.DBCreateDate), deref(m.DBMediaCreateDate), m.ModifiedAt)
 		if m.DBWidth != nil {
 			m.width = *m.DBWidth
 		}
@@ -537,7 +537,7 @@ func captureStem(filename string) string {
 // than deriveAll's file-mtime fallback — exif never runs on a sidecar, so
 // this is false for every .AAE regardless of what takenAt ended up holding.
 func (m *masterFile) hasExifTime() bool {
-	return deref(m.DBDateTaken) != "" || deref(m.DBCreationDate) != "" || deref(m.DBCreateDate) != ""
+	return deref(m.DBDateTaken) != "" || deref(m.DBCreationDate) != "" || deref(m.DBCreateDate) != "" || deref(m.DBMediaCreateDate) != ""
 }
 
 // captureDirs finds files that are one capture split across extensions (an
@@ -821,6 +821,13 @@ func parseTimeLoose(s string) (time.Time, bool) {
 	}
 	for _, layout := range looseTimeLayouts {
 		if t, err := time.Parse(layout, s); err == nil {
+			// Some devices write a bogus CreateDate (e.g. a QuickTime
+			// epoch/offset bug landing pre-1970) that still parses cleanly;
+			// reject it so firstTime falls through to the next candidate
+			// (MediaCreateDate) instead of taking a wrong-but-valid date.
+			if t.Year() < 1970 {
+				return time.Time{}, false
+			}
 			return t, true
 		}
 	}

@@ -99,7 +99,7 @@ func TestRunScanReturnsContextCanceledWithoutRunning(t *testing.T) {
 	cancel()
 	wf, _ := newTestWorkflow(t, ctx)
 
-	roots, err := wf.RunScan([]string{"/some/path"})
+	roots, err := wf.RunScan([]string{"/some/path"}, false)
 	if roots != nil {
 		t.Errorf("roots: got %v, want nil", roots)
 	}
@@ -115,7 +115,7 @@ func TestRunScanReturnsContextCanceledWithoutRunning(t *testing.T) {
 func TestWorkflowPhasesOrderAndMessages(t *testing.T) {
 	wf, _ := newTestWorkflow(t, context.Background())
 
-	phases := wf.workflowPhases([]string{"/root"})
+	phases := wf.workflowPhases([]string{"/root"}, false)
 
 	wantKinds := []workflowPhaseKind{
 		workflowPhaseScan, workflowPhaseMetadata, workflowPhaseScore, workflowPhaseVFS,
@@ -141,7 +141,7 @@ func TestWorkflowPhasesOrderAndMessages(t *testing.T) {
 // so a silent format change should fail a test, not just look different.
 func TestPhaseSummaryFormatting(t *testing.T) {
 	wf, _ := newTestWorkflow(t, context.Background())
-	phases := wf.workflowPhases([]string{"/root"})
+	phases := wf.workflowPhases([]string{"/root"}, false)
 
 	want := map[workflowPhaseKind]string{
 		workflowPhaseScan:     "Scanned 3 files",
@@ -166,7 +166,7 @@ func TestMetadataPhaseWrapsExiftoolDepsError(t *testing.T) {
 		Exiftool: func() (string, error) { return "", errors.New("download failed") },
 	}
 
-	phases := wf.workflowPhases([]string{"/root"})
+	phases := wf.workflowPhases([]string{"/root"}, false)
 	var metaPhase *workflowPhase
 	for i := range phases {
 		if phases[i].kind == workflowPhaseMetadata {
@@ -191,7 +191,7 @@ func TestVFSPhaseWrapsLocationDepsError(t *testing.T) {
 		Location: func() (*location.Resolver, error) { return nil, errors.New("download failed") },
 	}
 
-	phases := wf.workflowPhases([]string{"/root"})
+	phases := wf.workflowPhases([]string{"/root"}, false)
 	var vfsPhase *workflowPhase
 	for i := range phases {
 		if phases[i].kind == workflowPhaseVFS {

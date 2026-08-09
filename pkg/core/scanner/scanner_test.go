@@ -180,7 +180,7 @@ func TestScanner(t *testing.T) {
 				}
 			}
 
-			if _, err := sc.Run(ctx, []string{root}); err != nil {
+			if _, err := sc.Run(ctx, []string{root}, false); err != nil {
 				t.Fatalf("first scan: %v", err)
 			}
 			d.Writer.Flush()
@@ -218,7 +218,7 @@ func TestScanner(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if _, err := sc.Run(ctx, []string{root}); err != nil {
+			if _, err := sc.Run(ctx, []string{root}, false); err != nil {
 				t.Fatalf("re-scan: %v", err)
 			}
 			d.Writer.Flush()
@@ -249,13 +249,46 @@ func TestScanner(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "delete.jpg"), []byte("doomed bytes"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := sc.Run(ctx, []string{root}); err != nil {
+			if _, err := sc.Run(ctx, []string{root}, false); err != nil {
 				t.Fatalf("resurrect scan: %v", err)
 			}
 			d.Writer.Flush()
 			rows = registryByName(t, d)
 			if rows["delete.jpg"].DeletedAt != nil {
 				t.Error("reappeared file is still marked deleted")
+			}
+		}},
+		// TestRunForceRescan: an unchanged file (same size/mtime) normally keeps
+		// its ANALYZED status; force=true resets it back to DISCOVERED anyway, so
+		// a later metadata phase re-reads it instead of skipping it
+		{"RunForceRescan", func(t *testing.T) {
+			ctx := context.Background()
+			sc, d := newDBScanner(t)
+			root := t.TempDir()
+
+			if err := os.WriteFile(filepath.Join(root, "keep.jpg"), []byte("unchanged bytes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sc.Run(ctx, []string{root}, false); err != nil {
+				t.Fatalf("first scan: %v", err)
+			}
+			d.Writer.Flush()
+
+			rows := registryByName(t, d)
+			if _, err := d.ExecContext(ctx, `UPDATE file_registry SET scan_status = ? WHERE id = ?`,
+				db.StatusAnalyzed, rows["keep.jpg"].ID); err != nil {
+				t.Fatal(err)
+			}
+
+			// Nothing on disk changes between scans
+			if _, err := sc.Run(ctx, []string{root}, true); err != nil {
+				t.Fatalf("forced re-scan: %v", err)
+			}
+			d.Writer.Flush()
+
+			rows = registryByName(t, d)
+			if got := rows["keep.jpg"].Status; got != db.StatusDiscovered {
+				t.Errorf("unchanged file scan_status = %s, want DISCOVERED (forced)", got)
 			}
 		}},
 		// TestSweepFilesystemRoot: sweeping the filesystem root itself must still
@@ -288,7 +321,7 @@ func TestScanner(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "photo.jpg"), []byte("bytes"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := sc.Run(ctx, []string{root}); err != nil {
+			if _, err := sc.Run(ctx, []string{root}, false); err != nil {
 				t.Fatalf("first scan: %v", err)
 			}
 			d.Writer.Flush()
@@ -299,7 +332,7 @@ func TestScanner(t *testing.T) {
 			if err := os.RemoveAll(root); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := sc.Run(ctx, []string{root}); err == nil {
+			if _, err := sc.Run(ctx, []string{root}, false); err == nil {
 				t.Fatal("scan of a missing root should fail")
 			}
 			d.Writer.Flush()
@@ -332,7 +365,7 @@ func TestScanner(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := sc.Run(ctx, []string{rootA, rootB}); err != nil {
+			if _, err := sc.Run(ctx, []string{rootA, rootB}, false); err != nil {
 				t.Fatalf("first scan: %v", err)
 			}
 			d.Writer.Flush()
@@ -344,7 +377,7 @@ func TestScanner(t *testing.T) {
 			if err := os.RemoveAll(rootB); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := sc.Run(ctx, []string{rootA, rootB}); err == nil {
+			if _, err := sc.Run(ctx, []string{rootA, rootB}, false); err == nil {
 				t.Fatal("scan with a missing root should fail")
 			}
 			d.Writer.Flush()
@@ -392,7 +425,7 @@ func TestScanner(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if _, err := sc.Run(ctx, []string{t.TempDir()}); err != nil {
+			if _, err := sc.Run(ctx, []string{t.TempDir()}, false); err != nil {
 				t.Fatalf("scan: %v", err)
 			}
 			d.Writer.Flush()

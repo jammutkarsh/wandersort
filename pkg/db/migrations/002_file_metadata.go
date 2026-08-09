@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS file_metadata (
     -- hours off from sibling photos' local-time exif_date_time_original;
     -- this is what actually lines a video's wall-clock time back up with them
     exif_creation_date      TEXT,
+    -- QuickTime's track-level MediaCreateDate; lower priority than
+    -- exif_create_date, only used when the latter is missing/bogus (e.g. an
+    -- epoch/pre-1970 CreateDate some devices write)
+    exif_media_create_date  TEXT,
 
     -- macOS/iOS stamp both Description and UserComment with the literal
     -- string "Screenshot" on a screen capture; a real camera/phone photo

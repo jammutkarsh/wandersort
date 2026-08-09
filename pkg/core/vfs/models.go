@@ -107,17 +107,18 @@ type masterFile struct {
 	ModifiedAt string `db:"file_modified_at"`
 
 	// metadata persisted during hashing
-	DBWidth        *int64   `db:"exif_image_width"`
-	DBHeight       *int64   `db:"exif_image_height"`
-	DBOrientation  *int64   `db:"exif_orientation"`
-	DBLat          *float64 `db:"exif_gps_latitude"`
-	DBLon          *float64 `db:"exif_gps_longitude"`
-	DBMake         *string  `db:"exif_make"`
-	DBModel        *string  `db:"exif_model"`
-	DBDateTaken    *string  `db:"exif_date_time_original"`
-	DBCreateDate   *string  `db:"exif_create_date"`
-	DBCreationDate *string  `db:"exif_creation_date"`
-	IsScreenshot   bool     `db:"is_screenshot"`
+	DBWidth           *int64   `db:"exif_image_width"`
+	DBHeight          *int64   `db:"exif_image_height"`
+	DBOrientation     *int64   `db:"exif_orientation"`
+	DBLat             *float64 `db:"exif_gps_latitude"`
+	DBLon             *float64 `db:"exif_gps_longitude"`
+	DBMake            *string  `db:"exif_make"`
+	DBModel           *string  `db:"exif_model"`
+	DBDateTaken       *string  `db:"exif_date_time_original"`
+	DBCreateDate      *string  `db:"exif_create_date"`
+	DBCreationDate    *string  `db:"exif_creation_date"`
+	DBMediaCreateDate *string  `db:"exif_media_create_date"`
+	IsScreenshot      bool     `db:"is_screenshot"`
 
 	absPath string
 	takenAt time.Time

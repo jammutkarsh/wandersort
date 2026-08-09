@@ -263,9 +263,9 @@ func (e *Extractor) store(fileID int64, hash string, meta classifier.CommonMetad
 				exif_image_width, exif_image_height, exif_orientation,
 				exif_gps_latitude, exif_gps_longitude,
 				exif_make, exif_model,
-				exif_date_time_original, exif_create_date, exif_creation_date,
+				exif_date_time_original, exif_create_date, exif_creation_date, exif_media_create_date,
 				is_screenshot
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			hash,
 			fileID,
 			db.IntOrNil(meta.ImageWidth),
@@ -278,6 +278,7 @@ func (e *Extractor) store(fileID int64, hash string, meta classifier.CommonMetad
 			db.StrOrNil(meta.DateTimeOriginal),
 			db.StrOrNil(meta.CreateDate),
 			db.StrOrNil(meta.CreationDate),
+			db.StrOrNil(meta.MediaCreateDate),
 			isScreenshot,
 		); err != nil {
 			return err

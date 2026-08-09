@@ -108,7 +108,7 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 			fm.exif_image_width, fm.exif_image_height, fm.exif_orientation,
 			fm.exif_gps_latitude, fm.exif_gps_longitude,
 			fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date,
-			fm.exif_creation_date, fm.is_screenshot
+			fm.exif_creation_date, fm.exif_media_create_date, fm.is_screenshot
 		FROM live_files fr
 		JOIN file_metadata fm ON fm.file_id = fr.id
 		WHERE fm.is_master = 1
