@@ -42,8 +42,8 @@ wandersort review --rebuild`,
 
 	cmd.Flags().Bool(flagYes, false, "Skip the interactive review: confirm the proposed hierarchy as-is")
 	cmd.Flags().Bool(flagRebuild, false,
-		"Re-propose the unapproved folders with the current config.yaml rules before reviewing "+
-			"(no re-scan or re-hash); already-saved time slices are kept — re-open one in review to redo it")
+		"Re-propose every folder with the current config.yaml rules before reviewing "+
+			"(no re-scan or re-hash); time slices already saved are reopened and proposed again")
 	return cmd
 }
 
@@ -51,9 +51,8 @@ func (a *app) runReview(cmd *cobra.Command) error {
 	rebuild, _ := cmd.Flags().GetBool(flagRebuild)
 	yes, _ := cmd.Flags().GetBool(flagYes)
 
-	// No guard on --rebuild any more: a rebuild re-proposes what nobody has
-	// approved and leaves the approved plan alone (see vfs.persist), so there
-	// is no confirmed work left for it to discard.
+	// No confirmation prompt on --rebuild: the interactive path asks on screen
+	// (review's own reset modal) and --yes has nobody to ask.
 	switch {
 	case yes:
 		return a.confirmReviewAll(rebuild)
@@ -112,6 +111,11 @@ func (a *app) confirmReviewAll(rebuild bool) error {
 	}
 	if rebuild {
 		a.Log.Info("Rebuilding folder proposal", logger.UserKey, true)
+		// same as the interactive reset: the plan an approval was given for is
+		// about to be replaced, so the approval goes with it
+		if err := vfs.ReopenSegment(ctx, a.AppDB, nil); err != nil {
+			return err
+		}
 		if _, err := vfs.Propose(ctx, a.AppDB, resolver, a.Config, a.Log); err != nil {
 			return fmt.Errorf("rebuild proposal: %w", err)
 		}
@@ -155,12 +159,21 @@ func (a *app) settingsChanged(outputDir string) bool {
 // Re-proposing is always library-wide (vfs.Propose replaces every unapproved
 // row); seg only scopes the tree handed back, so a reset inside one time slice
 // returns that slice, not the whole library.
+//
+// It reopens the saved slices first, so a rebuild really does rebuild
+// everything. Keeping them was a reported bug: change the settings, reset, and
+// the slices already signed off still read `✓ saved` while holding folders the
+// new settings would never have proposed. An approval is given to a specific
+// plan; replacing that plan takes it back.
 func (a *app) rebuildTree(ctx context.Context, seg *vfs.Segment) ([]vfs.Node, error) {
 	resolver, err := a.Deps.Location()
 	if err != nil {
 		return nil, fmt.Errorf("dependencies: %w", err)
 	}
 	a.Log.Info("Rebuilding folder proposal", logger.UserKey, true)
+	if err := vfs.ReopenSegment(ctx, a.AppDB, nil); err != nil {
+		return nil, err
+	}
 	if _, err := vfs.Propose(ctx, a.AppDB, resolver, a.Config, a.Log); err != nil {
 		return nil, fmt.Errorf("rebuild proposal: %w", err)
 	}

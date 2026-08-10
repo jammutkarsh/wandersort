@@ -9,11 +9,13 @@ package review
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -25,6 +27,32 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
+
+// TestMain keeps every test in this package off the real preview root: a
+// finished review deletes it, and a test run must never take a developer's own
+// preview copies with it.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "wandersort-previews-test-*")
+	if err != nil {
+		panic(err)
+	}
+	previewRootDir = filepath.Join(dir, "previews")
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// usePreviewRoot points the preview root at a directory only this test uses.
+func usePreviewRoot(t *testing.T) string {
+	t.Helper()
+	prev := previewRootDir
+	previewRootDir = filepath.Join(t.TempDir(), "previews")
+	t.Cleanup(func() { previewRootDir = prev })
+	if err := os.MkdirAll(previewRootDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return previewRootDir
+}
 
 func sampleTree() []vfs.Node {
 	return []vfs.Node{{ID: "2024", Name: "2024", Children: []vfs.Node{
@@ -53,24 +81,11 @@ func TestReview(t *testing.T) {
 				t.Error("expected a non-nil Cmd")
 			}
 		}},
-		// TestPreviewDoneCachesBySignature covers the write side of the cache: a
-		// successful copy is remembered under its file-membership signature, not the
-		// node it happened to be peeked from.
-		{"PreviewDoneCachesBySignature", func(t *testing.T) {
-			m := newModel(sampleTree(), nil, nil, nil, nil)
-
-			next, _ := m.Update(previewDoneMsg{signature: "a.jpg\x00b.jpg", dir: "/tmp/wandersort-preview-xyz"})
-			rm := next.(Model)
-
-			if rm.previewDirs["a.jpg\x00b.jpg"] != "/tmp/wandersort-preview-xyz" {
-				t.Errorf("previewDirs = %+v, want the copied dir cached under the signature", rm.previewDirs)
-			}
-		}},
-		// TestFilesSignatureDedupesParentAndLeafNode covers the actual reported bug:
+		// TestPreviewDirDedupesParentAndLeafNode covers the actual reported bug:
 		// a folder with one child chain (e.g. .../08/Horizontal/Photos) and its leaf
 		// both cover the exact same underlying files — peeking either must resolve
-		// to the same signature so the same temp copy gets reused.
-		{"FilesSignatureDedupesParentAndLeafNode", func(t *testing.T) {
+		// to the same preview dir so the same temp copy gets reused.
+		{"PreviewDirDedupesParentAndLeafNode", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
 
@@ -105,29 +120,28 @@ func TestReview(t *testing.T) {
 			if len(parentFiles) != 2 || len(leafFiles) != 2 {
 				t.Fatalf("parentFiles = %v, leafFiles = %v, want 2 files each", parentFiles, leafFiles)
 			}
-			if filesSignature(parentFiles) != filesSignature(leafFiles) {
-				t.Errorf("signatures differ: parent %q vs leaf %q, want equal so both peeks share one temp copy",
-					filesSignature(parentFiles), filesSignature(leafFiles))
+			if previewDirFor(parentFiles) != previewDirFor(leafFiles) {
+				t.Errorf("preview dirs differ: parent %q vs leaf %q, want equal so both peeks share one temp copy",
+					previewDirFor(parentFiles), previewDirFor(leafFiles))
 			}
 		}},
-		// TestCleanupPreviewDirsRemovesEverything covers the exit-time sweep: every
-		// temp dir a review session created must be gone once it's over, regardless
-		// of how the reviewer exited (confirm, quit, ctrl-c all funnel through this).
-		{"CleanupPreviewDirsRemovesEverything", func(t *testing.T) {
-			a := filepath.Join(t.TempDir(), "a")
-			b := filepath.Join(t.TempDir(), "b")
-			for _, dir := range []string{a, b} {
-				if err := os.Mkdir(dir, 0o755); err != nil {
+		// TestCleanPreviewsRemovesEverything covers the sweep a saved plan and
+		// `wandersort reset` both run: copies survive an unsaved exit, but once the
+		// plan is written there is nothing left to peek at.
+		{"CleanPreviewsRemovesEverything", func(t *testing.T) {
+			root := usePreviewRoot(t)
+			for _, name := range []string{"a", "b"} {
+				if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
 					t.Fatal(err)
 				}
 			}
 
-			cleanupPreviewDirs(map[string]string{"nodeA": a, "nodeB": b})
+			if err := CleanPreviews(); err != nil {
+				t.Fatal(err)
+			}
 
-			for _, dir := range []string{a, b} {
-				if _, err := os.Stat(dir); !os.IsNotExist(err) {
-					t.Errorf("%s still exists after cleanupPreviewDirs", dir)
-				}
+			if _, err := os.Stat(root); !os.IsNotExist(err) {
+				t.Errorf("%s still exists after CleanPreviews", root)
 			}
 		}},
 		// TestMergeWithoutVisualModeIsRejectedLoudly covers the reported "merge
@@ -1292,11 +1306,12 @@ func TestReview(t *testing.T) {
 				t.Errorf("status = %q, want APPROVED", status)
 			}
 		}},
-		// TestPeekCmdCopiesFilesAndCachesBySignature drives peekCmd end to end
-		// against a real DB: it should copy the node's files to a temp dir and
-		// report a msg the caller can cache under filesSignature.
-		{"PeekCmdCopiesFilesAndCachesBySignature", func(t *testing.T) {
+		// TestPeekCmdCopiesFilesToTheDeterministicDir drives peekCmd end to end
+		// against a real DB: it should copy the node's files into the dir
+		// previewDirFor names, leaving no .copying- staging dir behind.
+		{"PeekCmdCopiesFilesToTheDeterministicDir", func(t *testing.T) {
 			ctx := context.Background()
+			usePreviewRoot(t)
 			d := dbtest.New(t)
 			// peekCmd copies real bytes from source_path, so the fixture's source
 			// file has to actually exist on disk
@@ -1307,23 +1322,32 @@ func TestReview(t *testing.T) {
 			insertVFSEntry(t, d, 1, srcFile, "2024/June/a.jpg")
 
 			node := &vfs.Node{ID: "2024/June"}
-			msg := peekCmd(ctx, d, node, map[string]string{})()
+			msg := peekCmd(ctx, d, node)()
 			pm := msg.(previewDoneMsg)
 			if pm.err != nil {
 				t.Fatalf("peekCmd: %v", pm.err)
 			}
-			defer os.RemoveAll(pm.dir)
+			if want := previewDirFor([]string{srcFile}); pm.dir != want {
+				t.Errorf("dir = %q, want the deterministic %q", pm.dir, want)
+			}
 			if _, err := os.Stat(filepath.Join(pm.dir, "a.jpg")); err != nil {
 				t.Errorf("expected a.jpg copied into %s: %v", pm.dir, err)
 			}
-			if pm.signature != filesSignature([]string{srcFile}) {
-				t.Errorf("signature = %q, want %q", pm.signature, filesSignature([]string{srcFile}))
+			entries, err := os.ReadDir(PreviewRoot())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 {
+				t.Errorf("preview root holds %d entries, want only the finished copy — a staging dir was left behind", len(entries))
 			}
 		}},
-		// TestPeekCmdReusesCachedCopy covers the cache-hit branch: a signature
-		// already present in the cache map short-circuits the copy entirely.
-		{"PeekCmdReusesCachedCopy", func(t *testing.T) {
+		// TestPeekCmdReusesAnEarlierSessionsCopy covers the whole point of the fixed
+		// root: a completed copy left behind by an earlier run is handed back as-is,
+		// with no second copy of the same bytes — and the reuse counts as a use, so
+		// makeRoom's mtime order is least-recently-opened, not oldest-created.
+		{"PeekCmdReusesAnEarlierSessionsCopy", func(t *testing.T) {
 			ctx := context.Background()
+			usePreviewRoot(t)
 			d := dbtest.New(t)
 			srcFile := filepath.Join(t.TempDir(), "a.jpg")
 			if err := os.WriteFile(srcFile, []byte("hello"), 0o644); err != nil {
@@ -1331,24 +1355,118 @@ func TestReview(t *testing.T) {
 			}
 			insertVFSEntry(t, d, 1, srcFile, "2024/June/a.jpg")
 
-			cachedDir := t.TempDir()
-			cache := map[string]string{filesSignature([]string{srcFile}): cachedDir}
 			node := &vfs.Node{ID: "2024/June"}
-			msg := peekCmd(ctx, d, node, cache)()
-			pm := msg.(previewDoneMsg)
-			if pm.err != nil {
-				t.Fatalf("peekCmd: %v", pm.err)
+			if pm := peekCmd(ctx, d, node)().(previewDoneMsg); pm.err != nil {
+				t.Fatalf("first peek: %v", pm.err)
 			}
-			if pm.dir != cachedDir {
-				t.Errorf("dir = %q, want the cached %q (no fresh copy)", pm.dir, cachedDir)
+			// a fresh copy would wipe the directory first, taking this with it
+			dir := previewDirFor([]string{srcFile})
+			witness := filepath.Join(dir, "witness")
+			if err := os.WriteFile(witness, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			stale := time.Now().Add(-time.Hour)
+			if err := os.Chtimes(dir, stale, stale); err != nil {
+				t.Fatal(err)
+			}
+
+			pm := peekCmd(ctx, d, node)().(previewDoneMsg)
+			if pm.err != nil {
+				t.Fatalf("second peek: %v", pm.err)
+			}
+			if _, err := os.Stat(witness); err != nil {
+				t.Errorf("second peek re-copied instead of reusing %s", pm.dir)
+			}
+			fi, err := os.Stat(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !fi.ModTime().After(stale) {
+				t.Errorf("mtime = %v, want bumped past %v so the reuse counts as a use", fi.ModTime(), stale)
+			}
+		}},
+		// TestPeekCmdLeavesNoDirWhenTheCopyFails covers what the atomic rename
+		// buys: a copy that dies partway can never appear under the hash name, so
+		// a later peek can't mistake three of forty files for a cache hit.
+		{"PeekCmdLeavesNoDirWhenTheCopyFails", func(t *testing.T) {
+			ctx := context.Background()
+			usePreviewRoot(t)
+			d := dbtest.New(t)
+			// a source that isn't there fails copyFiles partway through the batch
+			present := filepath.Join(t.TempDir(), "a.jpg")
+			if err := os.WriteFile(present, []byte("hello"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			missing := filepath.Join(t.TempDir(), "gone.jpg")
+			insertVFSEntry(t, d, 1, present, "2024/June/a.jpg")
+			insertVFSEntry(t, d, 2, missing, "2024/June/gone.jpg")
+
+			pm := peekCmd(ctx, d, &vfs.Node{ID: "2024/June"})().(previewDoneMsg)
+			if pm.err == nil {
+				t.Fatal("expected an error copying a missing source file")
+			}
+			if _, err := os.Stat(previewDirFor([]string{present, missing})); !os.IsNotExist(err) {
+				t.Error("a failed copy left a directory under the hash name, which a later peek would reuse")
+			}
+			entries, err := os.ReadDir(PreviewRoot())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Errorf("preview root holds %d entries after a failed copy, want none", len(entries))
+			}
+		}},
+		// TestMakeRoomEvictsLeastRecentlyUsedFirst covers the 5%-of-disk budget:
+		// when a new preview doesn't fit, the copies opened longest ago go until it
+		// does. peekCmd touches a copy it reuses, so mtime is the LRU order.
+		{"MakeRoomEvictsLeastRecentlyUsedFirst", func(t *testing.T) {
+			root := usePreviewRoot(t)
+			var dirs []string
+			for i, name := range []string{"coldest", "warmer", "warmest"} {
+				dir := filepath.Join(root, name)
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "f"), make([]byte, 1024), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				stamp := time.Now().Add(time.Duration(i-3) * time.Hour)
+				if err := os.Chtimes(dir, stamp, stamp); err != nil {
+					t.Fatal(err)
+				}
+				dirs = append(dirs, dir)
+			}
+
+			// free is stated, so the budget is exact: room for four copies, of
+			// which the incoming one needs three — the two oldest must go.
+			const free = 4*1024*previewBudgetDivisor - 3*1024
+			if err := makeRoom(root, 3*1024, free); err != nil {
+				t.Fatalf("makeRoom: %v", err)
+			}
+
+			for _, dir := range dirs[:2] {
+				if _, err := os.Stat(dir); !os.IsNotExist(err) {
+					t.Errorf("%s survived, want the least recently used copies evicted first", dir)
+				}
+			}
+			if _, err := os.Stat(dirs[2]); err != nil {
+				t.Errorf("most recently used copy evicted unnecessarily: %v", err)
+			}
+		}},
+		// TestMakeRoomRefusesAnOversizedPreview covers the other end: no amount of
+		// eviction makes a preview bigger than the whole budget fit.
+		{"MakeRoomRefusesAnOversizedPreview", func(t *testing.T) {
+			if err := makeRoom(usePreviewRoot(t), math.MaxInt64/2, 1024); err == nil {
+				t.Error("expected an over-budget preview to be refused")
 			}
 		}},
 		// TestPeekCmdReportsNoFilesUnderNode covers the empty-node error path.
 		{"PeekCmdReportsNoFilesUnderNode", func(t *testing.T) {
 			ctx := context.Background()
+			usePreviewRoot(t)
 			d := dbtest.New(t)
 			node := &vfs.Node{ID: "nowhere"}
-			msg := peekCmd(ctx, d, node, map[string]string{})()
+			msg := peekCmd(ctx, d, node)()
 			pm := msg.(previewDoneMsg)
 			if pm.err == nil {
 				t.Fatal("expected an error for a node with no files")
@@ -1380,8 +1498,9 @@ func insertVFSEntry(t *testing.T, d *db.DB, fileID int64, sourcePath, targetPath
 	if _, err := d.ExecContext(ctx, `
 		INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
 			file_extension, media_type, discovered_at, last_seen_at)
-		VALUES (?, '/src', 'a.jpg', 1024, '2024-06-01T10:00:00.000000000Z', '.jpg', 'IMAGE',
-			'2024-06-01T10:00:00.000000000Z', '2024-06-01T10:00:00.000000000Z')`, fileID); err != nil {
+		VALUES (?, '/src', ?, 1024, '2024-06-01T10:00:00.000000000Z', '.jpg', 'IMAGE',
+			'2024-06-01T10:00:00.000000000Z', '2024-06-01T10:00:00.000000000Z')`,
+		fileID, filepath.Base(sourcePath)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.ExecContext(ctx, `

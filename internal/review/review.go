@@ -63,6 +63,9 @@ func ConfirmAll(ctx context.Context, o Options) error {
 		return err
 	}
 	volume.CheckOutputSpace(ctx, o.DB, o.Log, o.OutputDir)
+	if err := CleanPreviews(); err != nil {
+		o.Log.Warn("could not remove the preview copies", "error", err)
+	}
 	return nil
 }
 
@@ -239,10 +242,9 @@ type Model struct {
 	statusIsErr bool // rejection, not confirmation: rendered in a warning colour
 
 	// async preview copy ([p])
-	previewing  bool
-	previewErr  error
-	previewDirs map[string]string // file-signature → temp dir, removed on exit
-	spin        spinner.Model
+	previewing bool
+	previewErr error
+	spin       spinner.Model
 }
 
 func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, resolver *location.Resolver, log logger.Logger) Model {
@@ -251,15 +253,14 @@ func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, resolver *l
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(tui.Primary)
 	m := Model{
-		spin:        sp,
-		suggCursor:  -1,
-		tree:        tree,
-		rows:        buildRows(tree),
-		ctx:         ctx,
-		db:          database,
-		resolver:    resolver,
-		log:         log,
-		previewDirs: map[string]string{},
+		spin:       sp,
+		suggCursor: -1,
+		tree:       tree,
+		rows:       buildRows(tree),
+		ctx:        ctx,
+		db:         database,
+		resolver:   resolver,
+		log:        log,
 	}
 	// user_labels only changes on Confirm, after this TUI exits, so the set is
 	// fixed for the session — load it once instead of querying per keystroke.

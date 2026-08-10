@@ -49,7 +49,13 @@ func (s screen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if s.finalizing {
 		if fm, ok := msg.(finalizeMsg); ok {
 			s.finalErr = fm.err
-			cleanupPreviewDirs(s.inner.previewDirs)
+			// The plan is written: the copies nobody is going to peek at again
+			// are the whole cache, this session's and any earlier one's.
+			if fm.err == nil {
+				if err := CleanPreviews(); err != nil {
+					s.log.Warn("could not remove the preview copies", "error", err)
+				}
+			}
 			// One slice saved is not the end of a segmented review: go back to
 			// the picker for the next one.
 			if s.host != nil && fm.err == nil {
@@ -70,7 +76,8 @@ func (s screen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return s, cmd
 	}
 	if !s.inner.confirmed {
-		cleanupPreviewDirs(s.inner.previewDirs)
+		// Preview copies deliberately survive an unsaved exit — the next
+		// session reuses them instead of re-copying the same bytes.
 		// [esc] out of one slice is a step back to the picker, not the end of the
 		// review — the other slices are still waiting to be looked at.
 		if s.inner.back && s.host != nil {

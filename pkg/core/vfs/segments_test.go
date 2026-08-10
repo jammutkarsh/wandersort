@@ -242,6 +242,75 @@ func TestReopenSegment(t *testing.T) {
 	}
 }
 
+// TestSegmentsCountsFolders: the picker leads with folders, since a review is
+// a decision about folders — every level of the tree, the same thing
+// BuildTree's nodes count, not just the directory a file sits in.
+func TestSegmentsCountsFolders(t *testing.T) {
+	d := dbtest.New(t)
+	seedEntry(t, d, 1, "2023/03_March/01/Goa", day(2023, time.March, 1), db.StatusProposed)
+	seedEntry(t, d, 2, "2023/03_March/01/Goa", day(2023, time.March, 1), db.StatusProposed)
+	seedEntry(t, d, 3, "2023/03_March/02/Pune", day(2023, time.March, 2), db.StatusProposed)
+	seedEntry(t, d, 4, "2024/05_May/09", day(2024, time.May, 9), db.StatusProposed)
+
+	segs, err := Segments(context.Background(), d, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2023, 03_March, 01, Goa, 02, Pune
+	if segs[0].Folders != 6 {
+		t.Errorf("2023 folders = %d, want 6", segs[0].Folders)
+	}
+	// 2024, 05_May, 09
+	if segs[1].Folders != 3 {
+		t.Errorf("2024 folders = %d, want 3", segs[1].Folders)
+	}
+}
+
+// TestReopenWholeLibrary is what a rebuild does first: the plan an approval was
+// given for is about to be replaced, so every slice goes back to reviewable —
+// a saved slice still reading "✓ saved" after a settings change and a reset was
+// a reported bug.
+func TestReopenWholeLibrary(t *testing.T) {
+	ctx := context.Background()
+	d := dbtest.New(t)
+	seedEntry(t, d, 1, "2023/x", day(2023, time.March, 1), db.StatusApproved)
+	seedEntry(t, d, 2, "2024/x", day(2024, time.March, 1), db.StatusApproved)
+
+	if err := ReopenSegment(ctx, d, nil); err != nil {
+		t.Fatal(err)
+	}
+	for id, e := range entryStatuses(t, d) {
+		if e.Status != db.StatusProposed {
+			t.Errorf("entry %d status = %q, want PROPOSED", id, e.Status)
+		}
+	}
+}
+
+// TestApproveSegment: [A] on the picker signs a slice off without opening it,
+// which is how an untouched slice gets saved now that [esc] over an unedited
+// tree just steps back.
+func TestApproveSegment(t *testing.T) {
+	ctx := context.Background()
+	d := dbtest.New(t)
+	seedEntry(t, d, 1, "2023/x", day(2023, time.March, 1), db.StatusProposed)
+	seedEntry(t, d, 2, "2024/x", day(2024, time.March, 1), db.StatusProposed)
+
+	segs, err := Segments(ctx, d, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApproveSegment(ctx, d, &segs[0]); err != nil {
+		t.Fatal(err)
+	}
+	got := entryStatuses(t, d)
+	if got[1].Status != db.StatusApproved {
+		t.Errorf("accepted entry status = %q, want APPROVED", got[1].Status)
+	}
+	if got[2].Status != db.StatusProposed {
+		t.Errorf("other segment status = %q, want still PROPOSED", got[2].Status)
+	}
+}
+
 // TestPersistKeepsApprovedRows: a rebuild re-proposes what nobody signed off
 // and leaves an approved plan — edited paths included — exactly as it is.
 func TestPersistKeepsApprovedRows(t *testing.T) {

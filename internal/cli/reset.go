@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/spf13/cobra"
@@ -38,10 +39,20 @@ wandersort reset --yes`,
 	}
 
 	cmd.Flags().Bool(flagYes, false, "Skip confirmation prompt")
+	cmd.Flags().Bool(flagPreviewsOnly, false, "Only clear cached preview copies, leave the database alone")
 	return cmd
 }
 
 func (a *app) runReset(cmd *cobra.Command) error {
+	previewsOnly, _ := cmd.Flags().GetBool(flagPreviewsOnly)
+	if previewsOnly {
+		if err := review.CleanPreviews(); err != nil {
+			return fmt.Errorf("could not remove the preview copies: %w", err)
+		}
+		fmt.Fprintln(os.Stderr, tui.OK.Render("Preview cache cleared."))
+		return nil
+	}
+
 	if _, err := os.Stat(a.Config.AppDBPath); os.IsNotExist(err) {
 		return fmt.Errorf("no database found — nothing to reset")
 	}
@@ -78,6 +89,11 @@ func (a *app) runReset(cmd *cobra.Command) error {
 	stamp := filepath.Join(filepath.Dir(a.Config.AppDBPath), vfs.StampFileName)
 	if err := os.Remove(stamp); err != nil && !os.IsNotExist(err) {
 		a.Log.Warn("could not remove the settings stamp", "error", err)
+	}
+
+	// Preview copies outlive a review session, so a wipe has to take them too.
+	if err := review.CleanPreviews(); err != nil {
+		a.Log.Warn("could not remove the preview copies", "error", err)
 	}
 
 	fmt.Fprintln(os.Stderr, tui.OK.Render("All wandersort data deleted."))

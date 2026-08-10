@@ -8,7 +8,6 @@ package review
 
 import (
 	"fmt"
-	"maps"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -38,7 +37,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.previewing = false
 		m.previewErr = msg.err
 		if msg.err == nil {
-			m.previewDirs[msg.signature] = msg.dir
 			openInViewer(msg.dir)
 		}
 		return m, nil
@@ -232,12 +230,18 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.hardQuit()
 	case "esc":
 		// A live selection is the nearer thing to back out of — esc clears it
-		// first, same as it does everywhere else. Otherwise esc always raises
-		// the save-or-discard question — even with nothing edited, since
-		// approving the proposal exactly as offered still needs a key.
+		// first, same as it does everywhere else.
 		if m.visualMode {
 			m.visualMode = false
 			break
+		}
+		// Nothing edited, and a picker underneath: this was a look around, not
+		// a decision. Asking "save or discard?" over a tree the reviewer never
+		// touched is a question about nothing — [A] on the picker is how an
+		// untouched slice gets approved. Unhosted there is no picker to go back
+		// to, so the question is still the only way to approve.
+		if m.hosted && !m.hasEdits() {
+			return m.discardAndExit()
 		}
 		m.askExit, m.exitChoice = true, true
 		return m, nil
@@ -263,10 +267,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.previewing {
 			m.previewing = true
 			m.previewErr = nil
-			node := m.rows[m.cursor].node
-			cached := make(map[string]string, len(m.previewDirs))
-			maps.Copy(cached, m.previewDirs)
-			cmd = tea.Batch(peekCmd(m.ctx, m.db, node, cached), m.spin.Tick)
+			cmd = tea.Batch(peekCmd(m.ctx, m.db, m.rows[m.cursor].node), m.spin.Tick)
 		}
 	case "V":
 		if m.visualMode {

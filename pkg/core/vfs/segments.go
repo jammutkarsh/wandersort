@@ -17,7 +17,9 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	gopath "path"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -32,6 +34,10 @@ type Segment struct {
 	Label              string
 	Start, End         *time.Time
 	Proposed, Approved int
+	// Folders is how many directories this slice's tree holds — every level of
+	// it, the same count the review screen's header reports. A reviewer decides
+	// about folders, not about files, so it is the number the picker leads with.
+	Folders int
 }
 
 // UndatedLabel names the bucket for files with no capture time. They have no
@@ -50,11 +56,12 @@ const autoLongSpanYears = 3
 // is a library with nothing dated in it.
 func Segments(ctx context.Context, database *db.DB, months int) ([]Segment, error) {
 	var rows []struct {
-		TakenAt *string `db:"taken_at"`
-		Status  string  `db:"status"`
+		TakenAt    *string `db:"taken_at"`
+		Status     string  `db:"status"`
+		TargetPath string  `db:"target_path"`
 	}
 	if err := database.SQL.SelectContext(ctx, &rows,
-		`SELECT taken_at, status FROM virtual_fs_entries WHERE status IN (?, ?)`,
+		`SELECT taken_at, status, target_path FROM virtual_fs_entries WHERE status IN (?, ?)`,
 		db.StatusProposed, db.StatusApproved); err != nil {
 		return nil, fmt.Errorf("query proposal dates: %w", err)
 	}
@@ -63,11 +70,12 @@ func Segments(ctx context.Context, database *db.DB, months int) ([]Segment, erro
 		at     time.Time
 		dated  bool
 		status string
+		dir    string
 	}
 	entries := make([]entry, 0, len(rows))
 	var lo, hi time.Time
 	for _, r := range rows {
-		e := entry{status: r.Status}
+		e := entry{status: r.Status, dir: gopath.Dir(r.TargetPath)}
 		if r.TakenAt != nil {
 			// written by persist through db.FormatTime, so anything that
 			// doesn't parse is a foreign row — treat it as undated rather
@@ -97,6 +105,9 @@ func Segments(ctx context.Context, database *db.DB, months int) ([]Segment, erro
 
 	buckets := map[time.Time]*Segment{}
 	var undated *Segment
+	// per-segment set of every directory its tree will hold, ancestors included
+	// — the same thing BuildTree counts, without building it
+	folders := map[*Segment]map[string]bool{}
 	for _, e := range entries {
 		seg := undated
 		if e.dated {
@@ -116,6 +127,19 @@ func Segments(ctx context.Context, database *db.DB, months int) ([]Segment, erro
 		} else {
 			seg.Proposed++
 		}
+		seen := folders[seg]
+		if seen == nil {
+			seen = map[string]bool{}
+			folders[seg] = seen
+		}
+		// most rows repeat a directory a sibling already added, so the walk up
+		// the ancestors stops at the first one already counted
+		for d := e.dir; d != "" && d != "." && d != "/" && !seen[d]; d = gopath.Dir(d) {
+			seen[d] = true
+		}
+	}
+	for seg, seen := range folders {
+		seg.Folders = len(seen)
 	}
 
 	out := make([]Segment, 0, len(buckets)+1)
@@ -167,19 +191,41 @@ func (s *Segment) clause(col string) (string, []any) {
 
 // ReopenSegment flips a saved segment's entries back to PROPOSED, so a
 // reviewer who changed their mind can redo that slice without rebuilding the
-// whole proposal.
+// whole proposal. A nil seg reopens the whole library — what a rebuild does
+// first, since re-proposing replaces the folders an approval was given for.
 func ReopenSegment(ctx context.Context, database *db.DB, seg *Segment) error {
+	if err := setSegmentStatus(ctx, database, seg, db.StatusApproved, db.StatusProposed); err != nil {
+		return fmt.Errorf("reopen %s: %w", segName(seg), err)
+	}
+	return nil
+}
+
+// ApproveSegment signs a slice off exactly as proposed, without opening it.
+// Confirm is the same flip plus the reviewer's edits; with nothing edited
+// there are no paths to rewrite and no names to learn, so this is all of it.
+func ApproveSegment(ctx context.Context, database *db.DB, seg *Segment) error {
+	if err := setSegmentStatus(ctx, database, seg, db.StatusProposed, db.StatusApproved); err != nil {
+		return fmt.Errorf("approve %s: %w", segName(seg), err)
+	}
+	return nil
+}
+
+func setSegmentStatus(ctx context.Context, database *db.DB, seg *Segment, from, to string) error {
 	where, args := seg.clause("taken_at")
 	if where != "" {
 		where = " AND " + where
 	}
-	if err := database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+	return database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
 		_, err := tx.ExecContext(ctx,
 			`UPDATE virtual_fs_entries SET status = ? WHERE status = ?`+where,
-			append([]any{db.StatusProposed, db.StatusApproved}, args...)...)
+			append([]any{to, from}, args...)...)
 		return err
-	}); err != nil {
-		return fmt.Errorf("reopen segment %q: %w", seg.Label, err)
+	})
+}
+
+func segName(seg *Segment) string {
+	if seg == nil {
+		return "the whole plan"
 	}
-	return nil
+	return strconv.Quote(seg.Label)
 }

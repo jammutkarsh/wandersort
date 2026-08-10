@@ -136,6 +136,8 @@ func (m pickerModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.opening = true
 		m.status, m.statusErr = "", false
 		return m, tea.Batch(m.open(), m.spin.Tick)
+	case "A":
+		return m.acceptAsProposed()
 	case "ctrl+x":
 		return m.reopen()
 	case "R":
@@ -252,6 +254,30 @@ func (m pickerModel) reenter() (tea.Model, error) {
 	return m, nil
 }
 
+// acceptAsProposed signs the slice off without opening it — the answer to "the
+// folders here are fine as they are". Opening a slice and pressing [esc] does
+// not save any more when nothing was edited (that is just a look around), so
+// this is where an untouched slice gets approved.
+func (m pickerModel) acceptAsProposed() (tea.Model, tea.Cmd) {
+	seg := m.segs[m.cursor]
+	if seg.Proposed == 0 {
+		m.status, m.statusErr = seg.Label+" is already saved", true
+		return m, nil
+	}
+	if err := vfs.ApproveSegment(m.ctx, m.o.DB, &seg); err != nil {
+		m.status, m.statusErr = err.Error(), true
+		return m, nil
+	}
+	next, err := m.reenter()
+	if err != nil {
+		m.status, m.statusErr = err.Error(), true
+		return m, nil
+	}
+	p := next.(pickerModel)
+	p.status, p.statusErr = seg.Label+" saved as proposed", false
+	return p, nil
+}
+
 // reopen discards a saved slice's approval and puts it back to reviewable —
 // the only way back into one that was signed off, short of rebuilding the
 // whole proposal. It does not re-propose anything: the slice's folders stay
@@ -305,7 +331,9 @@ func (m pickerModel) View() string {
 		tui.FaintTxt.Render(fmt.Sprintf("%d time slices", len(m.segs))), m.w))
 
 	for i, s := range m.segs {
-		state := fmt.Sprintf("%d to review", s.Proposed)
+		// the right column is folders, not a second file count: a review is a
+		// decision about folders, and the files are already named on the left
+		state := fmt.Sprintf("%d folders", s.Folders)
 		styled := tui.FaintTxt.Render(state)
 		if s.Proposed == 0 {
 			state, styled = "✓ saved", tui.OK.Render("✓ saved")
@@ -337,6 +365,7 @@ func (m pickerModel) View() string {
 	hints := []string{
 		tui.KeyHint("↑↓", "move"),
 		tui.KeyHint("enter", "review this slice"),
+		tui.KeyHint("A", "accept this slice as proposed"),
 		tui.KeyHint("ctrl+x", "discard changes for this slice"),
 	}
 	if m.o.Rebuild != nil {
@@ -366,11 +395,12 @@ func (m pickerModel) rebuildAskTitle() string {
 }
 
 func (m pickerModel) rebuildAskText() string {
-	text := "Reset throws every unsaved time slice away and proposes its folders again from your current settings.\n"
+	text := "Reset throws this plan away and proposes every folder again from your current settings.\n"
 	if m.askedBySettings {
 		text = "Your folder rules or saved places changed, so this plan no longer matches them.\n" +
-			"Reset proposes every folder you haven't saved yet again, from the new settings.\n"
+			"Reset proposes every folder again, from the new settings.\n"
 	}
-	text += "No keeps the plan as it is — [R] asks again.\nAlready-saved time slices are not affected."
+	text += "No keeps the plan as it is — [R] asks again.\n" +
+		"Time slices you already saved are reopened and proposed again too."
 	return text
 }

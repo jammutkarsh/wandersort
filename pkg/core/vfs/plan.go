@@ -639,6 +639,18 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 			// every grouped file wrote a NULL location_dir and the review
 			// tree had no GPS to re-query for that folder's renames
 			masters[i].locationDir = masters[leader].locationDir
+			// …and so does the time the directory was derived from, or the
+			// row's taken_at disagrees with its own path: a sidecar has no
+			// EXIF time of its own (it rides along on the group, see the
+			// window check above) and its file mtime can sit months away, so
+			// it surfaced in a review time slice whose tree showed one lone
+			// folder from a different year — a reported bug.
+			//
+			// ponytail: nothing to copy when the leader itself is undated, so
+			// a dated member of an undated group still lands in its own slice
+			// showing the Fallback folder. Give masterFile an explicit folder
+			// time if that ever turns up.
+			masters[i].folderDate = masters[leader].folderTime()
 		}
 	}
 	return dirs

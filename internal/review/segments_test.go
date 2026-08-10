@@ -164,14 +164,17 @@ func TestSegmentScreenBackToPicker(t *testing.T) {
 	_, cmd := next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	s := drainOpen(t, cmd()).model.(screen)
 
-	// first esc raises the save-or-discard ask; the second forcefully discards.
-	next2, _ := s.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	back, cmd := next2.(screen).Update(tea.KeyMsg{Type: tea.KeyEsc})
+	// nothing was edited, so [esc] asks nothing — looking around a slice is not
+	// a decision. [A] on the picker is how an untouched slice gets approved.
+	back, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if b := back.(screen); b.confirmed {
-		t.Error("[esc][esc] confirmed the slice")
+		t.Error("[esc] confirmed the slice")
+	}
+	if b := back.(screen); b.inner.askExit {
+		t.Error("[esc] over an unedited tree raised the save-or-discard ask")
 	}
 	if cmd == nil {
-		t.Fatal("[esc][esc] went nowhere")
+		t.Fatal("[esc] went nowhere")
 	}
 	sw, ok := cmd().(tui.SwitchMsg)
 	if !ok {
@@ -183,6 +186,63 @@ func TestSegmentScreenBackToPicker(t *testing.T) {
 	}
 	if p.opening {
 		t.Error("picker came back still opening — the spinner would never stop")
+	}
+}
+
+// TestSegmentScreenEscStillAsksAfterAnEdit: the no-ask shortcut is only for a
+// tree nobody touched. One edit and [esc] has a real question to put.
+func TestSegmentScreenEscStillAsksAfterAnEdit(t *testing.T) {
+	m, _ := pickerFixture(t)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd := next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	s := drainOpen(t, cmd()).model.(screen)
+	s.inner.width, s.inner.height = 80, 24
+
+	edited, _ := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	edited, _ = edited.(screen).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Trip")})
+	edited, _ = edited.(screen).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !edited.(screen).inner.hasEdits() {
+		t.Fatal("rename did not register as an edit")
+	}
+
+	asked, _ := edited.(screen).Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if !asked.(screen).inner.askExit {
+		t.Error("[esc] after an edit did not ask to save or discard")
+	}
+}
+
+// TestPickerAcceptsSliceAsProposed: [A] signs a slice off without opening it —
+// the way an untouched slice gets saved, since [esc] over an unedited tree is
+// just a step back now.
+func TestPickerAcceptsSliceAsProposed(t *testing.T) {
+	m, d := pickerFixture(t)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown}) // 2024, the unsaved one
+	next, _ = next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
+	p := next.(pickerModel)
+	if p.statusErr {
+		t.Fatalf("accept reported: %s", p.status)
+	}
+	if p.saved != 1 {
+		t.Errorf("saved slices = %d, want 1", p.saved)
+	}
+	if p.segs[1].Proposed != 0 || p.segs[1].Approved != 1 {
+		t.Errorf("2024 counts = %d/%d, want 0 proposed / 1 approved", p.segs[1].Proposed, p.segs[1].Approved)
+	}
+	var status string
+	if err := d.SQL.Get(&status, `SELECT status FROM virtual_fs_entries WHERE file_id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if status != db.StatusApproved {
+		t.Errorf("row status = %q, want APPROVED", status)
+	}
+
+	// an already-saved slice has nothing to accept — say so rather than no-op
+	next, _ = p.Update(tea.KeyMsg{Type: tea.KeyUp})
+	next, _ = next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
+	if !next.(pickerModel).statusErr {
+		t.Error("accepting an already-saved slice said nothing")
 	}
 }
 

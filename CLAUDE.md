@@ -327,9 +327,15 @@ one scan ever runs against it at a time (see "Conventions" below):
     `BuildTree` — `virtual_fs_entries` always holds exactly one proposal
     batch (the VFS phase replaces every unapproved row every run), so an
     empty tree from `BuildTree` alone means "nothing to review yet".
-    **`--rebuild` has no approved-plan guard any more** (and `ApprovedCount`
-    is gone with it): `persist` keeps approved rows, so a rebuild has no
-    confirmed work left to discard — it re-proposes what nobody signed off.
+    **`--rebuild` has no approved-plan *prompt*** (and `ApprovedCount` is gone
+    with it): the interactive path asks on screen with the review's own reset
+    modal, and `--yes` has nobody to ask. It does discard: `a.rebuildTree` (and
+    the `--yes` path) calls `vfs.ReopenSegment(ctx, db, nil)` before `Propose`,
+    flipping every approved row back to PROPOSED so the whole library is
+    re-proposed. `persist`'s keep-approved-rows rule is for the *scan* phase;
+    a reset is the one caller that means to throw them away, since an approval
+    was given to the plan being replaced — a saved slice still reading
+    `✓ saved` after a settings change and a reset was a reported bug.
     It also
     holds `newReviewScreen`, which builds the embedded screen `scan` swaps into.
     **The TUI itself lives in `internal/review/`** — see below.
@@ -384,11 +390,16 @@ one scan ever runs against it at a time (see "Conventions" below):
   both entry points — `Screen` and the loading screen's `treeLoadedMsg`.
   `[enter]` builds that slice's tree in a **fresh query** off the UI goroutine
   (a segment is a `taken_at` range, which is what the database is for — not a
-  filter over an already-loaded tree), `[ctrl+x]` discards a saved one's
+  filter over an already-loaded tree), `[A]` signs the slice off **without
+  opening it** (`vfs.ApproveSegment` — Confirm's status flip without the
+  rewrites, since an unedited tree has no paths to rewrite and no names to
+  learn), `[ctrl+x]` discards a saved one's
   approval and re-opens it, `[esc]` warns once while slices are still
-  unreviewed. `[R]`
+  unreviewed. `[A]` is where an untouched slice gets approved now that `[esc]`
+  inside one asks nothing when nothing was edited — see the exit ask below.
+  `[R]`
   is a second, library-wide question — the same reset the per-slice screen's
-  `[R]` raises, but re-proposing every unsaved slice at once, and raised
+  `[R]` raises, re-proposing every slice at once (saved ones included), and raised
   automatically on a settings change even while this list (not a slice) is on
   screen, so noticing a settings change never requires opening a slice first.
   The per-slice screen is the ordinary
@@ -519,11 +530,16 @@ one scan ever runs against it at a time (see "Conventions" below):
   folder remap onto it — same machinery as merge, with `prefixRewriter`
   covering anything deeper. Both undo via `[u]`.
   **`esc` is the only way out, and the only thing that writes** — there is no
-  separate save key any more. It always raises a full-screen Save/Discard ask
+  separate save key any more. It raises a full-screen Save/Discard ask
   (`askExit`/`exitChoice`, drawn the same way the config wizard's own `[esc]`
-  ask is): `[enter]` accepts the highlighted default (Save — approving the
-  proposal exactly as offered still needs a key, edits or not), a second
-  `[esc]` inside it forcefully discards. Save hosted goes back to the
+  ask is): `[enter]` accepts the highlighted default (Save), a second
+  `[esc]` inside it forcefully discards. **It asks nothing when the reviewer
+  edited nothing and a picker is underneath** (`hosted && !hasEdits()`) —
+  opening a slice to look at it is not a decision, and a Save/Discard question
+  over an untouched tree is a question about nothing (reported). That is what
+  `[A]` on the picker is for. Unhosted there is no picker to step back to, so
+  the ask still comes up with nothing edited: approving the proposal exactly as
+  offered has to be possible from inside. Save hosted goes back to the
   time-slice picker with this slice approved (`reenter`); Discard hosted goes
   back with it still unreviewed (`back`); neither hosted just ends the review.
   `ctrl+c` is the unconditional escape hatch — never saves, warns once
@@ -617,12 +633,38 @@ one scan ever runs against it at a time (see "Conventions" below):
   **`↑`/`↓` walk the rename dropdown** (`Model.suggCursor`, `-1` = nothing
   picked), `tab` fills the picked-or-top match and `enter` on a picked row
   fills it rather than applying — the same completion behaviour as the
-  `config` wizard's town inputs, which is where reviewers expect it from. **Preview caching is content-based, not node-based**
-  (`filesSignature`, keyed on the sorted file list, not the node ID): a
-  directory with one child chain (e.g. `.../08/Horizontal/Photos`) shares
-  literally the same files between its parent and its leaf, so peeking
-  either reuses one temp copy instead of making a new one every time; every
-  cached copy is `os.RemoveAll`'d once the TUI exits, however it exits.
+  `config` wizard's town inputs, which is where reviewers expect it from. **Preview caching is content-based and outlives the
+  session** (`preview.go`): a copy lives at `previewDirFor(files)` —
+  `$TMPDIR/wandersort-previews/<sha256 of the sorted file list>` — so a
+  directory with one child chain (e.g. `.../08/Horizontal/Photos`), which
+  shares literally the same files between its parent and its leaf, resolves
+  to one copy for both, **and so does the same folder peeked in a later
+  session**. That is what the fixed root buys over the old
+  `os.MkdirTemp` name plus an in-memory `previewDirs` map (both gone, with
+  `filesSignature`): re-copying gigabytes because the reviewer quit and came
+  back is the thing worth avoiding. **A directory existing under that name means
+  the copy finished**, because the copy is made in a `.copying-*` staging dir
+  next to it and `os.Rename`d into place — same directory, so same
+  filesystem, so atomic. A peek killed partway (ctrl+c, SIGKILL, disk full)
+  therefore cannot leave three of forty files under the hash name for a later
+  session to reuse as a cache hit, which is the failure the old
+  wipe-on-exit temp dirs never had to defend against. There is no completion
+  marker file (there was one; the rename does the same job with one mechanism
+  instead of two), and no partial-dir cleanup path: a leftover `.copying-*`
+  is never a hit and `makeRoom` evicts it like any other. A `Rename` that
+  fails because the target is already there means another process copied the
+  same folder first — its copy is this copy, so take it. **The copies are capped at 5% of the
+  volume** (`makeRoom`, budget = `(free + what the copies already hold) /
+  20`): before a new copy, the **least recently opened** dirs are evicted
+  until it fits, and one that can't fit in the whole budget is refused rather
+  than half-copied. LRU, not oldest-created — a reuse `touch`es the dir, so
+  peeking a dozen folders in one session can't evict the one being looked at
+  now. `maxPreviewBytes` (250MB) still caps a single peek. Nothing
+  is deleted on exit any more — **the sweep happens when the plan is
+  written** (`CleanPreviews`, called from `screen`'s successful `finalizeMsg`
+  and from `ConfirmAll`) and from `wandersort reset`, since at that point
+  there is nothing left to peek at. An unsaved exit deliberately leaves the
+  copies behind for the next session.
   **A rejected merge (`statusIsErr`) renders in `tui.Attn`, not
   `tui.DimText`** — a rejection used to look identical to routine status
   text, easy to miss (a reported "merge doesn't work" turned out to be
@@ -648,7 +690,9 @@ Back in `internal/cli/`:
 - `issue.go` — `issue` cmd: zips the log (renamed
     `wandersort.log`) + `about.txt`; db opt-in via `--include-db` (holds paths/GPS).
 - `reset.go` — wipe scan data (confirm prompt unless `--yes`), plus the
-    `.wandersort.cfg` stamp, which describes a proposal that no longer exists.
+    `.wandersort.cfg` stamp, which describes a proposal that no longer
+    exists, plus `review.CleanPreviews()` — peek copies outlive a review
+    session now, so a factory wipe has to take them too.
 - `help.go` — custom lipgloss-styled help renderer. Kept in `cli` (unlike
     `lock.go`) since it's a one-off cobra `SetHelpFunc`, not reusable
     logic another entry point would need.
@@ -1049,7 +1093,21 @@ raise the reset prompt.
   (`segments.go` + `virtual_fs_entries.taken_at`): `masterFile.folderDate` is
   the *cluster's* start, written to every member by `clusterAndSpill` before
   either early-continue, so one event that runs over a month or New Year
-  boundary lands in one Year/Month folder instead of being torn in two. Read it
+  boundary lands in one Year/Month folder instead of being torn in two —
+  **but only for a cluster spanning at most `maxFolderSpan` (24h)**. A cluster
+  grows for as long as consecutive shots stay inside `ClusterGap`, so a holiday
+  shot every few hours is one unbroken cluster running for a week; handing all
+  of it the start month filed the Jan 05 photos under `12_December/Jan_05`, the
+  same wrong-Year-tree failure the rule exists to prevent (a reported bug).
+  Past that span every file keeps its own month and the day-merge folds the
+  days into ranges as usual. The cap is a whole-cluster decision, never per
+  member, so one day can never be split across two month folders.
+  `captureDirs` copies the group leader's `folderTime()` onto every member for
+  the same reason it copies `locationDir`: a member takes the leader's
+  *directory*, so its `taken_at` has to be the date that directory came from,
+  or it surfaces in a review time slice whose tree shows one lone folder from
+  another year (reported — a sidecar has no EXIF time and falls back to a file
+  mtime months away). Read it
   through `masterFile.folderTime()` (folderDate, falling back to takenAt for
   the unclustered `PreviewPaths` samples) — `monthParts` (the Year/Month pair
   `dirFor` and `locationParent` share), `mergeSameLocationDays`' month key and
@@ -1067,9 +1125,14 @@ raise the reset prompt.
   calendar-aligned (years / Jan–Jun / quarters), `months <= 0` picking years
   over a >3-year span and half-years otherwise, undated rows last in their own
   `Undated` bucket, and **nil for "don't segment"** (one bucket, or nothing
-  dated). Because every cluster member shares a folder date, **a segment
-  boundary can never split one event**. Segmenting on `taken_at` rather than on
-  the path is the whole point: a path is what the reviewer renames.
+  dated). Because every member of a short cluster shares a folder date, **a
+  segment boundary can never split one sitting** (a week-long cluster does
+  split, because its files really are in different months — see
+  `maxFolderSpan`). Segmenting on `taken_at` rather than on the path is the
+  whole point: a path is what the reviewer renames. Each `Segment` also carries
+  `Folders`, the directory count of the tree it would build (ancestors
+  included, the same thing the review header counts) — the picker leads with
+  it, since a reviewer decides about folders, not files.
   `BuildTree(ctx, db, seg)` and `Confirm(ctx, db, roots, seg)` take a `nil`
   segment for the whole library. `Confirm` scopes only the *approval*: the
   renames go through `prefixRewriter` (longest remapped ancestor wins), so a

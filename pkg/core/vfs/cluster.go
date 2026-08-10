@@ -13,6 +13,15 @@ import (
 	"time"
 )
 
+// maxFolderSpan is how long a cluster may run and still claim one Year/Month
+// folder for all of its files. A cluster grows for as long as consecutive
+// shots stay inside the gap, so a holiday shot daily is one unbroken cluster
+// running for a week — filing its Jan 05 photos under 2025/12_December (as
+// `Jan_05`, in the wrong Year tree entirely) was a reported bug. Past this
+// span it is a trip, not one sitting: every file keeps the month it was shot
+// in, and the day-merge folds the days into ranges as usual.
+const maxFolderSpan = 24 * time.Hour
+
 // cluster groups masters whose capture times sit within the configured gap of
 // each other — one cluster ≈ one real-world event
 type cluster struct {
@@ -52,13 +61,15 @@ func clusterAndSpill(masters []masterFile, gap time.Duration) {
 	for ci := range clusters {
 		c := &clusters[ci]
 
-		// Every member takes the cluster's Year/Month, whatever is decided
-		// below — a trip that runs across a month or New Year boundary is one
-		// event and belongs in one folder, not torn in two. Unconditional and
-		// before both early-continues: a single-day cluster is unaffected
+		// Every member of a *short* cluster takes its Year/Month, whatever is
+		// decided below — an evening that runs past midnight into the next
+		// month is one event and belongs in one folder, not torn in two.
+		// Before both early-continues: a single-day cluster is unaffected
 		// (start is its own day) and a located cluster needs it just as much.
-		for _, i := range c.members {
-			masters[i].folderDate = c.start
+		if c.end.Sub(c.start) <= maxFolderSpan {
+			for _, i := range c.members {
+				masters[i].folderDate = c.start
+			}
 		}
 
 		located := 0

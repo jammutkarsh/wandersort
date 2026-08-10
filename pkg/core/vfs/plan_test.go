@@ -322,6 +322,73 @@ func TestPlanSidecarFollowsScreenshot(t *testing.T) {
 	}
 }
 
+// TestPlanLongClusterKeepsOwnMonth is the other half of the New Year rule: a
+// cluster grows for as long as shots keep landing inside the gap, so a holiday
+// shot every few hours is one unbroken cluster running for days. Filing its
+// January photos under the previous December — in the wrong Year tree, as
+// "Jan_05" — was a reported bug. Past maxFolderSpan every file keeps its own
+// month.
+func TestPlanLongClusterKeepsOwnMonth(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	cfg.CollapseLevels = false
+	cfg.MergeSameLocationDays = false
+
+	// 10h apart throughout: one cluster (gap is 12h), spanning 40h
+	got := runPlan(t, []masterFile{
+		{FileDir: "/src", FileName: "a.jpg", DBDateTaken: new("2025:12:31 10:00:00"), location: "Goa"},
+		{FileDir: "/src", FileName: "b.jpg", DBDateTaken: new("2025:12:31 20:00:00"), location: "Goa"},
+		{FileDir: "/src", FileName: "c.jpg", DBDateTaken: new("2026:01:01 06:00:00"), location: "Goa"},
+		{FileDir: "/src", FileName: "d.jpg", DBDateTaken: new("2026:01:01 16:00:00"), location: "Goa"},
+		{FileDir: "/src", FileName: "e.jpg", DBDateTaken: new("2026:01:02 02:00:00"), location: "Goa"},
+	}, cfg)
+	want := []string{
+		"2025/12_December/31/Goa/a.jpg",
+		"2025/12_December/31/Goa/b.jpg",
+		"2026/01_January/01/Goa/c.jpg",
+		"2026/01_January/01/Goa/d.jpg",
+		"2026/01_January/02/Goa/e.jpg",
+	}
+	for i, m := range got {
+		if m.targetPath != want[i] {
+			t.Errorf("%s: got %q, want %q", m.FileName, m.targetPath, want[i])
+		}
+	}
+}
+
+// TestPlanCaptureGroupMemberTakesLeaderFolderTime pins what persist writes as
+// taken_at against the directory the same file was given. A sidecar has no
+// EXIF time and falls back to its file mtime, which can sit months from the
+// capture it belongs to; it still follows the group's directory, so without the
+// leader's folder time it surfaced in a review time slice showing one lone
+// folder out of another year (a reported bug).
+func TestPlanCaptureGroupMemberTakesLeaderFolderTime(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	cfg.CollapseLevels = false
+
+	got := runPlan(t, []masterFile{
+		{FileDir: "/phone", FileName: "IMG_0044.HEIC", DBDateTaken: new("2025:11:30 09:00:00"), location: "Banjar"},
+		// copied off the phone months later, so the mtime says March
+		{FileDir: "/phone", FileName: "IMG_0044.AAE", MediaType: classifier.MediaTypeSidecar, ModifiedAt: "2026:03:01 12:00:00"},
+	}, cfg)
+
+	var leader, sidecar *masterFile
+	for i := range got {
+		if got[i].MediaType == classifier.MediaTypeSidecar {
+			sidecar = &got[i]
+		} else {
+			leader = &got[i]
+		}
+	}
+	if want := "2025/11_November/30/Banjar/IMG_0044.AAE"; sidecar.targetPath != want {
+		t.Fatalf("sidecar path: got %q, want %q", sidecar.targetPath, want)
+	}
+	if got, want := sidecar.folderTime(), leader.folderTime(); !got.Equal(want) {
+		t.Errorf("sidecar folder time: got %s, want %s (the row's taken_at has to match its own path)", got, want)
+	}
+}
+
 // TestPlanCaptureGroupRejectsReusedCounter keeps the guard the agreement window
 // exists for: the same filename reused by a later shoot must not be forced into
 // one directory.

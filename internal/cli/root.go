@@ -14,17 +14,18 @@ import (
 
 const (
 	// CLI flags
-	flagOutputPath = "output-path"
-	flagPaths      = "paths"
-	flagYes        = "yes"
-	flagVertical   = "vertical"
-	flagRebuild    = "rebuild"
-	flagForce      = "force"
-	flagPrint      = "print"
-	flagCollapse   = "collapse-levels"
-	flagPlain      = "plain"
-	flagSPDateOnly = "saved-places-date-only"
-	flagMergeDays  = "merge-same-location-days"
+	flagOutputPath   = "output-path"
+	flagPaths        = "paths"
+	flagYes          = "yes"
+	flagVertical     = "vertical"
+	flagRebuild      = "rebuild"
+	flagForce        = "force"
+	flagPrint        = "print"
+	flagCollapse     = "collapse-levels"
+	flagPlain        = "plain"
+	flagSPDateOnly   = "saved-places-date-only"
+	flagMergeDays    = "merge-same-location-days"
+	flagPreviewsOnly = "previews-only"
 )
 
 func (a *app) newRootCmd() *cobra.Command {
