@@ -9,6 +9,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -77,11 +78,14 @@ type HomeModel struct {
 }
 
 func NewHomeModel(cfg HomeConfig) HomeModel {
+	paths := path.New()
 	ti := textinput.New()
 	ti.Prompt = lipgloss.NewStyle().Foreground(Primary).Render("» ")
-	ti.Placeholder = "~/Pictures"
+	// Home-relative and OS-separated, not a hardcoded unix path: Windows'
+	// equivalent lives under its own user profile drive, never "~/Pictures".
+	ti.Placeholder = paths.RelativeToHome(filepath.Join(paths.HomeDir, "Pictures"))
 	ti.Focus()
-	m := HomeModel{cfg: cfg, ti: ti, paths: path.New(), suggCursor: -1, sel: -1}
+	m := HomeModel{cfg: cfg, ti: ti, paths: paths, suggCursor: -1, sel: -1}
 	m.refresh()
 	return m
 }

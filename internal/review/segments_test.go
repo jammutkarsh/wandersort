@@ -101,27 +101,27 @@ func drainOpen(t *testing.T, msg tea.Msg) segmentOpenedMsg {
 	return segmentOpenedMsg{}
 }
 
-// TestPickerQuitWarnsAboutUnsavedSlices: [q] is not a save, and the whole
+// TestPickerQuitWarnsAboutUnsavedSlices: [esc] is not a save, and the whole
 // point of segmenting is that leaving early loses the slices not yet done.
 func TestPickerQuitWarnsAboutUnsavedSlices(t *testing.T) {
 	m, _ := pickerFixture(t)
 
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	p := next.(pickerModel)
 	if cmd != nil {
-		t.Fatal("first q left immediately, want a warning first")
+		t.Fatal("first esc left immediately, want a warning first")
 	}
 	if !p.statusErr || p.status == "" {
-		t.Errorf("no warning after first q: %q", p.status)
+		t.Errorf("no warning after first esc: %q", p.status)
 	}
 
-	_, cmd = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	_, cmd = p.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if cmd == nil {
-		t.Fatal("second q did not leave")
+		t.Fatal("second esc did not leave")
 	}
 	sw, ok := cmd().(tui.SwitchMsg)
 	if !ok || sw.Next != nil {
-		t.Fatalf("second q sent %#v, want a Switch(nil) handing back to the host", cmd())
+		t.Fatalf("second esc sent %#v, want a Switch(nil) handing back to the host", cmd())
 	}
 }
 
@@ -129,7 +129,7 @@ func TestPickerReopenSavedSegment(t *testing.T) {
 	m, d := pickerFixture(t)
 
 	// cursor starts on 2023, the saved one
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("R")})
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 	p := next.(pickerModel)
 	if p.statusErr {
 		t.Fatalf("reopen reported: %s", p.status)
@@ -147,7 +147,7 @@ func TestPickerReopenSavedSegment(t *testing.T) {
 
 	// the unsaved slice has nothing to re-open — say so rather than no-op
 	next, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	next, _ = next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("R")})
+	next, _ = next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 	if !next.(pickerModel).statusErr {
 		t.Error("re-opening an unsaved slice said nothing")
 	}
@@ -164,20 +164,20 @@ func TestSegmentScreenBackToPicker(t *testing.T) {
 	_, cmd := next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	s := drainOpen(t, cmd()).model.(screen)
 
-	back, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	back, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if b := back.(screen); b.confirmed {
-		t.Error("[q] confirmed the slice")
+		t.Error("[esc] confirmed the slice")
 	}
 	if cmd == nil {
-		t.Fatal("[q] went nowhere")
+		t.Fatal("[esc] went nowhere")
 	}
 	sw, ok := cmd().(tui.SwitchMsg)
 	if !ok {
-		t.Fatalf("[q] sent %#v, want a Switch", cmd())
+		t.Fatalf("[esc] sent %#v, want a Switch", cmd())
 	}
 	p, ok := sw.Next.(pickerModel)
 	if !ok {
-		t.Fatalf("[q] switched to %T, want back to the picker", sw.Next)
+		t.Fatalf("[esc] switched to %T, want back to the picker", sw.Next)
 	}
 	if p.opening {
 		t.Error("picker came back still opening — the spinner would never stop")
@@ -233,6 +233,73 @@ func drainRebuilt(t *testing.T, msg tea.Msg) rebuiltMsg {
 	}
 	t.Fatalf("got %T, want rebuiltMsg", msg)
 	return rebuiltMsg{}
+}
+
+// TestPickerRebuildIsGlobalAndAutoAsks: a settings change while the picker is
+// on screen must raise the same reset question the per-segment screen shows —
+// without this, noticing a settings change meant opening every slice by hand.
+// Answering "y" re-proposes the whole library (seg == nil), not one slice.
+func TestPickerRebuildIsGlobalAndAutoAsks(t *testing.T) {
+	m, _ := pickerFixture(t)
+
+	// no Rebuild wired up: [R] must not raise a question it can't answer
+	if next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("R")}); next.(pickerModel).askRebuild {
+		t.Fatal("[R] raised the question with no way to rebuild")
+	}
+
+	var got *vfs.Segment
+	calls := 0
+	m.o.Rebuild = func(_ context.Context, seg *vfs.Segment) ([]vfs.Node, error) {
+		got, calls = seg, calls+1
+		return nil, nil
+	}
+
+	next, _ := m.Update(SettingsChangedMsg{})
+	p := next.(pickerModel)
+	if !p.askRebuild || !p.askedBySettings {
+		t.Fatal("a settings change must raise the rebuild question")
+	}
+
+	next, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	p = next.(pickerModel)
+	if p.askRebuild || !p.rebuilding || cmd == nil {
+		t.Fatal("y must start the rebuild on that press")
+	}
+
+	msg := drainLibraryRebuilt(t, cmd())
+	if msg.err != nil {
+		t.Fatal(msg.err)
+	}
+	if calls != 1 || got != nil {
+		t.Fatalf("rebuild called %d times with seg %+v, want once with nil (library-wide)", calls, got)
+	}
+
+	final := p.rebuilt(msg)
+	if final.rebuilding {
+		t.Error("still rebuilding after the result landed")
+	}
+	if final.statusErr {
+		t.Errorf("rebuild reported an error: %s", final.status)
+	}
+}
+
+func drainLibraryRebuilt(t *testing.T, msg tea.Msg) libraryRebuiltMsg {
+	t.Helper()
+	switch m := msg.(type) {
+	case libraryRebuiltMsg:
+		return m
+	case tea.BatchMsg:
+		for _, c := range m {
+			if c == nil {
+				continue
+			}
+			if lm, ok := c().(libraryRebuiltMsg); ok {
+				return lm
+			}
+		}
+	}
+	t.Fatalf("got %T, want libraryRebuiltMsg", msg)
+	return libraryRebuiltMsg{}
 }
 
 // TestPickerReenterCountsSavedSlices: the outcome a caller reports is "did any

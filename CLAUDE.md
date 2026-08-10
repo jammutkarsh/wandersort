@@ -186,7 +186,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     the scan screen knows nothing about `DownloadMsg`), and settles it with a
     `Finished` off the blocking `Deps.Location()` getter. Step order is
     **output path, rules,
-    review segment size, collapse, then one Saved places step** whose
+    then one Saved places step** whose
     sub-fields are home town, work
     town, "group saved-place photos by date only?" and "merge consecutive
     same-location days?" — both folder questions live *after* the towns
@@ -384,13 +384,18 @@ one scan ever runs against it at a time (see "Conventions" below):
   both entry points — `Screen` and the loading screen's `treeLoadedMsg`.
   `[enter]` builds that slice's tree in a **fresh query** off the UI goroutine
   (a segment is a `taken_at` range, which is what the database is for — not a
-  filter over an already-loaded tree), `[R]` re-opens a saved one, `[q]` warns
-  once while slices are still unreviewed. The per-slice screen is the ordinary
+  filter over an already-loaded tree), `[r]` discards a saved one's approval
+  and re-opens it, `[esc]` warns once while slices are still unreviewed. `[R]`
+  is a second, library-wide question — the same reset the per-slice screen's
+  `[R]` raises, but re-proposing every unsaved slice at once, and raised
+  automatically on a settings change even while this list (not a slice) is on
+  screen, so noticing a settings change never requires opening a slice first.
+  The per-slice screen is the ordinary
   `screen` wrapper carrying `seg` (what `Confirm` approves) and `host` (the
   picker snapshot it returns to on save, via `reenter`) — which is also where
   `Outcome`/`Run` read `saved` from, since a segmented review confirms as it
-  goes rather than once at the end. **`host` is also what `[q]` inside a slice
-  goes back to** (`Model.hosted`/`back` → `screen`'s `Switch(*s.host)`): a
+  goes rather than once at the end. **`host` is also what `[esc]` inside a
+  slice goes back to** (`Model.hosted`/`back` → `screen`'s `Switch(*s.host)`): a
   reported bug — leaving a slice unsaved used to `Switch(nil)` and end the whole
   review, so a reviewer who opened the wrong year had no way back to the list
   and the remaining slices were unreachable. `open` clears `opening` on the
@@ -512,8 +517,10 @@ one scan ever runs against it at a time (see "Conventions" below):
   the surviving node's `MergedIDs`, so files sitting directly in a removed
   folder remap onto it — same machinery as merge, with `prefixRewriter`
   covering anything deeper. Both undo via `[u]`.
-  `c` **save & exit** (the only thing that writes — `q` discards, so `q`
-  with pending edits warns once and needs a second `q`; `hasEdits` is just
+  `c` **save & exit** (the only thing that writes — `ctrl+c` discards, so
+  `ctrl+c` with pending edits warns once and needs a second `ctrl+c`;
+  `esc` steps back to the time-slice picker instead, when one is hosting this
+  screen. `hasEdits` is just
   "the undo stack is non-empty", since every edit snapshots, rather than a
   flag any edit path could forget to set). `--yes` confirms the proposal
   as-is, non-interactively; `--rebuild` re-runs `vfs.Run` with the current

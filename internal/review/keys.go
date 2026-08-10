@@ -143,21 +143,8 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	m.quitWarned = m.quitWarned && (key.String() == "ctrl+c" || key.String() == "q")
+	m.quitWarned = m.quitWarned && (key.String() == "ctrl+c" || key.String() == "esc")
 	switch key.String() {
-	case "q":
-		// Only meaningful with a picker underneath: leaving one time slice is
-		// going back to the list, not ending the review.
-		if !m.hosted {
-			break
-		}
-		if m.hasEdits() && !m.quitWarned {
-			m.quitWarned = true
-			m.statusMsg, m.statusIsErr = "unsaved edits — [c] saves this slice, press q again to discard them", true
-			break
-		}
-		m.back, m.done = true, true
-		return m, nil
 	case "ctrl+c":
 		if m.hasEdits() && !m.quitWarned {
 			m.quitWarned = true
@@ -170,7 +157,25 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case "esc":
-		m.visualMode = false
+		// A live selection is the nearer thing to back out of — esc clears it
+		// first, same as it does everywhere else. A second esc (or one with
+		// nothing selected) is "go back": only meaningful with a picker
+		// underneath, since leaving one time slice is going back to the list,
+		// not ending the review.
+		if m.visualMode {
+			m.visualMode = false
+			break
+		}
+		if !m.hosted {
+			break
+		}
+		if m.hasEdits() && !m.quitWarned {
+			m.quitWarned = true
+			m.statusMsg, m.statusIsErr = "unsaved edits — [c] saves this slice, press esc again to discard them", true
+			break
+		}
+		m.back, m.done = true, true
+		return m, nil
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--

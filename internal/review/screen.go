@@ -71,7 +71,7 @@ func (s screen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if !s.inner.confirmed {
 		cleanupPreviewDirs(s.inner.previewDirs)
-		// [q] out of one slice is a step back to the picker, not the end of the
+		// [esc] out of one slice is a step back to the picker, not the end of the
 		// review — the other slices are still waiting to be looked at.
 		if s.inner.back && s.host != nil {
 			return s, tui.Switch(*s.host)

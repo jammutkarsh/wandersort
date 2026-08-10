@@ -329,11 +329,13 @@ func TestForm(t *testing.T) {
 		{"FormEmbeddedReportsDoneInsteadOfQuitting", func(t *testing.T) {
 			for _, tc := range []struct {
 				name string
-				key  tea.KeyMsg
+				keys []tea.KeyMsg
 			}{
-				{"abort", tea.KeyMsg{Type: tea.KeyCtrlC}},
-				{"save & exit", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}},
-				{"last field", tea.KeyMsg{Type: tea.KeyEnter}},
+				{"abort", []tea.KeyMsg{{Type: tea.KeyCtrlC}}},
+				// esc raises the Save/Discard question rather than saving
+				// straight away — "y" answers Save.
+				{"save & exit", []tea.KeyMsg{{Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune("y")}}},
+				{"last field", []tea.KeyMsg{{Type: tea.KeyEnter}}},
 			} {
 				saved := false
 				yes := true
@@ -341,10 +343,14 @@ func TestForm(t *testing.T) {
 					func() error { saved = true; return nil })
 				m.Embedded = true
 
-				next, cmd := m.Update(tc.key)
-				fm := next.(FormModel)
-				if cmd != nil {
-					t.Errorf("%s: embedded form returned a cmd (%v), want none", tc.name, flattenCmd(cmd))
+				var fm FormModel
+				for _, key := range tc.keys {
+					next, cmd := m.Update(key)
+					fm = next.(FormModel)
+					if cmd != nil {
+						t.Errorf("%s: embedded form returned a cmd (%v), want none", tc.name, flattenCmd(cmd))
+					}
+					m = fm
 				}
 				if !fm.Done() {
 					t.Errorf("%s: embedded form should report Done()", tc.name)
@@ -358,6 +364,63 @@ func TestForm(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
 	}
+}
+
+// TestFormExitAskDiscardVsSave: esc raises the Save/Discard question instead
+// of saving straight away, and the two answers actually differ — a reported
+// risk with the old "esc == save" binding was leaving unintentionally
+// persisting whatever was typed.
+func TestFormExitAskDiscardVsSave(t *testing.T) {
+	newForm := func() (FormModel, *bool) {
+		saved := false
+		yes := true
+		m := NewFormModel([]*Field{{Kind: FieldConfirm, Title: "Only step", BoolValue: &yes}},
+			func() error { saved = true; return nil })
+		m.Embedded = true
+		return m, &saved
+	}
+
+	t.Run("esc alone only asks, does not save", func(t *testing.T) {
+		m, saved := newForm()
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		fm := next.(FormModel)
+		if fm.Done() || *saved {
+			t.Error("esc must raise the question, not save or exit on its own")
+		}
+		if !fm.askExit {
+			t.Error("esc must set askExit")
+		}
+	})
+
+	t.Run("n discards without saving", func(t *testing.T) {
+		m, saved := newForm()
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		next, _ = next.(FormModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+		fm := next.(FormModel)
+		if !fm.Done() || !fm.IsAborted() || *saved {
+			t.Errorf("n must abort without saving: done=%v aborted=%v saved=%v", fm.Done(), fm.IsAborted(), *saved)
+		}
+	})
+
+	t.Run("y saves", func(t *testing.T) {
+		m, saved := newForm()
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		next, _ = next.(FormModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+		fm := next.(FormModel)
+		if !fm.Done() || fm.IsAborted() || !*saved {
+			t.Errorf("y must save and exit: done=%v aborted=%v saved=%v", fm.Done(), fm.IsAborted(), *saved)
+		}
+	})
+
+	t.Run("ctrl+c bypasses the question and discards immediately", func(t *testing.T) {
+		m, saved := newForm()
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		next, _ = next.(FormModel).Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		fm := next.(FormModel)
+		if !fm.Done() || !fm.IsAborted() || *saved {
+			t.Error("ctrl+c must discard immediately, even with the question up")
+		}
+	})
 }
 
 // A description wraps to the body width instead of losing its tail to

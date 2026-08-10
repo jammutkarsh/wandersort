@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -85,6 +84,9 @@ func (a *app) runConfig(cmd *cobra.Command) error {
 // values) and a save closure that writes them to ~/.wandersort/config.yaml.
 func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
 	g, _ := a.Config.Load()
+	// Not a wizard field (env var SEGMENT_MONTHS only) — round-tripped as-is so
+	// a save never resets it to auto.
+	segmentMonths := g.SegmentMonths
 
 	out := g.OutputPath
 	if out == "" {
@@ -93,10 +95,6 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 	groupBy := append([]string{}, a.Config.Rules...)
 	if len(groupBy) == 0 {
 		groupBy = []string{vfs.RuleDate, vfs.RuleLocation} // sensible default
-	}
-	segment := "auto"
-	if a.Config.SegmentMonths > 0 {
-		segment = strconv.Itoa(a.Config.SegmentMonths)
 	}
 	collapse := a.Config.CollapseLevels
 	mergeDays := a.Config.MergeSameLocationDays
@@ -198,15 +196,6 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 		},
 		rulesField,
 		{
-			Kind:  tui.FieldInput,
-			Title: "Review segment size",
-			Description: "Big libraries are reviewed in time slices, saved one at a time.\n" +
-				"  auto = years when your photos span more than 3 years, else half-years.\n" +
-				"  Or set the months per slice: 3, 6 or 12.",
-			Value:     &segment,
-			Validator: segmentValidator,
-		},
-		{
 			Kind:        tui.FieldGroup,
 			Title:       "Saved places",
 			Description: "The everyday places you shoot from, and how their photos are foldered.",
@@ -270,8 +259,8 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 			CollapseLevels:        collapse,
 			SavedPlacesDateOnly:   spDateOnly,
 			MergeSameLocationDays: mergeDays,
+			SegmentMonths:         segmentMonths,
 		}
-		g.SegmentMonths, _ = strconv.Atoi(strings.TrimSpace(segment)) // "auto" → 0
 		// Canonicalize towns to the exact geonames spelling before saving.
 		g.SavedPlaces = []string{canonicalTownOrTyped(home), canonicalTownOrTyped(work)}
 		if err := a.Config.Save(g); err != nil {
@@ -280,17 +269,6 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 		return nil
 	}
 	return fields, save
-}
-
-// segmentValidator accepts the review's slice sizes: "auto", or one of the
-// calendar-aligned month counts vfs.Segments buckets by. Anything else would
-// silently save as 0 (auto) and look like the field did nothing.
-func segmentValidator(s string) error {
-	switch strings.TrimSpace(s) {
-	case "auto", "3", "6", "12":
-		return nil
-	}
-	return fmt.Errorf("must be auto, 3, 6 or 12")
 }
 
 // configExamples renders the wizard's live tree previews and their paired description text.

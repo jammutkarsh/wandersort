@@ -115,6 +115,11 @@ type FormModel struct {
 	// tab. Same shape as the review model's own embedded mode.
 	Embedded bool
 	done     bool
+
+	// askExit is [esc]'s question — save what's been entered, or throw it
+	// away — raised instead of assuming "save" the moment someone wants out.
+	askExit    bool
+	exitChoice bool // true = Save, false = Discard; which button is under the cursor
 }
 
 // Done reports that an embedded form has finished — saved, submitted, or
@@ -202,16 +207,22 @@ func (m FormModel) Init() tea.Cmd {
 func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// The question owns the keyboard until answered — everything below,
+		// including a FieldConfirm's own "y"/"n", would otherwise race it.
+		if m.askExit {
+			return m.answerExitAsk(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			m.aborted = true
 			return m.finish()
-		case "c":
-			// save & exit: same key as the review TUI, for changing one setting
-			// without clicking through every step
-			if !m.inputFocused() {
-				return m.saveAndExit()
-			}
+		case "esc":
+			// Unlike "c", esc is never a character someone would type into a
+			// field, so it works the same whether an input is focused or not.
+			// It doesn't save straight away — leaving is worth one question,
+			// not an assumed "yes".
+			m.askExit, m.exitChoice = true, true
+			return m, nil
 		case "enter":
 			// an arrowed-onto suggestion: pick it instead of advancing
 			if m.suggCursor >= 0 && m.suggCursor < len(m.sugg) && m.inputFocused() {
@@ -375,6 +386,9 @@ func (m *FormModel) refreshSuggestions() {
 // fields still to come sit dimmed below. The stack itself is the progress
 // indicator — no step counter needed.
 func (m FormModel) View() string {
+	if m.askExit {
+		return m.exitAskView()
+	}
 	rows := make([]string, 0, len(m.Fields))
 	for i, f := range m.Fields {
 		switch {
@@ -743,7 +757,7 @@ func (m FormModel) renderFooter() string {
 		return ""
 	}
 	if m.awaitReason() != "" {
-		return Footer(KeyHint("c", "save & exit")+"   "+KeyHint("ctrl+c", "discard & exit"), m.w)
+		return Footer(KeyHint("esc", "exit config")+"   "+KeyHint("ctrl+c", "discard & exit config"), m.w)
 	}
 	field := m.active()
 	if field == nil {
@@ -775,7 +789,7 @@ func (m FormModel) renderFooter() string {
 	}
 	// ctrl+c aborts without writing anything — the wizard's only exit that
 	// isn't a save, and one nothing on screen said out loud until now.
-	hints = append(hints, KeyHint("c", "save & exit"), KeyHint("ctrl+c", "discard & exit"))
+	hints = append(hints, KeyHint("esc", "exit config"), KeyHint("ctrl+c", "discard & exit config"))
 	return Footer(strings.Join(hints, "   "), m.w)
 }
 
@@ -822,6 +836,49 @@ func (m FormModel) moveNext() (tea.Model, tea.Cmd) {
 	}
 	m.seedInput()
 	return m, textinput.Blink
+}
+
+// exitAskView is [esc]'s question, drawn as the same full-screen dialog
+// ConfirmModel renders everywhere else — with its buttons relabelled, since
+// "Save"/"Discard" says what leaving actually does, unlike a bare yes/no.
+func (m FormModel) exitAskView() string {
+	choice := m.exitChoice
+	c := NewConfirmModel("Save your changes?",
+		"Keep what you've entered so far, or leave without saving it.", &choice)
+	c.YesLabel, c.NoLabel = "Save", "Discard"
+	sized, _ := c.Update(tea.WindowSizeMsg{Width: m.w, Height: m.h})
+	return sized.View()
+}
+
+// answerExitAsk drives the [esc] modal: the same keys ConfirmModel answers,
+// since that is what it is drawn as (see exitAskView). ctrl+c still falls
+// through to a plain discard — the modal is a considered choice, not another
+// wall to escape from.
+func (m FormModel) answerExitAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "ctrl+c":
+		m.aborted = true
+		return m.finish()
+	case "left", "h":
+		m.exitChoice = true
+	case "right", "l":
+		m.exitChoice = false
+	case "y":
+		m.askExit = false
+		return m.saveAndExit()
+	case "n", "esc":
+		m.askExit = false
+		m.aborted = true
+		return m.finish()
+	case "enter":
+		m.askExit = false
+		if m.exitChoice {
+			return m.saveAndExit()
+		}
+		m.aborted = true
+		return m.finish()
+	}
+	return m, nil
 }
 
 // saveAndExit commits the active input and submits the form right away,
@@ -884,8 +941,26 @@ type ConfirmModel struct {
 	Title       string
 	Description string
 	Value       *bool
-	w, h        int
-	aborted     bool
+	// YesLabel/NoLabel override the button text — "yes"/"no" by default.
+	// A caller whose choice isn't literally yes/no (e.g. Save vs Discard)
+	// sets these instead of drawing its own modal.
+	YesLabel, NoLabel string
+	w, h              int
+	aborted           bool
+}
+
+func (m ConfirmModel) yesLabel() string {
+	if m.YesLabel != "" {
+		return m.YesLabel
+	}
+	return "yes"
+}
+
+func (m ConfirmModel) noLabel() string {
+	if m.NoLabel != "" {
+		return m.NoLabel
+	}
+	return "no"
 }
 
 func NewConfirmModel(title, description string, value *bool) ConfirmModel {
@@ -940,16 +1015,17 @@ func (m ConfirmModel) View() string {
 		title += "\n\n" + DimText.Render(m.Description)
 	}
 
+	yes, no := m.yesLabel(), m.noLabel()
 	var buttons string
 	if m.Value != nil && *m.Value {
-		buttons = OK.Render("yes") + "  " + DimText.Render("no")
+		buttons = OK.Render(yes) + "  " + DimText.Render(no)
 	} else {
-		buttons = DimText.Render("yes") + "  " + Bad.Render("no")
+		buttons = DimText.Render(yes) + "  " + Bad.Render(no)
 	}
 
 	content := title + "\n\n" + buttons
 	body := lipgloss.NewStyle().Padding(1).Render(content)
-	footer := Footer(fmt.Sprintf("%s / %s", KeyHint("y", "yes"), KeyHint("n", "no")), m.w)
+	footer := Footer(fmt.Sprintf("%s / %s", KeyHint("y", yes), KeyHint("n", no)), m.w)
 	return Screen(body, footer, m.h)
 }
 

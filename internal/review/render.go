@@ -168,11 +168,11 @@ func (m Model) keyHelp() string {
 		hints = append(hints, tui.KeyHint("R", "reset plan"))
 	}
 	hints = append(hints, tui.KeyHint("c", "save & exit"))
-	// With a picker underneath, [q] and ctrl+c are different exits — one steps
+	// With a picker underneath, [esc] and ctrl+c are different exits — one steps
 	// back a screen, the other ends the review — so the labels have to say which.
 	if m.hosted {
 		hints = append(hints,
-			tui.KeyHint("q", "back to time slices"),
+			tui.KeyHint("esc", "back to time slices"),
 			tui.KeyHint("ctrl+c", "quit review"))
 	} else {
 		hints = append(hints, tui.KeyHint("ctrl+c", "discard & exit"))
@@ -257,7 +257,7 @@ func (m Model) helpView() string {
 	}
 	if m.hosted {
 		sections[len(sections)-1].keys = append(sections[len(sections)-1].keys,
-			key{"q", "back to the time slices, without saving this one"})
+			key{"esc", "back to the time slices, without saving this one"})
 	}
 
 	var b strings.Builder
