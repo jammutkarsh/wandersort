@@ -184,11 +184,17 @@ type Model struct {
 	// seg is that slice as the database knows it, so [R] can re-propose without
 	// widening this screen to the whole library.
 	seg *vfs.Segment
-	// hosted is "a segment picker is underneath this screen": [q] goes back to
-	// it instead of ending the review.
+	// hosted is "a segment picker is underneath this screen": discarding via
+	// [esc] goes back to it instead of ending the review.
 	hosted bool
-	// back is [q]'s answer — done without confirming, but not a quit.
+	// back is a discard's answer when hosted — done without confirming, but
+	// not a quit.
 	back bool
+	// askExit is [esc]'s question — save this plan, or throw the edits away —
+	// raised on every [esc] rather than assuming either answer. A second
+	// [esc] inside it forcefully discards; ctrl+c does too.
+	askExit    bool
+	exitChoice bool // true = Save, false = Discard; which button is under the cursor
 
 	ctx      context.Context
 	db       *db.DB

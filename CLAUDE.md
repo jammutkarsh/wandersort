@@ -143,7 +143,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     scan is running** — that run replaces the proposal wholesale, so the tree
     on disk is about to be stale. `ctrl+t` into a reviewable-but-unprefetched
     tab runs `openReview` (the same `ensureOutput` + optional rebuild +
-    `newReviewScreen` cmd `ctrl+r` on the home screen and `wandersort review`
+    `newReviewScreen` cmd `ctrl+t` and `wandersort review`
     use) and **leaves the tab where it is until
     the screen lands**, so there is never a blank frame. The tab bar's
     `✓ ready` follows `canReview`, not `reviewReady`, for the same reason: a
@@ -384,8 +384,9 @@ one scan ever runs against it at a time (see "Conventions" below):
   both entry points — `Screen` and the loading screen's `treeLoadedMsg`.
   `[enter]` builds that slice's tree in a **fresh query** off the UI goroutine
   (a segment is a `taken_at` range, which is what the database is for — not a
-  filter over an already-loaded tree), `[r]` discards a saved one's approval
-  and re-opens it, `[esc]` warns once while slices are still unreviewed. `[R]`
+  filter over an already-loaded tree), `[ctrl+x]` discards a saved one's
+  approval and re-opens it, `[esc]` warns once while slices are still
+  unreviewed. `[R]`
   is a second, library-wide question — the same reset the per-slice screen's
   `[R]` raises, but re-proposing every unsaved slice at once, and raised
   automatically on a settings change even while this list (not a slice) is on
@@ -517,12 +518,18 @@ one scan ever runs against it at a time (see "Conventions" below):
   the surviving node's `MergedIDs`, so files sitting directly in a removed
   folder remap onto it — same machinery as merge, with `prefixRewriter`
   covering anything deeper. Both undo via `[u]`.
-  `c` **save & exit** (the only thing that writes — `ctrl+c` discards, so
-  `ctrl+c` with pending edits warns once and needs a second `ctrl+c`;
-  `esc` steps back to the time-slice picker instead, when one is hosting this
-  screen. `hasEdits` is just
-  "the undo stack is non-empty", since every edit snapshots, rather than a
-  flag any edit path could forget to set). `--yes` confirms the proposal
+  **`esc` is the only way out, and the only thing that writes** — there is no
+  separate save key any more. It always raises a full-screen Save/Discard ask
+  (`askExit`/`exitChoice`, drawn the same way the config wizard's own `[esc]`
+  ask is): `[enter]` accepts the highlighted default (Save — approving the
+  proposal exactly as offered still needs a key, edits or not), a second
+  `[esc]` inside it forcefully discards. Save hosted goes back to the
+  time-slice picker with this slice approved (`reenter`); Discard hosted goes
+  back with it still unreviewed (`back`); neither hosted just ends the review.
+  `ctrl+c` is the unconditional escape hatch — never saves, warns once
+  (`hasEdits` is just "the undo stack is non-empty", since every edit
+  snapshots) and needs a second `ctrl+c` to actually discard and leave.
+  `--yes` confirms the proposal
   as-is, non-interactively; `--rebuild` re-runs `vfs.Run` with the current
   `config.yaml` `rules` *before* reviewing, so a config change
   re-proposes the hierarchy without a re-scan or re-hash (editing
@@ -1135,30 +1142,31 @@ raise the reset prompt.
   is what keeps folders with spaces working with no quoting or comma-escaping.
   Folders are held expanded (the scan needs real paths) and rendered back
   through `path.RelativeToHome`, the way they were typed and the way every
-  completion offers them. `↑` walks out of the input and up into the folders
-  already added (`sel`, `-1` = typing) — but only once the completion dropdown
-  is out of the way, since `↑` is the dropdown's key first; on a folder,
-  `enter` lifts it back into the input to correct and `ctrl+x` drops that one
-  rather than blindly the last. The input is blurred while a folder is
-  selected, since two cursors on screen reads as a bug, and any ordinary
-  keystroke returns to typing so a key never lands somewhere invisible;
-  shell-style directory completion through the injected `HomeConfig.Suggest`
+  completion offers them. `↑` pulls the most recently added folder straight
+  back into the input to edit — one key, not select-then-enter — but only
+  once the completion dropdown is out of the way, since `↑` is the dropdown's
+  key first; `ctrl+x` drops the last folder outright. There is no
+  select-cursor state at all: editing removes the folder from the list
+  immediately, so there's nothing left to have a cursor on.
+  Force re-scan (`ctrl+g`) asks first, and that ask takes only `[enter]`
+  (confirm) and `[esc]` (cancel) — a decision that re-reads every file from
+  disk gets exactly two keys, no `y`/`n`, no arrows (`ConfirmModel.Keys`
+  overrides the modal's default `y`/`n` footer for this one). Ctrl+t already
+  reaches the review tab, so there is no separate review key here.
+  Shell-style directory completion through the injected `HomeConfig.Suggest`
   (`cli.suggestDirs`, shared with the wizard's output-path field), `StartScanMsg`
-  on an empty enter, `OpenReviewMsg` on `ctrl+r`, and `HomeErrMsg` so a held
+  on an empty enter, and `HomeErrMsg` so a held
   output lock renders on the screen instead of taking the app down. Every
   command is ctrl-chorded because the input is always focused, so letters are
   ordinary text; completions are refreshed synchronously — they read the local
   filesystem, so the wizard's debounce would buy nothing), and shared chrome
   (`Banner`/`Footer`/`KeyHint`/`Screen`).
-  `ScanConfig.AutoReview` switches straight into the prefetched review instead
-  of asking: a scan is run in order to review it, and the session continues
-  afterwards either way, so the y/n prompt was one keypress between the user
-  and the thing they asked for. Every scan is a shell tab now, so it is always
-  on — `wandersort scan -p …` lands in the review too. Mid-scan `ctrl+c` is warn-once-then-act: the first press cancels and
+  The scan screen switches straight into the prefetched review the moment
+  it's ready — a scan is run in order to review it, and the session continues
+  afterwards either way, so there is no "continue?" prompt in the way.
+  Mid-scan `ctrl+c` is warn-once-then-act: the first press cancels and
   says what that costs, a second gives up on a pipeline that won't unwind.
-  **`ctrl+c` is the one quit key on every screen** — the post-scan prompt's
-  `[n] quit` was the last holdout and is gone; `[y]` still opens the review.
-  (`ConfirmModel`'s `y`/`n` stays: that is a yes/no question, not a way out.)
+  **`ctrl+c` is the one quit key on every screen.**
   `ConfirmModel` quits its own program on an answer, which is right for
   `reset`; a screen that wants the question *inside* itself — the review's
   rebuild modal — drives its own keys and uses `ConfirmModel` for the layout

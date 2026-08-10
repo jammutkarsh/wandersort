@@ -556,9 +556,8 @@ func (m shellModel) tabBar() string {
 func (a *app) newHomeScreen(lastScan []string) tui.HomeModel {
 	paths := path.New()
 	return tui.NewHomeModel(tui.HomeConfig{
-		Suggest:     func(typed string) []string { return suggestDirs(paths, typed) },
-		HasProposal: a.hasProposal(),
-		LastScan:    lastScan,
+		Suggest:  func(typed string) []string { return suggestDirs(paths, typed) },
+		LastScan: lastScan,
 	})
 }
 
@@ -577,9 +576,6 @@ func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, path
 		},
 		Cancel:     cancel,
 		ReviewNext: func() (tea.Model, error) { return a.newReviewScreen(ctx) },
-		// The whole point of the shell is to land in review; the session
-		// continues afterwards, so there is nothing to ask about.
-		AutoReview: true,
 	})
 }
 

@@ -1174,9 +1174,10 @@ func TestReview(t *testing.T) {
 			}
 		}},
 		// TestScreenFinalizesOnConfirm drives the embedded review's whole
-		// save-and-exit path: pressing [c] marks it done+confirmed, screen.Update
-		// kicks off finalize() (vfs.Confirm against the real DB), and the
-		// resulting finalizeMsg carries no error when the write succeeds.
+		// save-and-exit path: [esc] raises the ask, [enter] accepts the
+		// default "Save" choice, screen.Update kicks off finalize()
+		// (vfs.Confirm against the real DB), and the resulting finalizeMsg
+		// carries no error when the write succeeds.
 		{"ScreenFinalizesOnConfirm", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
@@ -1184,10 +1185,11 @@ func TestReview(t *testing.T) {
 
 			s := Screen(ctx, Options{DB: d, Tree: sampleTree(), Log: logger.NewNoopLogger(), OutputDir: t.TempDir()})
 
-			next, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+			next, _ := s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			next, cmd := next.(screen).Update(tea.KeyMsg{Type: tea.KeyEnter})
 			sm := next.(screen)
 			if !sm.finalizing {
-				t.Fatal("expected finalizing = true right after [c]")
+				t.Fatal("expected finalizing = true right after [esc][enter]")
 			}
 			if cmd == nil {
 				t.Fatal("expected a non-nil finalize Cmd")
@@ -1207,6 +1209,27 @@ func TestReview(t *testing.T) {
 				t.Errorf("Outcome(fs) = (%v, %v, %v), want (true, nil, true)", confirmed, err, ok)
 			}
 		}},
+		// TestExitAskAnswersYAndN covers the footer's own promise: the modal
+		// renders "y Save / n Discard" (ConfirmModel's default hint), so both
+		// keys have to actually drive the same answers [enter]/[esc] do.
+		{"ExitAskAnswersYAndN", func(t *testing.T) {
+			m := newModel(sampleTree(), nil, nil, nil, nil)
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			next, _ = next.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+			ym := next.(Model)
+			if !ym.confirmed || !ym.done || ym.askExit {
+				t.Errorf("[esc][y] = confirmed=%v done=%v askExit=%v, want (true, true, false)",
+					ym.confirmed, ym.done, ym.askExit)
+			}
+
+			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			next, _ = next.(Model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+			nm := next.(Model)
+			if nm.confirmed || !nm.done || nm.askExit {
+				t.Errorf("[esc][n] = confirmed=%v done=%v askExit=%v, want (false, true, false)",
+					nm.confirmed, nm.done, nm.askExit)
+			}
+		}},
 		// TestScreenFinalizeReportsConfirmError covers the failure branch: no
 		// proposal at all in the DB means vfs.Confirm returns ErrNoProposal, and
 		// that error must surface through Outcome rather than being swallowed.
@@ -1215,12 +1238,13 @@ func TestReview(t *testing.T) {
 			d := dbtest.New(t) // no virtual_fs_entries rows at all
 
 			s := Screen(ctx, Options{DB: d, Tree: sampleTree(), Log: logger.NewNoopLogger(), OutputDir: t.TempDir()})
-			next, _ := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+			next, _ := s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			next, _ = next.(screen).Update(tea.KeyMsg{Type: tea.KeyEnter})
 			sm := next.(screen)
 
 			final, _ := sm.Update(finalizeMsg{err: vfs.ErrNoProposal})
 			fs := final.(screen)
-			// confirmed reflects that the reviewer chose to save (pressed [c]),
+			// confirmed reflects that the reviewer chose to save ([esc][enter]),
 			// set the moment finalizing starts — independent of whether the write
 			// itself then succeeds. finalErr is what actually failed.
 			confirmed, err, ok := Outcome(fs)

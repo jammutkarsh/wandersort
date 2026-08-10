@@ -17,6 +17,9 @@ import (
 )
 
 func (m Model) View() string {
+	if m.askExit {
+		return m.exitAskView()
+	}
 	if m.askRebuild {
 		return m.rebuildAskView()
 	}
@@ -167,16 +170,7 @@ func (m Model) keyHelp() string {
 	if m.rebuild != nil {
 		hints = append(hints, tui.KeyHint("R", "reset plan"))
 	}
-	hints = append(hints, tui.KeyHint("c", "save & exit"))
-	// With a picker underneath, [esc] and ctrl+c are different exits — one steps
-	// back a screen, the other ends the review — so the labels have to say which.
-	if m.hosted {
-		hints = append(hints,
-			tui.KeyHint("esc", "back to time slices"),
-			tui.KeyHint("ctrl+c", "quit review"))
-	} else {
-		hints = append(hints, tui.KeyHint("ctrl+c", "discard & exit"))
-	}
+	hints = append(hints, tui.KeyHint("esc", "save or discard & leave"), tui.KeyHint("ctrl+c", "discard & exit"))
 	hints = append(hints, tui.KeyHint("?", "help"))
 	return strings.Join(hints, "   ")
 }
@@ -226,6 +220,24 @@ func (m Model) rebuildAskText() string {
 	return text
 }
 
+// exitAskView is [esc]'s question, drawn as the same full-screen dialog the
+// config wizard's own exit ask uses — "Save"/"Discard" says what leaving
+// actually does, unlike a bare yes/no. Save writes the plan even with nothing
+// edited: approving a proposal exactly as offered still needs a key now that
+// [c] is gone.
+func (m Model) exitAskView() string {
+	choice := m.exitChoice
+	what := "review"
+	if m.hosted {
+		what = "time slice"
+	}
+	c := tui.NewConfirmModel("Save your changes?",
+		"Keep the plan as edited and approve this "+what+", or leave without saving it.", &choice)
+	c.YesLabel, c.NoLabel = "Save", "Discard"
+	sized, _ := c.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	return sized.View()
+}
+
 // helpView is the full-screen key reference behind [?] — the footer names the
 // keys, this explains them. Any key returns to the tree.
 func (m Model) helpView() string {
@@ -235,7 +247,7 @@ func (m Model) helpView() string {
 		keys  []key
 	}{
 		{"Moving", []key{
-			{"↑/↓  j/k", "move one row"},
+			{"↑/↓", "move one row"},
 			{"n / N", "next / previous folder at the same depth — crosses into other branches"},
 		}},
 		{"Naming", []key{
@@ -251,13 +263,9 @@ func (m Model) helpView() string {
 		}},
 		{"Leaving", []key{
 			{"p", "peek — copies a sample of the folder's files and opens them (read-only)"},
-			{"c", "save the plan and exit — the only key that writes anything"},
-			{"ctrl+c", "exit without saving (warns once if you have unsaved edits)"},
+			{"esc", "leave — asks to save or discard; press esc again there to discard"},
+			{"ctrl+c", "discard and exit the program immediately — never just a step back"},
 		}},
-	}
-	if m.hosted {
-		sections[len(sections)-1].keys = append(sections[len(sections)-1].keys,
-			key{"esc", "back to the time slices, without saving this one"})
 	}
 
 	var b strings.Builder

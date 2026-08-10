@@ -267,12 +267,12 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch field.Kind {
 			case FieldMultiSelect:
 				switch msg.String() {
-				case "up", "k":
+				case "up":
 					if m.multiCursor > 0 {
 						m.multiCursor--
 					}
 					return m, nil
-				case "down", "j":
+				case "down":
 					if m.multiCursor < len(field.Options)-1 {
 						m.multiCursor++
 					}
@@ -297,12 +297,12 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m.moveNext()
 				// "yes" renders above "no" — both arrow pairs must match.
-				case "up", "k", "left", "h":
+				case "up", "left":
 					if field.BoolValue != nil {
 						*field.BoolValue = true
 					}
 					return m, nil
-				case "down", "j", "right", "l":
+				case "down", "right":
 					if field.BoolValue != nil {
 						*field.BoolValue = false
 					}
@@ -859,9 +859,9 @@ func (m FormModel) answerExitAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		m.aborted = true
 		return m.finish()
-	case "left", "h":
+	case "left":
 		m.exitChoice = true
-	case "right", "l":
+	case "right":
 		m.exitChoice = false
 	case "y":
 		m.askExit = false
@@ -945,8 +945,12 @@ type ConfirmModel struct {
 	// A caller whose choice isn't literally yes/no (e.g. Save vs Discard)
 	// sets these instead of drawing its own modal.
 	YesLabel, NoLabel string
-	w, h              int
-	aborted           bool
+	// Keys overrides the footer's key hints — "y / n" by default. A caller
+	// that doesn't drive this modal with y/n (only its own View() is used;
+	// see the force re-scan and review exit dialogs) sets this instead.
+	Keys    string
+	w, h    int
+	aborted bool
 }
 
 func (m ConfirmModel) yesLabel() string {
@@ -993,11 +997,11 @@ func (m ConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		// "yes" renders on the left, "no" on the right.
-		case "left", "h":
+		case "left":
 			if m.Value != nil {
 				*m.Value = true
 			}
-		case "right", "l":
+		case "right":
 			if m.Value != nil {
 				*m.Value = false
 			}
@@ -1025,8 +1029,11 @@ func (m ConfirmModel) View() string {
 
 	content := title + "\n\n" + buttons
 	body := lipgloss.NewStyle().Padding(1).Render(content)
-	footer := Footer(fmt.Sprintf("%s / %s", KeyHint("y", yes), KeyHint("n", no)), m.w)
-	return Screen(body, footer, m.h)
+	keys := m.Keys
+	if keys == "" {
+		keys = fmt.Sprintf("%s / %s", KeyHint("y", yes), KeyHint("n", no))
+	}
+	return Screen(body, Footer(keys, m.w), m.h)
 }
 
 func (m ConfirmModel) IsAborted() bool {

@@ -53,9 +53,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // the question has to be answered, not scrolled past.
 func (m Model) answerRebuildAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
-	case "left", "h":
+	case "left":
 		m.rebuildChoice = true
-	case "right", "l":
+	case "right":
 		m.rebuildChoice = false
 	case "y":
 		return m.startRebuild()
@@ -68,6 +68,75 @@ func (m Model) answerRebuildAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.askRebuild = false
 	}
 	return m, nil
+}
+
+// answerExitAsk drives [esc]'s Save/Discard modal — the same shape as the
+// config wizard's own exit ask, and the same keys tui.ConfirmModel answers
+// with. A second [esc] here forcefully discards, no second-guessing needed:
+// the modal itself was the warning. ctrl+c inside it is the harder "get me
+// out" — it never backs to the picker, unlike Discard (see hardQuit).
+func (m Model) answerExitAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "ctrl+c":
+		m.askExit = false
+		return m.hardQuit()
+	case "left":
+		m.exitChoice = true
+	case "right":
+		m.exitChoice = false
+	case "y":
+		m.askExit = false
+		return m.saveAndExit()
+	case "n":
+		m.askExit = false
+		return m.discardAndExit()
+	case "enter":
+		m.askExit = false
+		if m.exitChoice {
+			return m.saveAndExit()
+		}
+		return m.discardAndExit()
+	case "esc":
+		m.askExit = false
+		return m.discardAndExit()
+	}
+	return m, nil
+}
+
+// saveAndExit is [esc]'s "Save" answer: the only way this screen writes
+// anything, whether or not there was anything to edit in the first place —
+// a reviewer approving the proposal exactly as offered still needs a key.
+func (m Model) saveAndExit() (tea.Model, tea.Cmd) {
+	m.confirmed, m.done = true, true
+	if m.embedded {
+		return m, nil
+	}
+	return m, tea.Quit
+}
+
+// discardAndExit is [esc]'s "Discard" answer: hosted, that's a step back to
+// the time-slice picker (the other slices are still waiting); otherwise the
+// review just ends with nothing written.
+func (m Model) discardAndExit() (tea.Model, tea.Cmd) {
+	m.done = true
+	if m.hosted {
+		m.back = true
+	}
+	if m.embedded {
+		return m, nil
+	}
+	return m, tea.Quit
+}
+
+// hardQuit is ctrl+c's unconditional exit — never a step back to the picker,
+// even hosted: "ctrl+c anywhere quits the app" is the one guarantee it makes,
+// and honoring `hosted` here would break it.
+func (m Model) hardQuit() (tea.Model, tea.Cmd) {
+	m.done = true
+	if m.embedded {
+		return m, nil
+	}
+	return m, tea.Quit
 }
 
 // startRebuild runs the host's rebuild off the UI goroutine, behind the same
@@ -137,50 +206,46 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.answerRebuildAsk(key)
 	}
 
+	// Same shape for the exit question, except ctrl+c inside it is a hard
+	// discard rather than a fall-through — the modal is already the warning,
+	// so a second wait-and-warn cycle behind it would just trap the reviewer.
+	if m.askExit {
+		return m.answerExitAsk(key)
+	}
+
 	if m.showHelp {
 		m.showHelp = false
 		return m, nil
 	}
 
 	var cmd tea.Cmd
-	m.quitWarned = m.quitWarned && (key.String() == "ctrl+c" || key.String() == "esc")
+	m.quitWarned = m.quitWarned && key.String() == "ctrl+c"
 	switch key.String() {
 	case "ctrl+c":
+		// ctrl+c never saves — it's the unconditional discard, warned once so
+		// an accidental press doesn't throw work away.
 		if m.hasEdits() && !m.quitWarned {
 			m.quitWarned = true
-			m.statusMsg, m.statusIsErr = "unsaved changes — [c] saves and exits, press ctrl+c again to discard them", true
+			m.statusMsg, m.statusIsErr = "unsaved changes — press esc to save or discard them, or ctrl+c again to discard immediately", true
 			break
 		}
-		m.done = true
-		if m.embedded {
-			return m, nil
-		}
-		return m, tea.Quit
+		return m.hardQuit()
 	case "esc":
 		// A live selection is the nearer thing to back out of — esc clears it
-		// first, same as it does everywhere else. A second esc (or one with
-		// nothing selected) is "go back": only meaningful with a picker
-		// underneath, since leaving one time slice is going back to the list,
-		// not ending the review.
+		// first, same as it does everywhere else. Otherwise esc always raises
+		// the save-or-discard question — even with nothing edited, since
+		// approving the proposal exactly as offered still needs a key.
 		if m.visualMode {
 			m.visualMode = false
 			break
 		}
-		if !m.hosted {
-			break
-		}
-		if m.hasEdits() && !m.quitWarned {
-			m.quitWarned = true
-			m.statusMsg, m.statusIsErr = "unsaved edits — [c] saves this slice, press esc again to discard them", true
-			break
-		}
-		m.back, m.done = true, true
+		m.askExit, m.exitChoice = true, true
 		return m, nil
-	case "up", "k":
+	case "up":
 		if m.cursor > 0 {
 			m.cursor--
 		}
-	case "down", "j":
+	case "down":
 		if m.cursor < len(m.rows)-1 {
 			m.cursor++
 		}
@@ -237,13 +302,6 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusMsg, m.statusIsErr = "nothing left to undo", true
 		}
-	case "c":
-		m.confirmed = true
-		m.done = true
-		if m.embedded {
-			return m, nil
-		}
-		return m, tea.Quit
 	}
 	m.scrollIntoView()
 	return m, cmd

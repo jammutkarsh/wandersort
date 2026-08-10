@@ -62,16 +62,11 @@ type ScanConfig struct {
 	Pipeline func() error
 	// Cancel cancels the pipeline context on ctrl+c.
 	Cancel context.CancelFunc
-	// ReviewNext builds the review screen for the post-scan "continue?" prompt.
-	// nil (or an error) means no in-program review — the screen just exits.
+	// ReviewNext builds the review screen, switched into the moment it's ready.
+	// A scan is run in order to review it, and the shell keeps the session
+	// alive afterwards, so there's no "continue?" prompt in the way — nil (or
+	// an error) means no in-program review, and the screen just sits finished.
 	ReviewNext func() (tea.Model, error)
-	// AutoReview switches into the review screen the moment it's ready instead
-	// of asking. A scan is run in order to review it, and the shell keeps the
-	// session alive afterwards, so the y/n prompt is one keypress between the
-	// user and the thing they asked for. Every scan is hosted by the shell now,
-	// so this is always true; false still means the y/n prompt, which is also
-	// what a failed review prefetch falls back to.
-	AutoReview bool
 }
 
 // ScanModel is the full-screen live scan view: a Docker-buildkit-style stack
@@ -99,22 +94,16 @@ type ScanModel struct {
 	failErr    error // non-nil = pipeline failed
 	depsErr    error // non-nil = a dependency download failed; see DepsErr
 	cancelling bool  // ctrl+c pressed, waiting for the pipeline to unwind
-	finished   bool  // succeeded; showing the review prompt
-	loading    bool  // "y" pressed before the prefetch below landed
+	finished   bool  // succeeded; waiting to switch into the review
+	loading    bool  // "Opening review…" — waiting on the prefetch below
 	reviewErr  error // building the review screen failed
-	gotoReview bool  // user chose review and there was no in-program ReviewNext
 
-	// reviewModel/reviewFetching prefetch the review screen (vfs.BuildTree)
-	// as soon as the vfs phase flushes, ahead of "y", so it's usually ready
-	// by the time the reviewer reacts. A "n" quit mid-fetch discards nothing.
+	// reviewModel/reviewFetching prefetch the review screen (vfs.BuildTree) as
+	// soon as the vfs phase flushes, so it's usually ready by the time the
+	// pipeline itself finishes and the scan switches straight into it.
 	reviewModel    tea.Model
 	reviewFetching bool
 }
-
-// WantsReview reports whether the user accepted the post-scan review prompt but
-// no in-program review screen was wired (ReviewNext==nil) — the caller then
-// launches review itself after the program exits.
-func (m ScanModel) WantsReview() bool { return m.gotoReview }
 
 // DepsFailure reports a dependency-download failure (see DepsErr), if that's
 // why the pipeline ended — the caller prints it in the normal terminal once
@@ -214,10 +203,10 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sl.FinishRemaining(false, "done")
 		m.finished = true
-		// AutoReview: no y/n prompt — go straight into review, or park on
+		// Straight into review, no prompt — go straight in, or park on
 		// "Opening review…" until the prefetch lands and the reviewReadyMsg
 		// case above switches for us.
-		if m.cfg.AutoReview && m.cfg.ReviewNext != nil && m.reviewErr == nil {
+		if m.cfg.ReviewNext != nil && m.reviewErr == nil {
 			if m.reviewModel != nil {
 				return m, Switch(m.reviewModel)
 			}
@@ -245,26 +234,6 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.cancelling = true
 		return m, nil
-	}
-	if m.finished && !m.loading {
-		switch k.String() {
-		case "y", "Y", "enter":
-			switch {
-			case m.cfg.ReviewNext == nil:
-				m.gotoReview = true
-				return m, tea.Quit
-			case m.reviewModel != nil: // prefetch already landed — instant switch
-				return m, Switch(m.reviewModel)
-			case m.reviewErr != nil: // prefetch already failed — footer shows it
-				return m, nil
-			case m.reviewFetching: // still in flight — switch once it lands
-				m.loading = true
-				return m, nil
-			default: // shouldn't happen (vfs "done" always precedes "finished"); fall back
-				m.loading = true
-				return m, m.fetchReview()
-			}
-		}
 	}
 	return m, nil
 }
@@ -462,13 +431,11 @@ func (m ScanModel) footer() string {
 		b.WriteString("  ")
 		b.WriteString(DimText.Render("Opening review…"))
 	case m.finished:
+		// Only reachable with no ReviewNext wired — every real caller has one,
+		// so this is the finished screen sitting with nothing to switch into.
 		b.WriteString(OK.Render("✓ Scan complete."))
-		b.WriteString("  ")
-		b.WriteString(DimText.Render("Continue to review?"))
 		b.WriteString("\n")
-		// ctrl+c, not "n": one quit key everywhere, since every other screen
-		// (home, review, the wizard) already ends on it.
-		b.WriteString(Footer(KeyHint("y", "review")+"   "+KeyHint("ctrl+c", "quit"), m.w))
+		b.WriteString(Footer(KeyHint("ctrl+c", "quit"), m.w))
 	case m.cancelling:
 		// Warn-once-then-act, same shape as the review screen's discard guard:
 		// the first ctrl+c cancels and says what that costs, the second gives

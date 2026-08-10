@@ -48,22 +48,22 @@ func TestScanModel(t *testing.T) {
 		name string
 		fn   func(t *testing.T)
 	}{
-		// AutoReview is what makes the shell one flow: the scan was started in
-		// order to review it, so a y/n prompt is one keypress in the way.
-		{"AutoReviewSwitchesWithoutAsking", func(t *testing.T) {
-			m := NewScanModel(ScanConfig{ReviewNext: reviewNext, AutoReview: true})
+		// A scan is run in order to review it, so finishing switches straight
+		// into the prefetched review — no prompt in the way.
+		{"SwitchesToReviewWithoutAsking", func(t *testing.T) {
+			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
 			prefetched := &stubScreen{view: "review"}
 
 			next, _ := m.Update(reviewReadyMsg{model: prefetched})
 			_, cmd := next.(ScanModel).Update(scanDoneMsg{})
 			if got := switchTarget(cmd); got != tea.Model(prefetched) {
-				t.Fatalf("finishing with AutoReview should switch to the prefetched review, got %v", got)
+				t.Fatalf("finishing should switch to the prefetched review, got %v", got)
 			}
 		}},
 		// The prefetch hasn't landed yet: park on "Opening review…" and switch
 		// when it does, rather than dropping back to a prompt.
-		{"AutoReviewWaitsForTheStillRunningPrefetch", func(t *testing.T) {
-			m := NewScanModel(ScanConfig{ReviewNext: reviewNext, AutoReview: true})
+		{"WaitsForTheStillRunningPrefetch", func(t *testing.T) {
+			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
 			m.reviewFetching = true
 
 			next, cmd := m.Update(scanDoneMsg{})
@@ -78,18 +78,6 @@ func TestScanModel(t *testing.T) {
 			_, cmd = m.Update(reviewReadyMsg{model: landed})
 			if got := switchTarget(cmd); got != tea.Model(landed) {
 				t.Errorf("the arriving review should switch straight in, got %v", got)
-			}
-		}},
-		// Without AutoReview (the scan subcommand) the prompt stays.
-		{"WithoutAutoReviewTheScreenAsksFirst", func(t *testing.T) {
-			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
-			next, cmd := m.Update(reviewReadyMsg{model: &stubScreen{}})
-			next, cmd = next.(ScanModel).Update(scanDoneMsg{})
-			if switchTarget(cmd) != nil {
-				t.Fatal("the scan subcommand must ask before opening review")
-			}
-			if v := ansi.Strip(next.(ScanModel).View()); !strings.Contains(v, "Continue to review?") {
-				t.Errorf("want the review prompt:\n%s", v)
 			}
 		}},
 		// Warn-once-then-act: the first ctrl+c cancels and says what that

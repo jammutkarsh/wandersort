@@ -121,11 +121,11 @@ func (m pickerModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, tui.Switch(nil)
-	case "up", "k":
+	case "up":
 		if m.cursor > 0 {
 			m.cursor--
 		}
-	case "down", "j":
+	case "down":
 		if m.cursor < len(m.segs)-1 {
 			m.cursor++
 		}
@@ -136,7 +136,7 @@ func (m pickerModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.opening = true
 		m.status, m.statusErr = "", false
 		return m, tea.Batch(m.open(), m.spin.Tick)
-	case "r":
+	case "ctrl+x":
 		return m.reopen()
 	case "R":
 		if !m.rebuilding {
@@ -159,9 +159,9 @@ func (m *pickerModel) raiseRebuildAsk(settingsMoved bool) {
 
 func (m pickerModel) answerRebuildAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
-	case "left", "h":
+	case "left":
 		m.rebuildChoice = true
-	case "right", "l":
+	case "right":
 		m.rebuildChoice = false
 	case "y":
 		return m.startRebuild()
@@ -299,7 +299,7 @@ func (m pickerModel) View() string {
 
 	left := "Pick a time slice — each one is reviewed and saved on its own."
 	if m.unsaved() == 0 {
-		left = "Every time slice is saved. [r] discards one, [esc] exits review."
+		left = "Every time slice is saved. [ctrl+x] discards one, [esc] exits review."
 	}
 	b = append(b, tui.Row(tui.DimText.Render(left),
 		tui.FaintTxt.Render(fmt.Sprintf("%d time slices", len(m.segs))), m.w))
@@ -337,7 +337,7 @@ func (m pickerModel) View() string {
 	hints := []string{
 		tui.KeyHint("↑↓", "move"),
 		tui.KeyHint("enter", "review this slice"),
-		tui.KeyHint("r", "discard changes for this slice"),
+		tui.KeyHint("ctrl+x", "discard changes for this slice"),
 	}
 	if m.o.Rebuild != nil {
 		hints = append(hints, tui.KeyHint("R", "reset plan"))

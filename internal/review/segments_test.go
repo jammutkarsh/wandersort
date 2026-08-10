@@ -54,7 +54,7 @@ func pickerFixture(t *testing.T) (pickerModel, *db.DB) {
 func TestPickerOpensSelectedSegment(t *testing.T) {
 	m, _ := pickerFixture(t)
 
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	next, cmd := next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if p := next.(pickerModel); p.cursor != 1 || !p.opening {
 		t.Fatalf("picker = cursor %d opening %v, want 1/true", p.cursor, p.opening)
@@ -129,7 +129,7 @@ func TestPickerReopenSavedSegment(t *testing.T) {
 	m, d := pickerFixture(t)
 
 	// cursor starts on 2023, the saved one
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
 	p := next.(pickerModel)
 	if p.statusErr {
 		t.Fatalf("reopen reported: %s", p.status)
@@ -146,8 +146,8 @@ func TestPickerReopenSavedSegment(t *testing.T) {
 	}
 
 	// the unsaved slice has nothing to re-open — say so rather than no-op
-	next, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	next, _ = next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	next, _ = p.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, _ = next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyCtrlX})
 	if !next.(pickerModel).statusErr {
 		t.Error("re-opening an unsaved slice said nothing")
 	}
@@ -160,16 +160,18 @@ func TestPickerReopenSavedSegment(t *testing.T) {
 func TestSegmentScreenBackToPicker(t *testing.T) {
 	m, _ := pickerFixture(t)
 
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	_, cmd := next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	s := drainOpen(t, cmd()).model.(screen)
 
-	back, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	// first esc raises the save-or-discard ask; the second forcefully discards.
+	next2, _ := s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	back, cmd := next2.(screen).Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if b := back.(screen); b.confirmed {
-		t.Error("[esc] confirmed the slice")
+		t.Error("[esc][esc] confirmed the slice")
 	}
 	if cmd == nil {
-		t.Fatal("[esc] went nowhere")
+		t.Fatal("[esc][esc] went nowhere")
 	}
 	sw, ok := cmd().(tui.SwitchMsg)
 	if !ok {
@@ -184,6 +186,31 @@ func TestSegmentScreenBackToPicker(t *testing.T) {
 	}
 }
 
+// TestCtrlCInsideSegmentNeverBacksToPicker: ctrl+c is the one guarantee that
+// always ends the program, hosted or not — unlike [esc]'s Discard, which
+// steps back to the picker. A reported bug had ctrl+c inside a segment
+// screen doing the same "back to picker" as esc, which meant "ctrl+c quits
+// the app" was a lie in the one place a reviewer would reach for it hardest.
+func TestCtrlCInsideSegmentNeverBacksToPicker(t *testing.T) {
+	m, _ := pickerFixture(t)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd := next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	s := drainOpen(t, cmd()).model.(screen)
+
+	_, cmd = s.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c went nowhere")
+	}
+	sw, ok := cmd().(tui.SwitchMsg)
+	if !ok {
+		t.Fatalf("ctrl+c sent %#v, want a Switch", cmd())
+	}
+	if sw.Next != nil {
+		t.Fatalf("ctrl+c switched to %T, want Switch(nil) — never back to the picker", sw.Next)
+	}
+}
+
 // TestSegmentRebuildStaysScoped: [R] re-proposes the whole library, but the
 // tree it hands back must still be this one slice — otherwise a reset inside
 // 2017 replaces it with every year at once.
@@ -195,7 +222,7 @@ func TestSegmentRebuildStaysScoped(t *testing.T) {
 		return vfs.BuildTree(context.Background(), d, seg)
 	}
 
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	_, cmd := next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	s := drainOpen(t, cmd()).model.(screen)
 

@@ -102,61 +102,27 @@ func TestHome(t *testing.T) {
 				t.Errorf("StartScanMsg.Paths = %v, want [%s]", msg.Paths, dir)
 			}
 		}},
-		// ↑ walks up into the folders already added, so a mistyped one is
-		// fixable without retyping the rest. ctrl+x there drops the folder
-		// under the cursor, not blindly the last one.
-		{"UpArrowEditsAndRemovesAnAddedFolder", func(t *testing.T) {
+		// ↑ pulls the most recently added folder straight back into the input
+		// to edit — one key, not select-then-enter. ctrl+x drops the last
+		// folder outright.
+		{"UpArrowEditsTheLastAddedFolder", func(t *testing.T) {
 			a, b := t.TempDir(), t.TempDir()
 			m := typeHome(typeHome(NewHomeModel(HomeConfig{}), a), b)
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
 			m = next.(HomeModel)
-			if m.sel != 1 {
-				t.Fatalf("↑ from the input = row %d, want the last folder added", m.sel)
+			if got := m.Paths(); len(got) != 1 || got[0] != a {
+				t.Fatalf("↑ should lift the last folder out of the list, got %v", got)
 			}
-			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-			m = next.(HomeModel)
-			if m.sel != 0 {
-				t.Fatalf("a second ↑ = row %d, want the row above", m.sel)
-			}
-			if m.ti.Focused() {
-				t.Error("the text input should be blurred while a folder is selected")
+			if m.ti.Value() != b || !m.ti.Focused() {
+				t.Errorf("↑ should refocus the input on %q, got %q focused=%v", b, m.ti.Value(), m.ti.Focused())
 			}
 
-			// ctrl+x removes the selected folder, not the last one.
+			// ctrl+x removes the last folder outright.
 			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
 			m = next.(HomeModel)
-			if got := m.Paths(); len(got) != 1 || got[0] != b {
-				t.Fatalf("Paths() = %v, want only [%s] left", got, b)
-			}
-
-			// enter pulls the selected folder back into the input to correct.
-			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			m = next.(HomeModel)
-			if len(m.Paths()) != 0 {
-				t.Errorf("editing should lift the folder out of the list, got %v", m.Paths())
-			}
-			if m.ti.Value() != b || m.sel != -1 || !m.ti.Focused() {
-				t.Errorf("editing should refocus the input on %q, got %q sel=%d focused=%v",
-					b, m.ti.Value(), m.sel, m.ti.Focused())
-			}
-		}},
-		// ↓ walks back out of the list, and a typed character always does.
-		{"LeavingTheFolderList", func(t *testing.T) {
-			m := typeHome(NewHomeModel(HomeConfig{}), t.TempDir())
-
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
-			next, _ = next.(HomeModel).Update(tea.KeyMsg{Type: tea.KeyDown})
-			if got := next.(HomeModel).sel; got != -1 {
-				t.Errorf("↓ past the last folder = row %d, want back in the input", got)
-			}
-
-			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-			next, _ = next.(HomeModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-			typed := next.(HomeModel)
-			if typed.sel != -1 || typed.ti.Value() != "x" {
-				t.Errorf("typing should leave the list and land in the input, got sel=%d value=%q",
-					typed.sel, typed.ti.Value())
+			if got := m.Paths(); len(got) != 0 {
+				t.Fatalf("ctrl+x should remove the remaining folder, got %v", got)
 			}
 		}},
 		// Completions come from the injected Suggest; tab fills the top one.
@@ -168,21 +134,6 @@ func TestHome(t *testing.T) {
 			m = next.(HomeModel)
 			if got := m.ti.Value(); got != "~/Pictures/" {
 				t.Errorf("tab filled %q, want the top completion with a trailing slash", got)
-			}
-		}},
-		// [ctrl+r] only offers itself when there is a proposal to open.
-		{"ReviewKeyNeedsAProposal", func(t *testing.T) {
-			m := NewHomeModel(HomeConfig{})
-			if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR}); cmd != nil {
-				t.Error("ctrl+r without a proposal should do nothing")
-			}
-			m = NewHomeModel(HomeConfig{HasProposal: true})
-			_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
-			if cmd == nil {
-				t.Fatal("ctrl+r with a proposal should ask to open the review")
-			}
-			if _, ok := cmd().(OpenReviewMsg); !ok {
-				t.Errorf("cmd produced %T, want OpenReviewMsg", cmd())
 			}
 		}},
 		// A lock held by another process reaches the screen as a message and

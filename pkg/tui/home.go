@@ -40,8 +40,6 @@ type HomeErrMsg struct{ Err error }
 type HomeConfig struct {
 	// Suggest completes a typed path; nil disables the dropdown.
 	Suggest func(typed string) []string
-	// HasProposal enables the "review the existing plan" key.
-	HasProposal bool
 	// LastScan is the finished scan's summary, rendered dim above the input —
 	// empty on the first run, filled once a scan in this session has completed.
 	LastScan []string
@@ -64,12 +62,8 @@ type HomeModel struct {
 	added      []string
 	sugg       []string
 	suggCursor int // ↑/↓-picked completion; -1 = none picked
-	// sel is the folder the cursor has walked up into; -1 = typing. The list
-	// renders above the input, so ↑ leaves the input at its top and lands on
-	// the last folder added — the row nearest the cursor.
-	sel  int
-	err  error
-	w, h int
+	err        error
+	w, h       int
 
 	// confirmForce is a full-screen y/n asking before a force re-scan — the
 	// modal owns the keyboard except ctrl+c, same as the review package's
@@ -85,7 +79,7 @@ func NewHomeModel(cfg HomeConfig) HomeModel {
 	// equivalent lives under its own user profile drive, never "~/Pictures".
 	ti.Placeholder = paths.RelativeToHome(filepath.Join(paths.HomeDir, "Pictures"))
 	ti.Focus()
-	m := HomeModel{cfg: cfg, ti: ti, paths: paths, suggCursor: -1, sel: -1}
+	m := HomeModel{cfg: cfg, ti: ti, paths: paths, suggCursor: -1}
 	m.refresh()
 	return m
 }
@@ -106,14 +100,16 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		if m.confirmForce {
+			// Only esc/enter here — no y/n, no arrows: a decision this
+			// consequential (re-reading every file) gets exactly two keys.
 			switch msg.String() {
 			case "ctrl+c":
 				return m, tea.Quit
-			case "y", "enter", "left", "h":
+			case "enter":
 				m.confirmForce = false
 				paths := slices.Clone(m.added)
 				return m, func() tea.Msg { return StartScanMsg{Paths: paths, Force: true} }
-			case "n", "esc", "right", "l":
+			case "esc":
 				m.confirmForce = false
 			}
 			return m, nil
@@ -123,69 +119,42 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
-		case "ctrl+r":
-			if !m.cfg.HasProposal {
-				return m, nil
-			}
-			return m, func() tea.Msg { return OpenReviewMsg{} }
 		case "ctrl+g":
 			if len(m.added) > 0 {
 				m.confirmForce = true
 			}
 			return m, nil
 		case "ctrl+x":
-			// The selected folder, or the last one added when the cursor is
-			// still in the input — one key means "remove" either way.
-			return m, m.drop(m.selectedOr(len(m.added) - 1))
+			m.drop(len(m.added) - 1)
+			return m, nil
 		case "up":
 			switch {
 			case m.suggCursor > -1: // walking the completion list
 				m.suggCursor--
-			case m.sel > 0:
-				return m, m.setSel(m.sel - 1)
-			case m.sel < 0 && len(m.sugg) == 0 && len(m.added) > 0:
+			case len(m.sugg) == 0 && len(m.added) > 0:
 				// Only once the completions are out of the way: ↑ is the
-				// dropdown's key first, the folder list's second. The list is
-				// drawn above the input, so ↑ lands on the last folder added.
-				return m, m.setSel(len(m.added) - 1)
+				// dropdown's key first. Straight into editing the folder just
+				// added — no separate select-then-enter step.
+				return m, m.editLast()
 			}
 			return m, nil
 		case "down":
-			switch {
-			case m.sel >= 0:
-				return m, m.setSel(m.sel + 1) // past the last folder is back in the input
-			case m.suggCursor < len(m.sugg)-1:
+			if m.suggCursor < len(m.sugg)-1 {
 				m.suggCursor++
 			}
 			return m, nil
 		case "tab":
-			if len(m.sugg) > 0 && m.sel < 0 {
+			if len(m.sugg) > 0 {
 				m.fill(max(m.suggCursor, 0))
 			}
 			return m, nil
 		case "enter":
-			// On a folder: pull it back into the input to correct it, rather
-			// than making the user retype a whole path to fix one character.
-			if m.sel >= 0 {
-				m.ti.SetValue(m.paths.RelativeToHome(m.added[m.sel]))
-				m.ti.CursorEnd()
-				m.drop(m.sel)
-				cmd := m.setSel(-1)
-				m.refresh()
-				return m, cmd
-			}
 			// an arrowed-onto completion: pick it instead of adding the folder
 			if m.suggCursor >= 0 && m.suggCursor < len(m.sugg) {
 				m.fill(m.suggCursor)
 				return m, nil
 			}
 			return m.enter()
-		default:
-			// Any other key is typing: leave the list and let it through, so a
-			// stray keystroke never lands somewhere invisible.
-			if m.sel >= 0 {
-				m.setSel(-1)
-			}
 		}
 	}
 
@@ -197,38 +166,24 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// selectedOr is the selected folder's index, or fallback when the cursor is in
-// the input.
-func (m HomeModel) selectedOr(fallback int) int {
-	if m.sel >= 0 {
-		return m.sel
-	}
-	return fallback
+// editLast pulls the most recently added folder back into the input to
+// correct it, rather than making the user retype a whole path to fix one
+// character.
+func (m *HomeModel) editLast() tea.Cmd {
+	i := len(m.added) - 1
+	m.ti.SetValue(m.paths.RelativeToHome(m.added[i]))
+	m.ti.CursorEnd()
+	m.drop(i)
+	m.refresh()
+	return m.ti.Focus()
 }
 
-// setSel moves the cursor between the text input and the folder list, out of
-// range meaning "back in the input". The input is blurred while a folder is
-// selected: two cursors on screen at once reads as a bug.
-func (m *HomeModel) setSel(i int) tea.Cmd {
-	if i >= len(m.added) || i < 0 {
-		m.sel = -1
-		return m.ti.Focus()
-	}
-	m.sel = i
-	m.ti.Blur()
-	return nil
-}
-
-// drop removes one folder and keeps the cursor on a row that still exists.
-func (m *HomeModel) drop(i int) tea.Cmd {
+// drop removes one folder.
+func (m *HomeModel) drop(i int) {
 	if i < 0 || i >= len(m.added) {
-		return nil
+		return
 	}
 	m.added = slices.Delete(m.added, i, i+1)
-	if m.sel >= len(m.added) {
-		return m.setSel(len(m.added) - 1)
-	}
-	return nil
 }
 
 // enter adds the typed folder to the list, or starts the scan when the input
@@ -284,15 +239,15 @@ func (m *HomeModel) refresh() {
 
 func (m HomeModel) View() string {
 	if m.confirmForce {
-		// "yes" is the default highlight — enter/y confirms, matching the
-		// modal's own key handling above, not ConfirmModel's own Update (only
-		// its View is used here; see the review package's rebuild ask for the
-		// same built-per-frame pattern).
+		// "yes" is the default highlight — only its own key handling above
+		// drives this (enter/esc), not ConfirmModel's own Update; see the
+		// review package's rebuild ask for the same built-per-frame pattern.
 		yes := true
 		cm := NewConfirmModel("Force re-scan?",
 			"Re-reads every already-scanned file from disk instead of skipping "+
 				"unchanged ones. Slower — use after upgrading WanderSort, or if "+
 				"a file's metadata looks wrong.", &yes)
+		cm.Keys = fmt.Sprintf("%s / %s", KeyHint("enter", "confirm"), KeyHint("esc", "cancel"))
 		cm.w, cm.h = m.w, m.h
 		return cm.View()
 	}
@@ -313,16 +268,7 @@ func (m HomeModel) View() string {
 	b.WriteString(row(" "+Title.Render(title), "", m.w))
 	b.WriteString("\n")
 	for i, p := range m.added {
-		name := fmt.Sprintf("%d) %s", i+1, m.paths.RelativeToHome(p))
-		var line string
-		if i == m.sel {
-			// Whole-row highlight and cursor marker, same as the review tree —
-			// rendered plain, since a nested reset would cut the background
-			// short partway through the line.
-			line = Selected.Render("❯ " + name)
-		} else {
-			line = "  " + OK.Render(fmt.Sprintf("%d) ", i+1)) + Text.Render(m.paths.RelativeToHome(p))
-		}
+		line := "  " + OK.Render(fmt.Sprintf("%d) ", i+1)) + Text.Render(m.paths.RelativeToHome(p))
 		b.WriteString(row(" "+line, "", m.w))
 		b.WriteString("\n")
 	}
@@ -359,17 +305,6 @@ func (m HomeModel) footer() string {
 		b.WriteString(row(Attn.Render("⚠ "+m.err.Error()), "", m.w))
 		b.WriteString("\n")
 	}
-	// On a folder the keys mean something else entirely, so the bar says so
-	// rather than listing both sets at once.
-	if m.sel >= 0 {
-		return b.String() + Footer(strings.Join([]string{
-			KeyHint("↑↓", "move"),
-			KeyHint("enter", "edit this folder"),
-			KeyHint("ctrl+x", "remove it"),
-			KeyHint("ctrl+c", "quit"),
-		}, "   "), m.w)
-	}
-
 	var hints []string
 	if len(m.sugg) > 0 {
 		hints = append(hints, KeyHint("↑↓", "pick"), KeyHint("tab", "complete"))
@@ -382,9 +317,6 @@ func (m HomeModel) footer() string {
 		}
 		hints = append(hints, KeyHint("ctrl+x", "remove last"))
 		hints = append(hints, KeyHint("ctrl+g", "force re-scan"))
-	}
-	if m.cfg.HasProposal {
-		hints = append(hints, KeyHint("ctrl+r", "review existing plan"))
 	}
 	hints = append(hints, KeyHint("ctrl+c", "quit"))
 	b.WriteString(Footer(strings.Join(hints, "   "), m.w))
