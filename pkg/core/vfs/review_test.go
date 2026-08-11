@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
@@ -313,6 +314,41 @@ func TestReview(t *testing.T) {
 			}
 			if len(files) != 1 {
 				t.Errorf("FilesUnder(%q) = %v, want the one file under it", bracketed, files)
+			}
+		}},
+		{"BuildTreeExcludesOrphan", func(t *testing.T) {
+			h := newHarness(t)
+			h.addFile(t, "d/IMG_0042.AAE", "SIDECAR", classifier.CommonMetadata{}) // no pair — routed to OrphanDir
+			h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
+			h.build(t, DefaultConfig(), nil)
+
+			ctx := context.Background()
+			tree, err := BuildTree(ctx, h.d, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var walk func([]Node)
+			walk = func(ns []Node) {
+				for i := range ns {
+					if ns[i].Name == OrphanDir {
+						t.Errorf("orphan folder %q leaked into the review tree", ns[i].ID)
+					}
+					walk(ns[i].Children)
+				}
+			}
+			walk(tree)
+
+			// the orphan row still exists — Confirm just never got asked about it
+			if err := Confirm(ctx, h.d, tree, nil); err != nil {
+				t.Fatal(err)
+			}
+			var status string
+			if err := h.d.SQL.Get(&status,
+				`SELECT status FROM virtual_fs_entries WHERE target_path = ?`, OrphanDir+"/IMG_0042.AAE"); err != nil {
+				t.Fatal(err)
+			}
+			if status != db.StatusApproved {
+				t.Errorf("orphan row status = %q, want %q (approved along with everything else)", status, db.StatusApproved)
 			}
 		}},
 	}

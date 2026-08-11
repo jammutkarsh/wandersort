@@ -34,13 +34,13 @@ func CheckOutputSpace(ctx context.Context, database *db.DB, log logger.Logger, o
 
 	if uint64(librarySize) > free {
 		msg := fmt.Sprintf("Output volume may be too small: organizing the library needs up to %s, but only %s is free at %s",
-			humanBytes(uint64(librarySize)), humanBytes(free), outputDir)
+			HumanBytes(uint64(librarySize)), HumanBytes(free), outputDir)
 		log.Warn(msg, logger.UserKey, true)
 	}
 }
 
-// humanBytes renders n as a short base-1024 size, e.g. "1.5 GiB"
-func humanBytes(n uint64) string {
+// HumanBytes renders n as a short base-1024 size, e.g. "1.5 GiB"
+func HumanBytes(n uint64) string {
 	const unit = 1024
 	if n < unit {
 		return fmt.Sprintf("%d B", n)

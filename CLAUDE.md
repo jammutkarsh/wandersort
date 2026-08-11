@@ -363,6 +363,21 @@ one scan ever runs against it at a time (see "Conventions" below):
     of the same reported bug: in the shell the settings can move while the
     review is on screen, and no check that runs when a screen is *built* will
     see it. That is what `SettingsChangedMsg` is for.
+    **`--copy`/`--move` chain `execute.Run` onto `--yes`**, in the same
+    process and under the same output lock, so a script gets "approve then
+    transfer" as one command instead of two (`wandersort review --yes
+    --copy`). `--move` asks nothing extra here: `--yes` already means "no
+    prompts", the same contract it has everywhere else in this command.
+    Neither flag does anything on the interactive path — that one has its own
+    asking place, the review's segment picker (see `internal/review` below).
+  - `execute.go` — `execute` cmd: transfers every `APPROVED` row via
+    `pkg/core/execute.Run`. `--move`/`--dry-run`/`--yes`, the same
+    lock-then-DB shape `reset.go` uses, and the same TUI-or-plain confirm
+    split (`confirmMove`) for the one destructive thing this command can
+    do — `--move` without `--yes` asks; `--copy` (the default) never does,
+    because it never touches a source. Safe to re-run: `execute.Run` only
+    ever selects still-`APPROVED` rows, so a file already `DONE` is skipped
+    and a run stopped partway resumes on its own next time.
 
 - `internal/review/` — the bubbletea **full-tree view** TUI over the VFS
   proposal (issue #8), extracted from `internal/cli` because it was 60% of that
@@ -402,6 +417,18 @@ one scan ever runs against it at a time (see "Conventions" below):
   `[R]` raises, re-proposing every slice at once (saved ones included), and raised
   automatically on a settings change even while this list (not a slice) is on
   screen, so noticing a settings change never requires opening a slice first.
+  **`[x]`/`[X]` run `execute.Run` over the whole library's `APPROVED` rows —
+  not scoped to the selected slice, so copying-as-you-go across several saved
+  segments needs no extra key.** `[x]` (copy) runs immediately, off the UI
+  goroutine behind the same spinner `[R]`/`[enter]` use, because copy never
+  touches a source and so has nothing to ask about; `[X]` (move, capital =
+  the more consuming variant, the same relationship `[d]`/`[D]` already have)
+  raises one modal first — the same full-screen yes/no shape `[R]`'s reset
+  uses, defaulting to Cancel rather than the reset ask's default-to-proceed,
+  since this one deletes files on disk rather than throwing away edits
+  already sitting in the database. `transferredMsg` carries the `Report`
+  back to a status line; there is no tree to redraw, since neither key
+  changes what `BuildTree` would show.
   The per-slice screen is the ordinary
   `screen` wrapper carrying `seg` (what `Confirm` approves) and `host` (the
   picker snapshot it returns to on save, via `reenter`) — which is also where
@@ -1087,8 +1114,25 @@ raise the reset prompt.
 
   Known gap: a sidecar whose only sibling is a video has no group at all —
   `captureDirs` skips videos so a Live Photo `.MOV` isn't forced across the
-  Photos/Videos split — so it falls back to its own mtime (12 files in one real
-  15k library).
+  Photos/Videos split.
+  **A sidecar `captureDirs` can't pair — no group at all, or a group its own
+  agreement checks rejected — goes to `vfs.OrphanDir` (`"orphan"`) instead of
+  its own mtime fallback.** An `.AAE` carries no EXIF and is meaningless
+  without the photo it edits — useful only for re-importing into Apple
+  Photos, never for browsing — so an unpaired one is junk to be held
+  somewhere, not filed next to real folders by whatever its file mtime
+  happens to say (12 files in one real 15k library, previously scattered
+  through the real hierarchy, often alone). The short-circuit is in
+  `buildTargets`, the same shape `IsScreenshot`'s already is: check first,
+  bypass `dirFor`/Rules entirely, one flat folder for the whole library. A
+  *paired* sidecar is unaffected — it already took the leader's directory
+  before this check ever runs. `OrphanDir` is excluded from `BuildTree`
+  (`review.go`, the same `substr` prefix-compare `FilesUnder` uses, not
+  `LIKE` — nothing to review about junk) and therefore never renamed,
+  merged, or seen by a reviewer; `Confirm`'s blanket
+  `PROPOSED → APPROVED` still sweeps its rows up with everything else in
+  scope, so no separate sign-off is needed. It still flows through Execute
+  like any other row, landing at `<output>/orphan/` on disk.
   **A file's folder date is a stored fact, not a folder name**
   (`segments.go` + `virtual_fs_entries.taken_at`): `masterFile.folderDate` is
   the *cluster's* start, written to every member by `clusterAndSpill` before
@@ -1177,6 +1221,37 @@ raise the reset prompt.
   rows are the same question ("this directory sits under a path that moved"),
   so a longest-ancestor-wins rewriter answers both and there is no second
   remap pass that could disagree with the first.
+- `execute/` — the phase `vfs.go`'s package doc used to call "future work":
+  the one thing in this codebase that writes the user's media files. Reads
+  every `APPROVED` row of `virtual_fs_entries`, places `source_path` at
+  `outputDir/target_path`, and marks the row `DONE` or `ERROR` (+ a nullable
+  `error` column on the row itself — added to migration 003 in place, pre-tag
+  rule — so "which files failed and why" is a query, not a grep through the
+  log). `Run(ctx, db, log, outputDir, Options{Mode, DryRun})` is the whole
+  surface; `Mode` is `Copy` (the zero value — ship the safe default) or
+  `Move`. **Deliberately sequential**, per
+  `.tickets/apply-phase-unmeasured.md`: nothing has ever measured this
+  phase's throughput, so there is nothing yet to size a worker pool against
+  — don't add one speculatively. **Resumable by construction, not by an
+  explicit state machine**: it only ever selects `APPROVED` rows, so a run
+  that stops partway (crash, ctrl+c, a bad file) leaves every untouched row
+  exactly where the next run picks it up; a row that failed stays at `ERROR`
+  and is not retried automatically, the same contract
+  `file_registry.scan_status` already has. The seam is one function, not an
+  `FS` interface (that shape was considered and rejected — a large interface
+  learned to vary one behaviour is a shallow adapter): `transfer(ctx, mode,
+  src, dst) error` places one file, atomically. Two real implementations —
+  `productionTransfer` (a same-device `os.Rename` for `Move`, else
+  `atomicfile.Copy`; `Copy` never unlinks `src`, `Move` only does once the
+  destination is verified complete by size) and `dryRunTransfer` (does
+  nothing — `Run` already `os.Stat`s the source before calling `transfer`,
+  so a dry run's `Report` is real byte/file counts for zero I/O). Reports
+  through the same contract every other phase does
+  (`logger.PhaseKey`/`EventKey`/`ElapsedKey`, `UserKey` line with the byte
+  total from `volume.HumanBytes`), per that same ticket's ask for phase
+  timing and bytes-not-just-files. **The caller holds the output lock**
+  (`lock.AcquireOutput`), same contract `scan` has — `execute.Run` assumes
+  it, it does not take it.
 
 ## Supporting packages (`pkg/`)
 
@@ -1410,8 +1485,17 @@ raise the reset prompt.
 - **There is no `pkg/deps` and no `pkg/utils`** — a package named for nothing
   in particular is where unrelated helpers accumulate. The atomic download
   (temp file + rename, byte progress, SHA256 verify) is `install.downloadFile`,
-  next to its only callers; `copy.go` had one caller (the review TUI's
-  preview), so it went to `internal/review` as unexported `copyFiles`.
+  next to its only caller, and stays that way — it streams from an
+  `http.Response.Body`, not a local file, so it is a genuinely different
+  shape from the copy below rather than the same rule twice.
+- `atomicfile/` — `Copy(src, dest) (int64, error)`: a temp file in dest's
+  directory, then `os.Rename`, so a failure partway never leaves a partial
+  file at dest. This was `review.copyFile`, duplicated verbatim for the
+  peek feature; `pkg/core/execute`'s `Copy` mode needed the identical thing,
+  and the design ticket that placed execute's seam called this out by name
+  as "about to be duplicated a third time" — extracted on that third caller,
+  not before, per **imports point down only** (both callers are above it).
+  Imports nothing else in the project, like `pkg/path`/`pkg/logger`/`pkg/lock`.
 - `install/` — **the one place a downloadable dependency's version, download
   location, on-disk layout, fetch, and readiness are all known.** `pkg/exiftool`
   and `pkg/location` only ever run the already-installed binary or query an

@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS virtual_fs_entries (
     -- reviewer renames, and a fallback folder has no date in it at all. NULL
     -- for an undated file.
     taken_at TEXT,
+    -- why an ERROR row failed. The log line has the same text, but a phase
+    -- that moves the user's files needs "which ones failed and why" to be a
+    -- query, not a grep. NULL for every other status.
+    error TEXT,
     created_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
 );
 

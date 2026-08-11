@@ -71,7 +71,7 @@ func TestFlagHelpers(t *testing.T) {
 func TestNewRootCmdWiresSubcommands(t *testing.T) {
 	a := &app{}
 	root := a.newRootCmd()
-	want := []string{"config", "scan", "review", "issue", "reset"}
+	want := []string{"config", "scan", "review", "execute", "issue", "reset"}
 	for _, name := range want {
 		if _, _, err := root.Find([]string{name}); err != nil {
 			t.Errorf("root command missing %q: %v", name, err)

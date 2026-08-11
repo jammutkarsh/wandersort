@@ -9,9 +9,10 @@ package review
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 )
 
 // copyProgress reports a copyFiles run after each file: that file's path and
@@ -36,7 +37,7 @@ func copyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes 
 		}
 
 		dest := filepath.Join(destDir, filepath.Base(src))
-		n, err := copyFile(src, dest)
+		n, err := atomicfile.Copy(src, dest)
 		if err != nil {
 			return copied, err
 		}
@@ -47,37 +48,4 @@ func copyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes 
 		}
 	}
 	return copied, nil
-}
-
-// copyFile copies src to dest atomically: a temp file in dest's directory,
-// then a rename, so a failure partway never leaves a partial file at dest.
-// Returns bytes written.
-func copyFile(src, dest string) (int64, error) {
-	in, err := os.Open(src)
-	if err != nil {
-		return 0, fmt.Errorf("open %s: %w", src, err)
-	}
-	defer in.Close()
-
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".copy-*")
-	if err != nil {
-		return 0, fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		tmp.Close()
-		os.Remove(tmpName) // no-op if Rename succeeded
-	}()
-
-	n, err := io.Copy(tmp, in)
-	if err != nil {
-		return 0, fmt.Errorf("copy %s: %w", src, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return 0, fmt.Errorf("close temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, dest); err != nil {
-		return 0, fmt.Errorf("rename to %s: %w", dest, err)
-	}
-	return n, nil
 }

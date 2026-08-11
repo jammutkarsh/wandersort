@@ -303,16 +303,17 @@ func TestSameStemSameCaptureStillCoLocatesByOwnAttributes(t *testing.T) {
 	}
 }
 
-// TestSidecarWithNoOwnTimestampFallsBackToModTime covers .aae-style sidecars:
-// with no independent EXIF timestamp, deriveAll's takenAt falls back to file
-// mtime like any other file — no stem-matching to a "paired" photo needed.
+// TestSidecarWithNoOwnTimestampFallsBackToModTime covers .aae-style sidecars
+// with no pair: rather than deriveAll's file-mtime fallback scattering it
+// through the real hierarchy — often alone, since it carries no EXIF of its
+// own — captureDirs finding no group routes it to the flat OrphanDir instead.
 func TestSidecarWithNoOwnTimestampFallsBackToModTime(t *testing.T) {
 	h := newHarness(t)
 	id := h.addFile(t, "d/IMG_0042.AAE", "SIDECAR", classifier.CommonMetadata{})
 
 	rows := h.build(t, DefaultConfig(), nil)
-	if rows[id].TargetPath == "" {
-		t.Fatal("expected a target path derived from file mtime, got none")
+	if want := OrphanDir + "/IMG_0042.AAE"; rows[id].TargetPath != want {
+		t.Errorf("got %q, want %q", rows[id].TargetPath, want)
 	}
 }
 

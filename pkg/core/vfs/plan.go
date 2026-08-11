@@ -477,6 +477,15 @@ func buildTargets(ctx context.Context, masters []masterFile, cfg Config) {
 			dirs[i] = dir
 			return
 		}
+		// A sidecar captureDirs couldn't pair with a photo (missing pair,
+		// rejected time/device agreement) has nothing of its own to derive a
+		// folder from — its mtime fallback would otherwise scatter it through
+		// the real hierarchy, often alone. Paired sidecars never reach here;
+		// they already got the leader's directory above.
+		if m.MediaType == classifier.MediaTypeSidecar {
+			dirs[i] = OrphanDir
+			return
+		}
 		dirs[i] = dirFor(m, skip, cfg)
 	})
 

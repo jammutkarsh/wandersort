@@ -44,9 +44,12 @@ const (
 	StatusDiscovered = "DISCOVERED"
 	StatusError      = "ERROR"
 
-	// virtual_fs_entries lifecycle
+	// virtual_fs_entries lifecycle. StatusDone and StatusError (shared with
+	// the scan lifecycle above) are the Execute phase's outcomes — see
+	// pkg/core/execute.
 	StatusProposed = "PROPOSED"
 	StatusApproved = "APPROVED"
+	StatusDone     = "DONE"
 )
 
 // file_metadata.hash_kind: whether file_hash was computed from the file's

@@ -97,13 +97,18 @@ func BuildTree(ctx context.Context, database *db.DB, seg *Segment) ([]Node, erro
 	if where != "" {
 		where = " AND " + where
 	}
+	// orphaned sidecars have nothing to review — one flat junk folder, not a
+	// decision — so they never enter the tree at all. substr, not LIKE/GLOB:
+	// see FilesUnder below for why a folder name can't be trusted as a pattern.
+	orphanPrefix := OrphanDir + "/"
 	if err := database.SQL.SelectContext(ctx, &rows,
 		`SELECT vfe.target_path, vfe.source_path, vfe.location_dir,
 		        fm.exif_gps_latitude, fm.exif_gps_longitude
 		 FROM virtual_fs_entries vfe
 		 LEFT JOIN file_metadata fm ON fm.file_id = vfe.file_id
-		 WHERE vfe.status IN (?, ?)`+where,
-		append([]any{db.StatusProposed, db.StatusApproved}, args...)...); err != nil {
+		 WHERE vfe.status IN (?, ?)
+		   AND substr(vfe.target_path, 1, length(?)) != ?`+where,
+		append([]any{db.StatusProposed, db.StatusApproved, orphanPrefix, orphanPrefix}, args...)...); err != nil {
 		return nil, fmt.Errorf("query vfs entries: %w", err)
 	}
 

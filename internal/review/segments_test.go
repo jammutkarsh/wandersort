@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
@@ -368,6 +369,99 @@ func TestPickerRebuildIsGlobalAndAutoAsks(t *testing.T) {
 	if final.statusErr {
 		t.Errorf("rebuild reported an error: %s", final.status)
 	}
+}
+
+// TestPickerCopyKeyRunsTransferWithoutAsking: [x] never touches a source, so
+// it runs immediately — no modal in the way, unlike [X].
+func TestPickerCopyKeyRunsTransferWithoutAsking(t *testing.T) {
+	m, _ := pickerFixture(t)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	p := next.(pickerModel)
+	if !p.transferring || p.askMove {
+		t.Fatalf("[x] should start transferring immediately, got transferring=%v askMove=%v", p.transferring, p.askMove)
+	}
+	if cmd == nil {
+		t.Fatal("[x] dispatched no command")
+	}
+
+	msg := drainTransferred(t, cmd())
+	if msg.err != nil {
+		t.Fatal(msg.err)
+	}
+	// pickerFixture's seeded rows have no real file on disk, so the transfer
+	// fails at the source-stat step — that failure landing back is exactly
+	// what proves [x] really drove execute.Run rather than being a no-op key.
+	if msg.rep.Failed == 0 {
+		t.Fatal("expected the transfer to report a failure for the fixture's fake source path")
+	}
+
+	done := p.transferred(msg)
+	if done.transferring {
+		t.Error("still transferring after the result landed")
+	}
+	if !done.statusErr || done.status == "" {
+		t.Error("a failed transfer did not report a status")
+	}
+}
+
+// TestPickerMoveKeyAsksFirst: [X] deletes files, so unlike [x] it raises a
+// question, defaults to Cancel, and only starts on an explicit yes.
+func TestPickerMoveKeyAsksFirst(t *testing.T) {
+	m, _ := pickerFixture(t)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	p := next.(pickerModel)
+	if !p.askMove || p.moveChoice {
+		t.Fatalf("[X] should ask with Cancel as the default, got askMove=%v moveChoice=%v", p.askMove, p.moveChoice)
+	}
+	if cmd != nil {
+		t.Fatal("[X] should not start anything before the question is answered")
+	}
+
+	// "n" cancels — nothing starts
+	next, cmd = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	p = next.(pickerModel)
+	if p.askMove {
+		t.Error("[n] should dismiss the ask")
+	}
+	if p.transferring || cmd != nil {
+		t.Fatal("[n] must not start a transfer")
+	}
+
+	// ask again, this time say yes
+	next, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	next, cmd = next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	p = next.(pickerModel)
+	if p.askMove || !p.transferring {
+		t.Fatal("[y] must start the move on that press")
+	}
+	if cmd == nil {
+		t.Fatal("[y] dispatched no command")
+	}
+	msg := drainTransferred(t, cmd())
+	if msg.mode != execute.ModeMove {
+		t.Errorf("mode = %v, want ModeMove", msg.mode)
+	}
+}
+
+func drainTransferred(t *testing.T, msg tea.Msg) transferredMsg {
+	t.Helper()
+	switch m := msg.(type) {
+	case transferredMsg:
+		return m
+	case tea.BatchMsg:
+		for _, c := range m {
+			if c == nil {
+				continue
+			}
+			if tm, ok := c().(transferredMsg); ok {
+				return tm
+			}
+		}
+	}
+	t.Fatalf("got %T, want transferredMsg", msg)
+	return transferredMsg{}
 }
 
 func drainLibraryRebuilt(t *testing.T, msg tea.Msg) libraryRebuiltMsg {

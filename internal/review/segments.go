@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
@@ -51,6 +52,19 @@ type pickerModel struct {
 	askedBySettings bool
 	rebuilding      bool
 
+	// [x] copies every APPROVED row to the output now, no question asked —
+	// copy never touches a source, so there is nothing to warn about. [X]
+	// moves instead, which deletes each source once its copy verifies, and
+	// asks first: the same one-question-before-something-destructive shape
+	// [R]'s reset uses. Neither is scoped to the selected slice — a transfer
+	// acts on whatever the library has approved so far, segmented review or
+	// not, so a reviewer can copy as they go instead of waiting for every
+	// slice to be signed off.
+	askMove      bool
+	moveChoice   bool // which button the modal has under the cursor
+	transferring bool
+	transferMode execute.Mode // which one is running, for the spinner label
+
 	spin spinner.Model
 	w, h int
 }
@@ -65,6 +79,13 @@ type segmentOpenedMsg struct {
 // needs the side effect (vfs.Propose ran) — the tree o.Rebuild hands back is
 // for a single segment screen, not this list.
 type libraryRebuiltMsg struct{ err error }
+
+// transferredMsg carries [x]/[X]'s execute.Run result back.
+type transferredMsg struct {
+	mode execute.Mode
+	rep  execute.Report
+	err  error
+}
 
 func newPicker(ctx context.Context, o Options, segs []vfs.Segment) pickerModel {
 	sp := spinner.New()
@@ -81,7 +102,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 		return m, nil
 	case spinner.TickMsg:
-		if !m.opening && !m.rebuilding {
+		if !m.opening && !m.rebuilding && !m.transferring {
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -99,11 +120,17 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case libraryRebuiltMsg:
 		return m.rebuilt(msg), nil
+	case transferredMsg:
+		return m.transferred(msg), nil
 	case tea.KeyMsg:
-		if m.askRebuild && msg.String() != "ctrl+c" {
+		switch {
+		case m.askRebuild && msg.String() != "ctrl+c":
 			return m.answerRebuildAsk(msg)
+		case m.askMove && msg.String() != "ctrl+c":
+			return m.answerMoveAsk(msg)
+		default:
+			return m.handleKey(msg)
 		}
-		return m.handleKey(msg)
 	}
 	return m, nil
 }
@@ -144,8 +171,82 @@ func (m pickerModel) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.rebuilding {
 			m.raiseRebuildAsk(false) // the reviewer asked, nothing moved under them
 		}
+	case "x":
+		if !m.transferring && !m.rebuilding {
+			return m.startTransfer(execute.ModeCopy)
+		}
+	case "X":
+		if !m.transferring && !m.rebuilding {
+			m.raiseMoveAsk()
+		}
 	}
 	return m, nil
+}
+
+// raiseMoveAsk puts the one question a move needs up — copy never touches a
+// source and so never asks, but a move deletes one once its copy verifies,
+// and that is the one thing here worth a modal over.
+func (m *pickerModel) raiseMoveAsk() {
+	m.askMove = true
+	m.moveChoice = false // default to Cancel, unlike the rebuild ask — this one deletes files
+}
+
+func (m pickerModel) answerMoveAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "left":
+		m.moveChoice = true
+	case "right":
+		m.moveChoice = false
+	case "y":
+		return m.startTransfer(execute.ModeMove)
+	case "n", "esc":
+		m.askMove = false
+	case "enter":
+		if m.moveChoice {
+			return m.startTransfer(execute.ModeMove)
+		}
+		m.askMove = false
+	}
+	return m, nil
+}
+
+// startTransfer runs execute.Run off the UI goroutine behind the same
+// spinner opening a slice and rebuilding both use. Acts on the whole
+// library's APPROVED rows, not just the selected slice — see the field
+// comment on askMove.
+func (m pickerModel) startTransfer(mode execute.Mode) (tea.Model, tea.Cmd) {
+	m.askMove = false
+	m.transferring = true
+	m.transferMode = mode
+	m.status, m.statusErr = "", false
+	ctx, db, outputDir, log := m.ctx, m.o.DB, m.o.OutputDir, m.o.Log
+	return m, tea.Batch(m.spin.Tick, func() tea.Msg {
+		rep, err := execute.Run(ctx, db, log, outputDir, execute.Options{Mode: mode})
+		return transferredMsg{mode: mode, rep: rep, err: err}
+	})
+}
+
+// transferred reports what the transfer did. Approved rows a transfer just
+// marked DONE don't change what the picker's own counts mean — Proposed and
+// Approved are still exactly what BuildTree would show — so there is nothing
+// to re-read here, only a status line to report.
+func (m pickerModel) transferred(msg transferredMsg) pickerModel {
+	m.transferring = false
+	verb := "Copied"
+	if msg.mode == execute.ModeMove {
+		verb = "Moved"
+	}
+	switch {
+	case msg.err != nil:
+		m.status, m.statusErr = msg.err.Error(), true
+	case msg.rep.Done == 0 && msg.rep.Failed == 0:
+		m.status, m.statusErr = "nothing approved yet to transfer", true
+	case msg.rep.Failed > 0:
+		m.status, m.statusErr = fmt.Sprintf("%s %d files, %d failed — see the log", verb, msg.rep.Done, msg.rep.Failed), true
+	default:
+		m.status, m.statusErr = fmt.Sprintf("%s %d files to the output", verb, msg.rep.Done), false
+	}
+	return m
 }
 
 // raiseRebuildAsk puts the reset question up, same wording rule as the
@@ -319,6 +420,9 @@ func (m pickerModel) View() string {
 	if m.askRebuild {
 		return m.rebuildAskView()
 	}
+	if m.askMove {
+		return m.moveAskView()
+	}
 
 	var b []string
 	b = append(b, tui.Banner("review"))
@@ -354,6 +458,12 @@ func (m pickerModel) View() string {
 		foot = append(foot, m.spin.View()+tui.DimText.Render(" Opening…"))
 	case m.rebuilding:
 		foot = append(foot, m.spin.View()+tui.DimText.Render(" Re-proposing folders with your current settings…"))
+	case m.transferring:
+		verb := "Copying"
+		if m.transferMode == execute.ModeMove {
+			verb = "Moving"
+		}
+		foot = append(foot, m.spin.View()+tui.DimText.Render(" "+verb+" approved files to the output…"))
 	}
 	if m.status != "" {
 		if m.statusErr {
@@ -371,10 +481,28 @@ func (m pickerModel) View() string {
 	if m.o.Rebuild != nil {
 		hints = append(hints, tui.KeyHint("R", "reset plan"))
 	}
+	hints = append(hints, tui.KeyHint("x", "copy approved files now"), tui.KeyHint("X", "move approved files now"))
 	hints = append(hints, tui.KeyHint("esc", "leave"), tui.KeyHint("ctrl+c", "quit"))
 	foot = append(foot, tui.Footer(strings.Join(hints, "   "), m.w))
 
 	return tui.Screen(strings.Join(b, "\n"), strings.Join(foot, "\n"), m.h)
+}
+
+// moveAskView is [X]'s one question, in the same full-screen yes/no shape
+// [R]'s reset uses — the only other destructive act this screen can trigger.
+// Default lands on Cancel (moveChoice starts false), unlike the rebuild ask:
+// that one only throws away edits already sitting in this database, this one
+// deletes files on disk.
+func (m pickerModel) moveAskView() string {
+	choice := m.moveChoice
+	c := tui.NewConfirmModel(
+		"Move files instead of copying?",
+		"Each source file is deleted once its copy at the output is verified complete — this cannot be undone.\n"+
+			"No copies instead, which never touches a source — [x] does the same without asking.",
+		&choice,
+	)
+	sized, _ := c.Update(tea.WindowSizeMsg{Width: m.w, Height: m.h})
+	return sized.View()
 }
 
 // rebuildAskView is the same full-screen yes/no dialog the per-segment

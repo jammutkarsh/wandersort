@@ -26,6 +26,9 @@ const (
 	flagSPDateOnly   = "saved-places-date-only"
 	flagMergeDays    = "merge-same-location-days"
 	flagPreviewsOnly = "previews-only"
+	flagCopy         = "copy"
+	flagMove         = "move"
+	flagDryRun       = "dry-run"
 )
 
 func (a *app) newRootCmd() *cobra.Command {
@@ -88,6 +91,7 @@ Flags take precedence over environment variables.`,
 	rootCmd.AddCommand(a.newConfigCmd())
 	rootCmd.AddCommand(a.newScanCmd())
 	rootCmd.AddCommand(a.newReviewCmd())
+	rootCmd.AddCommand(a.newExecuteCmd())
 	rootCmd.AddCommand(a.newIssueCmd())
 	rootCmd.AddCommand(a.newResetCmd())
 

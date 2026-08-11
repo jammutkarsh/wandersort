@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jammutkarsh/wandersort/internal/review"
+	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -33,6 +34,9 @@ wandersort review
 # Skip the TUI: confirm the proposed hierarchy as-is
 wandersort review --yes
 
+# Confirm and copy every approved file to the output in one step
+wandersort review --yes --copy
+
 # Re-propose the hierarchy with the current config.yaml rules first
 wandersort review --rebuild`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -44,18 +48,29 @@ wandersort review --rebuild`,
 	cmd.Flags().Bool(flagRebuild, false,
 		"Re-propose every folder with the current config.yaml rules before reviewing "+
 			"(no re-scan or re-hash); time slices already saved are reopened and proposed again")
+	cmd.Flags().Bool(flagCopy, false, "With --yes, also copy every approved file to the output afterwards")
+	cmd.Flags().Bool(flagMove, false, "With --yes, also move every approved file to the output afterwards (deletes each source once verified)")
+	cmd.Flags().Bool(flagDryRun, false, "With --copy/--move, report what would be transferred without touching anything")
 	return cmd
 }
 
 func (a *app) runReview(cmd *cobra.Command) error {
 	rebuild, _ := cmd.Flags().GetBool(flagRebuild)
 	yes, _ := cmd.Flags().GetBool(flagYes)
+	copyNow, _ := cmd.Flags().GetBool(flagCopy)
+	moveNow, _ := cmd.Flags().GetBool(flagMove)
+	dryRun, _ := cmd.Flags().GetBool(flagDryRun)
+	if copyNow && moveNow {
+		return fmt.Errorf("--copy and --move are mutually exclusive")
+	}
 
 	// No confirmation prompt on --rebuild: the interactive path asks on screen
-	// (review's own reset modal) and --yes has nobody to ask.
+	// (review's own reset modal) and --yes has nobody to ask. --move here asks
+	// nothing either — --yes already means "no prompts, I know what I'm
+	// doing", the same contract --yes has everywhere else in this command.
 	switch {
 	case yes:
-		return a.confirmReviewAll(rebuild)
+		return a.confirmReviewAll(rebuild, copyNow || moveNow, moveNow, dryRun)
 	case a.isTuiEnabled(cmd):
 		// Opens the app on the review tab — the same session a bare
 		// `wandersort` gives, so a reviewer who finds the folders wrong can fix
@@ -74,8 +89,11 @@ func (a *app) runReview(cmd *cobra.Command) error {
 // confirmReviewAll is `review --yes`: no TUI, so the lock, the database and
 // the proposal work all run inline here, a missing library is a hard error
 // rather than a screen, and a settings change is a warning rather than a
-// question — there is nobody to ask.
-func (a *app) confirmReviewAll(rebuild bool) error {
+// question — there is nobody to ask. transfer requests execute.Run right
+// after Confirm, in the same process — the lock covering both is what makes
+// "approve then move" one atomic-looking step for a script; move picks the
+// mode, dryRun makes either one a report instead of a write.
+func (a *app) confirmReviewAll(rebuild, transfer, move, dryRun bool) error {
 	if _, err := os.Stat(a.Config.AppDBPath); os.IsNotExist(err) {
 		return fmt.Errorf("no database found — run 'wandersort scan' first")
 	}
@@ -134,6 +152,22 @@ func (a *app) confirmReviewAll(rebuild bool) error {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, "Folder structure approved.")
+	if !transfer {
+		fmt.Fprintln(os.Stderr, "Run 'wandersort execute' to copy or move the files, or re-run with --copy/--move.")
+		return nil
+	}
+
+	mode := execute.ModeCopy
+	if move {
+		mode = execute.ModeMove
+	}
+	rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{Mode: mode, DryRun: dryRun})
+	if err != nil {
+		return err
+	}
+	if rep.Failed > 0 {
+		return fmt.Errorf("%d file(s) failed to transfer — see the log for why", rep.Failed)
+	}
 	return nil
 }
 

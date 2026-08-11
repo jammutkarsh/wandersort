@@ -72,6 +72,16 @@ func DefaultConfig() Config {
 // interprets it.
 const RuleNone = "none"
 
+// OrphanDir is the one flat folder every ungrouped .AAE sidecar lands in
+// instead of wherever its file mtime would otherwise place it. A sidecar
+// carries no EXIF and is meaningless without the photo it edits — useful only
+// for re-importing into Apple Photos, never for browsing — so a sidecar
+// captureDirs couldn't pair with a photo is junk to be held somewhere, not
+// filed. Bypasses Rules entirely, the same way a screenshot's Year/Month
+// short-circuit does. Excluded from BuildTree (nothing to review about junk)
+// and therefore never renamed or merged by the reviewer.
+const OrphanDir = "orphan"
+
 // ConfigFor is DefaultConfig with the user's settings applied — the one
 // place vfs imports pkg/config, so config can never import vfs back.
 func ConfigFor(appCfg *config.Configuration) Config {
