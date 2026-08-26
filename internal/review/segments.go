@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -22,6 +23,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
+	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 // pickerModel lists the proposal's segments. Opening one builds its tree in a
@@ -64,8 +66,15 @@ type pickerModel struct {
 	moveChoice   bool // which button the modal has under the cursor
 	transferring bool
 	transferMode execute.Mode // which one is running, for the spinner label
+	// prog is the last progress report drawn, progCh the channel execute's
+	// OnProgress feeds it down. A transfer is the one thing here that runs for
+	// minutes over gigabytes, so it gets a bar rather than a bare spinner.
+	prog   transferProgressMsg
+	progCh chan transferProgressMsg
+	bytes  int64 // running total, since OnProgress reports one file's size
 
 	spin spinner.Model
+	bar  progress.Model
 	w, h int
 }
 
@@ -87,11 +96,35 @@ type transferredMsg struct {
 	err  error
 }
 
+// transferProgressMsg is one transferred file, as execute.OnProgress reported
+// it. A background goroutine cannot push a message into bubbletea, so each one
+// re-arms the command that read it off the channel.
+type transferProgressMsg struct {
+	target      string
+	bytes       int64
+	done, total int
+}
+
+// waitProgress reads the next report. A closed channel means the run is over
+// and transferredMsg is already on its way — nothing left to say.
+func waitProgress(ch chan transferProgressMsg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return msg
+	}
+}
+
 func newPicker(ctx context.Context, o Options, segs []vfs.Segment) pickerModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(tui.Primary)
-	return pickerModel{ctx: ctx, o: o, segs: segs, spin: sp}
+	return pickerModel{
+		ctx: ctx, o: o, segs: segs, spin: sp,
+		bar: progress.New(progress.WithDefaultGradient(), progress.WithoutPercentage()),
+	}
 }
 
 func (m pickerModel) Init() tea.Cmd { return nil }
@@ -120,6 +153,13 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case libraryRebuiltMsg:
 		return m.rebuilt(msg), nil
+	case transferProgressMsg:
+		if !m.transferring { // the result already landed — a late report draws nothing
+			return m, nil
+		}
+		m.prog = msg
+		m.bytes += msg.bytes
+		return m, waitProgress(m.progCh)
 	case transferredMsg:
 		return m.transferred(msg), nil
 	case tea.KeyMsg:
@@ -218,12 +258,30 @@ func (m pickerModel) startTransfer(mode execute.Mode) (tea.Model, tea.Cmd) {
 	m.askMove = false
 	m.transferring = true
 	m.transferMode = mode
+	m.prog, m.bytes = transferProgressMsg{}, 0
 	m.status, m.statusErr = "", false
+	// Buffered and lossy: a progress report is worth only what the next frame
+	// draws, so a full channel drops one rather than pacing the transfer to
+	// the terminal.
+	m.progCh = make(chan transferProgressMsg, 1)
+	ch := m.progCh
 	ctx, db, outputDir, log := m.ctx, m.o.DB, m.o.OutputDir, m.o.Log
-	return m, tea.Batch(m.spin.Tick, func() tea.Msg {
-		rep, err := execute.Run(ctx, db, log, outputDir, execute.Options{Mode: mode})
+	// run before waitProgress in the batch: the only thing that ever closes ch
+	// is the run finishing.
+	run := func() tea.Msg {
+		rep, err := execute.Run(ctx, db, log, outputDir, execute.Options{
+			Mode: mode,
+			OnProgress: func(target string, bytes int64, done, total int) {
+				select {
+				case ch <- transferProgressMsg{target: target, bytes: bytes, done: done, total: total}:
+				default:
+				}
+			},
+		})
+		close(ch)
 		return transferredMsg{mode: mode, rep: rep, err: err}
-	})
+	}
+	return m, tea.Batch(m.spin.Tick, run, waitProgress(ch))
 }
 
 // transferred reports what the transfer did. Approved rows a transfer just
@@ -459,11 +517,7 @@ func (m pickerModel) View() string {
 	case m.rebuilding:
 		foot = append(foot, m.spin.View()+tui.DimText.Render(" Re-proposing folders with your current settings…"))
 	case m.transferring:
-		verb := "Copying"
-		if m.transferMode == execute.ModeMove {
-			verb = "Moving"
-		}
-		foot = append(foot, m.spin.View()+tui.DimText.Render(" "+verb+" approved files to the output…"))
+		foot = append(foot, m.transferRow())
 	}
 	if m.status != "" {
 		if m.statusErr {
@@ -486,6 +540,24 @@ func (m pickerModel) View() string {
 	foot = append(foot, tui.Footer(strings.Join(hints, "   "), m.w))
 
 	return tui.Screen(strings.Join(b, "\n"), strings.Join(foot, "\n"), m.h)
+}
+
+// transferRow is the copy/move progress bar, in the same shape the config
+// wizard's download row uses: a bar plus what it is counting. Until the first
+// report lands there is no total to size a bar with (execute is still loading
+// its rows), so it starts as the spinner alone.
+func (m pickerModel) transferRow() string {
+	verb := "Copying"
+	if m.transferMode == execute.ModeMove {
+		verb = "Moving"
+	}
+	if m.prog.total == 0 {
+		return m.spin.View() + tui.DimText.Render(" "+verb+" approved files to the output…")
+	}
+	pct := float64(m.prog.done) / float64(m.prog.total)
+	left := m.spin.View() + " " + tui.DimText.Render(verb) + "  " + m.bar.ViewAs(pct) + "  " +
+		tui.DimText.Render(fmt.Sprintf("%d/%d", m.prog.done, m.prog.total))
+	return tui.Row(left, tui.FaintTxt.Render(volume.HumanBytes(uint64(m.bytes))), m.w)
 }
 
 // moveAskView is [X]'s one question, in the same full-screen yes/no shape

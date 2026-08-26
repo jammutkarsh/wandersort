@@ -9,6 +9,7 @@ package review
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -442,6 +443,36 @@ func TestPickerMoveKeyAsksFirst(t *testing.T) {
 	msg := drainTransferred(t, cmd())
 	if msg.mode != execute.ModeMove {
 		t.Errorf("mode = %v, want ModeMove", msg.mode)
+	}
+}
+
+// TestPickerTransferProgressFeedsTheBar: execute reports one file at a time,
+// so the picker has to accumulate the bytes and re-arm the channel read —
+// without the re-arm the bar freezes on the first file it ever drew.
+func TestPickerTransferProgressFeedsTheBar(t *testing.T) {
+	m, _ := pickerFixture(t)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	p := next.(pickerModel)
+	p.w, p.h = 100, 24
+
+	next, cmd := p.Update(transferProgressMsg{target: "2024/01/a.jpg", bytes: 1024, done: 1, total: 2})
+	if cmd == nil {
+		t.Error("a progress report must re-arm the channel read")
+	}
+	next, _ = next.(pickerModel).Update(transferProgressMsg{target: "2024/01/b.jpg", bytes: 1024, done: 2, total: 2})
+	p = next.(pickerModel)
+	if p.bytes != 2048 {
+		t.Errorf("bytes = %d, want 2048 — reports are per file, not cumulative", p.bytes)
+	}
+	if !strings.Contains(p.View(), "2/2") {
+		t.Error("the progress row does not say how many files are done")
+	}
+
+	// A report that arrives after the result must not put the bar back up.
+	done := p.transferred(transferredMsg{})
+	next, _ = done.Update(transferProgressMsg{done: 9, total: 9})
+	if next.(pickerModel).prog.done == 9 {
+		t.Error("a late report was drawn after the transfer had already reported")
 	}
 }
 

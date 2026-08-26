@@ -90,11 +90,12 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, o Options, xfer transfer) (Report, error) {
 	var rows []struct {
 		ID         int64  `db:"id"`
+		FileID     int64  `db:"file_id"`
 		SourcePath string `db:"source_path"`
 		TargetPath string `db:"target_path"`
 	}
 	if err := database.SQL.SelectContext(ctx, &rows,
-		`SELECT id, source_path, target_path FROM virtual_fs_entries WHERE status = ? ORDER BY id`,
+		`SELECT id, file_id, source_path, target_path FROM virtual_fs_entries WHERE status = ? ORDER BY id`,
 		db.StatusApproved); err != nil {
 		return Report{}, fmt.Errorf("load approved entries: %w", err)
 	}
@@ -123,7 +124,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		}
 
 		if !o.DryRun {
-			markResult(database, r.ID, xerr)
+			markResult(database, r.ID, r.FileID, dst, xerr)
 		}
 		if xerr != nil {
 			rep.Failed++
@@ -165,11 +166,15 @@ func summary(o Options, rep Report, elapsed time.Duration) string {
 	return msg
 }
 
-// markResult flips one row to DONE or ERROR. Fire-and-forget through the
-// same FIFO writer every phase uses; Run's Flush before returning is what
-// makes the caller's very next read (the CLI's summary, the picker's status
-// line) see it.
-func markResult(database *db.DB, id int64, xerr error) {
+// markResult flips one row to DONE or ERROR. On success it also repoints
+// file_registry and the row's own source_path at newPath — the file really
+// lives there now, so a stale old path would break the next thing that reads
+// it: a Move's source is gone outright, and a Copy's row would otherwise keep
+// pointing reorg attempts at a location that no longer reflects the plan
+// that was executed. Fire-and-forget through the same FIFO writer every phase
+// uses; Run's Flush before returning is what makes the caller's very next
+// read (the CLI's summary, the picker's status line) see it.
+func markResult(database *db.DB, id, fileID int64, newPath string, xerr error) {
 	if xerr != nil {
 		msg := xerr.Error()
 		database.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
@@ -179,9 +184,15 @@ func markResult(database *db.DB, id int64, xerr error) {
 		})
 		return
 	}
+	dir, name := filepath.Dir(newPath), filepath.Base(newPath)
 	database.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE virtual_fs_entries SET status = ?, error = NULL, source_path = ? WHERE id = ?`,
+			db.StatusDone, newPath, id); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx,
-			`UPDATE virtual_fs_entries SET status = ?, error = NULL WHERE id = ?`, db.StatusDone, id)
+			`UPDATE file_registry SET file_dir = ?, file_name = ? WHERE id = ?`, dir, name, fileID)
 		return err
 	})
 }

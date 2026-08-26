@@ -216,8 +216,15 @@ func (a *app) rebuildTree(ctx context.Context, seg *vfs.Segment) ([]vfs.Node, er
 
 // newReviewScreen builds the review screen over the current proposal, reusing
 // the scan's already-open DB and Deps — no lock/DB re-init needed. It never
-// rebuilds on the way in: the review asks about a settings change itself, on
+// rebuilds for a settings change: the review asks about that itself, on
 // screen, so there is one place that decision is made.
+//
+// An empty tree is different: nothing PROPOSED/APPROVED doesn't mean nothing
+// to organize — every master may already be DONE from an earlier execute
+// (see ReopenSegment). There is nothing on an empty tree to lose, so
+// rebuilding here is free, and it's the only way in: the [R] key that could
+// otherwise do this rebuild lives inside the screen this function returns,
+// and a TUI user has no CLI flag to reach for instead.
 func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	// Doesn't block: a.Deps was started by the scan and vfs already ran, so
 	// the location download has resolved by now. Autocomplete just degrades
@@ -231,7 +238,12 @@ func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 		return nil, err
 	}
 	if len(tree) == 0 {
-		return nil, fmt.Errorf("no proposal to review")
+		if tree, err = a.rebuildTree(ctx, nil); err != nil {
+			return nil, err
+		}
+	}
+	if len(tree) == 0 {
+		return nil, fmt.Errorf("nothing to organize yet — run 'wandersort scan' first")
 	}
 	return review.Screen(ctx, review.Options{
 		DB:              a.AppDB,
