@@ -189,10 +189,13 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 		{
 			Kind:        tui.FieldInput,
 			Title:       "Output path",
-			Description: "Where the organized library (DB + logs) is written. ~ is fine.",
+			Description: "Where the organized library goes: an empty folder, or one WanderSort already organized. ~ is fine.",
 			Value:       &out,
-			Placeholder: filepath.Join(homeDir, "WanderSortLibrary"),
+			Placeholder: filepath.Join(homeDir, config.DefaultLibrary),
 			Suggest:     suggestOut,
+			Validator: func(s string) error {
+				return config.CheckLibrary(paths.ExpandPath(strings.TrimSpace(s)))
+			},
 		},
 		rulesField,
 		{

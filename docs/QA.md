@@ -160,7 +160,7 @@ Execute/move stage isn't written yet, so it isn't here.
 
 117. `[H]` `wandersort reset` → confirmation prompt; answering no leaves data intact.
 118. `[A]` `wandersort reset --yes` → all scan data wiped.
-119. `[A]` `wandersort issue` → produces a zip with `wandersort.log` + `about.txt`, no DB by default.
+119. `[A]` `wandersort issue` → produces a zip **in the current directory** with `about.txt` + up to 5 recent runs' logs as `logs/<UTC time>Z_<pid>.log` (not the `issue` run's own), no DB by default. A run that only opened the settings and quit leaves no log to package.
 120. `[A]` `wandersort issue --include-db` → zip additionally contains the DB.
 
 ## 12. Serve / HTTP API (depends on everything — hardest)
@@ -179,16 +179,16 @@ Execute/move stage isn't written yet, so it isn't here.
 129. `[A]` `WORKERS=2 wandersort scan -p <dir>` → env ignored (worker count is not a setting); `-w 8` is rejected as an unknown flag.
 129b. `[A]` scan a folder holding two files of a unique length and two of a shared length → `sqlite3 .wandersort.db "SELECT hash_kind FROM file_metadata"` shows `size` for the unique pair (never read) and `content` for the shared pair.
 129c. `[A]` add a file matching a previously-unique length and re-scan → one `Re-reading files that are no longer a unique size` line, the incumbent's `hash_kind` flips to `content`, and identical content lands both in one duplicate group. **This is the case the prefilter can silently corrupt** — if the incumbent stays `size`, two identical files are reported as distinct.
-129d. `[A]` any scan against a `.wandersort.db` created before `hash_kind` existed → fails with `no such column: m.hash_kind`; deleting the file (not `wandersort reset`) is the fix.
+129d. `[A]` any scan against a `.wandersort.db` created before `hash_kind` existed → fails with `no such column: m.hash_kind`; deleting `.wandersort.db` and `.wandersort.cfg`, or the whole library folder (not `wandersort reset`), is the fix — the database alone leaves a folder `CheckLibrary` refuses.
 129a. `[H]` `wandersort scan -p <dir>` on an external spinning disk → one `Storage detected` line per volume names `class=rotational` and `concurrentReads=1`; on the internal SSD it names `solid-state` and the full budget. A library spanning both reads the SSD's files first.
-130. `[A]` `OUTPUT_PATH=/tmp/ws wandersort scan -p <dir>` → DB + logs written under `/tmp/ws`.
+130. `[A]` `OUTPUT_PATH=/tmp/ws wandersort scan -p <dir>` → DB, lock and stamp written under `/tmp/ws`; the log goes to `~/.wandersort/logs/`, not the library.
 131. `[A]` `wandersort scan -p <dir> --plain` → console shows the plain line log; the JSON log file holds the full developer detail either way.
 132. `[A]` any command on a machine with no `~/.wandersort/config.yaml` → the file is created with the commented template before the command does anything else.
 133. `[H]` `wandersort config` *(`$EDITOR` set)* → opens the file in `$EDITOR`.
 134. `[H]` `wandersort config` *(interactive TTY)* → full-screen wizard, in order: output path, rules, collapse, then one Home & work step holding home town, work town, "group home/work photos by date only?" and "merge consecutive same-location days?"; completing it prints exactly `config saved in ~/.wandersort/config.yaml`, ctrl+c prints "Cancelled — nothing saved." and writes nothing.
 135. `[A]` `wandersort config --print` / `-p` → prints the saved file to stdout, no wizard, exit 0.
 136. `[A]` `wandersort config | cat` → prints the file instead of launching the wizard into the pipe; `wandersort config > out.yaml` writes the file's contents.
-137. `[A]` add `output-path: /tmp/ws-cfg` to `config.yaml`, then `wandersort scan -p <dir>` *(no `-o` flag)* → DB + logs written under `/tmp/ws-cfg`; `-o` on the command line still overrides it.
+137. `[A]` add `output-path: /tmp/ws-cfg` to `config.yaml`, then `wandersort scan -p <dir>` *(no `-o` flag)* → DB, lock and stamp written under `/tmp/ws-cfg` (the log goes to `~/.wandersort/logs/`); `-o` on the command line still overrides it.
 138. `[A]` add `group-by: [none]` to `config.yaml`, then scan with no `--group-by` flag → flat `Year/Month` proposal; `--group-by location` on the command line still overrides it.
 139. `[A]` a freshly created `config.yaml` (first ever command) is empty, and one written by the wizard has no comments — every key present is a real setting.
 140. `[A]` put invalid YAML in `config.yaml` (e.g. a leading tab), then run any command → a **warning** naming the file and the parse error, the command continues on defaults, exit code unchanged by the bad file.

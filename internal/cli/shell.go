@@ -116,18 +116,13 @@ func (a *app) runShell(start shellStart) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	defer func() {
-		a.closeDBs()
-		if a.outLock != nil {
-			a.outLock.Unlock()
-		}
-	}()
+	defer a.closeDBs()
 
 	// Events flow to the program; the forwarding goroutine outlives Run() and
 	// exits with the process — the send never deadlocks since the program
 	// always drains it.
 	events := make(chan logger.Event, 4096)
-	tuiLog := logger.NewTUI(a.Config.LogLevel, a.Config.LogFile, func(e logger.Event) { events <- e })
+	tuiLog := logger.NewTUI(a.Config.LogLevel, a.logFile, func(e logger.Event) { events <- e })
 	origLog := a.Log
 	a.Log = tuiLog
 	defer func() { a.Log = origLog }()
@@ -224,7 +219,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tui.StartScanMsg:
 		paths, force := msg.Paths, msg.Force
 		a, ctx := m.a, m.ctx
-		return m, func() tea.Msg { return scanReadyMsg{paths: paths, force: force, err: a.ensureOutput(ctx)} }
+		return m, func() tea.Msg { return scanReadyMsg{paths: paths, force: force, err: a.openLibrary(ctx)} }
 
 	case tui.OpenReviewMsg:
 		return m, m.openReview()
@@ -471,7 +466,7 @@ func (m *shellModel) openReview() tea.Cmd {
 	m.rebuild = false
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
-		if err := a.ensureOutput(ctx); err != nil {
+		if err := a.openLibrary(ctx); err != nil {
 			return reviewOpenMsg{err: err}
 		}
 		if rebuild {

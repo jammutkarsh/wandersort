@@ -299,3 +299,40 @@ func TestResolve(t *testing.T) {
 		t.Run(tt.name, tt.fn)
 	}
 }
+
+func TestCheckLibrary(t *testing.T) {
+	tests := []struct {
+		name    string
+		files   []string // nil = folder does not exist
+		wantErr bool
+	}{
+		{"missing folder", nil, false},
+		{"empty folder", []string{}, false},
+		{"existing library", []string{defaultDBFileName, "2024"}, false},
+		{"only OS clutter and a leftover lock", []string{".DS_Store", "Thumbs.db", "desktop.ini", ".wandersort.lock"}, false},
+		{"leftover files of an older library", []string{".wandersort.log", ".wandersort.cfg"}, true},
+		{"foreign content", []string{".DS_Store", "Goa Trip"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "lib")
+			if tt.files != nil {
+				if err := os.Mkdir(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				for _, f := range tt.files {
+					if err := os.WriteFile(filepath.Join(dir, f), nil, 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			err := CheckLibrary(dir)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("CheckLibrary() = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), dir) {
+				t.Errorf("error %q does not name the folder", err)
+			}
+		})
+	}
+}

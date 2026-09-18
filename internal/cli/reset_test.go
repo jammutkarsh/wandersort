@@ -35,7 +35,6 @@ func TestRunResetNoDatabase(t *testing.T) {
 	dir := t.TempDir()
 	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
 		AppDBPath: filepath.Join(dir, ".wandersort.db"),
-		LogFile:   filepath.Join(dir, "wandersort.log"),
 	}}
 	if err := a.runReset(newResetTestCmd(t, true)); err == nil {
 		t.Fatal("runReset with no database on disk must fail")
@@ -62,7 +61,6 @@ func TestRunResetCancelledWithoutYes(t *testing.T) {
 
 	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
 		AppDBPath: dbPath,
-		LogFile:   filepath.Join(dir, "wandersort.log"),
 	}}
 	if err := a.runReset(newResetTestCmd(t, false)); err == nil {
 		t.Fatal("declining the confirm prompt must cancel the reset")
@@ -76,7 +74,6 @@ func TestRunResetYesWipesDatabase(t *testing.T) {
 
 	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
 		AppDBPath: dbPath,
-		LogFile:   filepath.Join(dir, "wandersort.log"),
 	}}
 	if err := a.runReset(newResetTestCmd(t, true)); err != nil {
 		t.Fatalf("runReset: %v", err)

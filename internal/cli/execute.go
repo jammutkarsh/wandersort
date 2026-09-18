@@ -65,15 +65,9 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 		return fmt.Errorf("execute cancelled")
 	}
 
-	l, err := a.lockOutput()
-	if err != nil {
-		return err
-	}
-	defer l.Unlock()
-
 	ctx := context.Background()
-	if err := a.initAppDB(ctx); err != nil {
-		return fmt.Errorf("app db: %w", err)
+	if err := a.openLibrary(ctx); err != nil {
+		return err
 	}
 	defer a.closeDBs()
 

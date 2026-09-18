@@ -33,7 +33,7 @@ one scan ever runs against it at a time (see "Conventions" below):
   logger here** — it's built later (see below).
 - `internal/cli/` — cobra CLI. One file per command, plus `app.go` and `root.go`:
   - `app.go` — `Execute(cfg)`, **the package's only exported symbol**, plus the
-    unexported `app` struct and everything hanging off it: `initAppDB`,
+    unexported `app` struct and everything hanging off it: `openLibrary`,
     `closeDBs`, `lockOutput`, `isTuiEnabled`, and `newDeps` — the one-line
     constructor for a `pkg/install.Coordinator` (see below), stored on
     `app.Deps`. Exiftool path / location resolver readiness used to be four
@@ -47,17 +47,23 @@ one scan ever runs against it at a time (see "Conventions" below):
     one way in and no struct to assemble. `tuiEnabled` decides TUI vs plain
     line logging (plain when `--plain` is set or stderr isn't a terminal);
     the TUI draws to stderr so stdout stays clean for piping.
-    `ensureOutput` is the shell's lazy `lockOutput` + `initAppDB` pair (stored
-    on `app.outLock`, idempotent): the wizard writes only `config.yaml`, so a
-    session that opens it first holds nothing, and a second `wandersort` is
-    refused at the point it would really collide rather than at launch. The
-    subcommands still take their own lock and unlock it themselves.
+    `openLibrary` is **the one way any command or the shell opens the output
+    folder**, lazily and once per session: `config.CheckLibrary` (empty, or
+    already holds `.wandersort.db`), then the output lock, then `db.New`;
+    `closeDBs` releases both. The order is the point: a refused folder gets
+    nothing written into it, and a process that loses the lock race creates no
+    file either (the lock file it opened is the winner's). A session that
+    never scans or reviews writes nothing outside `~/.wandersort` — no lock
+    file at launch, no cleanup pass at exit. The wizard writes only
+    `config.yaml`, so a second `wandersort` is refused at the point it would
+    really collide rather than at launch.
     `reloadConfig` re-runs `config.Resolve` after the shell's own wizard
     rewrote `config.yaml` mid-session — with `app.overrides`, the flag layer
     `PersistentPreRunE` resolved with, so a flag still beats what was just
     saved. **The output path is the one setting it holds back**: the database
     and the lock are already open on the old one, so it keeps the old
-    `AppDBPath`/`LogFile` and returns a note saying it takes effect next
+    `AppDBPath` (the log lives in `~/.wandersort/logs`, which never moves) and
+    returns a note saying it takes effect next
     launch. Everything else (rules, toggles, saved places) is live from that
     moment — which is what makes the stamp check and a mid-run
     `Workflow.UpdateConfig` agree on one `a.Config`.
@@ -142,7 +148,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     database file on disk, since nothing else writes one) **and not while a
     scan is running** — that run replaces the proposal wholesale, so the tree
     on disk is about to be stale. `ctrl+t` into a reviewable-but-unprefetched
-    tab runs `openReview` (the same `ensureOutput` + optional rebuild +
+    tab runs `openReview` (the same `openLibrary` + optional rebuild +
     `newReviewScreen` cmd `ctrl+t` and `wandersort review`
     use) and **leaves the tab where it is until
     the screen lands**, so there is never a blank frame. The tab bar's
@@ -714,8 +720,9 @@ Back in `internal/cli/`:
     WanderSort is" above), there was nothing left for it to read, so it was
     deleted rather than rewritten. `wandersort review` is the natural next
     step after `scan` now.
-- `issue.go` — `issue` cmd: zips the log (renamed
-    `wandersort.log`) + `about.txt`; db opt-in via `--include-db` (holds paths/GPS).
+- `issue.go` — `issue` cmd: zips the newest `issueLogs` (5) non-empty logs
+    other than its own run's, under `logs/`, + `about.txt`, into the **current
+    directory**, not the library; db opt-in via `--include-db` (holds paths/GPS).
 - `reset.go` — wipe scan data (confirm prompt unless `--yes`), plus the
     `.wandersort.cfg` stamp, which describes a proposal that no longer
     exists, plus `review.CleanPreviews()` — peek copies outlive a review
@@ -1205,8 +1212,11 @@ raise the reset prompt.
   `ALTER` on it. The cost is that `migrations.Run` tracks versions
   individually: a database where 003 is already recorded will never get the
   column, and the vfs phase then fails at runtime on the INSERT. **Deleting
-  `.wandersort.db` is the fix**, and `wandersort reset` is not — the file
-  itself has to go. Same applies to any future edit of an already-run
+  `.wandersort.db` *and* `.wandersort.cfg` (or the whole library folder) is
+  the fix**, and `wandersort reset` is not — the file itself has to go. The
+  stamp matters because `config.CheckLibrary` refuses a folder holding our
+  leftovers without a database (D1: a library whose database was deleted),
+  until ticket 10 removes the stamp. Same applies to any future edit of an already-run
   migration — `file_metadata.hash_kind` was added to **002's `CREATE TABLE`**
   the same way, and a pre-existing database fails the metadata phase with
   `no such column: m.hash_kind` until it is deleted.
@@ -1372,7 +1382,21 @@ raise the reset prompt.
   reading the plain console. There is no debug flag to bypass the console
   filter — the JSON file log always has every record.
   The **JSON file** handler keeps timestamp + source (`AddSource`) and every
-  attr — that's what `issue` ships. Never stdlib `log`.
+  attr — that's what `issue` ships. **One file per process, in
+  `~/.wandersort/logs/`, never in the library, and only for runs worth
+  keeping** (`file.go`). A `File` buffers in memory until `Persist`, which
+  creates `<UTC start time>Z_<pid>.log`, flushes, and prunes to the newest
+  `keepLogs` = 20 (`Recent` lists them newest first). `openLibrary` persists
+  (the run touches user data), `fileHandler`'s `persistOnWarn` persists on the
+  first Warn/Error (a launch that went wrong), and so does a buffer past
+  `maxBuffered` (1 MiB). Anything else — someone looking around the app — is
+  dropped at exit, so it neither leaves a file nor evicts a scan's log from
+  the 20. Cost: a crash before any of those loses the buffer. A log is about
+  a run, not about the output folder, so a mid-session output change moves
+  nothing. `PersistentPreRunE` builds the one `File` (`app.logFile`) and the
+  shell's `NewTUI` is handed the same one. The first line of every log names
+  the command and output folder, since the log no longer sits
+  next to it. Never stdlib `log`.
 - `location/` — offline reverse-geocode resolver over an already-open, already-
   verified sqlite DB. **This package has no idea where that DB came from,
   what version it needs to be, or what its checksum should be** — downloading,

@@ -13,13 +13,16 @@ import (
 	"runtime"
 	"strconv"
 
+	"github.com/jammutkarsh/wandersort/pkg/lock"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"go.yaml.in/yaml/v3"
 )
 
+// DefaultLibrary is the output folder's name under $HOME until the user picks
+// one; the settings wizard shows it as the placeholder.
+const DefaultLibrary = "WandersortLibrary"
+
 const (
-	defaultLibrary     = "WandersortLibrary"
-	defaultLogFileName = ".wandersort.log"
 	defaultDBFileName  = ".wandersort.db"
 	locationDBFileName = "location.db"
 	defaultLogLevel    = "info"
@@ -80,7 +83,10 @@ type Configuration struct {
 	LocationDBPath string `yaml:"-"`
 	LogLevel       string `yaml:"-"`
 	LogConsole     bool   `yaml:"-"`
-	LogFile        string `yaml:"-"`
+	// LogDir holds the logs of runs worth keeping (logger.NewFile, written
+	// once Persist is called), apart from any library: a log is about a run,
+	// not about the folder it wrote to.
+	LogDir         string `yaml:"-"`
 	ExecutablePath string `yaml:"-"`
 	Configured     bool   `yaml:"-"`
 }
@@ -144,7 +150,7 @@ func defaults() (*Configuration, error) {
 	appDir := filepath.Join(home, ".wandersort")
 	executablesDirectory := filepath.Join(appDir, "bin")
 	configPath := filepath.Join(appDir, configFileName)
-	outputPath := filepath.Join(home, defaultLibrary)
+	outputPath := filepath.Join(home, DefaultLibrary)
 
 	return &Configuration{
 		appConfig:             configPath,
@@ -152,7 +158,7 @@ func defaults() (*Configuration, error) {
 		LocationDBPath:        filepath.Join(appDir, locationDBFileName),
 		LogLevel:              defaultLogLevel,
 		LogConsole:            true,
-		LogFile:               filepath.Join(outputPath, defaultLogFileName),
+		LogDir:                filepath.Join(appDir, "logs"),
 		Workers:               runtime.NumCPU(),
 		ExecutablePath:        executablesDirectory,
 		CollapseLevels:        true,
@@ -203,7 +209,6 @@ func Resolve(o Overrides) (cfg *Configuration, warning string, err error) {
 		cfg.Configured = true
 		outputPath = wspath.New().ExpandPath(outputPath)
 		cfg.AppDBPath = filepath.Join(outputPath, defaultDBFileName)
-		cfg.LogFile = filepath.Join(outputPath, defaultLogFileName)
 	}
 
 	return cfg, warning, nil
@@ -258,6 +263,38 @@ func (cfg *Configuration) Save(saveCfg *Configuration) error {
 	}
 	if err := os.WriteFile(path, out, 0o644); err != nil {
 		return fmt.Errorf("write global config: %w", err)
+	}
+	return nil
+}
+
+// osClutter is what an OS drops into any folder it has shown; a folder holding
+// only these is still empty as far as the user is concerned.
+var osClutter = map[string]bool{".DS_Store": true, "Thumbs.db": true, "desktop.ini": true}
+
+// CheckLibrary reports whether dir may be used as an output folder: it must
+// not exist yet, be empty, or already be a library (hold .wandersort.db).
+// Planning only knows files the database placed, so anything else — a folder
+// organized by hand, or a library whose database was deleted — would receive
+// files on top of content nothing accounts for. OS clutter doesn't count, nor
+// does a lone lock file: it is taken just before the database is created, so
+// a run that died in between leaves one behind.
+func CheckLibrary(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("output folder %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		if e.Name() == defaultDBFileName {
+			return nil
+		}
+	}
+	for _, e := range entries {
+		if n := e.Name(); !osClutter[n] && n != lock.OutputFileName {
+			return fmt.Errorf("output folder %s already has files (%s) and is not a WanderSort library; pick an empty folder or an existing library", dir, n)
+		}
 	}
 	return nil
 }

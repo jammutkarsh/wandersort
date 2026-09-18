@@ -8,10 +8,8 @@
 package logger
 
 import (
-	"fmt"
+	"context"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 
 	slogmulti "github.com/samber/slog-multi"
@@ -26,10 +24,10 @@ type Logger interface {
 }
 
 // New constructs a Logger fanning out to the coloured stderr console (when
-// console is set) and the JSON file log (when logFile is non-empty). With
-// neither, it returns a no-op logger.
-func New(logLevel string, console bool, logFile string) Logger {
-	if !console && logFile == "" {
+// console is set) and the JSON file log (when file is non-nil). With neither,
+// it returns a no-op logger.
+func New(logLevel string, console bool, file *File) Logger {
+	if !console && file == nil {
 		return NewNoopLogger()
 	}
 
@@ -44,8 +42,8 @@ func New(logLevel string, console bool, logFile string) Logger {
 	}
 
 	// Enable FileLogger if provided
-	if h := fileHandler(logFile); h != nil {
-		handlers = append(handlers, h)
+	if file != nil {
+		handlers = append(handlers, fileHandler(file))
 	}
 
 	return &SlogAdapter{
@@ -56,12 +54,13 @@ func New(logLevel string, console bool, logFile string) Logger {
 
 // NewTUI builds a Logger for full-screen mode: the console handler is off (its
 // writes would corrupt the alt-screen) and records flow to sink for the TUI to
-// render. The JSON file log still captures everything.
-func NewTUI(logLevel, logFile string, sink Sink) Logger {
+// render. The JSON file log still captures everything; pass the same File
+// the startup logger got, so one process keeps one log.
+func NewTUI(logLevel string, file *File, sink Sink) Logger {
 	level := getSlogLevel(logLevel)
 	handlers := []slog.Handler{&teaHandler{sink: sink, minLevel: level}}
-	if h := fileHandler(logFile); h != nil {
-		handlers = append(handlers, h)
+	if file != nil {
+		handlers = append(handlers, fileHandler(file))
 	}
 	return &SlogAdapter{
 		logger: slog.New(slogmulti.Fanout(handlers...)),
@@ -69,21 +68,32 @@ func NewTUI(logLevel, logFile string, sink Sink) Logger {
 	}
 }
 
-// fileHandler opens the JSON file log (debug level, with source) or returns nil
-// if logFile is empty or cannot be opened. Shared by New and NewTUI.
-func fileHandler(logFile string) slog.Handler {
-	if logFile == "" {
-		return nil
+// fileHandler writes the JSON file log (debug level, with source) into file,
+// and persists file on the first warning: a run that went wrong is worth
+// keeping even if it never opened a library. Shared by New and NewTUI.
+func fileHandler(file *File) slog.Handler {
+	return persistOnWarn{slog.NewJSONHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true}), file}
+}
+
+type persistOnWarn struct {
+	slog.Handler
+	file *File
+}
+
+func (h persistOnWarn) Handle(ctx context.Context, r slog.Record) error {
+	err := h.Handler.Handle(ctx, r) // buffered first, so the warning itself is in the flush
+	if r.Level >= slog.LevelWarn {
+		h.file.Persist()
 	}
-	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "WARN: failed to create log directory %s: %v\n", filepath.Dir(logFile), err)
-	}
-	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARN: failed to open log file %s: %v (file logging disabled)\n", logFile, err)
-		return nil
-	}
-	return slog.NewJSONHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true})
+	return err
+}
+
+func (h persistOnWarn) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return persistOnWarn{h.Handler.WithAttrs(attrs), h.file}
+}
+
+func (h persistOnWarn) WithGroup(name string) slog.Handler {
+	return persistOnWarn{h.Handler.WithGroup(name), h.file}
 }
 
 // getSlogLevel maps a human-readable string to slog.Level

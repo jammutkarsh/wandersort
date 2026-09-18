@@ -36,7 +36,7 @@ func main() {
 		os.Exit(1)
 	}
 	ctx := context.Background()
-	log := logger.New("info", true, "")
+	log := logger.New("info", true, nil)
 	dbPath := filepath.Join(dir, install.LocationDBFileName)
 
 	// Location first, and fully awaited, before exiftool even starts: a

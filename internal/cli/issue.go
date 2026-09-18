@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/spf13/cobra"
 )
@@ -24,16 +25,17 @@ func (a *app) newIssueCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "issue",
 		Short: "Package logs into a zip you can attach to a bug report",
-		Long: `Collects the WanderSort log into a single zip you can share when something
-goes wrong — send it to the maintainer, or paste the log into any AI assistant
-to diagnose the problem yourself.
+		Long: `Collects the most recent WanderSort logs into a single zip you can share when
+something goes wrong — send it to the maintainer, or paste a log into any AI
+assistant to diagnose the problem yourself.
 
 Attach the zip to a new issue at:
   https://github.com/jammutkarsh/wandersort/issues/new/choose
 
-The zip is written next to the database/log (your --output-path or the
-configured default). Pass the same --output-path you scanned with, otherwise
-this packages a different, empty log.
+Logs live in ~/.wandersort/logs, one per run that opened a library or hit a
+warning or error — a run that only looked at the settings leaves none. The
+last few are packaged. The zip is written to the current directory. --include-db takes the
+database from your --output-path or the configured default.
 
 The database is not included by default because it holds file paths and photo
 metadata; add --include-db only if you are comfortable sharing that.`,
@@ -53,13 +55,27 @@ type zipEntry struct {
 	name string
 }
 
+// issueLogs is how many past runs' logs an issue zip carries: the run being
+// reported is rarely the newest, since the user ran other commands after it.
+const issueLogs = 5
+
 func (a *app) runIssue(includeDB bool) error {
-	// The logger creates an empty log file at startup, so existence alone is not
-	// enough — treat an empty log as "nothing to report".
-	if info, err := os.Stat(a.Config.LogFile); err != nil || info.Size() == 0 {
-		return fmt.Errorf("no log data found at %s — run a scan first", a.Config.LogFile)
+	var entries []zipEntry
+	for _, p := range logger.Recent(a.Config.LogDir, 0) {
+		// This run's own log says nothing about the problem; an empty one is a
+		// run that died before logging anything.
+		if info, err := os.Stat(p); p == a.logFile.Path() || err != nil || info.Size() == 0 {
+			continue
+		}
+		entries = append(entries, zipEntry{p, "logs/" + filepath.Base(p)})
+		if len(entries) == issueLogs {
+			break
+		}
 	}
-	entries := []zipEntry{{a.Config.LogFile, "wandersort.log"}}
+	if len(entries) == 0 {
+		return fmt.Errorf("no log data found in %s — run a scan first", a.Config.LogDir)
+	}
+	logCount := len(entries)
 
 	if includeDB {
 		// Include the SQLite sidecars too so the copied DB opens cleanly.
@@ -69,13 +85,16 @@ func (a *app) runIssue(includeDB bool) error {
 				entries = append(entries, zipEntry{src, "wandersort.db" + suffix})
 			}
 		}
-		if len(entries) == 1 {
+		if len(entries) == logCount {
 			a.Log.Warn("database not found; packaging logs only", "path", a.Config.AppDBPath)
 		}
 	}
 
 	zipName := fmt.Sprintf("wandersort-issue-%s.zip", time.Now().Format("20060102-150405"))
-	zipPath := filepath.Join(filepath.Dir(a.Config.AppDBPath), zipName)
+	zipPath, err := filepath.Abs(zipName) // the current directory, not the library
+	if err != nil {
+		return fmt.Errorf("resolve zip path: %w", err)
+	}
 	zf, err := os.Create(zipPath)
 	if err != nil {
 		return fmt.Errorf("create zip: %w", err)

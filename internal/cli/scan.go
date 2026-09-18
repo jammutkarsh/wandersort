@@ -116,13 +116,7 @@ func (a *app) runScanPlain(paths []string, force bool) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	l, err := a.lockOutput()
-	if err != nil {
-		return err
-	}
-	defer l.Unlock()
-
-	if err := a.initAppDB(ctx); err != nil {
+	if err := a.openLibrary(ctx); err != nil {
 		return err
 	}
 	a.Deps = a.newDeps(nil)

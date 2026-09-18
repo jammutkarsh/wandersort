@@ -8,78 +8,91 @@ package cli
 
 import (
 	"archive/zip"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-func TestRunIssueNoLogFile(t *testing.T) {
+// issueApp returns an app whose logs live in dir/logs and whose working
+// directory (where the zip lands) is dir. logs maps file name to contents.
+func issueApp(t *testing.T, logs map[string]string) (*app, string) {
+	t.Helper()
 	dir := t.TempDir()
-	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
-		LogFile:   filepath.Join(dir, "wandersort.log"),
-		AppDBPath: filepath.Join(dir, ".wandersort.db"),
-	}}
-	if err := a.runIssue(false); err == nil {
-		t.Fatal("runIssue with no log file must fail")
+	t.Chdir(dir)
+	logDir := filepath.Join(dir, "logs")
+	if err := os.Mkdir(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range logs {
+		if err := os.WriteFile(filepath.Join(logDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
+		LogDir:    logDir,
+		AppDBPath: filepath.Join(dir, "lib", ".wandersort.db"),
+	}}, dir
+}
+
+func TestRunIssueNoLogData(t *testing.T) {
+	tests := []struct {
+		name string
+		logs map[string]string
+	}{
+		{"no logs", nil},
+		{"only empty logs", map[string]string{"2026-01-01T10-00-00_1.log": ""}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, _ := issueApp(t, tt.logs)
+			if err := a.runIssue(false); err == nil {
+				t.Fatal("runIssue with nothing logged must fail")
+			}
+		})
 	}
 }
 
-func TestRunIssueEmptyLogFile(t *testing.T) {
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "wandersort.log")
-	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+func TestRunIssuePackagesRecentLogs(t *testing.T) {
+	logs := map[string]string{}
+	for i := 1; i <= issueLogs+2; i++ {
+		logs[fmt.Sprintf("2026-01-0%dT10-00-00_1.log", i)] = "some log data\n"
+	}
+	a, dir := issueApp(t, logs)
+	a.logFile = logger.NewFile(a.Config.LogDir)
+	a.logFile.Persist() // this run's own log, newest of all: must not be packaged
+	if _, err := a.logFile.Write([]byte("wandersort started\n")); err != nil {
 		t.Fatal(err)
 	}
-	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
-		LogFile:   logPath,
-		AppDBPath: filepath.Join(dir, ".wandersort.db"),
-	}}
-	if err := a.runIssue(false); err == nil {
-		t.Fatal("runIssue with an empty (just-created) log file must fail — logger always creates one")
-	}
-}
-
-func TestRunIssueCreatesZipWithoutDB(t *testing.T) {
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "wandersort.log")
-	if err := os.WriteFile(logPath, []byte("some log data\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	dbPath := filepath.Join(dir, ".wandersort.db")
-	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{LogFile: logPath, AppDBPath: dbPath}}
 
 	if err := a.runIssue(false); err != nil {
 		t.Fatalf("runIssue: %v", err)
 	}
 	entries, names := readZips(t, dir)
 	if len(entries) != 1 {
-		t.Fatalf("expected exactly one issue zip, found %d", len(entries))
+		t.Fatalf("expected exactly one issue zip in the working directory, found %d", len(entries))
 	}
-	wantNames := map[string]bool{"wandersort.log": true, "about.txt": true}
-	if len(names) != len(wantNames) {
-		t.Fatalf("zip entries = %v, want exactly %v", names, wantNames)
+	want := map[string]bool{"about.txt": true}
+	for i := 3; i <= issueLogs+2; i++ { // the newest issueLogs, not this run's
+		want[fmt.Sprintf("logs/2026-01-0%dT10-00-00_1.log", i)] = true
 	}
-	for n := range wantNames {
-		if !names[n] {
-			t.Errorf("zip missing entry %q, got %v", n, names)
-		}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("zip entries = %v, want %v", names, want)
 	}
 }
 
 func TestRunIssueIncludesDBWhenRequested(t *testing.T) {
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "wandersort.log")
-	if err := os.WriteFile(logPath, []byte("some log data\n"), 0o644); err != nil {
+	a, dir := issueApp(t, map[string]string{"2026-01-01T10-00-00_1.log": "some log data\n"})
+	if err := os.MkdirAll(filepath.Dir(a.Config.AppDBPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dbPath := filepath.Join(dir, ".wandersort.db")
-	if err := os.WriteFile(dbPath, []byte("fake db bytes"), 0o644); err != nil {
+	if err := os.WriteFile(a.Config.AppDBPath, []byte("fake db bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{LogFile: logPath, AppDBPath: dbPath}}
 
 	if err := a.runIssue(true); err != nil {
 		t.Fatalf("runIssue: %v", err)

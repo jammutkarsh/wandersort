@@ -30,12 +30,16 @@ type app struct {
 	Log    logger.Logger
 	AppDB  *db.DB
 	Deps   *install.Coordinator
-	// outLock is the output-dir lock the shell takes lazily (see ensureOutput);
-	// the subcommands hold their own and unlock it themselves.
+	// outLock is the output-dir lock, taken with the database by openLibrary
+	// and released with it by closeDBs.
 	outLock *lock.Lock
 	// overrides is the flag layer this invocation resolved with, kept so a
 	// re-resolve mid-session layers the same way (see reloadConfig).
 	overrides config.Overrides
+	// logFile is this process's log, shared by the startup logger and the
+	// shell's TUI logger. It stays in memory until openLibrary (or a warning)
+	// persists it, so a run that only explores the app leaves no file.
+	logFile *logger.File
 }
 
 // reloadConfig re-resolves the settings after the wizard rewrote config.yaml
@@ -51,7 +55,7 @@ func (a *app) reloadConfig() (note string, err error) {
 		a.Log.Warn(warning, logger.UserKey, true)
 	}
 	if a.AppDB != nil && cfg.AppDBPath != a.Config.AppDBPath {
-		cfg.AppDBPath, cfg.LogFile = a.Config.AppDBPath, a.Config.LogFile
+		cfg.AppDBPath = a.Config.AppDBPath
 		note = "Output folder saved — it takes effect the next time you start wandersort"
 	}
 	a.Config = cfg
@@ -93,7 +97,7 @@ func (a *app) workflowDeps() workflow.Deps {
 // hit routinely, so it gets the full styled explanation rather than a wrapped
 // one-liner; pkg/lock reports the fact, this decides how it reads.
 func (a *app) lockOutput() (*lock.Lock, error) {
-	l, err := lock.AcquireOutput(filepath.Dir(a.Config.LogFile))
+	l, err := lock.AcquireOutput(filepath.Dir(a.Config.AppDBPath))
 	var running *lock.AlreadyRunningError
 	if errors.As(err, &running) {
 		return nil, fmt.Errorf("%s", tui.Bad.Render(fmt.Sprintf("Another wandersort process is already running (PID %d).", running.PID))+"\n\n"+
@@ -115,47 +119,46 @@ func (a *app) hasProposal() bool {
 	return err == nil
 }
 
-// ensureOutput takes the output lock and opens the database, once — the shell
-// defers both until a scan or a review actually needs them, so the settings
-// wizard (which only writes config.yaml) runs with nothing held and a second
-// wandersort is only refused at the point it would really collide.
-func (a *app) ensureOutput(ctx context.Context) error {
-	if a.outLock != nil {
+// openLibrary opens the output folder as a library, once per session: check
+// it may be one, take the output lock, then open (or create) the database.
+// The order is the point — nothing is written into the folder before the
+// lock, and nothing but the lock before the database, so a refused folder is
+// never touched and a lost race (another process locked it first) creates no
+// file either: the lock file it tried to open is the winner's. Every command
+// and the shell open the library here, lazily, so a session that never scans
+// or reviews writes nothing outside the logs.
+func (a *app) openLibrary(ctx context.Context) error {
+	if a.AppDB != nil {
 		return nil
+	}
+	// From here the run touches (or tried to touch) user data: keep its log.
+	a.logFile.Persist()
+	if err := config.CheckLibrary(filepath.Dir(a.Config.AppDBPath)); err != nil {
+		return err
 	}
 	l, err := a.lockOutput()
 	if err != nil {
 		return err
 	}
-	if err := a.initAppDB(ctx); err != nil {
-		l.Unlock()
-		return err
-	}
-	a.outLock = l
-	return nil
-}
-
-func (a *app) initAppDB(ctx context.Context) error {
-	if a.AppDB != nil {
-		return nil
-	}
 	appDB, err := db.New(ctx, a.Config.AppDBPath, db.AppDB, a.Log)
 	if err != nil {
+		l.Unlock()
 		return fmt.Errorf("app db: %w", err)
 	}
-	a.AppDB = appDB
+	a.AppDB, a.outLock = appDB, l
 	return nil
 }
 
 func (a *app) closeDBs() {
 	// A failed Close can leave the WAL/SHM files locked (locking_mode=EXCLUSIVE),
 	// preventing the next scan from starting — always log the cause.
-	a.Log.Info("Closing databases")
 	if a.AppDB != nil {
+		a.Log.Info("Closing databases")
 		if err := a.AppDB.Close(); err != nil {
 			a.Log.Error("failed to close app database", "error", err)
 		}
 	}
+	a.outLock.Unlock() // nil-safe; after Close, so no other process opens the database mid-close
 	if a.Deps != nil {
 		if ldb := a.Deps.LocationDBIfReady(); ldb != nil {
 			if err := ldb.Close(); err != nil {

@@ -98,15 +98,9 @@ func (a *app) confirmReviewAll(rebuild, transfer, move, dryRun bool) error {
 		return fmt.Errorf("no database found — run 'wandersort scan' first")
 	}
 
-	l, err := a.lockOutput()
-	if err != nil {
-		return err
-	}
-	defer l.Unlock()
-
 	ctx := context.Background()
-	if err := a.initAppDB(ctx); err != nil {
-		return fmt.Errorf("app db: %w", err)
+	if err := a.openLibrary(ctx); err != nil {
+		return err
 	}
 	defer a.closeDBs()
 

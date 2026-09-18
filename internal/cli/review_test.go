@@ -37,7 +37,6 @@ func TestRunReviewNoDatabase(t *testing.T) {
 	dir := t.TempDir()
 	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
 		AppDBPath: filepath.Join(dir, ".wandersort.db"),
-		LogFile:   filepath.Join(dir, "wandersort.log"),
 	}}
 	cmd := &cobra.Command{Use: "review"}
 	cmd.Flags().Bool(flagYes, false, "")
@@ -66,7 +65,6 @@ func TestRunReviewRebuildBlocksApprovedPlan(t *testing.T) {
 
 	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
 		AppDBPath: dbPath,
-		LogFile:   filepath.Join(dir, "wandersort.log"),
 	}}
 	cmd := &cobra.Command{Use: "review"}
 	cmd.Flags().Bool(flagYes, false, "")

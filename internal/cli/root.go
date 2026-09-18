@@ -7,6 +7,8 @@
 package cli
 
 import (
+	"path/filepath"
+
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/spf13/cobra"
@@ -77,7 +79,10 @@ Flags take precedence over environment variables.`,
 			}
 			a.Config = cfg
 			// Build logger after Resolve so --output-path takes effect
-			a.Log = logger.New(a.Config.LogLevel, a.Config.LogConsole, a.Config.LogFile)
+			a.logFile = logger.NewFile(a.Config.LogDir)
+			a.Log = logger.New(a.Config.LogLevel, a.Config.LogConsole, a.logFile)
+			// The log no longer sits in the library, so say which one this run is about.
+			a.Log.Info("wandersort started", "command", cmd.CommandPath(), "output", filepath.Dir(a.Config.AppDBPath))
 			if warning != "" {
 				a.Log.Warn(warning, logger.UserKey, true)
 			}
@@ -85,7 +90,7 @@ Flags take precedence over environment variables.`,
 		},
 	}
 
-	rootCmd.PersistentFlags().StringP(flagOutputPath, "o", "", "Output directory (DB and logs)")
+	rootCmd.PersistentFlags().StringP(flagOutputPath, "o", "", "Library folder: empty, or one WanderSort already organized")
 	rootCmd.PersistentFlags().Bool(flagPlain, false, "Disable the full-screen TUI; use plain line logging")
 
 	rootCmd.AddCommand(a.newConfigCmd())

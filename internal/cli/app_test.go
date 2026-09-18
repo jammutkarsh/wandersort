@@ -8,6 +8,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -65,7 +66,7 @@ func TestLockOutputAlreadyRunning(t *testing.T) {
 	}
 	defer held.Unlock()
 
-	a := &app{Config: &config.Configuration{LogFile: filepath.Join(dir, "wandersort.log")}}
+	a := &app{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}}
 	_, err = a.lockOutput()
 	if err == nil {
 		t.Fatal("lockOutput must fail while another lock is held")
@@ -79,7 +80,7 @@ func TestLockOutputAlreadyRunning(t *testing.T) {
 // acquire cleanly and hand back a lock the caller can release.
 func TestLockOutputSucceedsWhenFree(t *testing.T) {
 	dir := t.TempDir()
-	a := &app{Config: &config.Configuration{LogFile: filepath.Join(dir, "wandersort.log")}}
+	a := &app{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}}
 	l, err := a.lockOutput()
 	if err != nil {
 		t.Fatalf("lockOutput: %v", err)
@@ -87,26 +88,26 @@ func TestLockOutputSucceedsWhenFree(t *testing.T) {
 	defer l.Unlock()
 }
 
-// TestInitAppDBIdempotent covers the early-return branch: calling it twice
+// TestOpenLibraryIdempotent covers the early-return branch: calling it twice
 // must not replace an already-open handle (which would leak the first one's
 // file descriptor).
-func TestInitAppDBIdempotent(t *testing.T) {
+func TestOpenLibraryIdempotent(t *testing.T) {
 	cfg := testConfig(t)
 	a := &app{Config: cfg, Log: logger.NewNoopLogger()}
 	ctx := context.Background()
 
-	if err := a.initAppDB(ctx); err != nil {
-		t.Fatalf("initAppDB: %v", err)
+	if err := a.openLibrary(ctx); err != nil {
+		t.Fatalf("openLibrary: %v", err)
 	}
 	first := a.AppDB
 	if first == nil {
-		t.Fatal("initAppDB left AppDB nil")
+		t.Fatal("openLibrary left AppDB nil")
 	}
-	if err := a.initAppDB(ctx); err != nil {
-		t.Fatalf("initAppDB (second call): %v", err)
+	if err := a.openLibrary(ctx); err != nil {
+		t.Fatalf("openLibrary (second call): %v", err)
 	}
 	if a.AppDB != first {
-		t.Error("initAppDB replaced an already-open AppDB handle")
+		t.Error("openLibrary replaced an already-open AppDB handle")
 	}
 	a.closeDBs()
 }
@@ -132,5 +133,30 @@ func TestWorkflowDepsReadsThroughToCoordinator(t *testing.T) {
 	// resolve against the Coordinator built *after* workflowDeps returned.
 	if deps.Exiftool == nil || deps.Location == nil {
 		t.Fatal("workflowDeps returned nil closures")
+	}
+}
+
+// TestOpenLibraryRefusedWritesNothing: the check runs before the lock, so a
+// folder that is not a library gets no lock file and no database. The attempt
+// itself is worth a log, so the run's log is persisted all the same.
+func TestOpenLibraryRefusedWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "IMG_0001.JPG"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}, Log: logger.NewNoopLogger()}
+	a.logFile = logger.NewFile(t.TempDir())
+	if err := a.openLibrary(context.Background()); err == nil {
+		t.Fatal("openLibrary must refuse a folder holding someone else's files")
+	}
+	if a.logFile.Path() == "" {
+		t.Error("openLibrary must persist the run's log")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("refused folder holds %d entries, want only the user's file", len(entries))
 	}
 }
