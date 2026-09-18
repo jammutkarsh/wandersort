@@ -20,6 +20,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
+	"golang.org/x/text/unicode/norm"
 )
 
 // ---------------------------------------------------------------------------
@@ -289,6 +290,48 @@ func TestScanner(t *testing.T) {
 			rows = registryByName(t, d)
 			if got := rows["keep.jpg"].Status; got != db.StatusDiscovered {
 				t.Errorf("unchanged file scan_status = %s, want DISCOVERED (forced)", got)
+			}
+		}},
+		// RunRescanPreservesNFDName guards a real reviewer-found bug: forcing
+		// a disk-given name to NFC on write folds it the same wrong way on
+		// every scan, so the rescan itself never marks it vanished — what
+		// actually broke was opening the stored NFC spelling against the
+		// real NFD-named file on Linux, where lookup is byte-exact. Kept
+		// unfolded, the name matches on disk (and here, byte for byte on
+		// rescan) instead of just failing to open later.
+		{"RunRescanPreservesNFDName", func(t *testing.T) {
+			ctx := context.Background()
+			sc, d := newDBScanner(t)
+			root := t.TempDir()
+
+			nfdName := norm.NFD.String("Café.jpg")
+			if err := os.WriteFile(filepath.Join(root, nfdName), []byte("bytes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sc.Run(ctx, []string{root}, false); err != nil {
+				t.Fatalf("first scan: %v", err)
+			}
+			d.Writer.Flush()
+			if _, err := sc.Run(ctx, []string{root}, false); err != nil {
+				t.Fatalf("second scan: %v", err)
+			}
+			d.Writer.Flush()
+
+			var rows []struct {
+				FileName  string  `db:"file_name"`
+				DeletedAt *string `db:"deleted_at"`
+			}
+			if err := d.SQL.Select(&rows, `SELECT file_name, deleted_at FROM file_registry`); err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 {
+				t.Fatalf("got %d rows after two scans, want 1: %+v", len(rows), rows)
+			}
+			if rows[0].DeletedAt != nil {
+				t.Errorf("unchanged NFD-named file marked vanished on rescan")
+			}
+			if rows[0].FileName != nfdName {
+				t.Errorf("file_name = %q, want unchanged %q (no NFC folding)", rows[0].FileName, nfdName)
 			}
 		}},
 		// TestSweepFilesystemRoot: sweeping the filesystem root itself must still

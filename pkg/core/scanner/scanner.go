@@ -231,7 +231,7 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 		}
 
 		file := FileDiscovery{
-			Dir:        filepath.Dir(p),
+			Dir:        path.ToSourcePath(filepath.Dir(p)),
 			Name:       d.Name(),
 			Size:       info.Size(),
 			ModTime:    info.ModTime(),
@@ -264,12 +264,14 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 // transient failure elsewhere heals on the next clean scan.
 func (s *Scanner) sweep(ctx context.Context, scanStartedAt time.Time, root string) error {
 	// Range match on (file_dir, file_name) avoids a full table scan and
-	// needs no LIKE escaping for roots containing % or _. Trim the
+	// needs no LIKE escaping for roots containing % or _. file_dir is stored
+	// through path.ToSourcePath (separator only, never the bytes of a name),
+	// so root must be run through the same conversion to compare. Trim the
 	// trailing separator first, or the filesystem root's range becomes
 	// ["//", "/0"), which no file_dir ever falls into.
-	trimmed := strings.TrimSuffix(root, string(filepath.Separator))
-	prefix := trimmed + string(filepath.Separator)
-	prefixEnd := trimmed + string(filepath.Separator+1)
+	trimmed := strings.TrimSuffix(path.ToSourcePath(root), "/")
+	prefix := trimmed + "/"
+	prefixEnd := trimmed + string(rune('/'+1))
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE file_registry SET deleted_at = ?
 		WHERE deleted_at IS NULL

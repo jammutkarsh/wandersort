@@ -24,6 +24,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
@@ -84,7 +85,11 @@ func peekCmd(ctx context.Context, database *db.DB, node *vfs.Node) tea.Cmd {
 			if err != nil {
 				return previewDoneMsg{err: err}
 			}
-			files = append(files, under...)
+			// source_path is stored via path.ToSourcePath (separator only);
+			// back to native form before any of it touches the filesystem.
+			for _, f := range under {
+				files = append(files, wspath.FromSourcePath(f))
+			}
 		}
 		if len(files) == 0 {
 			return previewDoneMsg{err: fmt.Errorf("no files under %s", node.Name)}

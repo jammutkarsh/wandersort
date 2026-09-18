@@ -35,6 +35,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
@@ -122,9 +123,13 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 			break // everything left stays APPROVED — the next run picks it up
 		}
 
+		// source_path is stored via path.ToSourcePath (separator only);
+		// convert back to the OS's native form before touching the filesystem.
+		src := wspath.FromSourcePath(r.SourcePath)
+
 		// Stat before transferring, not after: a Move unlinks the source on
 		// success, so "after" has nothing left to size for the report.
-		info, statErr := os.Stat(r.SourcePath)
+		info, statErr := os.Stat(src)
 		dst := filepath.Join(outputDir, r.TargetPath)
 
 		var xerr error
@@ -132,11 +137,11 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		case statErr != nil:
 			xerr = fmt.Errorf("source missing: %w", statErr)
 		default:
-			dst, xerr = xfer(ctx, o.Mode, r.SourcePath, dst)
+			dst, xerr = xfer(ctx, o.Mode, src, dst)
 		}
 		target := r.TargetPath
 		if rel, err := filepath.Rel(outputDir, dst); err == nil {
-			target = filepath.ToSlash(rel)
+			target = wspath.ToLibrary(rel)
 		}
 
 		if !o.DryRun {
@@ -144,7 +149,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		}
 		if xerr != nil {
 			rep.Failed++
-			log.Warn("could not transfer file", "source", r.SourcePath, "target", dst, "error", xerr)
+			log.Warn("could not transfer file", "source", src, "target", dst, "error", xerr)
 			continue
 		}
 		rep.Done++
@@ -202,11 +207,11 @@ func markResult(database *db.DB, id, fileID int64, newPath, target string, xerr 
 		})
 		return
 	}
-	dir, name := filepath.Dir(newPath), filepath.Base(newPath)
+	dir, name := wspath.ToSourcePath(filepath.Dir(newPath)), filepath.Base(newPath)
 	database.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE virtual_fs_entries SET status = ?, error = NULL, source_path = ?, target_path = ? WHERE id = ?`,
-			db.StatusDone, newPath, target, id); err != nil {
+			db.StatusDone, wspath.ToSourcePath(newPath), target, id); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx,

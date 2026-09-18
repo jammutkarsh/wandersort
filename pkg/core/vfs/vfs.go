@@ -23,6 +23,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 type VFS struct {
@@ -211,8 +212,8 @@ func insertStatement(chunk []masterFile, kept map[int64]bool) (stmt string, args
 			b.WriteString(",")
 		}
 		b.WriteString("(?,?,?,?,?,?)")
-		args = append(args, m.FileID, m.absPath, m.targetPath,
-			nullable(m.clusterID), db.StatusProposed, nullable(m.locationDir))
+		args = append(args, m.FileID, wspath.ToSourcePath(m.absPath), wspath.ToLibrary(m.targetPath),
+			nullable(m.clusterID), db.StatusProposed, nullable(wspath.ToLibrary(m.locationDir)))
 		n++
 	}
 	return b.String(), args, n

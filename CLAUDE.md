@@ -1543,7 +1543,17 @@ tree over the whole library.
   `config` wizard's output-path suggestion list (`internal/cli/config.go`)
   builds every candidate path through `RelativeToHome` and reads typed input
   back through `ExpandPath`, so a suggestion is never shown with the raw home
-  directory spelled out.
+  directory spelled out. `ToLibrary`/`FromLibrary` (NFC + `/`) are for
+  in-library path columns (`target_path`, `location_dir`) — paths this app
+  built itself, so folding every segment to one spelling costs nothing.
+  `ToSourcePath`/`FromSourcePath` (separator only, real `filepath.ToSlash`/
+  `FromSlash`) are for source-path columns (`source_path`,
+  `file_registry.file_dir`/`file_name`) — paths the filesystem handed the
+  scanner, never NFC-folded: Linux and Windows compare a filename byte for
+  byte, so folding an NFD-spelled name (normal for anything a Mac wrote) to
+  NFC before storing it makes that real file permanently unfindable there,
+  and can even collide two distinct Linux files that differ only in
+  normalization form into one row.
 - **There is no `pkg/deps` and no `pkg/utils`** — a package named for nothing
   in particular is where unrelated helpers accumulate. The atomic download
   (temp file + rename, byte progress, SHA256 verify) is `install.downloadFile`,

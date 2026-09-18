@@ -32,6 +32,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 	"lukechampine.com/blake3"
 )
@@ -343,6 +344,7 @@ func (e *Extractor) pendingVolumes(ctx context.Context) ([]pendingVolume, error)
 		if err := rows.Scan(&uuid, &sampleDir); err != nil {
 			return nil, fmt.Errorf("scan pending volume: %w", err)
 		}
+		sampleDir = wspath.FromSourcePath(sampleDir)
 		class := e.classOf(uuid, sampleDir)
 		cost := readCost(class, e.budget)
 		e.log.Info("Storage detected", logger.UserKey, true,
@@ -410,6 +412,7 @@ func (e *Extractor) getFile(ctx context.Context, v pendingVolume) (fileRecord, b
 		return fileRecord{}, false, fmt.Errorf("claim next metadata row: %w", err)
 	}
 
+	fileDir = wspath.FromSourcePath(fileDir)
 	cost := v.cost
 	if v.all {
 		// the closing sweep has no price of its own: charge the straggler by

@@ -72,6 +72,41 @@ func TestRunCopiesApprovedFilesAndMarksDone(t *testing.T) {
 	}
 }
 
+// TestRunCopiesForwardSlashSourcePath guards the read side of the
+// separator normalization: source_path is stored through path.ToSourcePath
+// (filepath.ToSlash), so a real run has to convert it back
+// (path.FromSourcePath) before touching the filesystem, not use it as-is.
+func TestRunCopiesForwardSlashSourcePath(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+
+	srcDir := filepath.Join(t.TempDir(), "nested", "dir")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(srcDir, "A.jpg")
+	if err := os.WriteFile(src, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dbtest.SeedFile(t, d, 1, srcDir, "A.jpg", 5)
+	if _, err := d.ExecContext(context.Background(), `
+		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
+		VALUES (?, ?, ?, ?)`, 1, filepath.ToSlash(src), "2024/A.jpg", db.StatusApproved); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Done != 1 || rep.Failed != 0 {
+		t.Fatalf("got %+v", rep)
+	}
+	if _, err := os.Stat(filepath.Join(out, "2024/A.jpg")); err != nil {
+		t.Errorf("missing copy: %v", err)
+	}
+}
+
 func TestRunCopyNeverTouchesSource(t *testing.T) {
 	d := dbtest.New(t)
 	out := t.TempDir()
