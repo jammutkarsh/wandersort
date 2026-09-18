@@ -1250,10 +1250,14 @@ raise the reset prompt.
   `file_registry.scan_status` already has. The seam is one function, not an
   `FS` interface (that shape was considered and rejected — a large interface
   learned to vary one behaviour is a shallow adapter): `transfer(ctx, mode,
-  src, dst) error` places one file, atomically. Two real implementations —
-  `productionTransfer` (a same-device `os.Rename` for `Move`, else
+  src, dst) (string, error)` places one file, atomically, and returns where it
+  landed. Two real implementations —
+  `productionTransfer` (a same-device `atomicfile.Rename` for `Move`, else
   `atomicfile.Copy`; `Copy` never unlinks `src`, `Move` only does once the
-  destination is verified complete by size) and `dryRunTransfer` (does
+  destination is verified complete by size. **Never overwrites** (spec D21):
+  both fail with `fs.ErrExist` on an occupied destination, and that error
+  alone moves on to `name_1.ext`, `name_2.ext`…; `markResult` writes the
+  landed name back to `target_path`) and `dryRunTransfer` (does
   nothing — `Run` already `os.Stat`s the source before calling `transfer`,
   so a dry run's `Report` is real byte/file counts for zero I/O). Reports
   through the same contract every other phase does
@@ -1513,12 +1517,23 @@ raise the reset prompt.
   `http.Response.Body`, not a local file, so it is a genuinely different
   shape from the copy below rather than the same rule twice.
 - `atomicfile/` — `Copy(src, dest) (int64, error)`: a temp file in dest's
-  directory, then `os.Rename`, so a failure partway never leaves a partial
-  file at dest. This was `review.copyFile`, duplicated verbatim for the
-  peek feature; `pkg/core/execute`'s `Copy` mode needed the identical thing,
-  and the design ticket that placed execute's seam called this out by name
-  as "about to be duplicated a third time" — extracted on that third caller,
-  not before, per **imports point down only** (both callers are above it).
+  directory, then `Rename`, so a failure partway never leaves a partial
+  file at dest. `Rename` is the **no-replace** rename (`os.Rename` silently
+  replaces on macOS/Linux): hard link then unlink, `fs.ErrExist` when the
+  target is taken, `ErrSourceKept` (link undone) when the source can't be
+  removed, check-then-rename where hard links don't exist (exFAT, some
+  network mounts — racy, marked `ponytail:`). **Order matters**: first, one
+  directory entry however spelled (case, NFD, symlinked parent —
+  `sameEntry`) is "already there", return nil and touch nothing; only after
+  that do two links to one file mean a crash-interrupted move to finish
+  (`halfDoneMove`, which also demands a link count ≥ 2). Swap or merge the
+  two and a move onto its own path deletes the file's only name — a real
+  bug in review. This was `review.copyFile`,
+  duplicated verbatim for the peek feature; `pkg/core/execute`'s `Copy` mode
+  needed the identical thing, and the design ticket that placed execute's
+  seam called this out by name as "about to be duplicated a third time" —
+  extracted on that third caller, not before, per **imports point down
+  only** (both callers are above it).
   Imports nothing else in the project, like `pkg/path`/`pkg/logger`/`pkg/lock`.
 - `install/` — **the one place a downloadable dependency's version, download
   location, on-disk layout, fetch, and readiness are all known.** `pkg/exiftool`

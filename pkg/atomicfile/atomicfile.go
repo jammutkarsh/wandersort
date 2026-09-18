@@ -11,15 +11,22 @@
 package atomicfile
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Copy copies src to dest atomically: a temp file in dest's directory, then a
-// rename, so a failure partway never leaves a partial file at dest. Creates
-// dest's parent directory if needed. Returns bytes written.
+// no-replace Rename, so a failure partway never leaves a partial file at dest
+// and an existing dest is never touched — that comes back as an error
+// matching fs.ErrExist. Creates dest's parent directory if needed. Returns
+// bytes written.
 func Copy(src, dest string) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return 0, fmt.Errorf("create dest dir %s: %w", filepath.Dir(dest), err)
@@ -38,7 +45,7 @@ func Copy(src, dest string) (int64, error) {
 	tmpName := tmp.Name()
 	defer func() {
 		tmp.Close()
-		os.Remove(tmpName) // no-op if Rename succeeded
+		os.Remove(tmpName) // no-op once Rename moved it
 	}()
 
 	n, err := io.Copy(tmp, in)
@@ -48,8 +55,101 @@ func Copy(src, dest string) (int64, error) {
 	if err := tmp.Close(); err != nil {
 		return 0, fmt.Errorf("close temp file: %w", err)
 	}
-	if err := os.Rename(tmpName, dest); err != nil {
-		return 0, fmt.Errorf("rename to %s: %w", dest, err)
+	if err := Rename(tmpName, dest); err != nil {
+		return 0, err
 	}
 	return n, nil
+}
+
+// ErrSourceKept means Rename linked newpath but could not remove oldpath, and
+// undid the link: nothing changed. Copying instead would not help — it would
+// fail on the same remove — so a caller with a copy fallback checks for this.
+var ErrSourceKept = errors.New("source could not be removed")
+
+// Rename moves oldpath to newpath without ever replacing an existing newpath,
+// which os.Rename silently does on macOS and Linux. It is a hard link then an
+// unlink of oldpath: the link fails with EEXIST when newpath is taken, and
+// that comes back as an error matching fs.ErrExist. All or nothing — if
+// oldpath can't be unlinked the link is undone (ErrSourceKept), so newpath
+// never ends up as a second name for a file that also still sits at oldpath.
+//
+// newpath already being oldpath's own inode is not a collision: a crash
+// between the link and the unlink left the move half done, and Rename
+// finishes it rather than linking the file a third time under another name.
+// oldpath and newpath naming one directory entry is not a move at all: the
+// file is already there, and linking or unlinking would delete its only name.
+func Rename(oldpath, newpath string) error {
+	if sameEntry(oldpath, newpath) {
+		return nil
+	}
+	err := os.Link(oldpath, newpath)
+	if err == nil || errors.Is(err, fs.ErrExist) && halfDoneMove(oldpath, newpath) {
+		// Already gone (a sync client, the user) is a finished move: newpath
+		// is now the file's only name, and undoing the link would delete it.
+		if err := os.Remove(oldpath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			os.Remove(newpath)
+			return fmt.Errorf("%w: remove %s after linking it to %s: %w", ErrSourceKept, oldpath, newpath, err)
+		}
+		return nil
+	}
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("%s: %w", newpath, fs.ErrExist)
+	}
+	// No hard links here (exFAT, some network mounts), or oldpath is on
+	// another device — os.Rename below reports the latter as it always did.
+	// ponytail: check-then-rename races anything that creates newpath between
+	// the Lstat and the rename; renameat2(RENAME_NOREPLACE) on Linux and
+	// renamex_np(RENAME_EXCL) on darwin close it if that ever matters.
+	if _, err := os.Lstat(newpath); err == nil {
+		return fmt.Errorf("%s: %w", newpath, fs.ErrExist)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("check %s: %w", newpath, err)
+	}
+	if err := os.Rename(oldpath, newpath); err != nil {
+		return fmt.Errorf("rename to %s: %w", newpath, err)
+	}
+	return nil
+}
+
+// sameFile reports whether a and b are two names for one file. Any Lstat
+// failure is "no": the caller then treats b as taken, the safe answer.
+func sameFile(a, b string) bool {
+	ai, err := os.Lstat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Lstat(b)
+	return err == nil && os.SameFile(ai, bi)
+}
+
+// halfDoneMove reports whether b is a second link to a's file, left by a
+// crash between Rename's link and unlink. The link count is the backstop
+// for a spelling sameEntry misses but the filesystem treats as one name
+// (ß against SS, exFAT's own case table): one entry is one link, so a file's
+// only name is never the one removed, whatever the spelling rules say.
+func halfDoneMove(a, b string) bool {
+	ai, err := os.Lstat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Lstat(b)
+	return err == nil && os.SameFile(ai, bi) && sharedInode(ai)
+}
+
+// sameEntry reports whether a and b are one directory entry, however they are
+// spelled: the same parent (Stat, so a symlinked prefix like /tmp against
+// /private/tmp resolves), names equal once normalised to NFC and case-folded
+// (APFS/exFAT treat Café in NFD and café in NFC as one name), and one file.
+// The last check keeps A.jpg and a.jpg on a case-sensitive volume apart:
+// there they are two entries, two files, and newpath is simply taken.
+func sameEntry(a, b string) bool {
+	if !strings.EqualFold(norm.NFC.String(filepath.Base(a)), norm.NFC.String(filepath.Base(b))) {
+		return false
+	}
+	ad, err := os.Stat(filepath.Dir(a))
+	if err != nil {
+		return false
+	}
+	bd, err := os.Stat(filepath.Dir(b))
+	return err == nil && os.SameFile(ad, bd) && sameFile(a, b)
 }

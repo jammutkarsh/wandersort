@@ -10,6 +10,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -180,5 +181,101 @@ func TestRunSkipsNonApprovedRows(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(out, "still-proposed.jpg")); !os.IsNotExist(err) {
 		t.Error("a PROPOSED row was written to the output")
+	}
+}
+
+func targetPath(t *testing.T, d *db.DB, id int64) string {
+	t.Helper()
+	var p string
+	if err := d.SQL.Get(&p, `SELECT target_path FROM virtual_fs_entries WHERE file_id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A file already on disk at the planned destination — one the database
+// doesn't know about — is never replaced: the transfer takes the next free
+// _N name and the row records where it really landed.
+func TestRunNeverOverwritesExistingDestination(t *testing.T) {
+	for _, mode := range []Mode{ModeCopy, ModeMove} {
+		t.Run(mode.String(), func(t *testing.T) {
+			d := dbtest.New(t)
+			out := t.TempDir()
+			src := seedApproved(t, d, 1, "2024/A.jpg", "incoming")
+			if err := os.MkdirAll(filepath.Join(out, "2024"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for name, body := range map[string]string{"A.jpg": "already here", "A_1.jpg": "also here"} {
+				if err := os.WriteFile(filepath.Join(out, "2024", name), []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: mode})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rep.Done != 1 || rep.Failed != 0 {
+				t.Fatalf("got %+v", rep)
+			}
+			for name, want := range map[string]string{"A.jpg": "already here", "A_1.jpg": "also here", "A_2.jpg": "incoming"} {
+				got, err := os.ReadFile(filepath.Join(out, "2024", name))
+				if err != nil || string(got) != want {
+					t.Errorf("%s = %q, %v; want %q", name, got, err, want)
+				}
+			}
+			if got := targetPath(t, d, 1); got != "2024/A_2.jpg" {
+				t.Errorf("target_path = %q, want 2024/A_2.jpg", got)
+			}
+			_, err = os.Stat(src)
+			if mode == ModeCopy && err != nil {
+				t.Errorf("copy removed the source: %v", err)
+			}
+			if mode == ModeMove && !os.IsNotExist(err) {
+				t.Errorf("move left the source behind: %v", err)
+			}
+		})
+	}
+}
+
+// A move that can't land anywhere keeps its source.
+func TestRunMoveKeepsSourceWhenNothingLanded(t *testing.T) {
+	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("root and Windows ignore the read-only output folder this test relies on")
+	}
+	d := dbtest.New(t)
+	out := t.TempDir()
+	src := seedApproved(t, d, 1, "A.jpg", "incoming")
+	if err := os.Chmod(out, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(out, 0o755) })
+
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Failed != 1 {
+		t.Fatalf("got %+v", rep)
+	}
+	if got, err := os.ReadFile(src); err != nil || string(got) != "incoming" {
+		t.Errorf("source = %q, %v; want it untouched", got, err)
+	}
+}
+
+func TestWithSuffix(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"a/IMG.jpg", 0, "a/IMG.jpg"},
+		{"a/IMG.jpg", 1, "a/IMG_1.jpg"},
+		{"a/IMG.jpg", 12, "a/IMG_12.jpg"},
+		{"a/README", 2, "a/README_2"},
+	} {
+		if got := withSuffix(c.in, c.n); got != c.want {
+			t.Errorf("withSuffix(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
 	}
 }

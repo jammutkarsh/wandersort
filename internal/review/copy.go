@@ -8,7 +8,9 @@ package review
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -38,6 +40,9 @@ func copyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes 
 
 		dest := filepath.Join(destDir, filepath.Base(src))
 		n, err := atomicfile.Copy(src, dest)
+		if errors.Is(err, fs.ErrExist) {
+			continue // two sources share a basename; a preview needs only one
+		}
 		if err != nil {
 			return copied, err
 		}
