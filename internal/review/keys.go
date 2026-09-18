@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
@@ -22,7 +23,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scrollIntoView()
 		return m, nil
 	case spinner.TickMsg:
-		if !m.previewing && !m.resetting {
+		if !m.previewing && !m.resetting && !m.transferring {
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -37,7 +38,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			openInViewer(msg.dir)
 		}
 		return m, nil
+	case transferProgressMsg:
+		if !m.transferring { // the result already landed — a late report draws nothing
+			return m, nil
+		}
+		m.prog = msg
+		m.bytes += msg.bytes
+		return m, waitProgress(m.progCh)
+	case transferredMsg:
+		return m.transferred(msg)
 	case tea.KeyMsg:
+		if m.askMove && msg.String() != "ctrl+c" {
+			return m.answerMoveAsk(msg)
+		}
 		return m.handleKey(msg)
 	}
 	return m, nil
@@ -46,8 +59,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // answerExitAsk drives [esc]'s Save/Discard modal — the same shape as the
 // config wizard's own exit ask, and the same keys tui.ConfirmModel answers
 // with. A second [esc] here forcefully discards, no second-guessing needed:
-// the modal itself was the warning. ctrl+c inside it is the harder "get me
-// out" — it never backs to the picker, unlike Discard (see hardQuit).
+// the modal itself was the warning.
 func (m Model) answerExitAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "ctrl+c":
@@ -87,23 +99,17 @@ func (m Model) saveAndExit() (tea.Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
-// discardAndExit is [esc]'s "Discard" answer: hosted, that's a step back to
-// the time-slice picker (the other slices are still waiting); otherwise the
-// review just ends with nothing written.
+// discardAndExit is [esc]'s "Discard" answer: the review ends with nothing
+// written.
 func (m Model) discardAndExit() (tea.Model, tea.Cmd) {
 	m.done = true
-	if m.hosted {
-		m.back = true
-	}
 	if m.embedded {
 		return m, nil
 	}
 	return m, tea.Quit
 }
 
-// hardQuit is ctrl+c's unconditional exit — never a step back to the picker,
-// even hosted: "ctrl+c anywhere quits the app" is the one guarantee it makes,
-// and honoring `hosted` here would break it.
+// hardQuit is ctrl+c's unconditional exit.
 func (m Model) hardQuit() (tea.Model, tea.Cmd) {
 	m.done = true
 	if m.embedded {
@@ -160,6 +166,17 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// A copy/move is already writing to disk under the plan as it stood the
+	// moment it started (see startTransfer's Confirm). [esc] saving over it,
+	// or [R] reloading out from under it, would race the transfer with no
+	// good outcome — so both wait. ctrl+c is untouched: it never saves, and
+	// each file execute.Run writes lands whole or not at all, so a run that
+	// gets killed picks back up on the next one.
+	if m.transferring && (key.String() == "esc" || key.String() == "R") {
+		m.statusMsg, m.statusIsErr = "copying — wait for it to finish", true
+		return m, nil
+	}
+
 	// Same shape for the exit question, except ctrl+c inside it is a hard
 	// discard rather than a fall-through — the modal is already the warning,
 	// so a second wait-and-warn cycle behind it would just trap the reviewer.
@@ -190,14 +207,6 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.visualMode {
 			m.visualMode = false
 			break
-		}
-		// Nothing edited, and a picker underneath: this was a look around, not
-		// a decision. Asking "save or discard?" over a tree the reviewer never
-		// touched is a question about nothing — [A] on the picker is how an
-		// untouched slice gets approved. Unhosted there is no picker to go back
-		// to, so the question is still the only way to approve.
-		if m.hosted && !m.hasEdits() {
-			return m.discardAndExit()
 		}
 		m.askExit, m.exitChoice = true, true
 		return m, nil
@@ -245,7 +254,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.resetting {
 			m.resetting = true
 			m.statusMsg, m.statusIsErr = "", false
-			cmd = tea.Batch(resetCmd(m.ctx, m.db, m.seg), m.spin.Tick)
+			cmd = tea.Batch(resetCmd(m.ctx, m.db), m.spin.Tick)
 		}
 	case "u":
 		if n := len(m.undo); n > 0 {
@@ -260,6 +269,14 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg, m.statusIsErr = "undid "+step.edit+left, false
 		} else {
 			m.statusMsg, m.statusIsErr = "nothing left to undo", true
+		}
+	case "x":
+		if !m.transferring {
+			return m.startTransfer(execute.ModeCopy)
+		}
+	case "X":
+		if !m.transferring {
+			m.raiseMoveAsk()
 		}
 	}
 	m.scrollIntoView()

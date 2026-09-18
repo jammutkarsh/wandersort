@@ -191,7 +191,7 @@ func summary(o Options, rep Report, elapsed time.Duration) string {
 // pointing reorg attempts at a location that no longer reflects the plan
 // that was executed. Fire-and-forget through the same FIFO writer every phase
 // uses; Run's Flush before returning is what makes the caller's very next
-// read (the CLI's summary, the picker's status line) see it.
+// read (the CLI's summary, the review tree's status line) see it.
 func markResult(database *db.DB, id, fileID int64, newPath, target string, xerr error) {
 	if xerr != nil {
 		msg := xerr.Error()

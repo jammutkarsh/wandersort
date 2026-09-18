@@ -355,15 +355,15 @@ one scan ever runs against it at a time (see "Conventions" below):
     (see `pkg/core/vfs/snapshot.go`), and both `newReviewScreen` and
     `confirmReviewAll` call `a.rebuildTree` themselves the moment it says yes
     — before the tree is ever shown, no question asked. `rebuildTree` calls
-    `vfs.ReopenSegment(ctx, db, nil)` before `Propose`, flipping every
+    `vfs.ReopenPlan(ctx, db)` before `Propose`, flipping every
     **unapproved-or-approved** row back to PROPOSED (never `DONE` — see
-    `ReopenSegment` in `pkg/core/vfs/segments.go`) so the whole library is
+    `ReopenPlan` in `pkg/core/vfs/review.go`) so the whole library is
     re-proposed under the settings as they now stand. `persist`'s
     keep-decided-rows rule is for the *scan* phase; a re-plan is the one
     caller that means to throw an approval away, since it was given to the
-    plan being replaced — a saved slice still reading `✓ saved` after a
+    plan being replaced — an approved row still reading `✓ saved` after a
     settings change was a reported bug. **A re-plan touching a *transferred*
-    file is a bug of the same shape, caught reversing it**: `ReopenSegment`
+    file is a bug of the same shape, caught reversing it**: `ReopenPlan`
     used to flip `DONE` rows too (so an already-organized library was
     "redoable"), which meant a save could quietly move files that were
     already on disk. It also
@@ -381,7 +381,8 @@ one scan ever runs against it at a time (see "Conventions" below):
     --copy`). `--move` asks nothing extra here: `--yes` already means "no
     prompts", the same contract it has everywhere else in this command.
     Neither flag does anything on the interactive path — that one has its own
-    asking place, the review's segment picker (see `internal/review` below).
+    asking place, the review tree's own `[x]`/`[X]` (see `internal/review`
+    below).
   - `execute.go` — `execute` cmd: transfers every `APPROVED` row via
     `pkg/core/execute.Run`. `--move`/`--dry-run`/`--yes`, the same
     lock-then-DB shape `reset.go` uses, and the same TUI-or-plain confirm
@@ -400,7 +401,16 @@ one scan ever runs against it at a time (see "Conventions" below):
     in-program: on save it runs `vfs.Confirm` and the free-space check itself,
     then `tui.Switch(nil)` hands back to the shell).
   - `ConfirmAll(ctx, Options)` — `--yes`: write the proposal as-is, no TUI.
-  - `Outcome(m tea.Model) (confirmed, err, ok)` — how an embedded review ended.
+  - `Outcome(m tea.Model) (Result, ok)` — how an embedded review ended.
+    `Result.Confirmed`/`Err` answer "was `[esc]` → Save pressed, and did it
+    work"; `Result.TransferDone`/`TransferFailed` are separate, because
+    `[x]`/`[X]` can write real files at any point in the session regardless
+    of whether the review is ever explicitly saved — a transfer can even end
+    the review on its own (see reset's `postTransferSync` case below), or a
+    discard/`ctrl+c` can land before a background transfer's own reload does.
+    `cli.reportReviewOutcome` reads the transfer counts first: reporting only
+    `Confirmed` said "Review cancelled — nothing changed" over a session that
+    had just copied or moved files to the output — a reported bug.
 
   There is **no standalone `Run` and no loading screen** any more: every
   full-screen command is the same shell opened on a different tab, so a review
@@ -408,50 +418,65 @@ one scan ever runs against it at a time (see "Conventions" below):
   (lock, DB, an out-of-date proposal's own re-plan, `BuildTree`) off the UI
   goroutine with the tab bar saying `opening…`. `Options.Load` went with them.
 
-  `Options` carries `DB`/`Tree`/`Resolver`/`Log`/`OutputDir`/`SegmentMonths`; a
-  nil `Resolver` just disables rename autocomplete. There is no `Rebuild` or
+  `Options` carries `DB`/`Tree`/`Resolver`/`Log`/`OutputDir`; a nil `Resolver`
+  just disables rename autocomplete. There is no `Rebuild` or
   `SettingsChanged` field any more — `cli/review.go` re-plans before the
   screen is ever built (see above), so the screen never needs to ask.
 
-  **A big library opens on the segment picker, not the tree** (`segments.go`,
-  `pickerModel`): `vfs.Segments` decides (nil = one slice, so go straight to
-  the tree as every review did before), and `segmentsFor` runs that check in
-  both entry points — `Screen` and the loading screen's `treeLoadedMsg`.
-  `[enter]` builds that slice's tree in a **fresh query** off the UI goroutine
-  (a segment is a `taken_at` range, which is what the database is for — not a
-  filter over an already-loaded tree), `[A]` signs the slice off **without
-  opening it** (`vfs.ApproveSegment` — Confirm's status flip without the
-  rewrites, since an unedited tree has no paths to rewrite and no names to
-  learn), `[ctrl+x]` discards a saved one's
-  approval and re-opens it, `[esc]` warns once while slices are still
-  unreviewed. `[A]` is where an untouched slice gets approved now that `[esc]`
-  inside one asks nothing when nothing was edited — see the exit ask below.
-  **The picker has no `[R]` of its own** — it holds no in-memory edits to
-  discard (each opened slice manages its own undo stack), and a settings
-  change re-plans the whole library before the picker is ever built (see
-  `cli/review.go` above), so there is nothing left for a key here to do.
-  **`[x]`/`[X]` run `execute.Run` over the whole library's `APPROVED` rows —
-  not scoped to the selected slice, so copying-as-you-go across several saved
-  segments needs no extra key.** `[x]` (copy) runs immediately, off the UI
-  goroutine behind the same spinner `[enter]` uses, because copy never
-  touches a source and so has nothing to ask about; `[X]` (move, capital =
-  the more consuming variant, the same relationship `[d]`/`[D]` already have)
-  raises one modal first — a full-screen yes/no defaulting to Cancel, since
-  this one deletes files on disk. `transferredMsg` carries the `Report`
-  back to a status line; there is no tree to redraw, since neither key
-  changes what `BuildTree` would show.
-  The per-slice screen is the ordinary
-  `screen` wrapper carrying `seg` (what `Confirm` approves) and `host` (the
-  picker snapshot it returns to on save, via `reenter`) — which is also where
-  `Outcome`/`Run` read `saved` from, since a segmented review confirms as it
-  goes rather than once at the end. **`host` is also what `[esc]` inside a
-  slice goes back to** (`Model.hosted`/`back` → `screen`'s `Switch(*s.host)`): a
-  reported bug — leaving a slice unsaved used to `Switch(nil)` and end the whole
-  review, so a reviewer who opened the wrong year had no way back to the list
-  and the remaining slices were unreachable. `open` clears `opening` on the
-  snapshot it takes, since that snapshot is taken mid-open and would otherwise
-  come back showing a spinner that never stops. `--yes` never segments: `ConfirmAll` is a
-  decision about the whole library. `copy.go` holds the unexported
+  **Review is one tree over the whole library — there is no time-slice
+  picker.** `wandersort review` on a multi-year library opens straight on the
+  full tree; `BuildTree`/`Confirm`/`ReopenPlan` all take no scoping
+  argument any more (spec D18, issue 19). A picker existed so a big library
+  could be reviewed and saved a year at a time — the edit file (issue 15)
+  keeps progress across sessions instead, the tree's own top level is already
+  the years, and a reviewer plans once and transfers together, so slicing was
+  a second screen for the same thing.
+  **`[x]`/`[X]` run `execute.Run` over the library's `APPROVED` rows, right
+  from the tree's own key bar** (`transfer.go`). **Both check there is room
+  for everything not yet transferred, then approve the plan exactly as it
+  stands on screen** (`vfs.Confirm(m.tree)`, the same call `[esc]` → Save
+  makes) **before starting `execute.Run`**: "copy means copy everything", so
+  a rename made on screen but never explicitly saved still has to be what
+  lands on disk, and a fresh review's still-`PROPOSED` rows have to be
+  transferable on the very first press — not only after an `[esc]` → Save
+  round trip. `[x]` (copy) then runs immediately, off the UI goroutine behind
+  the same spinner `[p]`/`[R]` use, because copy never touches a source and
+  so has nothing to ask about; `[X]` (move, capital = the more consuming
+  variant, the same relationship `[d]`/`[D]` already have) raises one modal
+  first — a full-screen yes/no defaulting to Cancel, since this one deletes
+  files on disk once each copy verifies. Neither is scoped to a selection —
+  a transfer acts on whatever is approved so far.
+  **`vfs.PendingBytes` sums both `PROPOSED` and `APPROVED` rows, checked
+  against `volume.FreeBytes(outputDir)` *before* `Confirm` saves anything**:
+  a refusal has to change nothing, and a rename doesn't touch a file's size,
+  so the total comes out the same whether it's read before or after the
+  save — checking first is what makes the refusal free. Doing it the other
+  way around was a reported bug: a refusal that landed after `Confirm` had
+  already run left the on-screen tree and the database disagreeing, and
+  every later save failed with `invalid review tree: unknown node id`.
+  (`ponytail:` a same-volume move only renames and needs no free space at
+  all, but the check doesn't know that yet and refuses it too on a
+  nearly-full disk.) **While a transfer runs, `[esc]` and `[R]` are
+  refused** (`m.transferring`) — either would race the write the transfer
+  already started under the plan it just confirmed; `ctrl+c` is untouched,
+  since each file lands whole or not at all and the next run picks up where
+  one killed mid-transfer left off. `transferredMsg` carries the `Report`
+  back to a status line, and then **reloads the tree, on the error path
+  too** — through the same `resetCmd`/`resetMsg` `[R]` uses (a
+  `postTransferSync` flag tells `reset` not to relabel that reload a
+  discard). `Confirm` already saved the plan before `execute.Run` ever
+  started, so the database is the current plan whether the run itself
+  succeeded, partially failed, or (a reported bug) failed outright, and
+  leaving the pre-save tree on screen after any of those is the same stale-ID
+  bug the reordered space check fixes. **A reload that comes back empty after
+  a transfer ends the review instead of holding the pre-transfer tree** —
+  `[R]`'s own manual empty-reload still just says so and stays open (there's
+  a plan to keep looking at), but nothing is left to look at once a transfer
+  has taken the last reviewable row, and the alternative was a reported bug:
+  the reviewer's very next `[esc]` → Save called `Confirm` over zero
+  reviewable rows and failed with "proposal was replaced by a newer scan" —
+  true of the query, false and alarming right after a clean transfer.
+  `copy.go` holds the unexported
   `copyFiles`/`copyFile` the peek feature uses (same atomic
   temp-file-then-rename pattern `pkg/install` downloads with); it moved here
   with the TUI because the preview is its only caller.
@@ -571,16 +596,10 @@ one scan ever runs against it at a time (see "Conventions" below):
   separate save key any more. It raises a full-screen Save/Discard ask
   (`askExit`/`exitChoice`, drawn the same way the config wizard's own `[esc]`
   ask is): `[enter]` accepts the highlighted default (Save), a second
-  `[esc]` inside it forcefully discards. **It asks nothing when the reviewer
-  edited nothing and a picker is underneath** (`hosted && !hasEdits()`) —
-  opening a slice to look at it is not a decision, and a Save/Discard question
-  over an untouched tree is a question about nothing (reported). That is what
-  `[A]` on the picker is for. Unhosted there is no picker to step back to, so
-  the ask still comes up with nothing edited: approving the proposal exactly as
-  offered has to be possible from inside. Save hosted goes back to the
-  time-slice picker with this slice approved (`reenter`); Discard hosted goes
-  back with it still unreviewed (`back`); neither hosted just ends the review.
-  `ctrl+c` is the unconditional escape hatch — never saves, warns once
+  `[esc]` inside it forcefully discards. It asks even with nothing edited —
+  approving the proposal exactly as offered has to be possible from inside,
+  and there is no other key for it. `ctrl+c` is the unconditional escape
+  hatch — never saves, warns once
   (`hasEdits` is just "the undo stack is non-empty", since every edit
   snapshots) and needs a second `ctrl+c` to actually discard and leave.
   `--yes` confirms the proposal
@@ -591,14 +610,14 @@ one scan ever runs against it at a time (see "Conventions" below):
   matches the current settings.
   **`R` is a plain reset, not a rebuild, and asks nothing** — it discards
   whatever is unsaved in *this* screen (renames, merges, drops — the same
-  things `[u]` already undoes one at a time) and reloads this segment's
+  things `[u]` already undoes one at a time) and reloads the
   still-proposed rows straight from the database (`resetCmd`/`resetMsg`,
   off the UI goroutine behind the same spinner `[p]` uses). Capital `R`
   because `r` is rename. There used to be a confirmation modal here
   (`askRebuild`, raised by the key itself or by a `SettingsChangedMsg` the
   shell forwarded in) — both are gone along with the settings-triggered
   rebuild they asked about: nothing `[R]` does now can discard anything that
-  was ever saved (`ReopenSegment` only reaches `APPROVED` rows, never `DONE`,
+  was ever saved (`ReopenPlan` only reaches `APPROVED` rows, never `DONE`,
   and reset touches nothing on disk at all), so there's nothing left worth a
   full-screen question over. Landing (`resetMsg`) replaces the tree wholesale
   — undo stack, cursor and selection with it, since they all describe rows
@@ -787,7 +806,7 @@ cobra's `cmd.Flags()` (only for the settings `Resolve` knows about:
 `output-path`, `collapse-levels`, `saved-places-date-only`,
 `merge-same-location-days` — checking `.Changed` so an unset flag reads as
 `nil`, not its zero value); `Resolve` reads the env layer itself via
-`os.Getenv` (`OUTPUT_PATH`, `SEGMENT_MONTHS`, …) and the file layer via
+`os.Getenv` (`OUTPUT_PATH`, …) and the file layer via
 `LoadGlobal`. There is no viper anywhere in this codebase — every other
 command's own flags (`--yes`, `--plain`, …) are read straight off `cmd.Flags()`
 in their own `RunE`, no env-var fallback for those (never documented, so
@@ -807,12 +826,10 @@ only read from the file once `output-path` is present, since a `bool` field
 can't otherwise tell "key absent" from "explicit false" the way `Resolve`'s
 flag/env layers can (a nil pointer vs. a real value). `saved-places` has no
 flag or env of its own — `Resolve` doesn't touch it at all; `app.syncAnchors`
-reads it straight via `config.Load`. `segment-months` (0 = auto, else 3/6/12 —
-the review's time-slice size, see `vfs.Segments`) is an int, so it goes through
-`pick` and needs no wizard gate; it has an env var
-(`SEGMENT_MONTHS`) and no flag. It is deliberately **not** in `ConfigStamp`:
-it changes how a plan is reviewed, never where a file lands, so it must not
-trigger a re-plan.
+reads it straight via `config.Load`. **There is no `segment-months` setting
+any more** (config key, `SEGMENT_MONTHS` env var, `Options.SegmentMonths`) —
+it sized the review's now-removed time-slice picker (issue 19); review is one
+tree over the whole library.
 
 ## Core pipeline (`pkg/core/`)
 
@@ -1155,7 +1172,8 @@ trigger a re-plan.
   scope, so no separate sign-off is needed. It still flows through Execute
   like any other row, landing at `<output>/orphan/` on disk.
   **A file's folder date is a stored fact, not a folder name**
-  (`segments.go` + `virtual_fs_entries.taken_at`): `masterFile.folderDate` is
+  (`masterFile.folderDate`, in-memory only — nothing persists it as its own
+  column; `persist` only ever writes the *path* it produces): it is
   the *cluster's* start, written to every member by `clusterAndSpill` before
   either early-continue, so one event that runs over a month or New Year
   boundary lands in one Year/Month folder instead of being torn in two —
@@ -1169,14 +1187,14 @@ trigger a re-plan.
   member, so one day can never be split across two month folders.
   `captureDirs` copies the group leader's `folderTime()` onto every member for
   the same reason it copies `locationDir`: a member takes the leader's
-  *directory*, so its `taken_at` has to be the date that directory came from,
-  or it surfaces in a review time slice whose tree shows one lone folder from
-  another year (reported — a sidecar has no EXIF time and falls back to a file
-  mtime months away). Read it
+  *directory*, so its own folder date has to be the one that directory came
+  from, or it surfaces in the review tree as one lone folder out of another
+  year (reported — a sidecar has no EXIF time and falls back to a file mtime
+  months away). Read it
   through `masterFile.folderTime()` (folderDate, falling back to takenAt for
   the unclustered `PreviewPaths` samples) — `monthParts` (the Year/Month pair
-  `dirFor` and `locationParent` share), `mergeSameLocationDays`' month key and
-  `persist`'s `taken_at` column all go through it, so nothing can disagree
+  `dirFor` and `locationParent` share) and `mergeSameLocationDays`' month key
+  both go through it, so nothing can disagree
   about which month a file is in. Known ceiling (`ponytail:` in `plan.go`): the
   merge's *day* is still the file's own day-of-month, and 31 and 01 aren't
   consecutive ints, so a boundary-crossing run gives sibling `31` and `Jan_01`
@@ -1186,24 +1204,12 @@ trigger a re-plan.
   `mergeSameLocationDays` entirely — a bare `01` under `12_December` reads as
   Dec 01 *and lands on top of the real Dec 01 files*, which was a reported bug
   (Jan 1 videos filed under `12_December/01/Banjar`).
-  `Segments(ctx, db, months)` buckets the reviewable rows by that column —
-  calendar-aligned (years / Jan–Jun / quarters), `months <= 0` picking years
-  over a >3-year span and half-years otherwise, undated rows last in their own
-  `Undated` bucket, and **nil for "don't segment"** (one bucket, or nothing
-  dated). Because every member of a short cluster shares a folder date, **a
-  segment boundary can never split one sitting** (a week-long cluster does
-  split, because its files really are in different months — see
-  `maxFolderSpan`). Segmenting on `taken_at` rather than on the path is the
-  whole point: a path is what the reviewer renames. Each `Segment` also carries
-  `Folders`, the directory count of the tree it would build (ancestors
-  included, the same thing the review header counts) — the picker leads with
-  it, since a reviewer decides about folders, not files.
-  `BuildTree(ctx, db, seg)` and `Confirm(ctx, db, roots, seg)` take a `nil`
-  segment for the whole library. `Confirm` scopes only the *approval*: the
-  renames go through `prefixRewriter` (longest remapped ancestor wins), so a
-  Year renamed in one slice's tree carries onto the rows of every other slice
-  under it — otherwise one year would become two folders on disk. `ReopenSegment`
-  puts a saved slice back to PROPOSED.
+  `BuildTree(ctx, db)` and `Confirm(ctx, db, roots)` always cover the whole
+  library — there is no time-slice scoping any more (issue 19). Renames go
+  through `prefixRewriter` (longest remapped ancestor wins), which is what
+  lets a review-time merge's folded-away node remap its descendants onto the
+  survivor. `ReopenPlan(ctx, db)` puts every `APPROVED` row back to
+  `PROPOSED` (never `DONE`), for a settings re-plan or `[R]`.
   `review.go` (issue #8's reconcile core, read by the CLI TUI) exposes the
   proposal as a directory tree the reviewer edits
   before `Confirm` writes it back: `BuildTree` also carries one exemplar
@@ -1220,8 +1226,8 @@ trigger a re-plan.
   leader's `locationDir` onto every member: `buildTargets` short-circuits
   `dirFor` for a grouped file, so without that copy the file wrote a NULL
   `location_dir` and its folder silently lost GPS-radius renames (8185 of
-  15024 entries in one real library). `location_dir` and `taken_at` are columns of
-  **003's `CREATE TABLE`**, not their own migrations — the pre-tag rule (no tag
+  15024 entries in one real library). `location_dir` is a column of
+  **003's `CREATE TABLE`**, not its own migration — the pre-tag rule (no tag
   yet, so no users) says edit the existing migration rather than stack an
   `ALTER` on it. The cost is that `migrations.Run` tracks versions
   individually: a database where 003 is already recorded will never get the
@@ -1240,11 +1246,9 @@ trigger a re-plan.
   user hit exactly that case. `Node.MergedIDs` is the other merge path: nodes
   the review TUI folded away are absent from the submitted tree entirely, so
   their IDs — and, via `prefixRewriter`, anything below them — remap onto
-  the survivor's path from there. `prefixRewriter` is one function doing two
-  jobs on purpose: a merged node's descendants and a segment's out-of-slice
-  rows are the same question ("this directory sits under a path that moved"),
-  so a longest-ancestor-wins rewriter answers both and there is no second
-  remap pass that could disagree with the first.
+  the survivor's path from there. A longest-ancestor-wins rewriter is what
+  makes a rename or merge on a Year node carry onto every row nested under
+  it, without a second remap pass that could disagree with the first.
 - `execute/` — the phase `vfs.go`'s package doc used to call "future work":
   the one thing in this codebase that writes the user's media files. Reads
   every `APPROVED` row of `virtual_fs_entries`, places `source_path` at

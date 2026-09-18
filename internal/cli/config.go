@@ -84,9 +84,6 @@ func (a *app) runConfig(cmd *cobra.Command) error {
 // values) and a save closure that writes them to ~/.wandersort/config.yaml.
 func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
 	g, _ := a.Config.Load()
-	// Not a wizard field (env var SEGMENT_MONTHS only) — round-tripped as-is so
-	// a save never resets it to auto.
-	segmentMonths := g.SegmentMonths
 
 	out := g.OutputPath
 	if out == "" {
@@ -262,7 +259,6 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 			CollapseLevels:        collapse,
 			SavedPlacesDateOnly:   spDateOnly,
 			MergeSameLocationDays: mergeDays,
-			SegmentMonths:         segmentMonths,
 		}
 		// Canonicalize towns to the exact geonames spelling before saving.
 		g.SavedPlaces = []string{canonicalTownOrTyped(home), canonicalTownOrTyped(work)}

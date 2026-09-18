@@ -46,10 +46,6 @@ type Config struct {
 	// resolution. Anchors can't stand in for them in ConfigStamp: resolving
 	// needs the location database, and the stamp check must work without it.
 	SavedPlaces []string
-	// SegmentMonths is the review's time-slice size (0 = auto). Deliberately
-	// absent from ConfigStamp: it changes how the plan is *reviewed*, never
-	// where a single file lands, so it must not trigger a re-plan.
-	SegmentMonths int
 	// Workers sizes the pool every per-master pass fans out over — deriveAll,
 	// resolveLocations, applyNameCase and buildTargets (see forEachMaster).
 	// 0 or 1 runs them inline.
@@ -94,7 +90,6 @@ func ConfigFor(appCfg *config.Configuration) Config {
 	cfg.MergeSameLocationDays = appCfg.MergeSameLocationDays
 	cfg.Workers = appCfg.Workers
 	cfg.SavedPlaces = appCfg.SavedPlaces
-	cfg.SegmentMonths = appCfg.SegmentMonths
 	switch {
 	// empty Rules keeps the defaults; RuleNone is interpreted only here, so
 	// every caller sees the sentinel resolved the same way

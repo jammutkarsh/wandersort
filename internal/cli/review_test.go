@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -33,22 +34,41 @@ func TestRunReviewNoDatabase(t *testing.T) {
 func TestReportReviewOutcome(t *testing.T) {
 	a := &app{Log: logger.NewNoopLogger()}
 
-	if _, err := a.reportReviewOutcome(true, errors.New("boom")); err == nil {
-		t.Error("a save error must always surface, even when confirmed=true")
+	if _, err := a.reportReviewOutcome(review.Result{Confirmed: true, Err: errors.New("boom")}); err == nil {
+		t.Error("a save error must always surface, even when Confirmed=true")
 	}
-	note, err := a.reportReviewOutcome(false, nil)
+	note, err := a.reportReviewOutcome(review.Result{Confirmed: false})
 	if err != nil {
 		t.Errorf("a cancelled review with no error must not itself error, got %v", err)
 	}
 	if !strings.Contains(note, "cancelled") {
 		t.Errorf("cancelled note = %q, want it to say so", note)
 	}
-	note, err = a.reportReviewOutcome(true, nil)
+	note, err = a.reportReviewOutcome(review.Result{Confirmed: true})
 	if err != nil {
 		t.Errorf("a confirmed review with no error must not error, got %v", err)
 	}
 	if !strings.Contains(note, "approved") {
 		t.Errorf("confirmed note = %q, want it to say so", note)
+	}
+
+	// A transfer takes priority over Confirmed — and over a session that never
+	// set it at all, which is exactly how a transfer can end the review on
+	// its own (a reported bug: it used to say "cancelled — nothing changed"
+	// over a session that had just copied real files to the output).
+	note, err = a.reportReviewOutcome(review.Result{Confirmed: false, TransferDone: 3})
+	if err != nil {
+		t.Errorf("a completed transfer with no error must not error, got %v", err)
+	}
+	if strings.Contains(note, "cancelled") || !strings.Contains(note, "3") {
+		t.Errorf("transfer note = %q, want it to report the 3 transferred files, not cancellation", note)
+	}
+	note, err = a.reportReviewOutcome(review.Result{TransferDone: 1, TransferFailed: 2})
+	if err != nil {
+		t.Errorf("a partially failed transfer with no error must not error, got %v", err)
+	}
+	if !strings.Contains(note, "1") || !strings.Contains(note, "2") {
+		t.Errorf("partial-failure note = %q, want it to mention both counts", note)
 	}
 }
 

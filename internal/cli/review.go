@@ -105,10 +105,10 @@ func (a *app) confirmReviewAll(transfer, move, dryRun bool) error {
 	var tree []vfs.Node
 	var err error
 	if a.settingsChanged(outputDir) {
-		if tree, err = a.rebuildTree(ctx, nil); err != nil {
+		if tree, err = a.rebuildTree(ctx); err != nil {
 			return err
 		}
-	} else if tree, err = vfs.BuildTree(ctx, a.AppDB, nil); err != nil {
+	} else if tree, err = vfs.BuildTree(ctx, a.AppDB); err != nil {
 		return err
 	}
 	if len(tree) == 0 {
@@ -162,28 +162,24 @@ func (a *app) settingsChanged(outputDir string) bool {
 // re-resolved on every wizard save (see app.reloadConfig), so "right now"
 // really is what the user last saved.
 //
-// Re-proposing is always library-wide (vfs.Propose replaces every unapproved
-// row); seg only scopes the tree handed back, so re-planning inside one time
-// slice returns that slice, not the whole library.
-//
-// It reopens the saved slices first, so a re-plan really does replan
-// everything. Keeping them was a reported bug: change the settings, and the
-// slices already signed off still read `✓ saved` while holding folders the
-// new settings would never have proposed. An approval is given to a specific
-// plan; replacing that plan takes it back.
-func (a *app) rebuildTree(ctx context.Context, seg *vfs.Segment) ([]vfs.Node, error) {
+// It reopens every approved-but-not-transferred row first, so a re-plan
+// really does replan everything. Keeping them was a reported bug: change the
+// settings, and the rows already signed off still read `✓ saved` while
+// holding folders the new settings would never have proposed. An approval is
+// given to a specific plan; replacing that plan takes it back.
+func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
 	resolver, err := a.Deps.Location()
 	if err != nil {
 		return nil, fmt.Errorf("dependencies: %w", err)
 	}
 	a.Log.Info("Settings changed — re-proposing the folder structure", logger.UserKey, true)
-	if err := vfs.ReopenSegment(ctx, a.AppDB, nil); err != nil {
+	if err := vfs.ReopenPlan(ctx, a.AppDB); err != nil {
 		return nil, err
 	}
 	if _, err := vfs.Propose(ctx, a.AppDB, resolver, a.Config, a.Log); err != nil {
 		return nil, fmt.Errorf("re-plan proposal: %w", err)
 	}
-	return vfs.BuildTree(ctx, a.AppDB, seg)
+	return vfs.BuildTree(ctx, a.AppDB)
 }
 
 // newReviewScreen builds the review screen over the current proposal, reusing
@@ -205,34 +201,46 @@ func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	outputDir := filepath.Dir(a.Config.AppDBPath)
 	var tree []vfs.Node
 	if a.settingsChanged(outputDir) {
-		if tree, err = a.rebuildTree(ctx, nil); err != nil {
+		if tree, err = a.rebuildTree(ctx); err != nil {
 			return nil, err
 		}
-	} else if tree, err = vfs.BuildTree(ctx, a.AppDB, nil); err != nil {
+	} else if tree, err = vfs.BuildTree(ctx, a.AppDB); err != nil {
 		return nil, err
 	}
 	if len(tree) == 0 {
 		return nil, fmt.Errorf("everything here is already organized — nothing left to review")
 	}
 	return review.Screen(ctx, review.Options{
-		DB:            a.AppDB,
-		Tree:          tree,
-		Resolver:      resolver,
-		Log:           a.Log,
-		OutputDir:     outputDir,
-		SegmentMonths: a.Config.SegmentMonths,
+		DB:        a.AppDB,
+		Tree:      tree,
+		Resolver:  resolver,
+		Log:       a.Log,
+		OutputDir: outputDir,
 	}), nil
 }
 
 // reportReviewOutcome reports how the embedded review ended, and hands back
 // the line it logged — the shell shows it above the next folder input, since
 // the session carries on past the review that produced it.
-func (a *app) reportReviewOutcome(confirmed bool, saveErr error) (string, error) {
-	if saveErr != nil {
-		return "", fmt.Errorf("save plan: %w", saveErr)
+//
+// A transfer takes priority over Confirmed: [x]/[X] can copy or move real
+// files at any point in the session, including on a path that never sets
+// Confirmed (a transfer can end the review on its own once it empties the
+// tree, or a discard/ctrl+c can land before a background transfer's own
+// reload does) — reporting "cancelled" or bare "approved" over a session that
+// actually wrote files would be a lie about what just happened on disk.
+func (a *app) reportReviewOutcome(res review.Result) (string, error) {
+	if res.Err != nil {
+		return "", fmt.Errorf("save plan: %w", res.Err)
 	}
 	note := "Review cancelled — nothing changed"
-	if confirmed {
+	switch {
+	case res.TransferDone > 0 || res.TransferFailed > 0:
+		note = fmt.Sprintf("Transferred %d file(s) to the output.", res.TransferDone)
+		if res.TransferFailed > 0 {
+			note = fmt.Sprintf("Transferred %d file(s) to the output, %d failed — see the log.", res.TransferDone, res.TransferFailed)
+		}
+	case res.Confirmed:
 		note = "Folder structure approved."
 	}
 	a.Log.Info(note, logger.UserKey, true)

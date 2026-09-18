@@ -17,6 +17,9 @@ import (
 )
 
 func (m Model) View() string {
+	if m.askMove {
+		return m.moveAskView()
+	}
 	if m.askExit {
 		return m.exitAskView()
 	}
@@ -51,9 +54,6 @@ func (m Model) header() string {
 		files += m.tree[i].FileCount
 	}
 	left := "Edit the proposed folders — nothing moves until you save."
-	if m.segLabel != "" {
-		left = m.segLabel + " — " + left
-	}
 	return tui.Banner("review") + "\n" +
 		tui.Row(tui.DimText.Render(left),
 			tui.FaintTxt.Render(fmt.Sprintf("%d folders  %d files", len(m.rows), files)), m.width)
@@ -122,6 +122,8 @@ func (m Model) footer() string {
 	case m.resetting:
 		b.WriteString(m.spin.View())
 		b.WriteString(tui.DimText.Render(" Reloading the proposed folders…"))
+	case m.transferring:
+		b.WriteString(m.transferRow())
 	default:
 		if m.previewErr != nil {
 			fmt.Fprintln(&b, tui.Bad.Render("Preview failed: ")+tui.Text.Render(m.previewErr.Error()))
@@ -164,11 +166,9 @@ func (m Model) keyHelp() string {
 			tui.KeyHint("D", "flatten"))
 	}
 	hints = append(hints, tui.KeyHint("u", "undo"), tui.KeyHint("R", "reset plan"))
-	leave := "save or discard & leave"
-	if m.hosted && !m.hasEdits() {
-		leave = "back to the time slices" // nothing edited: esc asks nothing
-	}
-	hints = append(hints, tui.KeyHint("esc", leave), tui.KeyHint("ctrl+c", "discard & exit"))
+	hints = append(hints,
+		tui.KeyHint("x", "copy approved now"), tui.KeyHint("X", "move approved now"))
+	hints = append(hints, tui.KeyHint("esc", "save or discard & leave"), tui.KeyHint("ctrl+c", "discard & exit"))
 	hints = append(hints, tui.KeyHint("?", "help"))
 	return strings.Join(hints, "   ")
 }
@@ -180,12 +180,8 @@ func (m Model) keyHelp() string {
 // [c] is gone.
 func (m Model) exitAskView() string {
 	choice := m.exitChoice
-	what := "review"
-	if m.hosted {
-		what = "time slice"
-	}
 	c := tui.NewConfirmModel("Save your changes?",
-		"Keep the plan as edited and approve this "+what+", or leave without saving it.", &choice)
+		"Keep the plan as edited and approve the review, or leave without saving it.", &choice)
 	c.YesLabel, c.NoLabel = "Save", "Discard"
 	sized, _ := c.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 	return sized.View()

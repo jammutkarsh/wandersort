@@ -61,7 +61,7 @@ func TestReview(t *testing.T) {
 			h.build(t, cfg, installtest.Resolver(t))
 
 			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.d, nil)
+			tree, err := BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -74,7 +74,7 @@ func TestReview(t *testing.T) {
 				t.Fatal("no folder to rename")
 			}
 
-			if err := Confirm(ctx, h.d, tree, nil); err != nil {
+			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatal(err)
 			}
 
@@ -119,7 +119,7 @@ func TestReview(t *testing.T) {
 			h.build(t, DefaultConfig(), installtest.Resolver(t))
 
 			bogus := []Node{{ID: "not/a/real/path", Name: "x", Children: []Node{}}}
-			if err := Confirm(context.Background(), h.d, bogus, nil); err == nil {
+			if err := Confirm(context.Background(), h.d, bogus); err == nil {
 				t.Fatal("expected error for unknown node id")
 			}
 		}},
@@ -137,7 +137,7 @@ func TestReview(t *testing.T) {
 			h.build(t, cfg, installtest.Resolver(t))
 
 			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.d, nil)
+			tree, err := BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -148,7 +148,7 @@ func TestReview(t *testing.T) {
 			suggested[0].Name = "Manali"
 			suggested[1].Name = "Manali"
 
-			if err := Confirm(ctx, h.d, tree, nil); err != nil {
+			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatalf("Confirm merge: %v", err)
 			}
 
@@ -186,7 +186,7 @@ func TestReview(t *testing.T) {
 			h.build(t, cfg, installtest.Resolver(t))
 
 			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.d, nil)
+			tree, err := BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -199,7 +199,7 @@ func TestReview(t *testing.T) {
 			suggested[0].MergedIDs = []string{foldedID}
 			tree = dropNodeByID(tree, foldedID)
 
-			if err := Confirm(ctx, h.d, tree, nil); err != nil {
+			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatalf("Confirm merge: %v", err)
 			}
 
@@ -233,7 +233,7 @@ func TestReview(t *testing.T) {
 			h.build(t, cfg, nil)
 
 			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.d, nil)
+			tree, err := BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -244,7 +244,7 @@ func TestReview(t *testing.T) {
 			// merge them onto one folder — both files now want the same basename
 			suggested[0].Name, suggested[1].Name = "Manali", "Manali"
 
-			if err := Confirm(ctx, h.d, tree, nil); err != nil {
+			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatalf("Confirm: %v", err)
 			}
 
@@ -278,18 +278,18 @@ func TestReview(t *testing.T) {
 			h.build(t, cfg, nil)
 
 			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.d, nil)
+			tree, err := BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, ok := renameFirstLeaf(tree, "Goa [2024]"); !ok {
 				t.Fatal("no renameable node in the proposal")
 			}
-			if err := Confirm(ctx, h.d, tree, nil); err != nil {
+			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatal(err)
 			}
 
-			tree, err = BuildTree(ctx, h.d, nil)
+			tree, err = BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -323,7 +323,7 @@ func TestReview(t *testing.T) {
 			h.build(t, DefaultConfig(), nil)
 
 			ctx := context.Background()
-			tree, err := BuildTree(ctx, h.d, nil)
+			tree, err := BuildTree(ctx, h.d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -339,7 +339,7 @@ func TestReview(t *testing.T) {
 			walk(tree)
 
 			// the orphan row still exists — Confirm just never got asked about it
-			if err := Confirm(ctx, h.d, tree, nil); err != nil {
+			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatal(err)
 			}
 			var status string

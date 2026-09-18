@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/jmoiron/sqlx"
 
@@ -200,9 +199,9 @@ const insertChunk = 50
 func insertStatement(chunk []masterFile, kept map[int64]bool) (stmt string, args []any, n int) {
 	var b strings.Builder
 	b.WriteString(`INSERT INTO virtual_fs_entries
-		(file_id, source_path, target_path, cluster_id, status, location_dir, taken_at)
+		(file_id, source_path, target_path, cluster_id, status, location_dir)
 		VALUES `)
-	args = make([]any, 0, len(chunk)*7)
+	args = make([]any, 0, len(chunk)*6)
 	for i := range chunk {
 		m := &chunk[i]
 		if kept[m.FileID] {
@@ -211,22 +210,12 @@ func insertStatement(chunk []masterFile, kept map[int64]bool) (stmt string, args
 		if n > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString("(?,?,?,?,?,?,?)")
+		b.WriteString("(?,?,?,?,?,?)")
 		args = append(args, m.FileID, m.absPath, m.targetPath,
-			nullable(m.clusterID), db.StatusProposed, nullable(m.locationDir),
-			nullableTime(m.folderTime()))
+			nullable(m.clusterID), db.StatusProposed, nullable(m.locationDir))
 		n++
 	}
 	return b.String(), args, n
-}
-
-// nullableTime stores a folder date in the canonical fixed-width UTC form, or
-// NULL for a file with no date at all (which is its own review segment).
-func nullableTime(t time.Time) any {
-	if t.IsZero() {
-		return nil
-	}
-	return db.FormatTime(t)
 }
 
 func nullable(s string) any {

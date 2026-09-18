@@ -360,11 +360,11 @@ func (m shellModel) handleSwitch(msg tui.SwitchMsg) (tea.Model, tea.Cmd) {
 	}
 
 	note := ""
-	if confirmed, saveErr, ok := review.Outcome(m.screens[tabReview]); ok {
+	if res, ok := review.Outcome(m.screens[tabReview]); ok {
 		var err error
 		// Reported per review as it finishes, not once at exit: the session
 		// outlives every plan it saves.
-		if note, err = m.a.reportReviewOutcome(confirmed, saveErr); err != nil {
+		if note, err = m.a.reportReviewOutcome(res); err != nil {
 			m.exitErr = err
 			return m, tea.Quit
 		}

@@ -9,10 +9,12 @@ package review
 import (
 	"context"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
@@ -29,21 +31,13 @@ type Options struct {
 	Resolver  *location.Resolver
 	Log       logger.Logger
 	OutputDir string // for the post-approve free-space check
-	// SegmentMonths is the reviewer's time-slice size from the settings
-	// (0 = let vfs.Segments pick from the library's span).
-	SegmentMonths int
-	// Segment is the slice this screen reviews — set by the picker when it
-	// opens one, nil for a whole-library review. It scopes what Confirm
-	// approves, and names itself in the header.
-	Segment *vfs.Segment
 }
 
 // ConfirmAll writes the proposed hierarchy as-is, without showing a TUI
 // (`wandersort review --yes`). Suggestions are what the reviewer would rename
 // a folder *to* — taking them unattended is a decision nobody made.
 func ConfirmAll(ctx context.Context, o Options) error {
-	// no segment: --yes is a decision about the whole library
-	if err := vfs.Confirm(ctx, o.DB, o.Tree, nil); err != nil {
+	if err := vfs.Confirm(ctx, o.DB, o.Tree); err != nil {
 		return err
 	}
 	volume.CheckOutputSpace(ctx, o.DB, o.Log, o.OutputDir)
@@ -58,58 +52,43 @@ func ConfirmAll(ctx context.Context, o Options) error {
 // different tab, so a review is always hosted, never its own program. Pass the
 // model the shell leaves behind to Outcome.
 func Screen(ctx context.Context, o Options) tea.Model {
-	if segs := segmentsFor(ctx, o); segs != nil {
-		return newPicker(ctx, o, segs)
-	}
-	return newSegmentScreen(ctx, o, nil)
-}
-
-// segmentsFor asks whether this proposal is worth slicing up. A failure is
-// not one: the worst it costs is a whole-library review, which is what every
-// review was until segments existed.
-//
-// ponytail: the caller has already built the whole tree by the time this says
-// yes, and that tree is then thrown away for the per-segment ones. One extra
-// BuildTree; have the caller hand over a tree-builder instead of a tree if it
-// ever shows up in a profile.
-func segmentsFor(ctx context.Context, o Options) []vfs.Segment {
-	segs, err := vfs.Segments(ctx, o.DB, o.SegmentMonths)
-	if err != nil && o.Log != nil {
-		o.Log.Warn("Could not split the proposal into time slices, reviewing all of it", "error", err)
-	}
-	return segs
-}
-
-// newSegmentScreen is the tree review as an in-program screen: it confirms
-// what it was given (scoped to o.Segment) and then goes back to the picker it
-// was opened from, or hands control to its caller when there isn't one.
-func newSegmentScreen(ctx context.Context, o Options, host *pickerModel) tea.Model {
-	m := newModel(o.Tree, ctx, o.DB, o.Resolver, o.Log).withHost(o)
+	m := newModel(o.Tree, ctx, o.DB, o.Resolver, o.Log, o.OutputDir)
 	m.embedded = true
-	m.hosted = host != nil
 	return screen{
 		inner:     m,
 		ctx:       ctx,
 		db:        o.DB,
 		log:       o.Log,
 		outputDir: o.OutputDir,
-		seg:       o.Segment,
-		host:      host,
 	}
+}
+
+// Result reports how an embedded review ended. Confirmed/Err answer "was
+// [esc] -> Save pressed, and did it work" — but [x]/[X] can transfer files to
+// the output at any point in the session regardless of whether the review is
+// ever explicitly saved (the review can even end on its own once a transfer
+// empties the tree — see reset's postTransferSync path), so TransferDone/
+// TransferFailed carry that separately: a caller reporting only Confirmed
+// would say "nothing changed" over a session that copied or moved real files.
+type Result struct {
+	Confirmed                    bool
+	Err                          error
+	TransferDone, TransferFailed int
 }
 
 // Outcome reports how an embedded review ended. ok is false when m is not a
 // review screen at all.
-func Outcome(m tea.Model) (confirmed bool, err error, ok bool) {
-	switch s := m.(type) {
-	case screen:
-		return s.confirmed, s.finalErr, true
-	case pickerModel:
-		// a segmented review saves as it goes: "confirmed" is "at least one
-		// slice was signed off", not one final write
-		return s.saved > 0, nil, true
+func Outcome(m tea.Model) (Result, bool) {
+	s, ok := m.(screen)
+	if !ok {
+		return Result{}, false
 	}
-	return false, nil, false
+	return Result{
+		Confirmed:      s.confirmed,
+		Err:            s.finalErr,
+		TransferDone:   s.inner.transferDone,
+		TransferFailed: s.inner.transferFailed,
+	}, true
 }
 
 /* --- bubbletea model --- */
@@ -165,28 +144,43 @@ type Model struct {
 	editing   bool
 	input     string
 	confirmed bool
-	// segLabel names the time slice this tree is, when the review is
-	// segmented — the header is the only thing that says which one is open.
-	segLabel string
-	// seg is that slice as the database knows it, so [R] can re-propose without
-	// widening this screen to the whole library.
-	seg *vfs.Segment
-	// hosted is "a segment picker is underneath this screen": discarding via
-	// [esc] goes back to it instead of ending the review.
-	hosted bool
-	// back is a discard's answer when hosted — done without confirming, but
-	// not a quit.
-	back bool
 	// askExit is [esc]'s question — save this plan, or throw the edits away —
 	// raised on every [esc] rather than assuming either answer. A second
 	// [esc] inside it forcefully discards; ctrl+c does too.
 	askExit    bool
 	exitChoice bool // true = Save, false = Discard; which button is under the cursor
 
-	ctx      context.Context
-	db       *db.DB
-	resolver *location.Resolver
-	log      logger.Logger
+	ctx       context.Context
+	db        *db.DB
+	resolver  *location.Resolver
+	log       logger.Logger
+	outputDir string // for the pre-transfer free-space check
+
+	// [x]/[X] copy or move every APPROVED file to the output right now. Not
+	// scoped to a selection — see transfer.go.
+	askMove      bool
+	moveChoice   bool // which button the move-ask modal has under the cursor
+	transferring bool
+	transferMode execute.Mode
+	// prog is the last progress report drawn, progCh the channel execute's
+	// OnProgress feeds it down. bar renders it — a transfer is the one thing
+	// here that runs for minutes over gigabytes, so it gets a bar, not a bare
+	// spinner.
+	prog   transferProgressMsg
+	progCh chan transferProgressMsg
+	bytes  int64 // running total, since OnProgress reports one file's size
+	bar    progress.Model
+	// postTransferSync marks the reload a finished transfer triggers (via the
+	// same resetCmd/resetMsg [R] uses) — nothing was "discarded" to get there
+	// (the plan was already saved before the transfer started), so reset must
+	// leave the transfer's own status line alone instead of overwriting it.
+	postTransferSync bool
+	// transferDone/transferFailed accumulate every [x]/[X] this session, so
+	// Outcome can report what actually reached disk even when the review ends
+	// without an explicit [esc] -> Save — a transfer can close the review on
+	// its own (see reset's postTransferSync case) or race an [esc] ->
+	// Discard/ctrl+c that lands before its own reload does.
+	transferDone, transferFailed int
 
 	// Rename autocomplete. Both sources are fetched up front and filtered in
 	// memory per keystroke, so typing never hits the DB.
@@ -222,13 +216,14 @@ type Model struct {
 	spin       spinner.Model
 }
 
-func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, resolver *location.Resolver, log logger.Logger) Model {
+func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, resolver *location.Resolver, log logger.Logger, outputDir string) Model {
 	// same spinner the scan and install screens run
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(tui.Primary)
 	m := Model{
 		spin:       sp,
+		bar:        progress.New(progress.WithDefaultGradient(), progress.WithoutPercentage()),
 		suggCursor: -1,
 		tree:       tree,
 		rows:       buildRows(tree),
@@ -236,21 +231,11 @@ func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, resolver *l
 		db:         database,
 		resolver:   resolver,
 		log:        log,
+		outputDir:  outputDir,
 	}
 	// user_labels only changes on Confirm, after this TUI exits, so the set is
 	// fixed for the session — load it once instead of querying per keystroke.
 	m.labels = vfs.Labels(ctx, database, log)
-	return m
-}
-
-// withHost applies the parts of Options only the caller can answer — which
-// segment this is. Separate from newModel so a whole-library review and a
-// segment's share one constructor.
-func (m Model) withHost(o Options) Model {
-	m.seg = o.Segment
-	if o.Segment != nil {
-		m.segLabel = o.Segment.Label
-	}
 	return m
 }
 
@@ -260,13 +245,13 @@ type resetMsg struct {
 	err  error
 }
 
-// resetCmd re-reads this screen's still-proposed rows, discarding every
-// in-memory edit. Nothing on disk changes — a reset only ever throws away
-// what was never saved; the rows behind an approved (saved) segment aren't
-// part of this query at all, so they're untouched by construction.
-func resetCmd(ctx context.Context, database *db.DB, seg *vfs.Segment) tea.Cmd {
+// resetCmd re-reads the still-proposed rows, discarding every in-memory edit.
+// Nothing on disk changes — a reset only ever throws away what was never
+// saved; already-approved rows aren't part of this query at all, so they're
+// untouched by construction.
+func resetCmd(ctx context.Context, database *db.DB) tea.Cmd {
 	return func() tea.Msg {
-		tree, err := vfs.BuildTree(ctx, database, seg)
+		tree, err := vfs.BuildTree(ctx, database)
 		return resetMsg{tree: tree, err: err}
 	}
 }
@@ -276,6 +261,8 @@ func resetCmd(ctx context.Context, database *db.DB, seg *vfs.Segment) tea.Cmd {
 // longer be at the same rows, and the cursor's row is gone.
 func (m Model) reset(msg resetMsg) Model {
 	m.resetting = false
+	quiet := m.postTransferSync
+	m.postTransferSync = false
 	if msg.err != nil {
 		m.statusMsg, m.statusIsErr = "reset failed: "+msg.err.Error(), true
 		return m
@@ -284,6 +271,16 @@ func (m Model) reset(msg resetMsg) Model {
 	// every key that reads the cursor row with nothing to read; keeping the
 	// old one is also the more useful answer.
 	if len(msg.tree) == 0 {
+		if quiet {
+			// The transfer just cleared out everything reviewable — there is
+			// nothing left to keep this screen open for. Staying on the
+			// pre-transfer tree left the reviewer's very next [esc] -> Save
+			// calling Confirm over zero reviewable rows, which fails with
+			// "proposal was replaced by a newer scan" — true of the query,
+			// false and alarming right after a clean transfer.
+			m.done = true
+			return m
+		}
 		m.statusMsg, m.statusIsErr = "nothing left to reset — this plan is already saved", true
 		return m
 	}
@@ -292,7 +289,9 @@ func (m Model) reset(msg resetMsg) Model {
 	m.cursor, m.offset = 0, 0
 	m.visualMode = false
 	m.reflow()
-	m.statusMsg, m.statusIsErr = "unsaved edits discarded", false
+	if !quiet {
+		m.statusMsg, m.statusIsErr = "unsaved edits discarded", false
+	}
 	return m
 }
 

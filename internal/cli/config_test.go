@@ -233,7 +233,7 @@ func TestConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(home, ".wandersort", "config.yaml")
-			if err := os.WriteFile(path, []byte("segment-months: 4\n\tbad: [unclosed\n"), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte("output-path: /tmp/lib\n\tbad: [unclosed\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 
@@ -255,7 +255,7 @@ func TestConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(home, ".wandersort", "config.yaml"),
-				[]byte("segment-months: 6\n"), 0o644); err != nil {
+				[]byte("output-path: /tmp/lib\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 
@@ -263,8 +263,8 @@ func TestConfig(t *testing.T) {
 			if err != nil || warning != "" {
 				t.Fatalf("valid config: err=%v warning=%q", err, warning)
 			}
-			if cfg.SegmentMonths != 6 {
-				t.Errorf("segment-months = %d, want 6 from the config file", cfg.SegmentMonths)
+			if !cfg.Configured {
+				t.Error("expected the config file's output-path to mark the config as configured")
 			}
 		}},
 		// TestTreeExample covers the wizard's example renderer: sibling paths must

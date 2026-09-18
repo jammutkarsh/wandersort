@@ -244,7 +244,7 @@ func TestResolve(t *testing.T) {
 			if err != nil {
 				t.Fatalf("defaults: %v", err)
 			}
-			if err := c.Save(&Configuration{SegmentMonths: 6}); err != nil {
+			if err := c.Save(&Configuration{Rules: []string{"device"}}); err != nil {
 				t.Fatal(err)
 			}
 

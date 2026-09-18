@@ -30,12 +30,8 @@ import (
 
 // prefixRewriter turns a remap of old-dir → new-dir into a function over any
 // directory: the longest remapped ancestor wins, and the rest of the path
-// rides along behind the new prefix.
-//
-// A whole-tree confirm never needs this — every leaf directory is its own
-// remap key. A segment's tree only holds the rows of one time slice, so the
-// Year node the reviewer renamed there is the *only* entry that covers the
-// other slices' rows sitting under it.
+// rides along behind the new prefix. A renamed leaf is its own remap key; a
+// merged-away node's descendants are covered by the longest-ancestor match.
 func prefixRewriter(remap map[string]string) func(dir string) string {
 	olds := slices.SortedFunc(maps.Keys(remap), func(a, b string) int { return len(b) - len(a) })
 	return func(dir string) string {
@@ -82,20 +78,16 @@ type Node struct {
 const maxSamples = 3
 
 // BuildTree reads the still-reviewable entries (executed/failed rows are past
-// reviewing) and returns the proposed directory tree, folders only. A nil seg
-// is the whole proposal; a segment narrows it to one time slice. An empty
-// result means no proposal exists — the caller decides if that's a 404.
-func BuildTree(ctx context.Context, database *db.DB, seg *Segment) ([]Node, error) {
+// reviewing) and returns the proposed directory tree, folders only, for the
+// whole library. An empty result means no proposal exists — the caller
+// decides if that's a 404.
+func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 	var rows []struct {
 		TargetPath  string   `db:"target_path"`
 		SourcePath  string   `db:"source_path"`
 		LocationDir *string  `db:"location_dir"`
 		GPSLat      *float64 `db:"exif_gps_latitude"`
 		GPSLon      *float64 `db:"exif_gps_longitude"`
-	}
-	where, args := seg.clause("vfe.taken_at")
-	if where != "" {
-		where = " AND " + where
 	}
 	// orphaned sidecars have nothing to review — one flat junk folder, not a
 	// decision — so they never enter the tree at all. substr, not LIKE/GLOB:
@@ -107,8 +99,8 @@ func BuildTree(ctx context.Context, database *db.DB, seg *Segment) ([]Node, erro
 		 FROM virtual_fs_entries vfe
 		 LEFT JOIN file_metadata fm ON fm.file_id = vfe.file_id
 		 WHERE vfe.status IN (?, ?)
-		   AND substr(vfe.target_path, 1, length(?)) != ?`+where,
-		append([]any{db.StatusProposed, db.StatusApproved, orphanPrefix, orphanPrefix}, args...)...); err != nil {
+		   AND substr(vfe.target_path, 1, length(?)) != ?`,
+		db.StatusProposed, db.StatusApproved, orphanPrefix, orphanPrefix); err != nil {
 		return nil, fmt.Errorf("query vfs entries: %w", err)
 	}
 
@@ -218,15 +210,10 @@ func Labels(ctx context.Context, database *db.DB, log logger.Logger) []string {
 }
 
 // Confirm applies the (possibly edited) tree back onto the proposal's
-// entries, flips PROPOSED rows to APPROVED, and remembers every name the
+// entries, flips every PROPOSED row to APPROVED, and remembers every name the
 // reviewer typed in user_labels, so the next review's rename completions
 // offer it. The write is synchronous: a nil return means committed.
-//
-// seg scopes the *approval* to one time slice (nil = the whole proposal). The
-// renames are not scoped: a Year the reviewer renamed in this segment's tree
-// has to carry onto the rows of every other segment sitting under it, or the
-// same year would end up as two differently-named folders on disk.
-func Confirm(ctx context.Context, database *db.DB, roots []Node, seg *Segment) error {
+func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 	var targets []string
 	if err := database.SQL.SelectContext(ctx, &targets,
 		`SELECT DISTINCT target_path FROM virtual_fs_entries`); err != nil {
@@ -342,13 +329,9 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node, seg *Segment) e
 				return err
 			}
 		}
-		where, args := seg.clause("taken_at")
-		if where != "" {
-			where = " AND " + where
-		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE virtual_fs_entries SET status = ? WHERE status = ?`+where,
-			append([]any{db.StatusApproved, db.StatusProposed}, args...)...); err != nil {
+			`UPDATE virtual_fs_entries SET status = ? WHERE status = ?`,
+			db.StatusApproved, db.StatusProposed); err != nil {
 			return err
 		}
 		for _, name := range slices.Sorted(maps.Keys(learned)) {
@@ -362,4 +345,37 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node, seg *Segment) e
 		return fmt.Errorf("confirm vfs: %w", err)
 	}
 	return nil
+}
+
+// ReopenPlan flips every APPROVED entry in the library back to PROPOSED, so
+// a settings change (or a reviewer's [R]) can re-plan without touching rows a
+// transfer has already made real: DONE is never reopened, since a transferred
+// file's folder is a fact on disk now, not a proposal to revisit.
+func ReopenPlan(ctx context.Context, database *db.DB) error {
+	if err := database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE virtual_fs_entries SET status = ? WHERE status = ?`,
+			db.StatusProposed, db.StatusApproved)
+		return err
+	}); err != nil {
+		return fmt.Errorf("reopen the plan: %w", err)
+	}
+	return nil
+}
+
+// PendingBytes sums the size of every still-untransferred file — PROPOSED or
+// APPROVED — what a transfer started right now would actually write, before
+// a single byte moves. Both statuses count because the free-space check runs
+// *before* the save that flips PROPOSED to APPROVED: a rename doesn't change
+// a file's size, so the total is the same either way, and checking first
+// means a refusal changes nothing rather than undoing a save.
+func PendingBytes(ctx context.Context, database *db.DB) (int64, error) {
+	var n int64
+	if err := database.SQL.GetContext(ctx, &n,
+		`SELECT COALESCE(SUM(fr.file_size), 0) FROM virtual_fs_entries vfe
+		 JOIN live_files fr ON fr.id = vfe.file_id
+		 WHERE vfe.status IN (?, ?)`, db.StatusProposed, db.StatusApproved); err != nil {
+		return 0, fmt.Errorf("size pending files: %w", err)
+	}
+	return n, nil
 }
