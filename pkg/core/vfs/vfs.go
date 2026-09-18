@@ -44,7 +44,7 @@ func New(db *db.DB, resolver *location.Resolver, log logger.Logger, cfg Config) 
 
 // Propose builds the proposal for the whole library from the user's settings —
 // the phase as a single call, for every caller that has an *config.Configuration
-// and a resolver (the scan pipeline, and review --rebuild). Assembling the
+// and a resolver (the scan pipeline, and cli's rebuildTree). Assembling the
 // Config and resolving the saved-place anchors are steps of the phase, not of
 // its callers; New is for a test or a caller that wants to state the Config
 // itself.
@@ -62,7 +62,7 @@ func Propose(ctx context.Context, database *db.DB, resolver *location.Resolver, 
 	// Config and the output directory.
 	if appCfg.AppDBPath != "" {
 		if err := WriteStamp(filepath.Dir(appCfg.AppDBPath), ConfigStamp(cfg)); err != nil {
-			// A missing stamp only costs a rebuild prompt that never fires —
+			// A missing stamp only costs a re-plan that never fires —
 			// not worth failing a finished proposal over.
 			log.Warn("Could not record the settings this proposal used", "error", err)
 		}

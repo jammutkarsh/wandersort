@@ -61,8 +61,8 @@ starts straight away; without it you are asked which folders to scan.
 screen to ask on.
 
 Runs on defaults if you haven't run 'wandersort config' yet. Run it later and
-'wandersort review --rebuild' to re-propose the folder structure from your
-settings without re-scanning.`,
+saving re-proposes the folder structure from your settings without
+re-scanning.`,
 		Example: `# Pick the folders on screen
 wandersort scan
 
@@ -110,7 +110,7 @@ func (a *app) runScan(cmd *cobra.Command, paths []string, force bool) error {
 // console logger's line output. Used with --plain or a non-terminal
 // stderr. Behaviour is unchanged from before the TUI existed. force is
 // --force's explicit consent to re-read every already-scanned file — no
-// confirmation prompt, same as --rebuild.
+// confirmation prompt needed.
 func (a *app) runScanPlain(paths []string, force bool) error {
 	start := time.Now()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

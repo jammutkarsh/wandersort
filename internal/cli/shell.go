@@ -47,10 +47,9 @@ var tabNames = [numTabs]string{"Scan", "Config", "Review"}
 // subcommand was enough to lose it. A subcommand is a starting point now, not
 // a smaller app.
 type shellStart struct {
-	tab     int
-	paths   []string // tabScan: scan these immediately instead of asking
-	force   bool     // tabScan: re-read every file from disk (--force)
-	rebuild bool     // tabReview: re-propose before building the tree (--rebuild)
+	tab   int
+	paths []string // tabScan: scan these immediately instead of asking
+	force bool     // tabScan: re-read every file from disk (--force)
 }
 
 // openConfigMsg opens the settings tab. A message rather than a direct call so
@@ -73,15 +72,6 @@ type shellModel struct {
 	screens [numTabs]tea.Model
 	tab     int
 	start   shellStart
-
-	// rebuild re-proposes on the way into the *first* review this session —
-	// `review --rebuild`. It clears itself, so ctrl+t back into a review later
-	// opens what is on disk rather than silently re-proposing again.
-	rebuild bool
-
-	// wf is the running scan's workflow, kept so a settings save can retarget
-	// its vfs phase while it is still going (see configSaved).
-	wf *workflow.Workflow
 
 	// reviewReady is "a built review screen is stashed in the tab" — the scan
 	// prefetched one, or ctrl+t/ctrl+r built one on demand. It is not the same
@@ -127,7 +117,7 @@ func (a *app) runShell(start shellStart) error {
 	a.Log = tuiLog
 	defer func() { a.Log = origLog }()
 
-	m := shellModel{a: a, ctx: ctx, cancel: cancel, start: start, rebuild: start.rebuild}
+	m := shellModel{a: a, ctx: ctx, cancel: cancel, start: start}
 	m.screens[tabScan] = a.newHomeScreen(nil)
 
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
@@ -235,8 +225,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// prefetched is stale; the new run's vfs phase repopulates it.
 		m.screens[tabReview], m.reviewReady = nil, false
 		m.tab = tabScan
-		var screen tui.ScanModel
-		m.wf, screen = m.a.newScanScreen(m.ctx, m.cancel, msg.paths, msg.force)
+		screen := m.a.newScanScreen(m.ctx, m.cancel, msg.paths, msg.force)
 		return m, m.place(tabScan, screen)
 
 	case reviewOpenMsg:
@@ -319,26 +308,21 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // configSaved picks up a wizard save without a relaunch: the settings the
-// review compares its plan against and the next scan uses are re-resolved
-// here, and a scan that is still running has its vfs phase retargeted, so the
-// folders it ends up proposing are the ones just asked for.
+// next scan uses are re-resolved here. A changed setting re-plans the
+// library at once, no question asked — but only by *routing through
+// openReview*, never by calling rebuildTree directly: the library may not be
+// open yet (a config-first session that never scanned or reviewed has no
+// AppDB), and rebuildTree touches it. openReview always opens the library
+// first, so a review already stashed is dropped and rebuilt fresh through
+// it; if none is stashed there is nothing to do here at all — the next
+// newReviewScreen call finds the stale stamp itself (settingsChanged) and
+// re-plans then, with the library open by construction at that point. The
+// config tab is unreachable while a scan runs (see nextTab/handleKey), so
+// there is never a running workflow to retarget.
 func (m *shellModel) configSaved() tea.Cmd {
 	note, err := m.a.reloadConfig()
 	if err != nil {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: err})
-	}
-	if m.wf != nil && m.scanRunning() {
-		m.wf.UpdateConfig(m.a.Config)
-	}
-	// A review already on screen was built before this save, so its own stamp
-	// check has been and gone — tell it directly, or the plan it is showing
-	// silently stops matching the settings. Only when the settings really
-	// moved, though: a trip through the wizard that lands back where it
-	// started is not a change, and asking about it is the one thing a
-	// full-screen question can't get away with.
-	var cmd tea.Cmd
-	if m.a.settingsChanged(filepath.Dir(m.a.Config.AppDBPath)) {
-		cmd = m.forward(tabReview, review.SettingsChangedMsg{})
 	}
 	// Confirming the save is the wizard's only receipt now that it closes back
 	// into the shell instead of ending the process with a printed line.
@@ -350,7 +334,12 @@ func (m *shellModel) configSaved() tea.Cmd {
 	}
 	// ponytail: shown on the home screen's error line, so it's lost if a scan
 	// is on screen instead. Give HomeModel a note line if that matters.
-	cmd = tea.Batch(cmd, m.forward(tabScan, tui.HomeErrMsg{Err: errors.New(note)}))
+	cmd := m.forward(tabScan, tui.HomeErrMsg{Err: errors.New(note)})
+
+	if m.reviewReady && m.a.settingsChanged(filepath.Dir(m.a.Config.AppDBPath)) {
+		m.screens[tabReview], m.reviewReady = nil, false
+		cmd = tea.Batch(cmd, m.openReview())
+	}
 	return cmd
 }
 
@@ -418,11 +407,15 @@ func (m *shellModel) homeAgain(note string) tea.Cmd {
 }
 
 // nextTab cycles scan → config → review → scan, skipping review while there is
-// nothing to review.
+// nothing to review and config while a scan is running — settings are
+// re-read once, by configSaved, and a scan changes what they'd apply to.
 func (m shellModel) nextTab() int {
 	for i := 1; i <= numTabs; i++ {
 		t := (m.tab + i) % numTabs
 		if t == tabReview && !m.canReview() {
+			continue
+		}
+		if t == tabConfig && m.scanRunning() {
 			continue
 		}
 		return t
@@ -450,31 +443,19 @@ func (m *shellModel) openConfig() tea.Cmd {
 }
 
 // openReview builds the review over whatever is in the database, off the UI
-// goroutine — the lock, the DB open, an eventual --rebuild and BuildTree are
-// all too slow to run in Update. Shared by [ctrl+r] on the home screen,
-// [ctrl+t] into an unprefetched review tab, and `wandersort review`.
+// goroutine — the lock, the DB open and BuildTree are all too slow to run in
+// Update. Shared by [ctrl+r] on the home screen, [ctrl+t] into an
+// unprefetched review tab, `wandersort review`, and a settings-triggered
+// re-plan (configSaved) swapping in the fresh proposal.
 func (m *shellModel) openReview() tea.Cmd {
 	if m.opening {
 		return nil // a second ctrl+t while the first is still building
 	}
 	m.opening = true
-	// `review --rebuild` re-proposes on the way into the first review only:
-	// after that the reviewer is inside the app, where [R] is how they ask
-	// for it — silently re-proposing on every later visit would throw away
-	// edits they never asked to lose.
-	rebuild := m.rebuild
-	m.rebuild = false
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
 		if err := a.openLibrary(ctx); err != nil {
 			return reviewOpenMsg{err: err}
-		}
-		if rebuild {
-			// The tree is discarded: newReviewScreen segments and builds its
-			// own. What's wanted here is the re-proposal it reads back.
-			if _, err := a.rebuildTree(ctx, nil); err != nil {
-				return reviewOpenMsg{err: err}
-			}
 		}
 		model, err := a.newReviewScreen(ctx)
 		return reviewOpenMsg{model: model, err: err}
@@ -557,11 +538,10 @@ func (a *app) newHomeScreen(lastScan []string) tui.HomeModel {
 }
 
 // newScanScreen wires a scan of paths into the shell, gated behind the same
-// upfront dependency download the scan subcommand uses. The workflow comes
-// back with the screen: a settings save mid-run retargets it (configSaved).
-func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, paths []string, force bool) (*workflow.Workflow, tui.ScanModel) {
+// upfront dependency download the scan subcommand uses.
+func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, paths []string, force bool) tui.ScanModel {
 	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, a.workflowDeps())
-	return wf, tui.NewScanModel(tui.ScanConfig{
+	return tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {
 			if err := waitForDeps(a.Deps); err != nil {
 				return &tui.DepsErr{Err: err}

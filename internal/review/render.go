@@ -20,9 +20,6 @@ func (m Model) View() string {
 	if m.askExit {
 		return m.exitAskView()
 	}
-	if m.askRebuild {
-		return m.rebuildAskView()
-	}
 	if m.showHelp {
 		return m.helpView()
 	}
@@ -122,9 +119,9 @@ func (m Model) footer() string {
 	case m.previewing:
 		b.WriteString(m.spin.View())
 		b.WriteString(tui.DimText.Render(" Copying preview…"))
-	case m.rebuilding:
+	case m.resetting:
 		b.WriteString(m.spin.View())
-		b.WriteString(tui.DimText.Render(" Re-proposing folders with your current settings…"))
+		b.WriteString(tui.DimText.Render(" Reloading the proposed folders…"))
 	default:
 		if m.previewErr != nil {
 			fmt.Fprintln(&b, tui.Bad.Render("Preview failed: ")+tui.Text.Render(m.previewErr.Error()))
@@ -166,10 +163,7 @@ func (m Model) keyHelp() string {
 			tui.KeyHint("d", "drop"),
 			tui.KeyHint("D", "flatten"))
 	}
-	hints = append(hints, tui.KeyHint("u", "undo"))
-	if m.rebuild != nil {
-		hints = append(hints, tui.KeyHint("R", "reset plan"))
-	}
+	hints = append(hints, tui.KeyHint("u", "undo"), tui.KeyHint("R", "reset plan"))
 	leave := "save or discard & leave"
 	if m.hosted && !m.hasEdits() {
 		leave = "back to the time slices" // nothing edited: esc asks nothing
@@ -177,52 +171,6 @@ func (m Model) keyHelp() string {
 	hints = append(hints, tui.KeyHint("esc", leave), tui.KeyHint("ctrl+c", "discard & exit"))
 	hints = append(hints, tui.KeyHint("?", "help"))
 	return strings.Join(hints, "   ")
-}
-
-// rebuildAskView is the reset question, drawn as the same full-screen yes/no
-// dialog `wandersort reset` asks with — a settings change invalidates the whole
-// plan on screen, so it gets the screen, not a line above the key bar that a
-// reviewer reading the tree will never look at.
-//
-// "Reset the plan" rather than "rebuild": re-proposing from the current
-// settings is what the key does whether the settings just moved or the
-// reviewer simply wants their edits thrown away, and one verb covers both.
-//
-// The ConfirmModel is built per frame rather than stored: it is pure layout,
-// and a bubbletea model copied by value can't safely hold a pointer into its
-// own fields, which is what its Value is.
-func (m Model) rebuildAskView() string {
-	choice := m.rebuildChoice
-	c := tui.NewConfirmModel(m.rebuildAskTitle(), m.rebuildAskText(), &choice)
-	sized, _ := c.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-	return sized.View()
-}
-
-// rebuildAskTitle names the reason the question is up: the settings moved
-// under the plan, or the reviewer asked to start over.
-func (m Model) rebuildAskTitle() string {
-	if m.askedBySettings {
-		return "Settings changed since this plan was proposed"
-	}
-	return "Reset this plan?"
-}
-
-// rebuildAskText spells out what a reset costs. A stamp is a hash, so it
-// can't name which setting moved — only the two kinds that can. A reset is
-// library-wide, saved time slices included: the plan they were approved for is
-// the one being replaced.
-func (m Model) rebuildAskText() string {
-	text := "Reset throws this plan away and proposes the folders again from your current settings.\n"
-	if m.askedBySettings {
-		text = "Your folder rules or saved places changed, so this plan no longer matches them.\n" +
-			"Reset proposes every folder again, from the new settings.\n"
-	}
-	text += "No keeps the plan as it is — [R] asks again.\n" +
-		"Time slices you already saved are reopened and proposed again too."
-	if m.hasEdits() {
-		text += "\n\nYour unsaved edits will be discarded."
-	}
-	return text
 }
 
 // exitAskView is [esc]'s question, drawn as the same full-screen dialog the
@@ -264,7 +212,7 @@ func (m Model) helpView() string {
 			{"d", "drop the folder — its contents move up one level, the folder goes away"},
 			{"D", "flatten — everything below moves directly into the folder"},
 			{"u", "undo the last reshape; press again to walk further back"},
-			{"R", "reset the plan — propose every unsaved folder again from your current settings, discarding your edits"},
+			{"R", "reset — discard your unsaved edits and go back to the plan as proposed"},
 		}},
 		{"Leaving", []key{
 			{"p", "peek — copies a sample of the folder's files and opens them (read-only)"},

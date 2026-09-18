@@ -39,7 +39,7 @@ type Config struct {
 	// (Aug/02+03+04/Goa → Aug/02_04/Goa). See mergeSameLocationDays.
 	MergeSameLocationDays bool
 	// Anchors are saved places resolved to GPS coordinates, built from
-	// config.yaml by the caller (workflow or review --rebuild). Nil when
+	// config.yaml by the caller (workflow or cli's rebuildTree). Nil when
 	// no saved places are configured or the resolver isn't ready.
 	Anchors []location.Anchor
 	// SavedPlaces is the same places as the names the user typed, before
@@ -48,7 +48,7 @@ type Config struct {
 	SavedPlaces []string
 	// SegmentMonths is the review's time-slice size (0 = auto). Deliberately
 	// absent from ConfigStamp: it changes how the plan is *reviewed*, never
-	// where a single file lands, so it must not raise the rebuild prompt.
+	// where a single file lands, so it must not trigger a re-plan.
 	SegmentMonths int
 	// Workers sizes the pool every per-master pass fans out over — deriveAll,
 	// resolveLocations, applyNameCase and buildTargets (see forEachMaster).

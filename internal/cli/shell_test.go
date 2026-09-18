@@ -19,7 +19,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
@@ -447,17 +446,6 @@ func TestShellModel(t *testing.T) {
 				}
 			}
 		}},
-		// `review --rebuild` re-proposes on the way into the first review only.
-		// Every later ctrl+t into the tab opens what is on disk: silently
-		// re-proposing again would throw away edits nobody asked to lose.
-		{"RebuildAppliesToTheFirstReviewOnly", func(t *testing.T) {
-			m := testShell(t)
-			m.rebuild = true
-			m.openReview()
-			if m.rebuild {
-				t.Error("openReview should consume the --rebuild request")
-			}
-		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
@@ -489,23 +477,38 @@ func flattenTeaCmd(cmd tea.Cmd) []tea.Msg {
 	return []tea.Msg{msg}
 }
 
-// TestConfigSavedNotifiesOpenReview is the reported bug plus its follow-up:
-// the stamp check runs when a review screen is built, so a settings change
-// made while the review is already on screen has to be pushed to it — but
-// *only* when the settings really moved. A trip through the wizard that lands
-// back where it started must not raise a full-screen question about nothing.
-func TestConfigSavedNotifiesOpenReview(t *testing.T) {
+// TestConfigSavedTriggersReplanOnSettingsChange: a settings save re-plans at
+// once, without asking, but *only* when the settings really moved — a trip
+// through the wizard that lands back where it started must not throw away
+// edits or transferred-file safety over nothing. And *only* by routing
+// through openReview, never by calling rebuildTree straight from the save: a
+// config-first session that never scanned or reviewed has no AppDB yet, and
+// rebuildTree touches it — a nil-pointer crash on exactly that path caught in
+// review of this change. The returned Cmd is actually invoked here, not just
+// checked for nil, since that crash only ever showed up at that point.
+func TestConfigSavedTriggersReplanOnSettingsChange(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		stamp string
-		want  bool
+		name       string
+		stamp      string
+		reviewOpen bool
+		wantCmd    bool
 	}{
-		{"settings moved", "some-other-settings", true},
-		{"net-zero edit", "", false},
+		{"settings moved, nothing open — never touches AppDB", "some-other-settings", false, false},
+		{"net-zero edit, review open — kept as is", "", true, false},
+		{"settings moved, review open — dropped and rebuilt", "some-other-settings", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := testShell(t)
-			fakeProposal(t, m.a)
+			// A file at AppDBPath, but garbage bytes rather than fakeProposal's
+			// empty one — an empty file is a valid (if freshly created) sqlite
+			// database, and this needs db.New to fail so the test can invoke
+			// the real Cmd without reaching a.Deps (never set up here).
+			if err := os.MkdirAll(filepath.Dir(m.a.Config.AppDBPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(m.a.Config.AppDBPath, []byte("not a database"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 			stamp := tc.stamp
 			if stamp == "" {
 				stamp = vfs.ConfigStamp(vfs.ConfigFor(m.a.Config))
@@ -514,13 +517,42 @@ func TestConfigSavedNotifiesOpenReview(t *testing.T) {
 				t.Fatal(err)
 			}
 			open := &probe{name: "review"}
-			m.screens[tabReview] = open
-			m.reviewReady = true
+			if tc.reviewOpen {
+				m.screens[tabReview], m.reviewReady = open, true
+			}
 
-			m.configSaved()
+			cmd := m.configSaved()
+			if got := cmd != nil; got != tc.wantCmd {
+				t.Fatalf("re-plan kicked off = %v, want %v", got, tc.wantCmd)
+			}
 
-			if got := open.got(review.SettingsChangedMsg{}); got != tc.want {
-				t.Errorf("review told the settings changed = %v, want %v", got, tc.want)
+			if !tc.wantCmd {
+				if tc.reviewOpen && (m.screens[tabReview] != open || !m.reviewReady) {
+					t.Error("an untouched review must not be dropped")
+				}
+				if m.a.AppDB != nil {
+					t.Error("configSaved must never open the library on its own")
+				}
+				return
+			}
+
+			// The drop happens synchronously in configSaved, not inside the
+			// Cmd it returns — a second ctrl+t before the Cmd runs must not
+			// find the stale screen still there.
+			if m.screens[tabReview] != nil || m.reviewReady {
+				t.Error("the stale review screen must be dropped before the rebuild runs, not after")
+			}
+			// Safe to invoke for real: fakeProposal's file isn't a valid
+			// database, so this exercises the real lock+open path (openReview
+			// always opens the library first) and fails cleanly at db.New —
+			// a.Deps.Location() is never reached, since newReviewScreen never
+			// runs past a failed openLibrary.
+			msg := cmd()
+			if _, ok := msg.(reviewOpenMsg); !ok {
+				t.Fatalf("got %T, want reviewOpenMsg (the db open failing safely)", msg)
+			}
+			if m.a.AppDB != nil {
+				t.Error("a fake proposal file must fail db.New, not open")
 			}
 		})
 	}

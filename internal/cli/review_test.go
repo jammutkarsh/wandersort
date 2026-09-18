@@ -7,31 +7,16 @@
 package cli
 
 import (
-	"context"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
-	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/spf13/cobra"
 )
-
-func seedVFSEntry(t *testing.T, d *db.DB, fileID int64, status string) {
-	t.Helper()
-	name := fmt.Sprintf("IMG_%d.jpg", fileID)
-	dbtest.SeedFile(t, d, fileID, "/src", name, 100)
-	if _, err := d.ExecContext(context.Background(),
-		`INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status) VALUES (?, ?, ?, ?)`,
-		fileID, "/src/"+name, "2024/08/"+name, status); err != nil {
-		t.Fatal(err)
-	}
-}
 
 func TestRunReviewNoDatabase(t *testing.T) {
 	dir := t.TempDir()
@@ -40,44 +25,9 @@ func TestRunReviewNoDatabase(t *testing.T) {
 	}}
 	cmd := &cobra.Command{Use: "review"}
 	cmd.Flags().Bool(flagYes, false, "")
-	cmd.Flags().Bool(flagRebuild, false, "")
 	if err := a.runReview(cmd); err == nil {
 		t.Fatal("runReview with no database on disk must fail")
 	}
-}
-
-// TestRunReviewRebuildBlocksApprovedPlan pins the safety rail: --rebuild
-// throws away every proposal, including an already-approved one, so it must
-// refuse rather than silently discard confirmed work unless --yes overrides it.
-func TestRunReviewRebuildBlocksApprovedPlan(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, ".wandersort.db")
-	seedDB(t, dbPath)
-
-	d, err := db.New(context.Background(), dbPath, db.AppDB, logger.NewNoopLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	seedVFSEntry(t, d, 1, db.StatusApproved)
-	if err := d.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
-		AppDBPath: dbPath,
-	}}
-	cmd := &cobra.Command{Use: "review"}
-	cmd.Flags().Bool(flagYes, false, "")
-	cmd.Flags().Bool(flagRebuild, false, "")
-	if err := cmd.Flags().Set(flagRebuild, "true"); err != nil {
-		t.Fatal(err)
-	}
-
-	err = a.runReview(cmd)
-	if err == nil {
-		t.Fatal("--rebuild without --yes must refuse to discard an approved plan")
-	}
-	a.closeDBs()
 }
 
 func TestReportReviewOutcome(t *testing.T) {
@@ -102,9 +52,9 @@ func TestReportReviewOutcome(t *testing.T) {
 	}
 }
 
-// TestSettingsChanged pins the three answers the rebuild prompt hangs on: no
-// stamp is never a change (a proposal from before stamping must not prompt),
-// a matching stamp is not a change, and a settings edit is.
+// TestSettingsChanged pins the three answers a re-plan hangs on: no stamp is
+// never a change (a proposal from before stamping must not re-plan), a
+// matching stamp is not a change, and a settings edit is.
 func TestSettingsChanged(t *testing.T) {
 	cfg := testConfig(t)
 	a := &app{Config: cfg, Log: logger.NewNoopLogger()}

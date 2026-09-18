@@ -273,103 +273,63 @@ func TestCtrlCInsideSegmentNeverBacksToPicker(t *testing.T) {
 	}
 }
 
-// TestSegmentRebuildStaysScoped: [R] re-proposes the whole library, but the
-// tree it hands back must still be this one slice — otherwise a reset inside
-// 2017 replaces it with every year at once.
-func TestSegmentRebuildStaysScoped(t *testing.T) {
-	m, d := pickerFixture(t)
-	var got *vfs.Segment
-	m.o.Rebuild = func(_ context.Context, seg *vfs.Segment) ([]vfs.Node, error) {
-		got = seg
-		return vfs.BuildTree(context.Background(), d, seg)
-	}
+// TestSegmentResetReloadsFromDB: [R] discards an in-memory rename and reloads
+// this one slice's still-proposed rows from the database, without touching
+// the other (already-saved) segment.
+func TestSegmentResetReloadsFromDB(t *testing.T) {
+	m, _ := pickerFixture(t)
 
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	_, cmd := next.(pickerModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	s := drainOpen(t, cmd()).model.(screen)
 
-	inner, cmd := s.inner.startRebuild()
-	if cmd == nil {
-		t.Fatal("rebuild dispatched nothing")
+	renamed := s.inner
+	renamed.applyRename("Renamed")
+	if renamed.rows[0].node.Name != "Renamed" || !renamed.hasEdits() {
+		t.Fatal("setup: rename should have landed and left an undo step")
 	}
-	msg := drainRebuilt(t, cmd())
+
+	next2, cmd := renamed.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("R")})
+	if cmd == nil {
+		t.Fatal("[R] dispatched nothing")
+	}
+	if !next2.(Model).resetting {
+		t.Fatal("[R] should mark the screen as resetting until the reload lands")
+	}
+	msg := drainReset(t, cmd())
 	if msg.err != nil {
 		t.Fatal(msg.err)
 	}
-	if got == nil || got.Label != "2024" {
-		t.Fatalf("rebuild asked for %+v, want the 2024 slice", got)
+
+	got := next2.(Model).reset(msg)
+	if got.resetting {
+		t.Error("still resetting after the tree landed")
 	}
-	tree := inner.(Model).rebuilt(msg).tree
-	if len(tree) != 1 || tree[0].Name != "2024" {
-		t.Errorf("rebuilt tree = %+v, want only the 2024 slice", tree)
+	if got.hasEdits() {
+		t.Error("reset must clear the undo stack")
+	}
+	if len(got.tree) != 1 || got.tree[0].Name != "2024" {
+		t.Errorf("reset tree = %+v, want the un-renamed 2024 slice", got.tree)
 	}
 }
 
-func drainRebuilt(t *testing.T, msg tea.Msg) rebuiltMsg {
+func drainReset(t *testing.T, msg tea.Msg) resetMsg {
 	t.Helper()
 	switch m := msg.(type) {
-	case rebuiltMsg:
+	case resetMsg:
 		return m
 	case tea.BatchMsg:
 		for _, c := range m {
 			if c == nil {
 				continue
 			}
-			if rm, ok := c().(rebuiltMsg); ok {
+			if rm, ok := c().(resetMsg); ok {
 				return rm
 			}
 		}
 	}
-	t.Fatalf("got %T, want rebuiltMsg", msg)
-	return rebuiltMsg{}
-}
-
-// TestPickerRebuildIsGlobalAndAutoAsks: a settings change while the picker is
-// on screen must raise the same reset question the per-segment screen shows —
-// without this, noticing a settings change meant opening every slice by hand.
-// Answering "y" re-proposes the whole library (seg == nil), not one slice.
-func TestPickerRebuildIsGlobalAndAutoAsks(t *testing.T) {
-	m, _ := pickerFixture(t)
-
-	// no Rebuild wired up: [R] must not raise a question it can't answer
-	if next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("R")}); next.(pickerModel).askRebuild {
-		t.Fatal("[R] raised the question with no way to rebuild")
-	}
-
-	var got *vfs.Segment
-	calls := 0
-	m.o.Rebuild = func(_ context.Context, seg *vfs.Segment) ([]vfs.Node, error) {
-		got, calls = seg, calls+1
-		return nil, nil
-	}
-
-	next, _ := m.Update(SettingsChangedMsg{})
-	p := next.(pickerModel)
-	if !p.askRebuild || !p.askedBySettings {
-		t.Fatal("a settings change must raise the rebuild question")
-	}
-
-	next, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	p = next.(pickerModel)
-	if p.askRebuild || !p.rebuilding || cmd == nil {
-		t.Fatal("y must start the rebuild on that press")
-	}
-
-	msg := drainLibraryRebuilt(t, cmd())
-	if msg.err != nil {
-		t.Fatal(msg.err)
-	}
-	if calls != 1 || got != nil {
-		t.Fatalf("rebuild called %d times with seg %+v, want once with nil (library-wide)", calls, got)
-	}
-
-	final := p.rebuilt(msg)
-	if final.rebuilding {
-		t.Error("still rebuilding after the result landed")
-	}
-	if final.statusErr {
-		t.Errorf("rebuild reported an error: %s", final.status)
-	}
+	t.Fatalf("got %T, want resetMsg", msg)
+	return resetMsg{}
 }
 
 // TestPickerCopyKeyRunsTransferWithoutAsking: [x] never touches a source, so
@@ -493,25 +453,6 @@ func drainTransferred(t *testing.T, msg tea.Msg) transferredMsg {
 	}
 	t.Fatalf("got %T, want transferredMsg", msg)
 	return transferredMsg{}
-}
-
-func drainLibraryRebuilt(t *testing.T, msg tea.Msg) libraryRebuiltMsg {
-	t.Helper()
-	switch m := msg.(type) {
-	case libraryRebuiltMsg:
-		return m
-	case tea.BatchMsg:
-		for _, c := range m {
-			if c == nil {
-				continue
-			}
-			if lm, ok := c().(libraryRebuiltMsg); ok {
-				return lm
-			}
-		}
-	}
-	t.Fatalf("got %T, want libraryRebuiltMsg", msg)
-	return libraryRebuiltMsg{}
 }
 
 // TestPickerReenterCountsSavedSlices: the outcome a caller reports is "did any

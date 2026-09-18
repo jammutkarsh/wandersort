@@ -65,8 +65,10 @@ one scan ever runs against it at a time (see "Conventions" below):
     `AppDBPath` (the log lives in `~/.wandersort/logs`, which never moves) and
     returns a note saying it takes effect next
     launch. Everything else (rules, toggles, saved places) is live from that
-    moment — which is what makes the stamp check and a mid-run
-    `Workflow.UpdateConfig` agree on one `a.Config`.
+    moment — which is what the stamp check compares `a.Config` against on
+    every save (see `configSaved` below). The settings tab is unreachable
+    while a scan runs (`nextTab`), so a running workflow never needs its own
+    settings retargeted.
   - `root.go` — root cmd and flag-name constants. **`PersistentPreRunE` is the
     single place** config is resolved: it ensures `~/.wandersort/config.yaml`
     exists (`config.EnsureGlobalConfigFile`), builds a `config.FlagOverrides`
@@ -77,7 +79,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     / env vars / `config.yaml` all take effect before any logging or DB work.
     Don't rebuild the logger in `main.go`. There is no global registry here
     any more (no viper): every other command's own flags — `--yes`,
-    `--plain`, `--rebuild`, `--vertical`, `--print`, `--paths` — are read
+    `--plain`, `--vertical`, `--print`, `--paths` — are read
     straight off `cmd.Flags()` inside that command's own `RunE`, since `cmd`
     is already in scope there. `tuiEnabled` takes the invoked `cmd` for the
     same reason. **There is no `--debug`
@@ -99,7 +101,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     programs. `runShell(shellStart)` takes which tab to open on, and *every*
     interactive command goes through it — bare `wandersort` (the folder input),
     `scan -p …` (`shellStart.paths`, so the run starts without asking),
-    `config`, and `review` (`shellStart.rebuild` for `--rebuild`). **A
+    `config`, and `review`. **A
     subcommand is a starting point, not a smaller app**: each one used to build
     its own `tea.Program` around a single screen, so `wandersort scan` could
     not reach the settings and `wandersort config` could not start a scan —
@@ -108,10 +110,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     opening tab by *message* (`tui.StartScanMsg` / `openConfigMsg` /
     `tui.OpenReviewMsg`) rather than placing the screen itself, because
     bubbletea calls `Init` on a copy and any container mutation there is
-    discarded. `shellStart.rebuild` is consumed by the first `openReview` and
-    cleared: after that the reviewer is inside the app, where `[R]` is how they
-    ask, and silently re-proposing on every later `ctrl+t` would discard edits
-    nobody chose to lose. Keeping all three screens alive at once is the whole
+    discarded. Keeping all three screens alive at once is the whole
     point — the scan model has to go on receiving its log events while a form
     is on top of it. Routing: `ctrl+t` cycles (skipping review
     only when `canReview` says there is nothing there); every other key goes to
@@ -148,9 +147,8 @@ one scan ever runs against it at a time (see "Conventions" below):
     database file on disk, since nothing else writes one) **and not while a
     scan is running** — that run replaces the proposal wholesale, so the tree
     on disk is about to be stale. `ctrl+t` into a reviewable-but-unprefetched
-    tab runs `openReview` (the same `openLibrary` + optional rebuild +
-    `newReviewScreen` cmd `ctrl+t` and `wandersort review`
-    use) and **leaves the tab where it is until
+    tab runs `openReview` (the same `openLibrary` + `newReviewScreen` cmd
+    `ctrl+t` and `wandersort review` use) and **leaves the tab where it is until
     the screen lands**, so there is never a blank frame. The tab bar's
     `✓ ready` follows `canReview`, not `reviewReady`, for the same reason: a
     plan left on disk is as ready as one this session prefetched, and a plain
@@ -165,13 +163,29 @@ one scan ever runs against it at a time (see "Conventions" below):
     stayed, so a later save must go home as usual.
     **A wizard save is picked up without a relaunch** (`configSaved`, run when
     an embedded `FormModel` reports `Done()` without an abort or an error):
-    `a.reloadConfig` re-resolves the settings, and a scan still running has its
-    workflow retargeted through `wf.UpdateConfig` — which is why `shellModel`
-    keeps the `*workflow.Workflow` the scan tab was built with, and why
-    `newScanScreen` returns it alongside the screen. That is the whole reason
-    the settings tab is worth having *during* a scan: the folders the run ends
-    up proposing are the ones just asked for, with no rebuild prompt
-    afterwards. Changing the output path mid-session is the exception — it
+    `a.reloadConfig` re-resolves the settings, and **a changed setting
+    re-plans the library at once, no question asked** — but only when a
+    review screen is already stashed (`reviewReady`), and only by dropping it
+    and routing through the ordinary `openReview` a `ctrl+t` uses, never by
+    calling `a.rebuildTree` straight from the save. `rebuildTree` touches
+    `a.AppDB`, and a config-first session that never scanned or reviewed has
+    none yet — calling it directly from `configSaved` was a nil-pointer crash
+    on exactly that path, caught in review before it shipped. `openReview`
+    always opens the
+    library first, so by the time `newReviewScreen` runs (and finds the stale
+    `.wandersort.cfg` stamp itself — see `settingsChanged` below —
+    and calls `rebuildTree` then) the database is guaranteed open. With
+    nothing stashed there is nothing left to do here at all: whoever opens
+    review next hits that same stale-stamp check, with the library open by
+    construction at that point. The settings tab is unreachable while a scan
+    runs (`nextTab` skips it), so there is never a running workflow to
+    retarget — that mid-scan case, and the prompt asking whether to apply a
+    change, both used to exist and both are gone: re-planning stored metadata
+    is cheap, so a save just takes effect. `settingsChanged(outputDir)` (the
+    `.wandersort.cfg` stamp compare, see `vfs.ConfigStamp`) is the only gate:
+    a save that changes nothing does nothing, and drops nothing stashed.
+    Changing the
+    output path mid-session is the one exception — it
     surfaces as `reloadConfig`'s note on the home screen's error line, which is
     also where a plain `Settings saved in <path>` goes when there is no note:
     the wizard closes back into the shell instead of ending a process, so a
@@ -294,13 +308,13 @@ one scan ever runs against it at a time (see "Conventions" below):
     which install exiftool *then* the location DB when both are asked for —
     the small download unblocks the earlier phase; the big one has the whole
     pipeline to hide behind — and each command asks only for what it needs:
-    `review --rebuild` never runs the metadata phase, so it starts the location
-    database alone).
+    a settings-triggered re-plan (`rebuildTree`) never runs the metadata
+    phase, so it starts the location database alone).
     **`scan` never requires `wandersort config` to have run first** — an
     unconfigured first scan just builds its folder proposal (output path,
     rules, saved-place anchors) from defaults. Running `wandersort config`
-    later and then `wandersort review --rebuild` re-proposes the hierarchy
-    from the new settings without a re-scan. `--paths/-p` is repeatable + comma-friendly
+    later re-proposes the hierarchy from the new settings right away, no
+    re-scan needed (`configSaved`). `--paths/-p` is repeatable + comma-friendly
     (`StringSlice`); `config.yaml`'s `rules` key (see below) controls the VFS
     folder depth for this scan's proposal — no CLI flag, set it via
     `wandersort config`. The plain path (`--plain`/non-TTY) keeps the simple
@@ -325,50 +339,42 @@ one scan ever runs against it at a time (see "Conventions" below):
     only place a missing `.wandersort.db` is a hard error: the interactive
     path opens the app and says so on the home screen instead, since that user
     has a scan tab one `ctrl+t` away and refusing to start hides it);
-    interactive is `runShell(shellStart{tab: tabReview, rebuild: rebuild})`, so
+    interactive is `runShell(shellStart{tab: tabReview})`, so
     a reviewer who finds the folders wrong can fix the settings and come back
     without relaunching; **a non-TTY without `--yes` is now an error** naming
     `--yes`, rather than drawing an alt-screen into a pipe. There is no session
     lookup before
     `BuildTree` — `virtual_fs_entries` always holds exactly one proposal
     batch (the VFS phase replaces every unapproved row every run), so an
-    empty tree from `BuildTree` alone means "nothing to review yet".
-    **`--rebuild` has no approved-plan *prompt*** (and `ApprovedCount` is gone
-    with it): the interactive path asks on screen with the review's own reset
-    modal, and `--yes` has nobody to ask. It does discard: `a.rebuildTree` (and
-    the `--yes` path) calls `vfs.ReopenSegment(ctx, db, nil)` before `Propose`,
-    flipping every approved row back to PROPOSED so the whole library is
-    re-proposed. `persist`'s keep-approved-rows rule is for the *scan* phase;
-    a reset is the one caller that means to throw them away, since an approval
-    was given to the plan being replaced — a saved slice still reading
-    `✓ saved` after a settings change and a reset was a reported bug.
-    It also
-    holds `newReviewScreen`, which builds the embedded screen `scan` swaps into.
-    **The TUI itself lives in `internal/review/`** — see below.
-    It also owns the **rebuild prompt**: `settingsChanged(outputDir)` compares
-    the `.wandersort.cfg` stamp against `vfs.ConfigStamp(vfs.ConfigFor(a.Config))`
-    (see `pkg/core/vfs/snapshot.go`). Nothing re-proposes on its own, so this
-    comparison is the only way a settings change ever becomes visible. **The
-    CLI does not ask the question itself** — it hands the answer to the review
-    as `review.Options.SettingsChanged` and the rebuild itself as
-    `Options.Rebuild` (`a.rebuildTree` = `vfs.Propose` + `BuildTree`), and the
-    review raises its own full-screen yes/no over the tree. One asking place,
-    two entry points (the shell opening review — however it was asked for —
-    and a settings save while a review is already on screen), instead of an
-    interstitial screen per entry point — the earlier version had a pre-load
-    `review.Prompt` *and* a `tui.ConfirmModel` interstitial in
-    `newReviewScreen` *and* a banner, and they could each fire for the same
-    change. `--yes` has nobody to ask: one `UserKey` warning
-    naming `review --rebuild`, then the existing tree.
-    **The comparison is of the settings, not of "did the wizard run"** — a
-    reported bug: a trip through the wizard that changes something and changes
-    it back has the same stamp, and must not raise a question about nothing.
-    `shell.configSaved` therefore calls `settingsChanged` before forwarding
-    `review.SettingsChangedMsg`, rather than forwarding on every save.
-    **A build-time check alone can never be enough**, which is the other half
-    of the same reported bug: in the shell the settings can move while the
-    review is on screen, and no check that runs when a screen is *built* will
-    see it. That is what `SettingsChangedMsg` is for.
+    empty tree from `BuildTree` alone means "nothing to review yet" — after
+    the stale-stamp check below has had its say, since it means "already
+    organized", not "nothing proposed".
+    **There is no `--rebuild` flag, no manual rebuild at all.** A stale
+    proposal re-plans itself: `settingsChanged(outputDir)` compares the
+    `.wandersort.cfg` stamp against `vfs.ConfigStamp(vfs.ConfigFor(a.Config))`
+    (see `pkg/core/vfs/snapshot.go`), and both `newReviewScreen` and
+    `confirmReviewAll` call `a.rebuildTree` themselves the moment it says yes
+    — before the tree is ever shown, no question asked. `rebuildTree` calls
+    `vfs.ReopenSegment(ctx, db, nil)` before `Propose`, flipping every
+    **unapproved-or-approved** row back to PROPOSED (never `DONE` — see
+    `ReopenSegment` in `pkg/core/vfs/segments.go`) so the whole library is
+    re-proposed under the settings as they now stand. `persist`'s
+    keep-decided-rows rule is for the *scan* phase; a re-plan is the one
+    caller that means to throw an approval away, since it was given to the
+    plan being replaced — a saved slice still reading `✓ saved` after a
+    settings change was a reported bug. **A re-plan touching a *transferred*
+    file is a bug of the same shape, caught reversing it**: `ReopenSegment`
+    used to flip `DONE` rows too (so an already-organized library was
+    "redoable"), which meant a save could quietly move files that were
+    already on disk. It also
+    holds `newReviewScreen`, which builds the embedded screen `scan` swaps
+    into, and is also where a shell-side settings save re-plans from
+    (`shell.configSaved`, see above) — one function, three callers
+    (`newReviewScreen`, `confirmReviewAll`, `configSaved`), rather than each
+    re-deriving "reopen then propose".
+    **The TUI itself lives in `internal/review/`** — see below; it has no
+    rebuild concept of its own any more, only `[R]` as a reset of unsaved
+    edits (see the `Model` notes below).
     **`--copy`/`--move` chain `execute.Run` onto `--yes`**, in the same
     process and under the same output lock, so a script gets "approve then
     transfer" as one command instead of two (`wandersort review --yes
@@ -399,11 +405,13 @@ one scan ever runs against it at a time (see "Conventions" below):
   There is **no standalone `Run` and no loading screen** any more: every
   full-screen command is the same shell opened on a different tab, so a review
   is always hosted, and the shell's own `openReview` already does the slow work
-  (lock, DB, optional rebuild, `BuildTree`) off the UI goroutine with the tab
-  bar saying `opening…`. `Options.Load` went with them.
+  (lock, DB, an out-of-date proposal's own re-plan, `BuildTree`) off the UI
+  goroutine with the tab bar saying `opening…`. `Options.Load` went with them.
 
-  `Options` carries `DB`/`Tree`/`Resolver`/`Log`/`OutputDir`; a nil
-  `Resolver` just disables rename autocomplete.
+  `Options` carries `DB`/`Tree`/`Resolver`/`Log`/`OutputDir`/`SegmentMonths`; a
+  nil `Resolver` just disables rename autocomplete. There is no `Rebuild` or
+  `SettingsChanged` field any more — `cli/review.go` re-plans before the
+  screen is ever built (see above), so the screen never needs to ask.
 
   **A big library opens on the segment picker, not the tree** (`segments.go`,
   `pickerModel`): `vfs.Segments` decides (nil = one slice, so go straight to
@@ -418,21 +426,18 @@ one scan ever runs against it at a time (see "Conventions" below):
   approval and re-opens it, `[esc]` warns once while slices are still
   unreviewed. `[A]` is where an untouched slice gets approved now that `[esc]`
   inside one asks nothing when nothing was edited — see the exit ask below.
-  `[R]`
-  is a second, library-wide question — the same reset the per-slice screen's
-  `[R]` raises, re-proposing every slice at once (saved ones included), and raised
-  automatically on a settings change even while this list (not a slice) is on
-  screen, so noticing a settings change never requires opening a slice first.
+  **The picker has no `[R]` of its own** — it holds no in-memory edits to
+  discard (each opened slice manages its own undo stack), and a settings
+  change re-plans the whole library before the picker is ever built (see
+  `cli/review.go` above), so there is nothing left for a key here to do.
   **`[x]`/`[X]` run `execute.Run` over the whole library's `APPROVED` rows —
   not scoped to the selected slice, so copying-as-you-go across several saved
   segments needs no extra key.** `[x]` (copy) runs immediately, off the UI
-  goroutine behind the same spinner `[R]`/`[enter]` use, because copy never
+  goroutine behind the same spinner `[enter]` uses, because copy never
   touches a source and so has nothing to ask about; `[X]` (move, capital =
   the more consuming variant, the same relationship `[d]`/`[D]` already have)
-  raises one modal first — the same full-screen yes/no shape `[R]`'s reset
-  uses, defaulting to Cancel rather than the reset ask's default-to-proceed,
-  since this one deletes files on disk rather than throwing away edits
-  already sitting in the database. `transferredMsg` carries the `Report`
+  raises one modal first — a full-screen yes/no defaulting to Cancel, since
+  this one deletes files on disk. `transferredMsg` carries the `Report`
   back to a status line; there is no tree to redraw, since neither key
   changes what `BuildTree` would show.
   The per-slice screen is the ordinary
@@ -579,43 +584,25 @@ one scan ever runs against it at a time (see "Conventions" below):
   (`hasEdits` is just "the undo stack is non-empty", since every edit
   snapshots) and needs a second `ctrl+c` to actually discard and leave.
   `--yes` confirms the proposal
-  as-is, non-interactively; `--rebuild` re-runs `vfs.Run` with the current
-  `config.yaml` `rules` *before* reviewing, so a config change
-  re-proposes the hierarchy without a re-scan or re-hash (editing
-  `config.yaml` alone, without `--rebuild`, changes nothing until the next
-  `wandersort scan`).
-  **`R` is `--rebuild` from inside the review, and the screen calls it
-  "reset the plan"** — the same thing without
-  quitting and relaunching, which is the only form of it the shell can offer at
-  all (there is no command line to add a flag to once the app is open). Capital
-  `R` because `r` is rename. **One verb, two reasons**: the settings moved
-  under the plan, or the reviewer simply wants their edits thrown away and the
-  folders proposed again — the same act either way, so `raiseRebuildAsk` takes
-  only a `settingsMoved` bool and it picks the wording
-  (`rebuildAskTitle`/`rebuildAskText`), nothing else. It does not reset on the
-  keypress: it raises `askRebuild`, a
-  **full-screen yes/no drawn as `tui.ConfirmModel`** (the dialog `reset` asks
-  with), which is also what `SettingsChangedMsg` and `Options.SettingsChanged`
-  raise. Three ways in, one question. It was a dim line above the key bar
-  first, and the reported verdict was the obvious one — **nobody reads that**;
-  a plan that no longer matches the settings is worth the screen. The modal
-  owns the keyboard until answered (only `ctrl+c` falls through, so the app is
-  never trapped), and **`y` rebuilds on that press** — an earlier
-  warn-once-then-act on `[R]` meant pressing it twice, which read as "the first
-  press only dismissed the message". The modal *is* the warning: its text
-  names the unsaved edits it discards. It no longer names an approved-file
-  count — a reset keeps approved rows now, so there was nothing to warn about.
-  The rebuild itself runs `Options.Rebuild` (the caller's hook: this package
-  has neither the settings nor the vfs phase, and must not grow either) off the
-  UI goroutine behind the same spinner `[p]` uses, then replaces the tree
-  wholesale — undo stack, cursor and selection with it, since they all describe
-  folders that may no longer exist. A nil `Options.Rebuild` hides the key and
-  never raises the question, rather than offering something the host can't do.
-  **`Rebuild` takes the screen's `*vfs.Segment`**: re-proposing is always
-  library-wide (`vfs.Propose` replaces every unapproved row), but the tree it
-  hands back has to stay scoped, or a reset inside the 2017 slice replaces it
-  with every year at once — a reported bug, and one that fired on entry too,
-  since a settings change raises the same modal.
+  as-is, non-interactively. **There is no `--rebuild` flag and no manual
+  rebuild inside the review any more** — a stale proposal (the settings moved
+  since it was built) re-plans itself before the screen is ever shown, over in
+  `cli/review.go` (see above); by the time a reviewer sees a tree, it already
+  matches the current settings.
+  **`R` is a plain reset, not a rebuild, and asks nothing** — it discards
+  whatever is unsaved in *this* screen (renames, merges, drops — the same
+  things `[u]` already undoes one at a time) and reloads this segment's
+  still-proposed rows straight from the database (`resetCmd`/`resetMsg`,
+  off the UI goroutine behind the same spinner `[p]` uses). Capital `R`
+  because `r` is rename. There used to be a confirmation modal here
+  (`askRebuild`, raised by the key itself or by a `SettingsChangedMsg` the
+  shell forwarded in) — both are gone along with the settings-triggered
+  rebuild they asked about: nothing `[R]` does now can discard anything that
+  was ever saved (`ReopenSegment` only reaches `APPROVED` rows, never `DONE`,
+  and reset touches nothing on disk at all), so there's nothing left worth a
+  full-screen question over. Landing (`resetMsg`) replaces the tree wholesale
+  — undo stack, cursor and selection with it, since they all describe rows
+  that may have moved under the reload.
   **The screen is built from `pkg/tui`, like scan and config** — it used to
   hand-roll its own chrome and looked like a different program: `tui.Screen`
   pins the footer to the terminal's last row, `header()` is banner + one
@@ -825,7 +812,7 @@ the review's time-slice size, see `vfs.Segments`) is an int, so it goes through
 `pick` and needs no wizard gate; it has an env var
 (`SEGMENT_MONTHS`) and no flag. It is deliberately **not** in `ConfigStamp`:
 it changes how a plan is reviewed, never where a file lands, so it must not
-raise the reset prompt.
+trigger a re-plan.
 
 ## Core pipeline (`pkg/core/`)
 
@@ -843,17 +830,13 @@ raise the reset prompt.
   running, so a first-ever TUI scan walks while the downloads are still going.
   The metadata phase is the first to block on exiftool now that hashing no
   longer runs ahead of it — the walk is all the cover the download gets. Plain-console scans, which install everything up front, wrap
-  the values in `workflow.ReadyDeps`. **`appCfg` is swappable while the
-  pipeline runs** (`UpdateConfig`, mutex-guarded, plus a dirty flag): the shell
-  hosts the settings wizard and the scan in one program, so a save can land
-  mid-run. Only the vfs phase re-reads it — every phase above it has already
-  used what it needed — and it does so in a small loop: `takeConfig` for a
-  pass, then re-run if `configChanged` reports a save arrived *during* it.
-  Let-it-finish-then-re-run rather than cancel mid-flight: `vfs.Propose`
-  replaces the proposal wholesale and is idempotent, so a second pass costs one
-  pass and needs no context surgery or half-written state. It is also what
-  keeps `BuildAnchors` (which replaces `r.Anchors` in place and is read
-  lock-free from the parallel `Lookup`) strictly sequential — never call
+  the values in `workflow.ReadyDeps`. **`appCfg` is fixed for the run** —
+  there is no `UpdateConfig`/mid-run retargeting any more: the settings tab
+  is unreachable while a scan runs (`cli/shell.go`'s `nextTab`), so nothing
+  can save a change for the vfs phase to pick up mid-flight. `BuildAnchors`
+  (which replaces `r.Anchors` in place and is read
+  lock-free from the parallel `Lookup`) is called exactly once per run for the
+  same reason — never call
   `vfs.Propose` concurrently with itself. **There is no `scan_sessions` table and
   no in-memory run-overlap guard either** — `RunScan` takes no ID and returns
   none; two scans can never race against the same output dir because
@@ -1004,15 +987,16 @@ raise the reset prompt.
   Proposes destinations for every live master in the library
   from the persisted metadata (never re-reads files); each run replaces every
   *unapproved* row and leaves an approved plan alone (safe to call again
-  mid-review — see `review.go`'s
-  `--rebuild` flag). `persist` **flushes the writer before returning**: the
+  mid-review — see `cli/review.go`'s `rebuildTree`). `persist` **flushes the
+  writer before returning**: the
   writer is an async FIFO, and every caller reads the rows straight back
-  (`[R]` re-proposes then calls `BuildTree` immediately), so without it the
-  review redrew the proposal this run had just replaced — a reported
+  (`rebuildTree` re-proposes then calls `BuildTree` immediately), so without it
+  the review redrew the proposal this run had just replaced — a reported
   "rebuild doesn't rebuild" bug. **`vfs.Propose` is the phase as one call** — it builds its
   own `Config` via `ConfigFor` and resolves the saved-place anchors via
   `BuildAnchors` before running. Assembling those is part of the phase, not of
-  its callers: `workflow`'s vfs phase and `cli/review --rebuild` used to run
+  its callers: `workflow`'s vfs phase and `cli/review.go`'s `rebuildTree` used
+  to run
   the same four-line ritual (load the config file again, build anchors, copy
   `resolver.Anchors` onto the `Config`, `New(...).Run`) and either could drift
   from the other. `New` stays for a test, or a caller that wants to state the
@@ -1057,8 +1041,9 @@ raise the reset prompt.
   so a new vfs-relevant setting doesn't churn its signature — and is therefore
   the one place `vfs` imports `pkg/config`, meaning `config` can never import
   `vfs`) is the single place the `none` sentinel
-  is turned into a nil `Rules` — `workflow` and `review --rebuild` both go
-  through it. The month segment is **number-first (`06_June`)**: a bare month
+  is turned into a nil `Rules` — `workflow` and `cli/review.go`'s
+  `rebuildTree` both go through it.
+  The month segment is **number-first (`06_June`)**: a bare month
   name sorts alphabetically, which put `December` above `November` in the
   review tree and in every file browser. **The location ladder has no device
   or `Unsorted` rung**: resolved city → dated event segment (skipped when a
@@ -1360,9 +1345,9 @@ raise the reset prompt.
   **`ctrl+c` is the one quit key on every screen.**
   `ConfirmModel` quits its own program on an answer, which is right for
   `reset`; a screen that wants the question *inside* itself — the review's
-  rebuild modal — drives its own keys and uses `ConfirmModel` for the layout
-  only, built per frame (a bubbletea model copied by value can't safely hold a
-  pointer into its own fields, which is what its `Value` is).
+  `[esc]` Save/Discard ask — drives its own keys and uses `ConfirmModel` for
+  the layout only, built per frame (a bubbletea model copied by value can't
+  safely hold a pointer into its own fields, which is what its `Value` is).
   Design rules live in `pkg/tui/README.md` — new screens compose from this
   kit, never invent colours/markers. The pipeline feeds it through the logger
   only (`pkg/logger/stream.go`: `StreamKey` per-file lines — logged at **Info**,
@@ -1620,10 +1605,9 @@ raise the reset prompt.
   happens-before edge documented in a comment rather than enforced by a type —
   `app` now holds one field (`Deps *install.Coordinator`), built per command by
   `app.newDeps`, and every read blocks on the Coordinator's own internal
-  channel instead of racing a shared field. `review --rebuild` uses
-  `StartLocationOnly` (it only re-runs the vfs phase, never exif) and the
-  plain interactive path reuses the same `Coordinator` if `--rebuild` already
-  built one, rather than installing twice.
+  channel instead of racing a shared field. `confirmReviewAll` (`review
+  --yes`) uses `StartLocationOnly` (a settings-triggered re-plan only re-runs
+  the vfs phase, never exif).
 
 ## Conventions that bite if ignored
 

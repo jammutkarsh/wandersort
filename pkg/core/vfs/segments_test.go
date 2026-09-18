@@ -242,6 +242,28 @@ func TestReopenSegment(t *testing.T) {
 	}
 }
 
+// TestReopenSegmentNeverTouchesDone: a transferred file is a fact on disk,
+// never re-planned — not by a settings save, a reset, or [ctrl+x]. Reopening
+// used to flip DONE rows back to PROPOSED too (so an already-organized
+// library could be redone); that behaviour is gone.
+func TestReopenSegmentNeverTouchesDone(t *testing.T) {
+	ctx := context.Background()
+	d := dbtest.New(t)
+	seedEntry(t, d, 1, "2023/x", day(2023, time.March, 1), db.StatusDone)
+	seedEntry(t, d, 2, "2023/y", day(2023, time.March, 2), db.StatusApproved)
+
+	if err := ReopenSegment(ctx, d, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := entryStatuses(t, d)
+	if got[1].Status != db.StatusDone {
+		t.Errorf("transferred entry status = %q, want still DONE", got[1].Status)
+	}
+	if got[2].Status != db.StatusProposed {
+		t.Errorf("approved entry status = %q, want PROPOSED", got[2].Status)
+	}
+}
+
 // TestSegmentsCountsFolders: the picker leads with folders, since a review is
 // a decision about folders — every level of the tree, the same thing
 // BuildTree's nodes count, not just the directory a file sits in.

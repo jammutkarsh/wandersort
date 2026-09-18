@@ -20,7 +20,6 @@ const (
 	flagPaths      = "paths"
 	flagYes        = "yes"
 	flagVertical   = "vertical"
-	flagRebuild    = "rebuild"
 	flagForce      = "force"
 	flagPrint      = "print"
 	flagCollapse   = "collapse-levels"
@@ -43,8 +42,8 @@ duplicates, and scores copies to pick the best one to keep.
 
 'wandersort scan' works on defaults right away. Run 'wandersort config' — the
 settings wizard — any time to set your output folder, folder rules, and
-saved places; 'wandersort review --rebuild' re-proposes the folder structure
-from the new settings without a re-scan.`,
+saved places; saving re-proposes the folder structure from the new settings
+right away, no re-scan needed.`,
 		Example: `# Change the global settings
 wandersort config
 

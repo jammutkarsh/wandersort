@@ -29,16 +29,6 @@ type Options struct {
 	Resolver  *location.Resolver
 	Log       logger.Logger
 	OutputDir string // for the post-approve free-space check
-	// Rebuild re-proposes the hierarchy from the caller's current settings and
-	// returns the new tree, behind [R]. Nil hides the key — the review can't do
-	// this itself, it has neither the settings nor the phase. seg is the slice
-	// the screen is reviewing: re-proposing is library-wide, but the tree handed
-	// back has to stay scoped to it, or a reset inside one time slice replaces
-	// it with the whole library.
-	Rebuild func(ctx context.Context, seg *vfs.Segment) ([]vfs.Node, error)
-	// SettingsChanged opens the review with the rebuild question already up —
-	// the caller compared the config stamp before building the screen.
-	SettingsChanged bool
 	// SegmentMonths is the reviewer's time-slice size from the settings
 	// (0 = let vfs.Segments pick from the library's span).
 	SegmentMonths int
@@ -47,12 +37,6 @@ type Options struct {
 	// approves, and names itself in the header.
 	Segment *vfs.Segment
 }
-
-// SettingsChangedMsg tells an already-open review that the settings moved
-// under it. The stamp check only runs when a review screen is built, so
-// without this a change made while the review is on screen — which is exactly
-// what the unified shell makes easy — would never be noticed.
-type SettingsChangedMsg struct{}
 
 // ConfirmAll writes the proposed hierarchy as-is, without showing a TUI
 // (`wandersort review --yes`). Suggestions are what the reviewer would rename
@@ -221,20 +205,11 @@ type Model struct {
 	// sets done instead of tea.Quit, and the shell wrapper finalizes.
 	embedded bool
 	done     bool
-	// [R] resets the plan: re-proposes the whole hierarchy from the caller's
-	// current settings. Both a settings change and the key itself raise
-	// askRebuild — a full-screen yes/no the reviewer has to answer, not a
-	// status line: the plan on screen no longer matches the settings, and a
-	// line above the key bar is exactly what nobody reads. It is also the only
-	// warning a reset needs (it discards every edit), which is why there is no
-	// press-twice dance on top of it.
-	rebuild       func(ctx context.Context, seg *vfs.Segment) ([]vfs.Node, error)
-	askRebuild    bool
-	rebuildChoice bool // which button the modal has under the cursor
-	// askedBySettings is why the question is up — a settings change, rather
-	// than the reviewer pressing [R] to start over. Only the wording differs.
-	askedBySettings bool
-	rebuilding      bool
+	// [R] resets the plan: discards every edit and reloads the still-proposed
+	// rows straight from the database — no confirmation, since nothing it does
+	// is a surprise (the same discard [u] already does one step at a time).
+	// resetting gates the spinner while that query runs.
+	resetting bool
 	// undo holds one whole-tree snapshot per structural edit, so [u] walks all
 	// the way back — a reshaped tree can't be restored from per-row names.
 	undo        []undoStep
@@ -268,51 +243,48 @@ func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, resolver *l
 	return m
 }
 
-// withHost applies the parts of Options only the caller can answer — how to
-// rebuild, and whether the settings already moved. Separate from newModel so
-// a whole-library review and a segment's share one constructor.
+// withHost applies the parts of Options only the caller can answer — which
+// segment this is. Separate from newModel so a whole-library review and a
+// segment's share one constructor.
 func (m Model) withHost(o Options) Model {
-	m.rebuild = o.Rebuild
 	m.seg = o.Segment
 	if o.Segment != nil {
 		m.segLabel = o.Segment.Label
 	}
-	if o.SettingsChanged {
-		m.raiseRebuildAsk(true)
-	}
 	return m
 }
 
-// raiseRebuildAsk puts the reset question up. settingsMoved only picks the
-// wording — the answer does the same thing either way.
-func (m *Model) raiseRebuildAsk(settingsMoved bool) {
-	if m.rebuild == nil { // the host can't re-propose; asking would go nowhere
-		return
-	}
-	m.askRebuild = true
-	m.rebuildChoice = true
-	m.askedBySettings = settingsMoved
-}
-
-// rebuiltMsg carries [R]'s new tree back from the vfs phase.
-type rebuiltMsg struct {
+// resetMsg carries [R]'s reload back from the database.
+type resetMsg struct {
 	tree []vfs.Node
 	err  error
 }
 
-// rebuilt swaps in the re-proposed hierarchy. Everything derived from the old
-// tree goes with it: the undo stack can't describe edits to folders that no
-// longer exist, and the cursor's row is gone.
-func (m Model) rebuilt(msg rebuiltMsg) Model {
-	m.rebuilding = false
+// resetCmd re-reads this screen's still-proposed rows, discarding every
+// in-memory edit. Nothing on disk changes — a reset only ever throws away
+// what was never saved; the rows behind an approved (saved) segment aren't
+// part of this query at all, so they're untouched by construction.
+func resetCmd(ctx context.Context, database *db.DB, seg *vfs.Segment) tea.Cmd {
+	return func() tea.Msg {
+		tree, err := vfs.BuildTree(ctx, database, seg)
+		return resetMsg{tree: tree, err: err}
+	}
+}
+
+// reset swaps in the freshly read tree. Everything derived from the old one
+// goes with it: the undo stack can't describe edits to folders that may no
+// longer be at the same rows, and the cursor's row is gone.
+func (m Model) reset(msg resetMsg) Model {
+	m.resetting = false
 	if msg.err != nil {
 		m.statusMsg, m.statusIsErr = "reset failed: "+msg.err.Error(), true
 		return m
 	}
-	// An empty tree would leave every key that reads the cursor row with
-	// nothing to read; keeping the old one is also the more useful answer.
+	// Nothing left proposed here (every row in scope is already saved) leaves
+	// every key that reads the cursor row with nothing to read; keeping the
+	// old one is also the more useful answer.
 	if len(msg.tree) == 0 {
-		m.statusMsg, m.statusIsErr = "reset proposed no folders — keeping the current plan", true
+		m.statusMsg, m.statusIsErr = "nothing left to reset — this plan is already saved", true
 		return m
 	}
 	m.tree = msg.tree
@@ -320,7 +292,7 @@ func (m Model) rebuilt(msg rebuiltMsg) Model {
 	m.cursor, m.offset = 0, 0
 	m.visualMode = false
 	m.reflow()
-	m.statusMsg, m.statusIsErr = "folders re-proposed with your current settings", false
+	m.statusMsg, m.statusIsErr = "unsaved edits discarded", false
 	return m
 }
 

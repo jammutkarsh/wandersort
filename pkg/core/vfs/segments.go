@@ -194,16 +194,11 @@ func (s *Segment) clause(col string) (string, []any) {
 // whole proposal. A nil seg reopens the whole library — what a rebuild does
 // first, since re-proposing replaces the folders an approval was given for.
 //
-// Reopens DONE rows too, not just APPROVED: since execute repoints
-// file_registry/source_path at the file's real post-transfer location (see
-// execute.markResult), a reopened-and-reproposed file transfers cleanly a
-// second time from wherever it actually is now — an already-organized
-// library is redoable, not a one-shot.
+// APPROVED only, never DONE: a transferred file is never re-planned, by a
+// settings save, a rebuild, or the picker's [ctrl+x] — its folder is a fact
+// on disk now, not a proposal to revisit.
 func ReopenSegment(ctx context.Context, database *db.DB, seg *Segment) error {
 	if err := setSegmentStatus(ctx, database, seg, db.StatusApproved, db.StatusProposed); err != nil {
-		return fmt.Errorf("reopen %s: %w", segName(seg), err)
-	}
-	if err := setSegmentStatus(ctx, database, seg, db.StatusDone, db.StatusProposed); err != nil {
 		return fmt.Errorf("reopen %s: %w", segName(seg), err)
 	}
 	return nil
