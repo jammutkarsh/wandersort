@@ -7,14 +7,11 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
@@ -61,7 +58,8 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 	// Copy never touches a source, so it never asks. Move is the one thing in
 	// this codebase that can delete the user's files — it asks unless the
 	// caller already said --yes (a dry run deletes nothing either way).
-	if move && !dryRun && !yes && !a.confirmMove(cmd) {
+	if move && !dryRun && !yes && !a.confirm(cmd, "Move files instead of copying?",
+		"Each source file is deleted once its copy at the output is verified complete — this cannot be undone.") {
 		return fmt.Errorf("execute cancelled")
 	}
 
@@ -88,28 +86,4 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 	}
 	fmt.Fprintln(os.Stderr, tui.OK.Render(fmt.Sprintf("Done: %d files.", rep.Done)))
 	return nil
-}
-
-// confirmMove asks before the one operation in this command that can delete
-// the user's files: a themed dialog in the full-screen TUI, or a plain y/N
-// prompt when --plain / non-interactive — same split as reset's.
-func (a *app) confirmMove(cmd *cobra.Command) bool {
-	if !a.isTuiEnabled(cmd) {
-		fmt.Fprint(os.Stderr, tui.Attn.Render("Move files instead of copying?")+" (y/N): ")
-		reader := bufio.NewReader(os.Stdin)
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(strings.ToLower(input))
-		return input == "y" || input == "yes"
-	}
-	ok := false
-	m := tui.NewConfirmModel(
-		"Move files instead of copying?",
-		"Each source file is deleted once its copy at the output is verified complete — this cannot be undone.",
-		&ok,
-	)
-	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
-	if _, err := prog.Run(); err != nil {
-		return false
-	}
-	return ok
 }

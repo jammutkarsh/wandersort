@@ -107,6 +107,13 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	if len(rows) == 0 {
 		return Report{}, nil
 	}
+	// Spec D24: the database is the only record of the plan and its edits.
+	// Photos survive a corrupted database; their structure's meaning doesn't.
+	if !o.DryRun {
+		if err := database.Backup(ctx, filepath.Join(outputDir, db.BackupFileName)); err != nil {
+			return Report{}, fmt.Errorf("back up database: %w", err)
+		}
+	}
 
 	start := time.Now()
 	var rep Report

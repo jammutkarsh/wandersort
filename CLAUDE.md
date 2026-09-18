@@ -723,10 +723,39 @@ Back in `internal/cli/`:
 - `issue.go` — `issue` cmd: zips the newest `issueLogs` (5) non-empty logs
     other than its own run's, under `logs/`, + `about.txt`, into the **current
     directory**, not the library; db opt-in via `--include-db` (holds paths/GPS).
-- `reset.go` — wipe scan data (confirm prompt unless `--yes`), plus the
-    `.wandersort.cfg` stamp, which describes a proposal that no longer
-    exists, plus `review.CleanPreviews()` — peek copies outlive a review
-    session now, so a factory wipe has to take them too.
+- `reset.go` — bare `reset` clears only the peek copies
+    (`review.CleanPreviews()`), asks nothing, and names `--db` for the rest:
+    nothing about throwing away a cache is worth a question. `reset --db` is
+    the factory wipe (confirm prompt unless `--yes`). **An already-empty
+    database is not wiped at all** (`db.IsEmpty`, "nothing to reset"): its
+    backup would replace the one holding what the earlier reset deleted with
+    an empty copy, leaving `recover` nothing to bring back. Otherwise it
+    **backs the database up first** (`db.Backup`, the same
+    `.wandersort.db.bak` execute writes — a failed backup stops the wipe),
+    then clears the rows, the `.wandersort.cfg` stamp, which describes a
+    proposal that no longer exists, and the peek copies, which outlive a
+    review session. `config.CheckLibrary` points a folder holding the backup
+    but no database at `recover` instead of refusing it as foreign.
+- `recover.go` — `recover`: `db.Restore` puts `.wandersort.db.bak` back
+    (confirm unless `--yes`), which is what makes both `reset --db` and an
+    execute run undoable. The backup is kept. **Not `openLibrary`**: that
+    would open the very database being replaced. It takes the output lock
+    (keeps other wandersort processes out), then `Restore`:
+    - checks the backup first (our `application_id`, `PRAGMA quick_check`);
+    - refuses with `db.ErrInUse` while **any** connection has the live file
+      open, even an idle sqlite browser — detected by
+      `locking_mode=EXCLUSIVE` + `journal_mode=DELETE`, which SQLite only
+      allows with every other connection gone, and whose lock is then held
+      until close so nobody opens it mid-restore;
+    - copies through SQLite's online backup API (`NewRestore`) on that same
+      connection — **never a file swap**: the pages go through SQLite's own
+      rollback journal, so a crash rolls back to the old database, and there
+      is no `-wal` file to delete by hand and get wrong;
+    - drops the `wandersort_backup` stamp table.
+    Then it opens the result once with `db.New` to prove it is a library.
+- `app.go`'s `confirm` is the one yes/no prompt (`execute --move`,
+    `reset --db`, `recover`): a `tui.ConfirmModel` in the TUI, y/N on stdin
+    under `--plain`/non-TTY.
 - `help.go` — custom lipgloss-styled help renderer. Kept in `cli` (unlike
     `lock.go`) since it's a one-off cobra `SetHelpFunc`, not reusable
     logic another entry point would need.
@@ -1263,7 +1292,17 @@ raise the reset prompt.
   through the same contract every other phase does
   (`logger.PhaseKey`/`EventKey`/`ElapsedKey`, `UserKey` line with the byte
   total from `volume.HumanBytes`), per that same ticket's ask for phase
-  timing and bytes-not-just-files. **The caller holds the output lock**
+  timing and bytes-not-just-files. Before any transfer (not on a dry run)
+  it writes `.wandersort.db.bak` via `db.Backup` (spec D24; a failed backup
+  stops the run). The copy is built as `.wandersort.db.bak.tmp`, verified
+  (`application_id`, `quick_check`) and only then renamed over the old
+  backup, so a failed backup never costs the previous one. **The backup
+  never has the live database's hash** — `VACUUM INTO` alone can match it,
+  and a duplicate finder would then offer to delete one of the two; `Backup`
+  stamps a `wandersort_backup` row into the copy, which the live database
+  never holds. Size is only a best effort: the copy is padded a page if it
+  matches the live file *when taken*, but the live file keeps changing after
+  that. **The caller holds the output lock**
   (`lock.AcquireOutput`), same contract `scan` has — `execute.Run` assumes
   it, it does not take it.
 
@@ -1344,7 +1383,13 @@ raise the reset prompt.
   still two shapes here: `Configuration` (resolved, runtime — gains a
   `Configured` field once `Resolve` has run) and `Global` (on-disk); `Resolve`
   is now the one place that maps one onto the other.
-- `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry; `writer.go` batched
+- `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry. The app DB runs
+  `locking_mode=EXCLUSIVE` on its one pooled connection, so while wandersort
+  has a library open every other client (sqlite3 CLI, DB browsers) gets
+  "database is locked" — reads included. Nothing in-process may open a second
+  connection to the live file; `issue --include-db` copies raw bytes, so it is
+  unaffected. `backup.go`: `Backup`/`Restore` (see `execute/` and
+  `cli/recover.go`); `writer.go` batched
   writes; `reset.go` `DB.ResetAll` (the FK-safe factory wipe behind
   `wandersort reset` — it lives here, not in the CLI layer, because it is a
   database operation); `migrations/` numbered

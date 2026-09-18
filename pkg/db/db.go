@@ -149,6 +149,11 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 	}
 
 	pragmas := []string{
+		// Hold the file lock for the whole session: while wandersort has the
+		// library open, any other client — the sqlite3 CLI, a DB browser —
+		// gets "database is locked" instead of reading a half-written run or
+		// writing under the pipeline. Safe because the pool is one connection.
+		"PRAGMA locking_mode=EXCLUSIVE",
 		"PRAGMA page_size=32768",             //  32KB for better I/O efficiency
 		"PRAGMA journal_mode=WAL",            // Better concurrency and durability
 		"PRAGMA synchronous=NORMAL",          // Reduces fsync frequency to improve write performance with acceptable safety

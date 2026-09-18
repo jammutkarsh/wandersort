@@ -8,6 +8,7 @@ package execute
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -124,6 +125,31 @@ func TestRunDryRunTouchesNothing(t *testing.T) {
 	}
 	if status, _ := rowStatus(t, d, 1); status != db.StatusApproved {
 		t.Errorf("dry run changed status to %q", status)
+	}
+	if _, err := os.Stat(filepath.Join(out, db.BackupFileName)); !os.IsNotExist(err) {
+		t.Error("dry run wrote a database backup")
+	}
+}
+
+func TestRunBacksUpPreRunPlan(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	seedApproved(t, d, 1, "A.jpg", "hello")
+
+	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := sql.Open("sqlite", filepath.Join(out, db.BackupFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	var status string
+	if err := b.QueryRow(`SELECT status FROM virtual_fs_entries WHERE file_id = 1`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != db.StatusApproved {
+		t.Errorf("backup holds status %q, want the pre-run %q", status, db.StatusApproved)
 	}
 }
 
@@ -245,11 +271,14 @@ func TestRunMoveKeepsSourceWhenNothingLanded(t *testing.T) {
 	}
 	d := dbtest.New(t)
 	out := t.TempDir()
-	src := seedApproved(t, d, 1, "A.jpg", "incoming")
-	if err := os.Chmod(out, 0o555); err != nil {
+	src := seedApproved(t, d, 1, "ro/A.jpg", "incoming")
+	// Only the target folder is read-only: the output folder itself has to
+	// take the database backup, or the run stops before trying anything.
+	ro := filepath.Join(out, "ro")
+	if err := os.Mkdir(ro, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(out, 0o755) })
+	t.Cleanup(func() { os.Chmod(ro, 0o755) })
 
 	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
 	if err != nil {

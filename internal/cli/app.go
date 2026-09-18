@@ -7,12 +7,15 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -173,4 +176,22 @@ func (a *app) isTuiEnabled(cmd *cobra.Command) bool {
 		return false
 	}
 	return term.IsTerminal(int(os.Stderr.Fd()))
+}
+
+// confirm asks a yes/no question before something irreversible: a themed
+// dialog in the full-screen TUI, or a plain y/N prompt when --plain /
+// non-interactive. Anything but an explicit yes is a no.
+func (a *app) confirm(cmd *cobra.Command, title, detail string) bool {
+	if !a.isTuiEnabled(cmd) {
+		fmt.Fprint(os.Stderr, tui.Attn.Render(title)+" (y/N): ")
+		input, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		input = strings.TrimSpace(strings.ToLower(input))
+		return input == "y" || input == "yes"
+	}
+	ok := false
+	prog := tea.NewProgram(tui.NewConfirmModel(title, detail, &ok), tea.WithAltScreen(), tea.WithOutput(os.Stderr))
+	if _, err := prog.Run(); err != nil {
+		return false
+	}
+	return ok
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -312,6 +313,7 @@ func TestCheckLibrary(t *testing.T) {
 		{"only OS clutter and a leftover lock", []string{".DS_Store", "Thumbs.db", "desktop.ini", ".wandersort.lock"}, false},
 		{"leftover files of an older library", []string{".wandersort.log", ".wandersort.cfg"}, true},
 		{"foreign content", []string{".DS_Store", "Goa Trip"}, true},
+		{"backup without its database", []string{".wandersort.db.bak", "2024"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -332,6 +334,9 @@ func TestCheckLibrary(t *testing.T) {
 			}
 			if err != nil && !strings.Contains(err.Error(), dir) {
 				t.Errorf("error %q does not name the folder", err)
+			}
+			if slices.Contains(tt.files, ".wandersort.db.bak") && (err == nil || !strings.Contains(err.Error(), "wandersort recover")) {
+				t.Errorf("error %v does not point at 'wandersort recover'", err)
 			}
 		})
 	}

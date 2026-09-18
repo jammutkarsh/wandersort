@@ -42,7 +42,7 @@ func pickerFixture(t *testing.T) (pickerModel, *db.DB) {
 	seed(1, 2023, db.StatusApproved)
 	seed(2, 2024, db.StatusProposed)
 
-	o := Options{DB: d, Log: logger.NewNoopLogger(), SegmentMonths: 12}
+	o := Options{DB: d, Log: logger.NewNoopLogger(), SegmentMonths: 12, OutputDir: t.TempDir()}
 	segs, err := vfs.Segments(context.Background(), d, o.SegmentMonths)
 	if err != nil {
 		t.Fatal(err)

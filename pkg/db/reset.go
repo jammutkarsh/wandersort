@@ -69,3 +69,19 @@ func (d *DB) ResetAll(ctx context.Context) (ResetCounts, error) {
 
 	return resp, nil
 }
+
+// IsEmpty reports whether ResetAll would find anything to delete. A reset of
+// an empty database must not run at all: its backup would overwrite the one
+// holding the data an earlier reset wiped.
+func (d *DB) IsEmpty(ctx context.Context) (bool, error) {
+	var found bool
+	err := d.SQL.QueryRowContext(ctx, `SELECT
+		EXISTS (SELECT 1 FROM virtual_fs_entries) OR
+		EXISTS (SELECT 1 FROM file_metadata) OR
+		EXISTS (SELECT 1 FROM file_registry) OR
+		EXISTS (SELECT 1 FROM user_labels)`).Scan(&found)
+	if err != nil {
+		return false, fmt.Errorf("reset: check for data: %w", err)
+	}
+	return !found, nil
+}

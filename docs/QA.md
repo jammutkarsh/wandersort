@@ -158,8 +158,11 @@ Execute/move stage isn't written yet, so it isn't here.
 
 ## 11. Reset & issue (destructive / packaging)
 
-117. `[H]` `wandersort reset` → confirmation prompt; answering no leaves data intact.
-118. `[A]` `wandersort reset --yes` → all scan data wiped.
+117. `[A]` `wandersort reset` → preview copies cleared, no prompt, database untouched; prints a hint naming `--db`.
+117a. `[H]` `wandersort reset --db` → confirmation prompt; answering no leaves data intact.
+118. `[A]` `wandersort reset --db --yes` → `.wandersort.db.bak` written, then all scan data wiped.
+118a. `[A]` `wandersort recover --yes` after 118 → the wiped data is back; `.wandersort.db.bak` still there.
+118b. `[A]` `wandersort recover` with no `.wandersort.db.bak` → error naming execute and `reset --db` as what writes one.
 119. `[A]` `wandersort issue` → produces a zip **in the current directory** with `about.txt` + up to 5 recent runs' logs as `logs/<UTC time>Z_<pid>.log` (not the `issue` run's own), no DB by default. A run that only opened the settings and quit leaves no log to package.
 120. `[A]` `wandersort issue --include-db` → zip additionally contains the DB.
 

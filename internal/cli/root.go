@@ -16,21 +16,21 @@ import (
 
 const (
 	// CLI flags
-	flagOutputPath   = "output-path"
-	flagPaths        = "paths"
-	flagYes          = "yes"
-	flagVertical     = "vertical"
-	flagRebuild      = "rebuild"
-	flagForce        = "force"
-	flagPrint        = "print"
-	flagCollapse     = "collapse-levels"
-	flagPlain        = "plain"
-	flagSPDateOnly   = "saved-places-date-only"
-	flagMergeDays    = "merge-same-location-days"
-	flagPreviewsOnly = "previews-only"
-	flagCopy         = "copy"
-	flagMove         = "move"
-	flagDryRun       = "dry-run"
+	flagOutputPath = "output-path"
+	flagPaths      = "paths"
+	flagYes        = "yes"
+	flagVertical   = "vertical"
+	flagRebuild    = "rebuild"
+	flagForce      = "force"
+	flagPrint      = "print"
+	flagCollapse   = "collapse-levels"
+	flagPlain      = "plain"
+	flagSPDateOnly = "saved-places-date-only"
+	flagMergeDays  = "merge-same-location-days"
+	flagDB         = "db"
+	flagCopy       = "copy"
+	flagMove       = "move"
+	flagDryRun     = "dry-run"
 )
 
 func (a *app) newRootCmd() *cobra.Command {
@@ -99,6 +99,7 @@ Flags take precedence over environment variables.`,
 	rootCmd.AddCommand(a.newExecuteCmd())
 	rootCmd.AddCommand(a.newIssueCmd())
 	rootCmd.AddCommand(a.newResetCmd())
+	rootCmd.AddCommand(a.newRecoverCmd())
 
 	rootCmd.InitDefaultCompletionCmd()
 	for _, cmd := range rootCmd.Commands() {
