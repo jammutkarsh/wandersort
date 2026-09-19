@@ -109,7 +109,7 @@ Execute/move stage isn't written yet, so it isn't here.
 67. `[H]` `wandersort review` → full indented tree renders, alt-screen, scrollable with `↑/↓`/`j`/`k`.
 68. `[H]` press `n` on a nested folder → the cursor jumps to the next folder at the **same indent level**, even under a different parent; `N` goes back. Past the last one at that level it reports "no more folders at this level" instead of wrapping.
 69. `[H]` press `V`, then `n` a few times, then `D` → the whole level across several branches is selected and flattened, without arrowing through the folders in between.
-70. `[A]` `wandersort review --yes` → every suggested name accepted non-interactively, `Confirm` runs, exit 0.
+70. `[A]` `wandersort review --yes` → unknown flag; `wandersort execute` is the non-interactive path (applies the draft, approves, copies).
 71. `[H]` press `enter` on a suggested node → suggestion accepted inline, cursor advances.
 72. `[H]` manually rename a node with `r`, then move off and back and press `enter` on it again → the manual rename is kept, **not** overwritten by the suggestion (precedence: default name < location suggestion < user's rename).
 73. `[H]` press `r` on any node → rename prompt opens pre-filled; for a node with a GPS coordinate, ranked place candidates appear below the input.
@@ -140,12 +140,13 @@ Execute/move stage isn't written yet, so it isn't here.
 98. `[H]` press `L` → status line reports the new layout name, tree rebuilds to match (e.g. flat `Year/Month` with `group-by: none`); any renames typed before pressing `L` are gone (expected — different depth means different nodes).
 99. `[A]` press `L` before a location resolver is available (e.g. location DB unreachable) → no-op, no crash.
 100. `[H]` rename two different unresolved date-clusters to the exact same real place name, then `c` confirm → both collapse into one folder (not rejected as a naming collision).
-101. `[H]` press `c` → "Folder structure approved" message; `q` without `c` → "review cancelled — nothing changed", DB untouched.
+101. `[H]` make edits, `esc` → back home with "Review edits kept — run 'wandersort execute'…"; no save/discard question, DB untouched, `.wandersort.draft` holds one line per edit.
 102. `[H]` peek (`p`) two or more different folders during one review session, then quit (`q`) or confirm (`c`) → every temp preview folder created during the session is gone afterward (check `$TMPDIR`).
 103. `[H]` resize the terminal narrow (~50 cols) during a review → the key help wraps instead of running off the edge, and the tree shrinks to match: no rows are pushed off the bottom, the last row and the help are both visible.
 104. `[H]` a library spanning several months (e.g. November and December) → months are listed chronologically in the review tree **and** on disk (`11_November` before `12_December`), not alphabetically.
-105. `[H]` make a rename or a merge/drop, then press `q` → warning that changes are unsaved; press any other key, then `q` again → warns again; press `q` twice in a row → exits, DB untouched.
-106. `[H]` press `q` with nothing edited → exits immediately, no warning.
+105. `[H]` make N edits, kill the process (`kill -9`), reopen review → same tree. Quit with `ctrl+c` after N edits and reopen → same tree, no question on quit.
+106. `[H]` `R` in review → `.wandersort.draft` deleted, tree back to the plan as proposed, DB unchanged. The key bar and `?` help list no copy or move key.
+106a. `[A]` `wandersort execute` after review edits → files land under the renamed/merged folders, draft file gone. With too little free space → stops with a message, nothing applied or copied, draft still there.
 107. `[A]` `wandersort review --rebuild --group-by device` *(after a scan)* → proposal re-proposed as `Year/Month/Device` without re-scanning or re-hashing; review opens on the new tree.
 108. `[A]` set `group-by: [location]` in `config.yaml`, then `wandersort review --rebuild` with no flag → the config's levels are used.
 109. `[A]` `wandersort review --group-by device` *(no `--rebuild`)* → the existing proposal is reviewed unchanged; the flag alone does not re-propose.

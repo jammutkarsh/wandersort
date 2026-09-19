@@ -8,6 +8,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,5 +90,45 @@ func TestRunExecuteProceedsWhenSettingsMatch(t *testing.T) {
 	// all, rather than refusing over a settings change that never happened.
 	if err != nil {
 		t.Errorf("runExecute with a matching stamp = %v, want nil", err)
+	}
+}
+
+// TestRunExecuteAppliesDraft covers spec D18 from the command's side: the
+// review's draft reaches the plan only here, the file lands under the renamed
+// folder, and the draft is gone afterwards.
+func TestRunExecuteAppliesDraft(t *testing.T) {
+	cfg := testConfig(t)
+	dir := t.TempDir()
+	cfg.AppDBPath = filepath.Join(dir, ".wandersort.db")
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.jpg"), []byte("photo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := db.New(context.Background(), cfg.AppDBPath, db.AppDB, logger.NewNoopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbtest.SeedFile(t, d, 1, src, "a.jpg", 5)
+	day := dbtest.SeedEntry(t, d, 1, filepath.Join(src, "a.jpg"), "2024/06_June/03/a.jpg", db.StatusProposed)
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := vfs.AppendDraft(dir, vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: day, From: "03", To: "Goa-Trip"}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &app{Log: logger.NewNoopLogger(), Config: cfg}
+	err = a.runExecute(execCmd(t))
+	a.closeDBs()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "2024", "06_June", "Goa-Trip", "a.jpg")); err != nil {
+		t.Errorf("file not under the renamed folder: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, vfs.DraftFileName)); !os.IsNotExist(err) {
+		t.Errorf("draft still there after execute: %v", err)
 	}
 }

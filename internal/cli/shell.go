@@ -16,7 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
-	"github.com/jammutkarsh/wandersort/internal/review"
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
@@ -270,9 +270,9 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// ctrl+c is a quit request wherever it's pressed. While a scan is running
 	// it belongs to the scan screen — it warns once, cancels, and only quits
 	// if the user insists. Otherwise it means quit the app, but the key is
-	// still forwarded first so the review's unsaved-edits guard gets to warn:
-	// quitReq is what turns the screen's answer (Done, or a SwitchMsg) into a
-	// quit instead of a walk back to the home screen.
+	// still forwarded first so the screen gets its say (the wizard's own
+	// guard): quitReq is what turns the screen's answer (Done, or a
+	// SwitchMsg) into a quit instead of a walk back to the home screen.
 	if k.String() == "ctrl+c" {
 		if m.scanRunning() {
 			m.tab = tabScan
@@ -359,15 +359,14 @@ func (m shellModel) handleSwitch(msg tui.SwitchMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// The review wrote its edits to the draft as they were made; the home
+	// screen says where they go next, since the session outlives the review.
+	// Only when there are some — a look around that changed nothing has
+	// nothing kept to mention.
 	note := ""
-	if res, ok := review.Outcome(m.screens[tabReview]); ok {
-		var err error
-		// Reported per review as it finishes, not once at exit: the session
-		// outlives every plan it saves.
-		if note, err = m.a.reportReviewOutcome(res); err != nil {
-			m.exitErr = err
-			return m, tea.Quit
-		}
+	if m.screens[tabReview] != nil && m.hasDraft() {
+		note = "Review edits kept — run 'wandersort execute' to apply them and copy the files."
+		m.a.Log.Info(note, logger.UserKey, true)
 	}
 	m.screens[tabReview], m.reviewReady = nil, false
 	// ctrl+c out of the review means quit, not "back to the folder input" —
@@ -572,4 +571,11 @@ func (a *app) runRoot(cmd *cobra.Command) error {
 		return cmd.Help()
 	}
 	return a.runShell(shellStart{tab: tabScan})
+}
+
+// hasDraft reports whether review edits are waiting for execute. An unreadable
+// draft counts: execute is where that surfaces, and the note points there.
+func (m shellModel) hasDraft() bool {
+	edits, err := vfs.ReadDraft(filepath.Dir(m.a.Config.AppDBPath))
+	return err != nil || len(edits) > 0
 }

@@ -10,19 +10,12 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
 func (m Model) View() string {
-	if m.askMove {
-		return m.moveAskView()
-	}
-	if m.askExit {
-		return m.exitAskView()
-	}
 	if m.showHelp {
 		return m.helpView()
 	}
@@ -53,7 +46,7 @@ func (m Model) header() string {
 	for i := range m.tree {
 		files += m.tree[i].FileCount
 	}
-	left := "Edit the proposed folders — nothing moves until you save."
+	left := "Edit the proposed folders — edits are kept as you go; nothing moves until 'wandersort execute'."
 	return tui.Banner("review") + "\n" +
 		tui.Row(tui.DimText.Render(left),
 			tui.FaintTxt.Render(fmt.Sprintf("%d folders  %d files", len(m.rows), files)), m.width)
@@ -119,11 +112,6 @@ func (m Model) footer() string {
 	case m.previewing:
 		b.WriteString(m.spin.View())
 		b.WriteString(tui.DimText.Render(" Copying preview…"))
-	case m.resetting:
-		b.WriteString(m.spin.View())
-		b.WriteString(tui.DimText.Render(" Reloading the proposed folders…"))
-	case m.transferring:
-		b.WriteString(m.transferRow())
 	default:
 		if m.previewErr != nil {
 			fmt.Fprintln(&b, tui.Bad.Render("Preview failed: ")+tui.Text.Render(m.previewErr.Error()))
@@ -166,25 +154,9 @@ func (m Model) keyHelp() string {
 			tui.KeyHint("D", "flatten"))
 	}
 	hints = append(hints, tui.KeyHint("u", "undo"), tui.KeyHint("R", "reset plan"))
-	hints = append(hints,
-		tui.KeyHint("x", "copy approved now"), tui.KeyHint("X", "move approved now"))
-	hints = append(hints, tui.KeyHint("esc", "save or discard & leave"), tui.KeyHint("ctrl+c", "discard & exit"))
+	hints = append(hints, tui.KeyHint("esc", "leave"), tui.KeyHint("ctrl+c", "quit"))
 	hints = append(hints, tui.KeyHint("?", "help"))
 	return strings.Join(hints, "   ")
-}
-
-// exitAskView is [esc]'s question, drawn as the same full-screen dialog the
-// config wizard's own exit ask uses — "Save"/"Discard" says what leaving
-// actually does, unlike a bare yes/no. Save writes the plan even with nothing
-// edited: approving a proposal exactly as offered still needs a key now that
-// [c] is gone.
-func (m Model) exitAskView() string {
-	choice := m.exitChoice
-	c := tui.NewConfirmModel("Save your changes?",
-		"Keep the plan as edited and approve the review, or leave without saving it.", &choice)
-	c.YesLabel, c.NoLabel = "Save", "Discard"
-	sized, _ := c.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-	return sized.View()
 }
 
 // helpView is the full-screen key reference behind [?] — the footer names the
@@ -209,12 +181,12 @@ func (m Model) helpView() string {
 			{"d", "drop the folder — its contents move up one level, the folder goes away"},
 			{"D", "flatten — everything below moves directly into the folder"},
 			{"u", "undo the last reshape; press again to walk further back"},
-			{"R", "reset — discard your unsaved edits and go back to the plan as proposed"},
+			{"R", "reset — discard every edit and go back to the plan as proposed"},
 		}},
 		{"Leaving", []key{
 			{"p", "peek — copies a sample of the folder's files and opens them (read-only)"},
-			{"esc", "leave — asks to save or discard once you have edited something; press esc again there to discard"},
-			{"ctrl+c", "discard and exit the program immediately — never just a step back"},
+			{"esc", "leave — your edits are kept; 'wandersort execute' applies them and copies the files"},
+			{"ctrl+c", "quit the program — your edits are kept here too"},
 		}},
 	}
 

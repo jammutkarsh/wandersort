@@ -156,8 +156,8 @@ one scan ever runs against it at a time (see "Conventions" below):
     **`ctrl+c` anywhere quits the app** — being dropped back on
     the folder input instead was a reported bug. While a scan is running it
     goes to the scan screen so the cancel guard gets a say. Otherwise it is
-    still *forwarded* to the active screen first, so the review's
-    unsaved-edits guard can warn once; `quitReq` is what turns the screen's
+    still *forwarded* to the active screen first, so the screen gets its say
+    (the wizard's own guard); `quitReq` is what turns the screen's
     answer (`Done`, or the `SwitchMsg{nil}` a review hands back with) into a
     quit rather than a walk home, and any other keystroke clears it — the user
     stayed, so a later save must go home as usual.
@@ -333,16 +333,16 @@ one scan ever runs against it at a time (see "Conventions" below):
     `BuildAnchors`-then-copy-`resolver.Anchors` ritual (duplicated in
     `workflow` and `cli/review`) made it. `user_labels`' `SAVED_PLACE` kind is
     legacy: nothing writes it, the CHECK constraint just still allows it.
-  - `review.go` — `review` cmd: a three-way switch and nothing else.
-    `--yes` is `confirmReviewAll` (its own lock, DB, `vfs.BuildTree` and
-    `review.ConfirmAll`, all inline — no TUI to defer any of it to, and the
-    only place a missing `.wandersort.db` is a hard error: the interactive
-    path opens the app and says so on the home screen instead, since that user
-    has a scan tab one `ctrl+t` away and refusing to start hides it);
-    interactive is `runShell(shellStart{tab: tabReview})`, so
-    a reviewer who finds the folders wrong can fix the settings and come back
-    without relaunching; **a non-TTY without `--yes` is now an error** naming
-    `--yes`, rather than drawing an alt-screen into a pipe. There is no session
+  - `review.go` — `review` cmd: interactive is
+    `runShell(shellStart{tab: tabReview})`, so a reviewer who finds the
+    folders wrong can fix the settings and come back without relaunching; a
+    missing library says so on the home screen rather than refusing to start
+    (that user has a scan tab one `ctrl+t` away). **A non-TTY is an error**
+    pointing at `wandersort execute`, rather than drawing an alt-screen into a
+    pipe. **There is no `--yes`, `--copy` or `--move` any more** (spec D18,
+    issue 15): review never writes the plan, so there is nothing to confirm
+    non-interactively — `execute` alone applies, approves and transfers.
+    There is no session
     lookup before
     `BuildTree` — `virtual_fs_entries` always holds exactly one proposal
     batch (the VFS phase replaces every unapproved row every run), so an
@@ -352,8 +352,8 @@ one scan ever runs against it at a time (see "Conventions" below):
     **There is no `--rebuild` flag, no manual rebuild at all.** A stale
     proposal re-plans itself: `settingsChanged(outputDir)` compares the
     `.wandersort.cfg` stamp against `vfs.ConfigStamp(vfs.ConfigFor(a.Config))`
-    (see `pkg/core/vfs/snapshot.go`), and both `newReviewScreen` and
-    `confirmReviewAll` call `a.rebuildTree` themselves the moment it says yes
+    (see `pkg/core/vfs/snapshot.go`), and `newReviewScreen` calls
+    `a.rebuildTree` itself the moment it says yes
     — before the tree is ever shown, no question asked. `rebuildTree` calls
     `vfs.ReopenPlan(ctx, db)` before `Propose`, flipping every
     **unapproved-or-approved** row back to PROPOSED (never `DONE` — see
@@ -369,48 +369,40 @@ one scan ever runs against it at a time (see "Conventions" below):
     already on disk. It also
     holds `newReviewScreen`, which builds the embedded screen `scan` swaps
     into, and is also where a shell-side settings save re-plans from
-    (`shell.configSaved`, see above) — one function, three callers
-    (`newReviewScreen`, `confirmReviewAll`, `configSaved`), rather than each
-    re-deriving "reopen then propose".
+    (`shell.configSaved`, see above, which routes through `newReviewScreen`)
+    — one function, rather than each caller re-deriving "reopen then
+    propose". The re-plan also throws the review draft away (`Propose`
+    removes it, see `pkg/core/vfs` below): its folder IDs no longer exist.
+    `newReviewScreen` reads the draft (`vfs.ReadDraft`) and hands it to the
+    screen as `Options.Edits`.
     **The TUI itself lives in `internal/review/`** — see below; it has no
-    rebuild concept of its own any more, only `[R]` as a reset of unsaved
-    edits (see the `Model` notes below).
-    **`--copy`/`--move` chain `execute.Run` onto `--yes`**, in the same
-    process and under the same output lock, so a script gets "approve then
-    transfer" as one command instead of two (`wandersort review --yes
-    --copy`). `--move` asks nothing extra here: `--yes` already means "no
-    prompts", the same contract it has everywhere else in this command.
-    Neither flag does anything on the interactive path — that one has its own
-    asking place, the review tree's own `[x]`/`[X]` (see `internal/review`
-    below).
-  - `execute.go` — `execute` cmd: transfers every `APPROVED` row via
-    `pkg/core/execute.Run`. `--move`/`--dry-run`/`--yes`, the same
-    lock-then-DB shape `reset.go` uses, and the same TUI-or-plain confirm
-    split (`confirmMove`) for the one destructive thing this command can
-    do — `--move` without `--yes` asks; `--copy` (the default) never does,
-    because it never touches a source. Safe to re-run: `execute.Run` only
-    ever selects still-`APPROVED` rows, so a file already `DONE` is skipped
-    and a run stopped partway resumes on its own next time.
+    rebuild concept of its own any more, only `[R]` as a reset of the draft
+    (see the `Model` notes below).
+  - `execute.go` — `execute` cmd: **the one place review edits reach the
+    database and files move** (spec D18). In order: refuse on a stale
+    settings stamp; `--move` without `--yes` asks (`confirm`; `--copy`, the
+    default, never does — it never touches a source); `checkPlanFits`
+    (`vfs.PendingBytes` against `volume.FreeBytes`, a hard stop before
+    anything changes, `ponytail:` it refuses a same-volume move too);
+    `vfs.ApplyDraft` (replay the draft, `Confirm` it — which applies and
+    approves in one transaction — then delete the file); `CleanPreviews`;
+    `execute.Run`. `--dry-run` skips the apply and reports `PROPOSED` and
+    `APPROVED` rows at their proposed paths (without the draft's edits).
+    Safe to re-run: `execute.Run` only ever selects still-`APPROVED` rows,
+    so a file already `DONE` is skipped and a run stopped partway resumes on
+    its own next time; a crash between the apply and the draft's removal
+    replays as a no-op.
 
 - `internal/review/` — the bubbletea **full-tree view** TUI over the VFS
   proposal (issue #8), extracted from `internal/cli` because it was 60% of that
   package's lines while cobra wiring is the rest. Its whole exported surface is
-  three functions in `review.go`:
-  - `Screen(ctx, Options) tea.Model` — the review as an app-shell screen, and
-    **the only interactive entry point** (`screen.go`, which finalizes
-    in-program: on save it runs `vfs.Confirm` and the free-space check itself,
-    then `tui.Switch(nil)` hands back to the shell).
-  - `ConfirmAll(ctx, Options)` — `--yes`: write the proposal as-is, no TUI.
-  - `Outcome(m tea.Model) (Result, ok)` — how an embedded review ended.
-    `Result.Confirmed`/`Err` answer "was `[esc]` → Save pressed, and did it
-    work"; `Result.TransferDone`/`TransferFailed` are separate, because
-    `[x]`/`[X]` can write real files at any point in the session regardless
-    of whether the review is ever explicitly saved — a transfer can even end
-    the review on its own (see reset's `postTransferSync` case below), or a
-    discard/`ctrl+c` can land before a background transfer's own reload does.
-    `cli.reportReviewOutcome` reads the transfer counts first: reporting only
-    `Confirmed` said "Review cancelled — nothing changed" over a session that
-    had just copied or moved files to the output — a reported bug.
+  `Screen(ctx, Options) tea.Model` (plus `CleanPreviews`): the review as an
+  app-shell screen, and **the only interactive entry point**. It writes
+  nothing but the draft file; `[esc]`/`ctrl+c` hand back to the shell with
+  `tui.Switch(nil)`, and the shell's home line says the edits are kept for
+  `wandersort execute`. There is no `ConfirmAll`, no `Outcome`/`Result`, no
+  `screen.go` finalize wrapper any more — they existed only for a save step
+  and in-review transfers, both gone (issue 15).
 
   There is **no standalone `Run` and no loading screen** any more: every
   full-screen command is the same shell opened on a different tab, so a review
@@ -418,8 +410,10 @@ one scan ever runs against it at a time (see "Conventions" below):
   (lock, DB, an out-of-date proposal's own re-plan, `BuildTree`) off the UI
   goroutine with the tab bar saying `opening…`. `Options.Load` went with them.
 
-  `Options` carries `DB`/`Tree`/`Resolver`/`Log`/`OutputDir`; a nil `Resolver`
-  just disables rename autocomplete. There is no `Rebuild` or
+  `Options` carries `DB`/`Tree`/`Edits`/`Resolver`/`Log`/`OutputDir`; a nil
+  `Resolver` just disables rename autocomplete. `Tree` is the plan as the
+  database holds it, `Edits` the draft to replay onto it, and `OutputDir`
+  where the draft lives. There is no `Rebuild` or
   `SettingsChanged` field any more — `cli/review.go` re-plans before the
   screen is ever built (see above), so the screen never needs to ask.
 
@@ -431,51 +425,27 @@ one scan ever runs against it at a time (see "Conventions" below):
   keeps progress across sessions instead, the tree's own top level is already
   the years, and a reviewer plans once and transfers together, so slicing was
   a second screen for the same thing.
-  **`[x]`/`[X]` run `execute.Run` over the library's `APPROVED` rows, right
-  from the tree's own key bar** (`transfer.go`). **Both check there is room
-  for everything not yet transferred, then approve the plan exactly as it
-  stands on screen** (`vfs.Confirm(m.tree)`, the same call `[esc]` → Save
-  makes) **before starting `execute.Run`**: "copy means copy everything", so
-  a rename made on screen but never explicitly saved still has to be what
-  lands on disk, and a fresh review's still-`PROPOSED` rows have to be
-  transferable on the very first press — not only after an `[esc]` → Save
-  round trip. `[x]` (copy) then runs immediately, off the UI goroutine behind
-  the same spinner `[p]`/`[R]` use, because copy never touches a source and
-  so has nothing to ask about; `[X]` (move, capital = the more consuming
-  variant, the same relationship `[d]`/`[D]` already have) raises one modal
-  first — a full-screen yes/no defaulting to Cancel, since this one deletes
-  files on disk once each copy verifies. Neither is scoped to a selection —
-  a transfer acts on whatever is approved so far.
-  **`vfs.PendingBytes` sums both `PROPOSED` and `APPROVED` rows, checked
-  against `volume.FreeBytes(outputDir)` *before* `Confirm` saves anything**:
-  a refusal has to change nothing, and a rename doesn't touch a file's size,
-  so the total comes out the same whether it's read before or after the
-  save — checking first is what makes the refusal free. Doing it the other
-  way around was a reported bug: a refusal that landed after `Confirm` had
-  already run left the on-screen tree and the database disagreeing, and
-  every later save failed with `invalid review tree: unknown node id`.
-  (`ponytail:` a same-volume move only renames and needs no free space at
-  all, but the check doesn't know that yet and refuses it too on a
-  nearly-full disk.) **While a transfer runs, `[esc]` and `[R]` are
-  refused** (`m.transferring`) — either would race the write the transfer
-  already started under the plan it just confirmed; `ctrl+c` is untouched,
-  since each file lands whole or not at all and the next run picks up where
-  one killed mid-transfer left off. `transferredMsg` carries the `Report`
-  back to a status line, and then **reloads the tree, on the error path
-  too** — through the same `resetCmd`/`resetMsg` `[R]` uses (a
-  `postTransferSync` flag tells `reset` not to relabel that reload a
-  discard). `Confirm` already saved the plan before `execute.Run` ever
-  started, so the database is the current plan whether the run itself
-  succeeded, partially failed, or (a reported bug) failed outright, and
-  leaving the pre-save tree on screen after any of those is the same stale-ID
-  bug the reordered space check fixes. **A reload that comes back empty after
-  a transfer ends the review instead of holding the pre-transfer tree** —
-  `[R]`'s own manual empty-reload still just says so and stays open (there's
-  a plan to keep looking at), but nothing is left to look at once a transfer
-  has taken the last reviewable row, and the alternative was a reported bug:
-  the reviewer's very next `[esc]` → Save called `Confirm` over zero
-  reviewable rows and failed with "proposal was replaced by a newer scan" —
-  true of the query, false and alarming right after a clean transfer.
+  **Edits go to a journal, not the database** (spec D17, `vfs.DraftFileName`
+  = `.wandersort.draft` next to the database, `pkg/core/vfs/draft.go`). Every
+  landed edit appends one JSON line (`vfs.Edit`: `rename` with node/from/to;
+  `merge` with every node, anchor first; `drop`/`flatten` with every node of
+  the `[V]` range, since the range is one edit and one `[u]`) and syncs it
+  (`Model.record`); a failed write undoes the edit on screen too. The model
+  keeps `base` (the tree as loaded, never edited) and `edits`; the tree on
+  screen is always `vfs.Replay(CloneTree(base), edits)`. **Replay is
+  idempotent** — an edit naming folders that are gone, or that changes
+  nothing, is skipped — which is what makes a crash between `ApplyDraft`'s
+  commit and its file removal harmless. A torn last line (a crash
+  mid-append) is dropped **and the file rewritten without it** (`ReadDraft`;
+  likewise a whole last edit missing only its newline is kept and the file
+  rewritten with one):
+  left in place, the next append glued onto it, lost that edit, and the one
+  after made every read fail — review would not open and execute refused,
+  with `[R]` unreachable inside the review that no longer opened (caught in
+  review). **Review never copies or moves**:
+  `[x]`/`[X]`, `transfer.go`, the move question and the progress bar are
+  gone; `wandersort execute` (and issue 21's copy screen) is the only place
+  files move.
   `copy.go` holds the unexported
   `copyFiles`/`copyFile` the peek feature uses (same atomic
   temp-file-then-rename pattern `pkg/install` downloads with); it moved here
@@ -488,7 +458,7 @@ one scan ever runs against it at a time (see "Conventions" below):
   return the edited tree plus what happened; nothing in that file knows a
   keypress or a row exists. `Model`'s `mergeSelection`/`dropFolders`/
   `flattenFolders` are thin callers: resolve `selectedRows()` into an ID list,
-  call across the seam, then apply the result back onto cursor/undo/status
+  call across the seam, then apply the result back onto cursor/journal/status
   state the tree edit itself has no business touching. This is also
   `MergedIDs`' one owner now — `vfs.Confirm` was already the other half of
   that invariant (interpreting what this file writes), so putting both in
@@ -562,9 +532,9 @@ one scan ever runs against it at a time (see "Conventions" below):
   children (the Month/Day scaffolding between two branches) are skipped, not
   merged. **`u` undoes every edit all the way back**, not just the
   last one: every edit — renames included — goes through
-  `Model.applyEdit`, which pushes a whole-tree clone first (`Model.snapshot`
-  calling `vfs.CloneTree`, capped at `maxUndo` = 100) onto a stack. Trees are
-  folders only, never files, so a clone is cheap.
+  `Model.applyEdit`, which journals it; `[u]` drops the draft's last line
+  (`vfs.WriteDraft`, temp file + rename) and replays the rest onto `base`.
+  The journal is the whole history, so there is no snapshot stack and no cap.
   `d`/`D` **remove nesting the reviewer doesn't want**. Both act on
   `selectedRows` — a `[V]` range (every row in it at the anchor row's depth,
   the same rule `m` uses) or just the cursor row when there's no selection.
@@ -601,36 +571,17 @@ one scan ever runs against it at a time (see "Conventions" below):
   the surviving node's `MergedIDs`, so files sitting directly in a removed
   folder remap onto it — same machinery as merge, subfolders included. Both
   undo via `[u]`.
-  **`esc` is the only way out, and the only thing that writes** — there is no
-  separate save key any more. It raises a full-screen Save/Discard ask
-  (`askExit`/`exitChoice`, drawn the same way the config wizard's own `[esc]`
-  ask is): `[enter]` accepts the highlighted default (Save), a second
-  `[esc]` inside it forcefully discards. It asks even with nothing edited —
-  approving the proposal exactly as offered has to be possible from inside,
-  and there is no other key for it. `ctrl+c` is the unconditional escape
-  hatch — never saves, warns once
-  (`hasEdits` is just "the undo stack is non-empty", since every edit
-  snapshots) and needs a second `ctrl+c` to actually discard and leave.
-  `--yes` confirms the proposal
-  as-is, non-interactively. **There is no `--rebuild` flag and no manual
-  rebuild inside the review any more** — a stale proposal (the settings moved
-  since it was built) re-plans itself before the screen is ever shown, over in
-  `cli/review.go` (see above); by the time a reviewer sees a tree, it already
-  matches the current settings.
-  **`R` is a plain reset, not a rebuild, and asks nothing** — it discards
-  whatever is unsaved in *this* screen (renames, merges, drops — the same
-  things `[u]` already undoes one at a time) and reloads the
-  still-proposed rows straight from the database (`resetCmd`/`resetMsg`,
-  off the UI goroutine behind the same spinner `[p]` uses). Capital `R`
-  because `r` is rename. There used to be a confirmation modal here
-  (`askRebuild`, raised by the key itself or by a `SettingsChangedMsg` the
-  shell forwarded in) — both are gone along with the settings-triggered
-  rebuild they asked about: nothing `[R]` does now can discard anything that
-  was ever saved (`ReopenPlan` only reaches `APPROVED` rows, never `DONE`,
-  and reset touches nothing on disk at all), so there's nothing left worth a
-  full-screen question over. Landing (`resetMsg`) replaces the tree wholesale
-  — undo stack, cursor and selection with it, since they all describe rows
-  that may have moved under the reload.
+  **There is no save step** (spec D18): every edit is already in the draft,
+  so `esc` (after clearing a `[V]` selection) and `ctrl+c` just leave — no
+  Save/Discard question, no unsaved-edits warning. **There is no `--rebuild`
+  flag and no manual rebuild inside the review** — a stale proposal (the
+  settings moved since it was built) re-plans itself before the screen is
+  ever shown, over in `cli/review.go` (see above); by the time a reviewer
+  sees a tree, it already matches the current settings.
+  **`R` is a plain reset, not a rebuild, and asks nothing** — it deletes the
+  draft file and shows `base`, the plan as proposed. The database is
+  untouched (it never held the edits), so there is no query and no spinner.
+  Capital `R` because `r` is rename. Cursor and selection reset with it.
   **The screen is built from `pkg/tui`, like scan and config** — it used to
   hand-roll its own chrome and looked like a different program: `tui.Screen`
   pins the footer to the terminal's last row, `header()` is banner + one
@@ -709,10 +660,10 @@ one scan ever runs against it at a time (see "Conventions" below):
   peeking a dozen folders in one session can't evict the one being looked at
   now. `maxPreviewBytes` (250MB) still caps a single peek. Nothing
   is deleted on exit any more — **the sweep happens when the plan is
-  written** (`CleanPreviews`, called from `screen`'s successful `finalizeMsg`
-  and from `ConfirmAll`) and from `wandersort reset`, since at that point
-  there is nothing left to peek at. An unsaved exit deliberately leaves the
-  copies behind for the next session.
+  written** (`CleanPreviews`, called by `execute` once the draft is applied)
+  and from `wandersort reset`, since at that point there is nothing left to
+  peek at. Leaving a review deliberately keeps the copies for the next
+  session.
   **A rejected merge (`statusIsErr`) renders in `tui.Attn`, not
   `tui.DimText`** — a rejection used to look identical to routine status
   text, easy to miss (a reported "merge doesn't work" turned out to be
@@ -747,7 +698,7 @@ Back in `internal/cli/`:
     an empty copy, leaving `recover` nothing to bring back. Otherwise it
     **backs the database up first** (`db.Backup`, the same
     `.wandersort.db.bak` execute writes — a failed backup stops the wipe),
-    then clears the rows, the `.wandersort.cfg` stamp, which describes a
+    then clears the rows, the review draft, the `.wandersort.cfg` stamp, which describes a
     proposal that no longer exists, and the peek copies, which outlive a
     review session. `config.CheckLibrary` points a folder holding the backup
     but no database at `recover` instead of refusing it as foreign.
@@ -1039,7 +990,12 @@ tree over the whole library.
   the same four-line ritual (load the config file again, build anchors, copy
   `resolver.Anchors` onto the `Config`, `New(...).Run`) and either could drift
   from the other. `New` stays for a test, or a caller that wants to state the
-  `Config` itself. **`Propose` also writes the config stamp** on success
+  `Config` itself. **`Propose` first deletes the review draft**
+  (`RemoveDraft`, spec D19/D20): a new proposal means new folder IDs, so a
+  scan's vfs phase and a settings re-plan both throw away edits made against
+  the old one. (A scan cancelled before its vfs phase leaves the draft, which
+  is right — the proposal it was made against is still there.)
+  **`Propose` also writes the config stamp** on success
   (`snapshot.go`: `ConfigStamp`/`WriteStamp`/`ReadStamp`, `.wandersort.cfg` in
   the output directory) — the same argument, one rung up: every path to a fresh
   proposal goes through `Propose`, and only `Propose` holds both the `Config`
@@ -1492,8 +1448,8 @@ tree over the whole library.
   says what that costs, a second gives up on a pipeline that won't unwind.
   **`ctrl+c` is the one quit key on every screen.**
   `ConfirmModel` quits its own program on an answer, which is right for
-  `reset`; a screen that wants the question *inside* itself — the review's
-  `[esc]` Save/Discard ask — drives its own keys and uses `ConfirmModel` for
+  `reset`; a screen that wants the question *inside* itself — the config
+  wizard's `[esc]` Save/Discard ask — drives its own keys and uses `ConfirmModel` for
   the layout only, built per frame (a bubbletea model copied by value can't
   safely hold a pointer into its own fields, which is what its `Value` is).
   Design rules live in `pkg/tui/README.md` — new screens compose from this
@@ -1763,9 +1719,8 @@ tree over the whole library.
   happens-before edge documented in a comment rather than enforced by a type —
   `app` now holds one field (`Deps *install.Coordinator`), built per command by
   `app.newDeps`, and every read blocks on the Coordinator's own internal
-  channel instead of racing a shared field. `confirmReviewAll` (`review
-  --yes`) uses `StartLocationOnly` (a settings-triggered re-plan only re-runs
-  the vfs phase, never exif).
+  channel instead of racing a shared field. `StartLocationOnly` is for a
+  caller that only re-runs the vfs phase, never exif.
 
 ## Conventions that bite if ignored
 

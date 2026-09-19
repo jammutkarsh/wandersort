@@ -51,6 +51,14 @@ func New(db *db.DB, resolver *location.Resolver, log logger.Logger, cfg Config) 
 // its callers; New is for a test or a caller that wants to state the Config
 // itself.
 func Propose(ctx context.Context, database *db.DB, resolver *location.Resolver, appCfg *config.Configuration, log logger.Logger) (int, error) {
+	// A new proposal means new folder IDs, so review edits made against the old
+	// one mean nothing now (spec D19, D20): a scan and a settings re-plan both
+	// discard them here, before anything is replaced.
+	if appCfg.AppDBPath != "" {
+		if err := RemoveDraft(filepath.Dir(appCfg.AppDBPath)); err != nil {
+			return 0, err
+		}
+	}
 	cfg := ConfigFor(appCfg)
 	cfg.Anchors = resolver.BuildAnchors(ctx, appCfg.SavedPlaces)
 	log.Info("Proposing destination folders", "rules", cfg.Rules, "anchors", len(cfg.Anchors))

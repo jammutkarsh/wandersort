@@ -12,34 +12,52 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 )
 
-// undoStep is the tree as it stood before one structural edit, plus what that
-// edit was, for the status line.
-type undoStep struct {
-	tree []vfs.Node
-	edit string
-}
-
-// maxUndo caps how far back [u] walks. A step clones the folder tree only
-// (never files), so each is cheap — this just bounds a long session's memory.
-const maxUndo = 100
-
-// snapshot records the tree before a structural edit so [u] can walk back to
-// it. Called by every edit that reshapes the tree — merge, drop, flatten.
-func (m *Model) snapshot(edit string) {
-	m.undo = append(m.undo, undoStep{tree: vfs.CloneTree(m.tree), edit: edit})
-	if len(m.undo) > maxUndo {
-		m.undo = m.undo[len(m.undo)-maxUndo:]
+// record journals one landed edit (spec D17): the draft file first, so an
+// edit on screen is one a crash can't lose, then the in-memory copy [u] pops.
+// A failed write undoes the edit on screen too — the reviewer would otherwise
+// see a change that the next session has never heard of.
+func (m *Model) record(e vfs.Edit) {
+	e.Seq = len(m.edits) + 1
+	if err := vfs.AppendDraft(m.outputDir, e); err != nil {
+		m.tree = vfs.Replay(vfs.CloneTree(m.base), m.edits)
+		m.reflow()
+		m.statusMsg, m.statusIsErr = err.Error(), true
+		return
 	}
+	m.edits = append(m.edits, e)
 }
 
-// applyEdit runs one structural tree edit: snapshot, apply, reflow, report.
+// undo drops the last edit from the draft and rebuilds the tree from the plan
+// as proposed plus the edits left — the journal is the whole history, so
+// there is no snapshot stack to keep beside it.
+func (m *Model) undo() {
+	n := len(m.edits)
+	if n == 0 {
+		m.statusMsg, m.statusIsErr = "nothing left to undo", true
+		return
+	}
+	if err := vfs.WriteDraft(m.outputDir, m.edits[:n-1]); err != nil {
+		m.statusMsg, m.statusIsErr = err.Error(), true
+		return
+	}
+	last := m.edits[n-1]
+	m.edits = m.edits[:n-1]
+	m.tree = vfs.Replay(vfs.CloneTree(m.base), m.edits)
+	m.reflow()
+	left := ""
+	if len(m.edits) > 0 {
+		left = fmt.Sprintf(" (%d more)", len(m.edits))
+	}
+	m.statusMsg, m.statusIsErr = "undid "+last.Op+left, false
+}
+
+// applyEdit runs one structural tree edit: apply, reflow, journal, report.
 // Returns whether the edit landed, so a caller with follow-up work (merge
-// re-focusing the surviving node) knows whether to do it.
-func (m *Model) applyEdit(name string, edit func([]vfs.Node) ([]vfs.Node, string, error)) bool {
-	m.snapshot(name)
+// re-focusing the surviving node) knows whether to do it. The edit functions
+// validate before they touch the tree, so a refusal leaves it as it was.
+func (m *Model) applyEdit(e vfs.Edit, edit func([]vfs.Node) ([]vfs.Node, string, error)) bool {
 	newTree, status, err := edit(m.tree)
 	if err != nil {
-		m.undo = m.undo[:len(m.undo)-1] // nothing was mutated, discard the snapshot
 		m.statusMsg, m.statusIsErr = err.Error(), true
 		return false
 	}
@@ -47,7 +65,8 @@ func (m *Model) applyEdit(name string, edit func([]vfs.Node) ([]vfs.Node, string
 	m.reflow()
 	m.visualMode = false
 	m.statusMsg, m.statusIsErr = status, false
-	return true
+	m.record(e)
+	return !m.statusIsErr
 }
 
 // mergeSelection folds the selected folders into one node under their lowest
@@ -77,7 +96,7 @@ func (m *Model) mergeSelection() {
 	}
 
 	var mergedID int64
-	if ok := m.applyEdit("merge", func(tree []vfs.Node) ([]vfs.Node, string, error) {
+	if ok := m.applyEdit(vfs.Edit{Op: vfs.OpMerge, Nodes: ids}, func(tree []vfs.Node) ([]vfs.Node, string, error) {
 		newTree, id, name, ancestor, err := vfs.MergeNodes(tree, ids)
 		if err != nil {
 			return nil, "", err
@@ -91,14 +110,14 @@ func (m *Model) mergeSelection() {
 
 // applyRename writes the name straight onto the node — there is no pending
 // rename layer, so nothing is left over to render as an arrow or to survive an
-// undo. Snapshots first, so [u] reverts a rename like any other edit.
+// undo. Journalled like any other edit, so [u] reverts it the same way.
 func (m *Model) applyRename(name string) {
 	row := m.rows[m.cursor]
 	id, old := row.node.ID, row.node.Name
 	if name == "" || name == old {
 		return
 	}
-	if ok := m.applyEdit("rename", func(tree []vfs.Node) ([]vfs.Node, string, error) {
+	if ok := m.applyEdit(vfs.Edit{Op: vfs.OpRename, Node: id, From: old, To: name}, func(tree []vfs.Node) ([]vfs.Node, string, error) {
 		n := vfs.FindNode(tree, id)
 		if n == nil {
 			return nil, "", fmt.Errorf("internal error locating %q", old)
@@ -144,7 +163,7 @@ func (m *Model) dropFolders(targets []*reviewRow) {
 		ids[i] = r.node.ID
 	}
 
-	m.applyEdit("drop", func(tree []vfs.Node) ([]vfs.Node, string, error) {
+	m.applyEdit(vfs.Edit{Op: vfs.OpDrop, Nodes: ids}, func(tree []vfs.Node) ([]vfs.Node, string, error) {
 		newTree, names, err := vfs.DropNodes(tree, ids)
 		if err != nil {
 			return nil, "", err
@@ -167,7 +186,7 @@ func (m *Model) flattenFolders(targets []*reviewRow) {
 
 	// over a [V] range the folders stay separate — folding them together is
 	// [m]'s job, not this one
-	m.applyEdit("flatten", func(tree []vfs.Node) ([]vfs.Node, string, error) {
+	m.applyEdit(vfs.Edit{Op: vfs.OpFlatten, Nodes: ids}, func(tree []vfs.Node) ([]vfs.Node, string, error) {
 		newTree, absorbed, names, err := vfs.FlattenNodes(tree, ids)
 		if err != nil {
 			return nil, "", err

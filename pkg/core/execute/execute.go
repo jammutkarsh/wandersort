@@ -101,9 +101,17 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		SourcePath string `db:"source_path"`
 		TargetPath string `db:"target_path"`
 	}
+	// A dry run also counts the plan not yet approved — execute approves it
+	// only once it really transfers, so otherwise a first dry run reports
+	// nothing. ponytail: those rows show their paths as proposed, without the
+	// review's draft edits; replay the draft here if a dry run must show them.
+	pending := db.StatusApproved
+	if o.DryRun {
+		pending = db.StatusProposed
+	}
 	if err := database.SQL.SelectContext(ctx, &rows,
-		`SELECT id, file_id, source_path, target_path FROM virtual_fs_entries WHERE status = ? ORDER BY id`,
-		db.StatusApproved); err != nil {
+		`SELECT id, file_id, source_path, target_path FROM virtual_fs_entries WHERE status IN (?, ?) ORDER BY id`,
+		db.StatusApproved, pending); err != nil {
 		return Report{}, fmt.Errorf("load approved entries: %w", err)
 	}
 	if len(rows) == 0 {

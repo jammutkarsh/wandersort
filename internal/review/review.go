@@ -9,86 +9,38 @@ package review
 import (
 	"context"
 
-	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
-	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 // Options is everything the review TUI needs. Resolver may be nil — rename
-// autocomplete degrades gracefully without it.
+// autocomplete degrades gracefully without it. Tree is the plan as the
+// database holds it; Edits is the draft journal (vfs.ReadDraft) replayed on
+// top of it, and every edit made on screen is appended to that file in
+// OutputDir.
 type Options struct {
 	DB        *db.DB
 	Tree      []vfs.Node
+	Edits     []vfs.Edit
 	Resolver  *location.Resolver
 	Log       logger.Logger
-	OutputDir string // for the post-approve free-space check
-}
-
-// ConfirmAll writes the proposed hierarchy as-is, without showing a TUI
-// (`wandersort review --yes`). Suggestions are what the reviewer would rename
-// a folder *to* — taking them unattended is a decision nobody made.
-func ConfirmAll(ctx context.Context, o Options) error {
-	if err := vfs.Confirm(ctx, o.DB, o.Tree); err != nil {
-		return err
-	}
-	volume.CheckOutputSpace(ctx, o.DB, o.Log, o.OutputDir)
-	if err := CleanPreviews(); err != nil {
-		o.Log.Warn("could not remove the preview copies", "error", err)
-	}
-	return nil
+	OutputDir string
 }
 
 // Screen returns the review as an app-shell screen — the only interactive
 // entry point. Every full-screen command is the same shell opened on a
-// different tab, so a review is always hosted, never its own program. Pass the
-// model the shell leaves behind to Outcome.
+// different tab, so a review is always hosted, never its own program. It
+// writes nothing but the draft file: leaving hands back to the shell with
+// tui.Switch(nil), and `wandersort execute` applies the edits.
 func Screen(ctx context.Context, o Options) tea.Model {
-	m := newModel(o.Tree, ctx, o.DB, o.Resolver, o.Log, o.OutputDir)
-	m.embedded = true
-	return screen{
-		inner:     m,
-		ctx:       ctx,
-		db:        o.DB,
-		log:       o.Log,
-		outputDir: o.OutputDir,
-	}
-}
-
-// Result reports how an embedded review ended. Confirmed/Err answer "was
-// [esc] -> Save pressed, and did it work" — but [x]/[X] can transfer files to
-// the output at any point in the session regardless of whether the review is
-// ever explicitly saved (the review can even end on its own once a transfer
-// empties the tree — see reset's postTransferSync path), so TransferDone/
-// TransferFailed carry that separately: a caller reporting only Confirmed
-// would say "nothing changed" over a session that copied or moved real files.
-type Result struct {
-	Confirmed                    bool
-	Err                          error
-	TransferDone, TransferFailed int
-}
-
-// Outcome reports how an embedded review ended. ok is false when m is not a
-// review screen at all.
-func Outcome(m tea.Model) (Result, bool) {
-	s, ok := m.(screen)
-	if !ok {
-		return Result{}, false
-	}
-	return Result{
-		Confirmed:      s.confirmed,
-		Err:            s.finalErr,
-		TransferDone:   s.inner.transferDone,
-		TransferFailed: s.inner.transferFailed,
-	}, true
+	return newModel(o.Tree, o.Edits, ctx, o.DB, o.Resolver, o.Log, o.OutputDir)
 }
 
 /* --- bubbletea model --- */
@@ -135,52 +87,20 @@ func buildRows(tree []vfs.Node) []*reviewRow {
 }
 
 type Model struct {
-	tree      []vfs.Node
-	rows      []*reviewRow
-	cursor    int
-	offset    int // first visible row (scroll position)
-	height    int
-	width     int
-	editing   bool
-	input     string
-	confirmed bool
-	// askExit is [esc]'s question — save this plan, or throw the edits away —
-	// raised on every [esc] rather than assuming either answer. A second
-	// [esc] inside it forcefully discards; ctrl+c does too.
-	askExit    bool
-	exitChoice bool // true = Save, false = Discard; which button is under the cursor
+	tree    []vfs.Node
+	rows    []*reviewRow
+	cursor  int
+	offset  int // first visible row (scroll position)
+	height  int
+	width   int
+	editing bool
+	input   string
 
 	ctx       context.Context
 	db        *db.DB
 	resolver  *location.Resolver
 	log       logger.Logger
-	outputDir string // for the pre-transfer free-space check
-
-	// [x]/[X] copy or move every APPROVED file to the output right now. Not
-	// scoped to a selection — see transfer.go.
-	askMove      bool
-	moveChoice   bool // which button the move-ask modal has under the cursor
-	transferring bool
-	transferMode execute.Mode
-	// prog is the last progress report drawn, progCh the channel execute's
-	// OnProgress feeds it down. bar renders it — a transfer is the one thing
-	// here that runs for minutes over gigabytes, so it gets a bar, not a bare
-	// spinner.
-	prog   transferProgressMsg
-	progCh chan transferProgressMsg
-	bytes  int64 // running total, since OnProgress reports one file's size
-	bar    progress.Model
-	// postTransferSync marks the reload a finished transfer triggers (via the
-	// same resetCmd/resetMsg [R] uses) — nothing was "discarded" to get there
-	// (the plan was already saved before the transfer started), so reset must
-	// leave the transfer's own status line alone instead of overwriting it.
-	postTransferSync bool
-	// transferDone/transferFailed accumulate every [x]/[X] this session, so
-	// Outcome can report what actually reached disk even when the review ends
-	// without an explicit [esc] -> Save — a transfer can close the review on
-	// its own (see reset's postTransferSync case) or race an [esc] ->
-	// Discard/ctrl+c that lands before its own reload does.
-	transferDone, transferFailed int
+	outputDir string // where the draft file lives, next to the database
 
 	// Rename autocomplete. Both sources are fetched up front and filtered in
 	// memory per keystroke, so typing never hits the DB.
@@ -194,19 +114,12 @@ type Model struct {
 	visualMode   bool
 	visualAnchor int
 	showHelp     bool // [?] — full-screen key reference; any key closes it
-	quitWarned   bool // [ctrl+c] with pending edits warns once before discarding
-	// embedded runs the model inside the app-shell (scan → review swap): it
-	// sets done instead of tea.Quit, and the shell wrapper finalizes.
-	embedded bool
-	done     bool
-	// [R] resets the plan: discards every edit and reloads the still-proposed
-	// rows straight from the database — no confirmation, since nothing it does
-	// is a surprise (the same discard [u] already does one step at a time).
-	// resetting gates the spinner while that query runs.
-	resetting bool
-	// undo holds one whole-tree snapshot per structural edit, so [u] walks all
-	// the way back — a reshaped tree can't be restored from per-row names.
-	undo        []undoStep
+	done         bool // left the review; the shell has been handed back
+	// base is the plan as the database holds it, never edited; edits is the
+	// draft journal on top of it. The tree on screen is always base with
+	// edits replayed, which is what lets [u] drop a line and [R] drop them all.
+	base        []vfs.Node
+	edits       []vfs.Edit
 	statusMsg   string
 	statusIsErr bool // rejection, not confirmation: rendered in a warning colour
 
@@ -216,82 +129,43 @@ type Model struct {
 	spin       spinner.Model
 }
 
-func newModel(tree []vfs.Node, ctx context.Context, database *db.DB, resolver *location.Resolver, log logger.Logger, outputDir string) Model {
+func newModel(tree []vfs.Node, edits []vfs.Edit, ctx context.Context, database *db.DB, resolver *location.Resolver, log logger.Logger, outputDir string) Model {
 	// same spinner the scan and install screens run
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(tui.Primary)
 	m := Model{
 		spin:       sp,
-		bar:        progress.New(progress.WithDefaultGradient(), progress.WithoutPercentage()),
 		suggCursor: -1,
-		tree:       tree,
-		rows:       buildRows(tree),
+		base:       tree,
+		edits:      edits,
+		tree:       vfs.Replay(vfs.CloneTree(tree), edits),
 		ctx:        ctx,
 		db:         database,
 		resolver:   resolver,
 		log:        log,
 		outputDir:  outputDir,
 	}
-	// user_labels only changes on Confirm, after this TUI exits, so the set is
-	// fixed for the session — load it once instead of querying per keystroke.
+	m.rows = buildRows(m.tree)
+	// user_labels only changes when execute applies a plan, never while this
+	// screen is up, so load it once instead of querying per keystroke.
 	m.labels = vfs.Labels(ctx, database, log)
 	return m
 }
 
-// resetMsg carries [R]'s reload back from the database.
-type resetMsg struct {
-	tree []vfs.Node
-	err  error
-}
-
-// resetCmd re-reads the still-proposed rows, discarding every in-memory edit.
-// Nothing on disk changes — a reset only ever throws away what was never
-// saved; already-approved rows aren't part of this query at all, so they're
-// untouched by construction.
-func resetCmd(ctx context.Context, database *db.DB) tea.Cmd {
-	return func() tea.Msg {
-		tree, err := vfs.BuildTree(ctx, database)
-		return resetMsg{tree: tree, err: err}
-	}
-}
-
-// reset swaps in the freshly read tree. Everything derived from the old one
-// goes with it: the undo stack can't describe edits to folders that may no
-// longer be at the same rows, and the cursor's row is gone.
-func (m Model) reset(msg resetMsg) Model {
-	m.resetting = false
-	quiet := m.postTransferSync
-	m.postTransferSync = false
-	if msg.err != nil {
-		m.statusMsg, m.statusIsErr = "reset failed: "+msg.err.Error(), true
+// reset is [R]: throw the draft away and show the plan as proposed. The
+// database is untouched — it never held the edits.
+func (m Model) reset() Model {
+	if err := vfs.RemoveDraft(m.outputDir); err != nil {
+		m.statusMsg, m.statusIsErr = err.Error(), true
 		return m
 	}
-	// Nothing left proposed here (every row in scope is already saved) leaves
-	// every key that reads the cursor row with nothing to read; keeping the
-	// old one is also the more useful answer.
-	if len(msg.tree) == 0 {
-		if quiet {
-			// The transfer just cleared out everything reviewable — there is
-			// nothing left to keep this screen open for. Staying on the
-			// pre-transfer tree left the reviewer's very next [esc] -> Save
-			// calling Confirm over zero reviewable rows, which fails with
-			// "proposal was replaced by a newer scan" — true of the query,
-			// false and alarming right after a clean transfer.
-			m.done = true
-			return m
-		}
-		m.statusMsg, m.statusIsErr = "nothing left to reset — this plan is already saved", true
-		return m
-	}
-	m.tree = msg.tree
-	m.undo = nil
+	m.edits = nil
+	m.tree = vfs.CloneTree(m.base)
 	m.cursor, m.offset = 0, 0
 	m.visualMode = false
 	m.reflow()
-	if !quiet {
-		m.statusMsg, m.statusIsErr = "unsaved edits discarded", false
-	}
+	m.statusMsg, m.statusIsErr = "edits discarded — back to the plan as proposed", false
 	return m
 }
 
@@ -319,10 +193,6 @@ func (m *Model) reflow() {
 	m.rows = buildRows(m.tree)
 	m.cursor = min(m.cursor, len(m.rows)-1) // the tree may have shrunk
 }
-
-// hasEdits reports whether quitting would lose an edit. Every edit — rename
-// included — snapshots the tree first, so the undo stack is the whole answer.
-func (m Model) hasEdits() bool { return len(m.undo) > 0 }
 
 // jumpSameDepth moves the cursor to the next ([n]) or previous ([N]) row at
 // the cursor's own depth, so a deep tree is walkable without scrolling through

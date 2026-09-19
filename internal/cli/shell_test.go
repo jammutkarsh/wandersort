@@ -350,15 +350,15 @@ func TestShellModel(t *testing.T) {
 				_, cmd := next.(shellModel).Update(tui.SwitchMsg{Next: nil})
 				assertQuits(t, cmd, "ctrl+c out of the review")
 			})
-			t.Run("review after warning about unsaved edits", func(t *testing.T) {
+			t.Run("a keystroke after ctrl+c clears the quit request", func(t *testing.T) {
 				m := testShell(t)
 				m.screens[tabReview], m.reviewReady = &probe{name: "review"}, true
 				m.tab = tabReview
 
-				// First ctrl+c: the review warns and stays, so nothing quits.
+				// A screen that stays on ctrl+c (the probe does) keeps the
+				// session; any other key means the user stayed, so a later
+				// hand-back must go home, not quit.
 				next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-				// Any other key means the user stayed — a later hand-back
-				// (saving with [c]) must go home, not quit.
 				next, _ = next.(shellModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 				m = next.(shellModel)
 				if m.quitReq {
@@ -367,13 +367,36 @@ func TestShellModel(t *testing.T) {
 				next, cmd := m.Update(tui.SwitchMsg{Next: nil})
 				for _, msg := range flattenTeaCmd(cmd) {
 					if _, quit := msg.(tea.QuitMsg); quit {
-						t.Fatal("a saved review must return home, not quit")
+						t.Fatal("a review left later must return home, not quit")
 					}
 				}
 				if next.(shellModel).tab != tabScan {
 					t.Errorf("want the scan tab, got %d", next.(shellModel).tab)
 				}
 			})
+		}},
+		// Leaving review mentions the kept edits only when the draft holds
+		// some — a look around that changed nothing has nothing to point at.
+		{"ReviewNoteOnlyWithDraftEdits", func(t *testing.T) {
+			leave := func(t *testing.T, withEdit bool) string {
+				m := testShell(t)
+				m.a.Config.AppDBPath = filepath.Join(t.TempDir(), ".wandersort.db")
+				if withEdit {
+					if err := vfs.AppendDraft(filepath.Dir(m.a.Config.AppDBPath), vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: 1, To: "x"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				m.screens[tabReview], m.reviewReady = &probe{name: "review"}, true
+				m.tab = tabReview
+				next, _ := m.Update(tui.SwitchMsg{Next: nil})
+				return ansi.Strip(next.(shellModel).View())
+			}
+			if v := leave(t, false); strings.Contains(v, "Review edits kept") {
+				t.Errorf("no edits, yet the home screen says edits were kept:\n%s", v)
+			}
+			if v := leave(t, true); !strings.Contains(v, "Review edits kept") {
+				t.Errorf("draft edits, yet no note on the home screen:\n%s", v)
+			}
 		}},
 		// exitStatus reads the scan model the container kept — tui.Shell's
 		// Current() never sees it, since the ScanModel lives inside a tab.

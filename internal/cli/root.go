@@ -27,7 +27,6 @@ const (
 	flagSPDateOnly = "saved-places-date-only"
 	flagMergeDays  = "merge-same-location-days"
 	flagDB         = "db"
-	flagCopy       = "copy"
 	flagMove       = "move"
 	flagDryRun     = "dry-run"
 )

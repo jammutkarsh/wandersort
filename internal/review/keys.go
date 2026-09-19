@@ -7,14 +7,12 @@
 package review
 
 import (
-	"fmt"
-
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/path"
+	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -24,14 +22,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scrollIntoView()
 		return m, nil
 	case spinner.TickMsg:
-		if !m.previewing && !m.resetting && !m.transferring {
+		if !m.previewing {
 			return m, nil
 		}
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
-	case resetMsg:
-		return m.reset(msg), nil
 	case previewDoneMsg:
 		m.previewing = false
 		m.previewErr = msg.err
@@ -39,84 +35,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			openInViewer(msg.dir)
 		}
 		return m, nil
-	case transferProgressMsg:
-		if !m.transferring { // the result already landed — a late report draws nothing
-			return m, nil
-		}
-		m.prog = msg
-		m.bytes += msg.bytes
-		return m, waitProgress(m.progCh)
-	case transferredMsg:
-		return m.transferred(msg)
 	case tea.KeyMsg:
-		if m.askMove && msg.String() != "ctrl+c" {
-			return m.answerMoveAsk(msg)
-		}
 		return m.handleKey(msg)
 	}
 	return m, nil
 }
 
-// answerExitAsk drives [esc]'s Save/Discard modal — the same shape as the
-// config wizard's own exit ask, and the same keys tui.ConfirmModel answers
-// with. A second [esc] here forcefully discards, no second-guessing needed:
-// the modal itself was the warning.
-func (m Model) answerExitAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch key.String() {
-	case "ctrl+c":
-		m.askExit = false
-		return m.hardQuit()
-	case "left":
-		m.exitChoice = true
-	case "right":
-		m.exitChoice = false
-	case "y":
-		m.askExit = false
-		return m.saveAndExit()
-	case "n":
-		m.askExit = false
-		return m.discardAndExit()
-	case "enter":
-		m.askExit = false
-		if m.exitChoice {
-			return m.saveAndExit()
-		}
-		return m.discardAndExit()
-	case "esc":
-		m.askExit = false
-		return m.discardAndExit()
-	}
-	return m, nil
-}
-
-// saveAndExit is [esc]'s "Save" answer: the only way this screen writes
-// anything, whether or not there was anything to edit in the first place —
-// a reviewer approving the proposal exactly as offered still needs a key.
-func (m Model) saveAndExit() (tea.Model, tea.Cmd) {
-	m.confirmed, m.done = true, true
-	if m.embedded {
-		return m, nil
-	}
-	return m, tea.Quit
-}
-
-// discardAndExit is [esc]'s "Discard" answer: the review ends with nothing
-// written.
-func (m Model) discardAndExit() (tea.Model, tea.Cmd) {
+// leave hands back to the shell. Nothing to save or discard: every edit is
+// already in the draft file, and stays there for the next review or for
+// `wandersort execute` to apply.
+func (m Model) leave() (tea.Model, tea.Cmd) {
 	m.done = true
-	if m.embedded {
-		return m, nil
-	}
-	return m, tea.Quit
-}
-
-// hardQuit is ctrl+c's unconditional exit.
-func (m Model) hardQuit() (tea.Model, tea.Cmd) {
-	m.done = true
-	if m.embedded {
-		return m, nil
-	}
-	return m, tea.Quit
+	return m, tui.Switch(nil)
 }
 
 func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -167,41 +97,16 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// A copy/move is already writing to disk under the plan as it stood the
-	// moment it started (see startTransfer's Confirm). [esc] saving over it,
-	// or [R] reloading out from under it, would race the transfer with no
-	// good outcome — so both wait. ctrl+c is untouched: it never saves, and
-	// each file execute.Run writes lands whole or not at all, so a run that
-	// gets killed picks back up on the next one.
-	if m.transferring && (key.String() == "esc" || key.String() == "R") {
-		m.statusMsg, m.statusIsErr = "copying — wait for it to finish", true
-		return m, nil
-	}
-
-	// Same shape for the exit question, except ctrl+c inside it is a hard
-	// discard rather than a fall-through — the modal is already the warning,
-	// so a second wait-and-warn cycle behind it would just trap the reviewer.
-	if m.askExit {
-		return m.answerExitAsk(key)
-	}
-
 	if m.showHelp {
 		m.showHelp = false
 		return m, nil
 	}
 
 	var cmd tea.Cmd
-	m.quitWarned = m.quitWarned && key.String() == "ctrl+c"
 	switch key.String() {
 	case "ctrl+c":
-		// ctrl+c never saves — it's the unconditional discard, warned once so
-		// an accidental press doesn't throw work away.
-		if m.hasEdits() && !m.quitWarned {
-			m.quitWarned = true
-			m.statusMsg, m.statusIsErr = "unsaved changes — press esc to save or discard them, or ctrl+c again to discard immediately", true
-			break
-		}
-		return m.hardQuit()
+		// the shell turns this hand-back into a quit
+		return m.leave()
 	case "esc":
 		// A live selection is the nearer thing to back out of — esc clears it
 		// first, same as it does everywhere else.
@@ -209,8 +114,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.visualMode = false
 			break
 		}
-		m.askExit, m.exitChoice = true, true
-		return m, nil
+		return m.leave()
 	case "up":
 		if m.cursor > 0 {
 			m.cursor--
@@ -256,33 +160,9 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.showHelp = true
 	case "R":
-		if !m.resetting {
-			m.resetting = true
-			m.statusMsg, m.statusIsErr = "", false
-			cmd = tea.Batch(resetCmd(m.ctx, m.db), m.spin.Tick)
-		}
+		m = m.reset()
 	case "u":
-		if n := len(m.undo); n > 0 {
-			step := m.undo[n-1]
-			m.undo = m.undo[:n-1]
-			m.tree = step.tree
-			m.reflow()
-			left := ""
-			if len(m.undo) > 0 {
-				left = fmt.Sprintf(" (%d more)", len(m.undo))
-			}
-			m.statusMsg, m.statusIsErr = "undid "+step.edit+left, false
-		} else {
-			m.statusMsg, m.statusIsErr = "nothing left to undo", true
-		}
-	case "x":
-		if !m.transferring {
-			return m.startTransfer(execute.ModeCopy)
-		}
-	case "X":
-		if !m.transferring {
-			m.raiseMoveAsk()
-		}
+		m.undo()
 	}
 	m.scrollIntoView()
 	return m, cmd
