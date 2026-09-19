@@ -12,6 +12,8 @@ package vfs
 
 import (
 	"context"
+	"database/sql/driver"
+	"encoding/json/v2"
 	"fmt"
 	"strings"
 
@@ -26,12 +28,32 @@ type folderRow struct {
 	Parent int64  `db:"parent_id"`
 	Name   string `db:"name"`
 	Level  string `db:"level"`
+	Bounds Bounds `db:"bounds"`
+}
+
+// Scan reads a folder_nodes.bounds column.
+func (b *Bounds) Scan(src any) error {
+	*b = Bounds{}
+	switch v := src.(type) {
+	case string:
+		return json.Unmarshal([]byte(v), b)
+	case []byte:
+		return json.Unmarshal(v, b)
+	}
+	return fmt.Errorf("folder bounds: unexpected %T", src)
+}
+
+// Value writes a folder_nodes.bounds column. No alternatives is "[]", never
+// "null" — json/v2 writes a nil slice as [].
+func (b Bounds) Value() (driver.Value, error) {
+	out, err := json.Marshal(b)
+	return string(out), err
 }
 
 func loadFolderRows(ctx context.Context, q sqlx.QueryerContext) (map[int64]folderRow, error) {
 	var rows []folderRow
 	if err := sqlx.SelectContext(ctx, q, &rows,
-		`SELECT id, COALESCE(parent_id, 0) AS parent_id, name, level FROM folder_nodes`); err != nil {
+		`SELECT id, COALESCE(parent_id, 0) AS parent_id, name, level, bounds FROM folder_nodes`); err != nil {
 		return nil, fmt.Errorf("load folders: %w", err)
 	}
 	out := make(map[int64]folderRow, len(rows))
@@ -78,7 +100,7 @@ type folderIndex struct {
 func loadFolders(ctx context.Context, tx *sqlx.Tx) (*folderIndex, error) {
 	var rows []folderRow
 	if err := tx.SelectContext(ctx, &rows, placedFoldersCTE+`
-		SELECT id, COALESCE(parent_id, 0) AS parent_id, name, level FROM folder_nodes
+		SELECT id, COALESCE(parent_id, 0) AS parent_id, name, level, bounds FROM folder_nodes
 		WHERE id NOT IN (SELECT id FROM placed_folders)
 		ORDER BY id`); err != nil {
 		return nil, fmt.Errorf("load reusable folders: %w", err)
@@ -162,6 +184,11 @@ func splitPlacedFolders(ctx context.Context, tx *sqlx.Tx) (map[int64]int64, erro
 			}
 			for i, id := range old {
 				twins[id] = chain[i]
+				// same path, same files: the twin means what the old folder did
+				if _, err := tx.ExecContext(ctx, `UPDATE folder_nodes SET bounds = ? WHERE id = ?`,
+					rows[id].Bounds, chain[i]); err != nil {
+					return nil, fmt.Errorf("copy folder bounds: %w", err)
+				}
 			}
 		}
 		loc := e.LocationNode
@@ -217,16 +244,19 @@ func (f *folderIndex) ensure(ctx context.Context, tx *sqlx.Tx, dir string, level
 // pruneFolders deletes every folder no entry sits in, directly or below. A
 // folder with a file in it is never deleted, so a placed file's folder stays.
 func pruneFolders(ctx context.Context, tx *sqlx.Tx) error {
-	if _, err := tx.ExecContext(ctx, `
-		WITH RECURSIVE used(id) AS (
-			SELECT node_id FROM virtual_fs_entries
-			UNION
-			SELECT fn.parent_id FROM folder_nodes fn
-			JOIN used u ON fn.id = u.id
-			WHERE fn.parent_id IS NOT NULL
-		)
+	if _, err := tx.ExecContext(ctx, usedFoldersCTE+`
 		DELETE FROM folder_nodes WHERE id NOT IN (SELECT id FROM used)`); err != nil {
 		return fmt.Errorf("delete unused folders: %w", err)
 	}
 	return nil
 }
+
+// usedFoldersCTE names every folder an entry sits in, or above one, as used.
+const usedFoldersCTE = `
+	WITH RECURSIVE used(id) AS (
+		SELECT node_id FROM virtual_fs_entries
+		UNION
+		SELECT fn.parent_id FROM folder_nodes fn
+		JOIN used u ON fn.id = u.id
+		WHERE fn.parent_id IS NOT NULL
+	)`

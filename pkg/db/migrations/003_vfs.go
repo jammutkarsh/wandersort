@@ -28,7 +28,14 @@ CREATE TABLE IF NOT EXISTS folder_nodes (
     name TEXT NOT NULL,
     -- the grouping level that made this folder: year, month, screenshots,
     -- fallback, orphan, or one of the rules levels (date, location, …)
-    level TEXT NOT NULL
+    level TEXT NOT NULL,
+    -- what files this folder holds (spec D13), a JSON array of alternatives,
+    -- each an AND of levels: [{"date":[3],"location":["Goa"]},
+    -- {"date":[20],"location":["Manali"]}]. A file belongs if it matches any
+    -- alternative; [] matches nothing, [{}] everything. A folder's full range
+    -- is its bounds AND its ancestors'. Read in Go only (vfs.Bounds); nothing
+    -- queries inside it.
+    bounds TEXT NOT NULL DEFAULT '[{}]'
 );
 
 CREATE INDEX IF NOT EXISTS idx_folder_nodes_parent ON folder_nodes(parent_id);

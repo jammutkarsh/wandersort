@@ -184,7 +184,7 @@ func resolveLocations(ctx context.Context, masters []masterFile, cfg Config, geo
 			log.Debug("No location for coordinates", "lat", m.lat, "lon", m.lon, "error", err)
 			return
 		}
-		m.location = city
+		m.location, m.city = city, city
 		for _, a := range cfg.Anchors {
 			dLat, dLon := m.lat-a.Lat, m.lon-a.Lon
 			if dLat*dLat+dLon*dLon <= location.MaxDistSquared {
@@ -201,6 +201,7 @@ func resolveLocations(ctx context.Context, masters []masterFile, cfg Config, geo
 func applyNameCase(ctx context.Context, masters []masterFile, workers int) {
 	forEachMaster(ctx, masters, workers, func(_ int, m *masterFile) {
 		m.location = caseName(m.location)
+		m.city = caseName(m.city)
 		m.device = caseName(m.device)
 	})
 }
@@ -489,7 +490,7 @@ func buildTargets(ctx context.Context, masters []masterFile, cfg Config) {
 		// the real hierarchy, often alone. Paired sidecars never reach here;
 		// they already got the leader's directory above.
 		if m.MediaType == classifier.MediaTypeSidecar {
-			dirs[i], m.dirLevels = OrphanDir, []string{LevelOrphan}
+			dirs[i], m.dirLevels, m.dirBounds = OrphanDir, []string{LevelOrphan}, []Constraint{{}}
 			return
 		}
 		dirs[i] = dirFor(m, skip, cfg)
@@ -768,6 +769,7 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 			// every grouped file had no location folder and the review tree
 			// no GPS to re-query for that folder's renames
 			masters[i].dirLevels = masters[leader].dirLevels
+			masters[i].dirBounds = masters[leader].dirBounds
 			// the leader's time and hash also rank the member when names
 			// collide, so a sidecar keeps its photo's suffix
 			masters[i].orderTime = masters[leader].takenAt
@@ -808,18 +810,19 @@ func monthParts(m *masterFile) []string {
 // order. skip names the levels uninformativeLevels found nothing to say with.
 func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 	if m.takenAt.IsZero() {
-		m.dirLevels = []string{LevelFallback}
+		m.dirLevels, m.dirBounds = []string{LevelFallback}, []Constraint{{}}
 		return path.SanitizeSegment(cfg.Fallback)
 	}
 
 	parts := monthParts(m)
 	levels := []string{LevelYear, LevelMonth}
+	bounds := []Constraint{boundsFor(m, LevelYear), boundsFor(m, LevelMonth)}
 
 	// A screenshot has no location/device/orientation worth a folder of its
 	// own — group every screenshot in the month together instead of letting
 	// the configured Rules fragment them.
 	if m.IsScreenshot {
-		m.dirLevels = append(levels, LevelScreenshots)
+		m.dirLevels, m.dirBounds = append(levels, LevelScreenshots), append(bounds, Constraint{})
 		return strings.Join(append(parts, "Screenshots"), "/")
 	}
 
@@ -833,9 +836,56 @@ func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 		}
 		parts = append(parts, path.SanitizeSegment(seg))
 		levels = append(levels, level)
+		bounds = append(bounds, boundsFor(m, level))
 	}
-	m.dirLevels = levels
+	m.dirLevels, m.dirBounds = levels, bounds
 	return strings.Join(parts, "/")
+}
+
+// boundsFor is the constraint one folder dirFor emits puts on m (spec D13):
+// the value the segment was derived from, not its name. persist collects them
+// per folder, so a range folder lists its days and a saved place's folder
+// every city folded into it.
+func boundsFor(m *masterFile, level string) Constraint {
+	switch level {
+	case LevelYear:
+		return Constraint{Year: []int{m.folderTime().Year()}}
+	case LevelMonth:
+		return Constraint{Month: []int{int(m.folderTime().Month())}}
+	case RuleDate:
+		return dayBounds(m)
+	case RuleLocation:
+		if m.location == "" {
+			return dayBounds(m) // a dated event segment standing in for a place
+		}
+		places := []string{m.location}
+		if m.city != "" && m.city != m.location {
+			places = append(places, m.city)
+			slices.Sort(places)
+		}
+		return Constraint{Location: places}
+	case RuleDevice:
+		return Constraint{Device: []string{m.device}}
+	case RuleOrientation, RuleMedia:
+		seg := segmentFor(m, level, Config{})
+		if level == RuleOrientation {
+			return Constraint{Orientation: []string{seg}}
+		}
+		return Constraint{Media: []string{seg}}
+	}
+	return Constraint{}
+}
+
+// dayBounds is the day m was shot, for a folder named after dates.
+func dayBounds(m *masterFile) Constraint {
+	b := Constraint{Date: []int{m.takenAt.Day()}}
+	if crossesFolderMonth(m) {
+		// a Jan_01 folder under 12_December: its own year and month
+		// contradict its ancestors', so nothing new matches it — the safe
+		// answer, where a bare day would claim Dec 01
+		b.Year, b.Month = []int{m.takenAt.Year()}, []int{int(m.takenAt.Month())}
+	}
+	return b
 }
 
 // segmentFor is the folder name one grouping level gives this file, or "" when

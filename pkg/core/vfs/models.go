@@ -161,7 +161,10 @@ type masterFile struct {
 	lat, lon      float64
 	device        string
 	location      string // resolved city; "" when unknown
-	atSavedPlace  bool   // GPS at a confirmed saved-place place; suppresses the location level (SavedPlacesDateOnly)
+	// city is the geonames city before a saved place's folder name replaced
+	// it — the anchor-folded cities a saved-place folder's Bounds list
+	city         string
+	atSavedPlace bool // GPS at a confirmed saved-place place; suppresses the location level (SavedPlacesDateOnly)
 	// keepLocationFolder overrides that suppression for this file because its
 	// day holds files from somewhere else too. See unsuppressMixedSavedPlaces.
 	keepLocationFolder bool
@@ -173,6 +176,8 @@ type masterFile struct {
 	// segment — dirFor records it. The location entry is where the review
 	// tree hangs this file's GPS, whatever depth the Rules put it at.
 	dirLevels []string
+	// what each of those folders holds, one per segment — see boundsFor
+	dirBounds []Constraint
 	// the folder_nodes rows persist linked this file to: its folder, and its
 	// location folder (0 = none)
 	nodeID, locationNodeID int64

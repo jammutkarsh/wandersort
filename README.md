@@ -64,12 +64,12 @@ WanderSort is a single, self-contained command-line binary.
 
 ### Install
 
-Build from source (requires Go 1.26+):
+Build from source (requires Go 1.27+):
 
 ```bash
 git clone https://github.com/jammutkarsh/wandersort.git
 cd wandersort
-make install         installs to $GOPATH/bin/wandersort (requires Go 1.26.5 or above)
+make install         installs to $GOPATH/bin/wandersort (requires Go 1.27.1 or above)
 ```
 
 ### Usage

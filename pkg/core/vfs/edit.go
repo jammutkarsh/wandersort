@@ -7,7 +7,9 @@
 package vfs
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +18,198 @@ import (
 // This file holds the review tree's reshaping rules (merge/drop/flatten) as
 // plain []Node functions with no TUI knowledge, testable by stating a tree
 // and asserting the result. Each mutates in place — CloneTree first for undo.
+
+// Constraint is one way a file can belong in a folder (spec D13): an AND of
+// levels. A nil level constrains nothing; an empty non-nil one matches
+// nothing. Usually one level is set, but a drop pushes the dropped folder's
+// constraint into its children, so one can carry several.
+type Constraint struct {
+	Year  []int `json:"year,omitzero"`
+	Month []int `json:"month,omitzero"`
+	// Date is the days of the month, a set: {3, 20} is the 3rd and the 20th,
+	// never the days between.
+	Date        []int    `json:"date,omitzero"`
+	Location    []string `json:"location,omitzero"`
+	Device      []string `json:"device,omitzero"`
+	Orientation []string `json:"orientation,omitzero"`
+	Media       []string `json:"media,omitzero"`
+}
+
+// Bounds is what one folder holds: a file belongs if it satisfies any one of
+// its alternatives, and a folder's full range is its Bounds AND every
+// ancestor's. Alternatives keep a merge exact — Goa on the 3rd merged with
+// Manali on the 20th does not admit Goa on the 20th. No alternatives matches
+// nothing; one empty Constraint matches everything.
+//
+// Never mutated in place — every operation returns fresh slices — so trees
+// and their undo clones share Bounds freely.
+type Bounds []Constraint
+
+// Union holds every file either side holds — the merge rule (D14): the
+// alternatives side by side.
+func (b Bounds) Union(o Bounds) Bounds {
+	out := slices.Clone(b)
+	for _, c := range o {
+		out = out.with(c)
+	}
+	return out
+}
+
+// Intersect holds only the files both sides hold — the drop rule (D14): each
+// pair of alternatives intersected, the empty ones gone.
+func (b Bounds) Intersect(o Bounds) Bounds {
+	out := Bounds{}
+	for _, x := range b {
+		for _, y := range o {
+			if c, ok := x.intersect(y); ok {
+				out = out.with(c)
+			}
+		}
+	}
+	return out
+}
+
+// Matches reports whether a file, stated as a Constraint holding its own
+// values, satisfies any alternative. A level the file has no value for fails
+// every alternative that constrains it.
+func (b Bounds) Matches(file Constraint) bool {
+	return slices.ContainsFunc(b, func(c Constraint) bool {
+		return admits(c.Year, file.Year) && admits(c.Month, file.Month) && admits(c.Date, file.Date) &&
+			admits(c.Location, file.Location) && admits(c.Device, file.Device) &&
+			admits(c.Orientation, file.Orientation) && admits(c.Media, file.Media)
+	})
+}
+
+// with adds c, folding it into an alternative it differs from on one level
+// at most — an exact rewrite ({3, Goa} or {20, Goa} is {3 or 20, Goa}) that
+// keeps an ordinary folder at one alternative however many files it holds.
+func (b Bounds) with(c Constraint) Bounds {
+	for i, a := range b {
+		if j, ok := a.join(c); ok {
+			return slices.Delete(slices.Clone(b), i, i+1).with(j)
+		}
+	}
+	return append(slices.Clone(b), c)
+}
+
+// join is a ∪ c as one alternative, when they differ on one level at most.
+func (a Constraint) join(c Constraint) (Constraint, bool) {
+	diff := 0
+	for _, same := range []bool{
+		sameSet(a.Year, c.Year), sameSet(a.Month, c.Month), sameSet(a.Date, c.Date),
+		sameSet(a.Location, c.Location), sameSet(a.Device, c.Device),
+		sameSet(a.Orientation, c.Orientation), sameSet(a.Media, c.Media),
+	} {
+		if !same {
+			diff++
+		}
+	}
+	if diff > 1 {
+		return Constraint{}, false
+	}
+	return Constraint{
+		Year:        unionSet(a.Year, c.Year),
+		Month:       unionSet(a.Month, c.Month),
+		Date:        unionSet(a.Date, c.Date),
+		Location:    unionSet(a.Location, c.Location),
+		Device:      unionSet(a.Device, c.Device),
+		Orientation: unionSet(a.Orientation, c.Orientation),
+		Media:       unionSet(a.Media, c.Media),
+	}, true
+}
+
+// intersect is a ∩ c; ok is false when any level comes out empty.
+func (a Constraint) intersect(c Constraint) (Constraint, bool) {
+	out := Constraint{
+		Year:        intersectSet(a.Year, c.Year),
+		Month:       intersectSet(a.Month, c.Month),
+		Date:        intersectSet(a.Date, c.Date),
+		Location:    intersectSet(a.Location, c.Location),
+		Device:      intersectSet(a.Device, c.Device),
+		Orientation: intersectSet(a.Orientation, c.Orientation),
+		Media:       intersectSet(a.Media, c.Media),
+	}
+	for _, n := range []int{
+		emptyLen(out.Year), emptyLen(out.Month), emptyLen(out.Date), emptyLen(out.Location),
+		emptyLen(out.Device), emptyLen(out.Orientation), emptyLen(out.Media),
+	} {
+		if n == 0 {
+			return Constraint{}, false
+		}
+	}
+	return out, true
+}
+
+// emptyLen is len(s), or -1 for an unconstrained (nil) level.
+func emptyLen[T any](s []T) int {
+	if s == nil {
+		return -1
+	}
+	return len(s)
+}
+
+// sameSet compares two sorted sets, nil (unconstrained) only equal to nil.
+func sameSet[T comparable](a, b []T) bool {
+	return (a == nil) == (b == nil) && slices.Equal(a, b)
+}
+
+// unionSet is a ∪ b, sorted; unconstrained on either side stays unconstrained.
+func unionSet[T cmp.Ordered](a, b []T) []T {
+	if a == nil || b == nil {
+		return nil
+	}
+	out := append(make([]T, 0, len(a)+len(b)), a...)
+	out = append(out, b...)
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// intersectSet is a ∩ b in a's (sorted) order; non-nil when both are, so an
+// empty result reads as "nothing", not "anything".
+func intersectSet[T comparable](a, b []T) []T {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	out := []T{}
+	for _, v := range a {
+		if slices.Contains(b, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// admits reports whether a level constraint c holds the file's values f.
+func admits[T comparable](c, f []T) bool {
+	if c == nil {
+		return true
+	}
+	if len(f) == 0 {
+		return false
+	}
+	for _, v := range f {
+		if !slices.Contains(c, v) {
+			return false
+		}
+	}
+	return true
+}
+
+// pushDown intersects every descendant of n with its ancestors up to n, so
+// each folder in n's subtree means on its own what it meant under them. A
+// merge calls it before moving a subtree under a looser parent: two day
+// folders' same-named Canon children stay "Canon on the 3rd" and "Canon on
+// the 20th" once both days are one folder.
+func pushDown(n *Node) {
+	for i := range n.Children {
+		c := &n.Children[i]
+		c.Bounds = c.Bounds.Intersect(n.Bounds)
+		pushDown(c)
+	}
+}
 
 // SortTree restores name order after a structural edit — BuildTree emits
 // sorted levels, but a splice (merge, drop, flatten) appends, and a folder
@@ -45,6 +239,7 @@ func CloneTree(nodes []Node) []Node {
 		if n.MergedIDs != nil {
 			out[i].MergedIDs = append([]int64(nil), n.MergedIDs...)
 		}
+		out[i].Bounds = slices.Clone(n.Bounds)
 		if n.Lat != nil {
 			lat := *n.Lat
 			out[i].Lat = &lat
@@ -111,6 +306,7 @@ func childByName(parent *Node, name string) *Node {
 // rather than leaving them as duplicate siblings.
 func mergeInto(dst *Node, src Node) {
 	dst.FileCount += src.FileCount
+	dst.Bounds = dst.Bounds.Union(src.Bounds)
 	dst.Samples = append(dst.Samples, src.Samples...)
 	dst.MergedIDs = append(dst.MergedIDs, src.ID)
 	dst.MergedIDs = append(dst.MergedIDs, src.MergedIDs...)
@@ -278,6 +474,22 @@ func MergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 		return tree, 0, "", "", fmt.Errorf("internal error locating merge destination")
 	}
 
+	// each pick is lifted out from under the folders between it and the LCA,
+	// so it takes their bounds with it — "Canon under the 3rd" stays the 3rd —
+	// and its subtree takes its own, since the merged parent will be looser
+	for i := range picks {
+		chain := chainTo(tree, picks[i].id)
+		if len(chain) == len(shared) {
+			// this pick is the LCA itself: another pick sits inside it
+			return tree, 0, "", "", fmt.Errorf("can't merge a folder with a folder inside it")
+		}
+		for _, between := range chain[len(shared) : len(chain)-1] {
+			picks[i].value.Bounds = picks[i].value.Bounds.Intersect(FindNode(tree, between).Bounds)
+		}
+		picks[i].value.Children = CloneTree(picks[i].value.Children)
+		pushDown(&picks[i].value)
+	}
+
 	// leaves *before* the splice — afterwards a childless node is either one of
 	// these or an ancestor the merge emptied out
 	leafIDs := map[int64]bool{}
@@ -346,7 +558,12 @@ func DropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err er
 			continue
 		}
 		removeChildByID(parent, d.node.ID)
-		parent.Children = append(parent.Children, d.node.Children...)
+		// each lifted child keeps what the dropped folder constrained, so
+		// dropping `12` over `Panji` leaves a Panji that still means day 12
+		for _, c := range d.node.Children {
+			c.Bounds = c.Bounds.Intersect(d.node.Bounds)
+			parent.Children = append(parent.Children, c)
+		}
 		// files sitting directly in the dropped node remap onto the parent
 		parent.MergedIDs = append(parent.MergedIDs, append([]int64{d.node.ID}, d.node.MergedIDs...)...)
 		names = append(names, d.node.Name)
@@ -386,7 +603,9 @@ func FlattenNodes(tree []Node, ids []int64) (newTree []Node, absorbed int, names
 			}
 		}
 		absorb(node.Children)
-		node.Children = nil // FileCount is unchanged — it already counted the subtree
+		// FileCount is unchanged — it already counted the subtree — and so are
+		// the node's own Bounds: the descendants' constraints go with them
+		node.Children = nil
 		names = append(names, node.Name)
 	}
 

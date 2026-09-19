@@ -202,6 +202,18 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 		if err != nil {
 			return err
 		}
+		// folders still holding a decided file keep what they already hold on
+		// top of what this plan adds; the rest mean only this plan's files
+		occupied := map[int64]Bounds{}
+		var used []folderRow
+		if err := tx.SelectContext(ctx, &used, usedFoldersCTE+`
+			SELECT id, bounds FROM folder_nodes WHERE id IN (SELECT id FROM used)`); err != nil {
+			return fmt.Errorf("load occupied folders: %w", err)
+		}
+		for _, r := range used {
+			occupied[r.ID] = r.Bounds
+		}
+		bounds := map[int64]Bounds{}
 		for i := range masters {
 			m := &masters[i]
 			if kept[m.FileID] {
@@ -214,6 +226,24 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 			m.nodeID, m.locationNodeID = chain[len(chain)-1], 0
 			if d := m.locationDepth(); d >= 0 && d < len(chain) {
 				m.locationNodeID = chain[d]
+			}
+			for d, id := range chain {
+				var c Constraint
+				if d < len(m.dirBounds) {
+					c = m.dirBounds[d]
+				}
+				b, ok := bounds[id]
+				if !ok {
+					b = occupied[id] // nil unless the folder holds a decided file
+				}
+				bounds[id] = b.with(c)
+			}
+		}
+		// rewritten on every plan, reused folders included: a range folder a
+		// new day joined must say so
+		for id, b := range bounds {
+			if _, err := tx.ExecContext(ctx, `UPDATE folder_nodes SET bounds = ? WHERE id = ?`, b, id); err != nil {
+				return fmt.Errorf("store folder bounds: %w", err)
 			}
 		}
 

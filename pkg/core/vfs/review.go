@@ -54,6 +54,9 @@ type Node struct {
 	// tree, but their files and subfolders still point at them, so Confirm
 	// must move those here too.
 	MergedIDs []int64 `json:"mergedIds,omitempty"`
+	// What the folder holds, as stored; the edits in edit.go transform it and
+	// Confirm writes it back.
+	Bounds Bounds `json:"bounds"`
 }
 
 const maxSamples = 3
@@ -105,7 +108,7 @@ func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 			return t
 		}
 		f := folders[id]
-		t := &tnode{Node: Node{ID: id, Name: f.Name}}
+		t := &tnode{Node: Node{ID: id, Name: f.Name, Bounds: f.Bounds}}
 		byID[id] = t
 		parent := root
 		if f.Parent != 0 {
@@ -327,10 +330,11 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 }
 
 // treeEdits is a submitted review tree read against the stored folders: where
-// each folder now sits, which folders were folded into which, and the names
-// the reviewer typed.
+// each folder now sits, what it holds, which folders were folded into which,
+// and the names the reviewer typed.
 type treeEdits struct {
 	placeOf    map[int64]folderKey
+	bounds     map[int64]Bounds
 	mergedInto map[int64]int64
 	learned    []string
 }
@@ -340,7 +344,7 @@ type treeEdits struct {
 // disk, so the later one folds into the first — a deliberate merge, not an
 // error.
 func readTree(roots []Node, folders map[int64]folderRow) (treeEdits, error) {
-	e := treeEdits{placeOf: map[int64]folderKey{}, mergedInto: map[int64]int64{}}
+	e := treeEdits{placeOf: map[int64]folderKey{}, bounds: map[int64]Bounds{}, mergedInto: map[int64]int64{}}
 	seen := map[folderKey]int64{}
 	learned := map[string]bool{}
 	var walk func(nodes []Node, parent int64) error
@@ -372,9 +376,12 @@ func readTree(roots []Node, folders map[int64]folderRow) (treeEdits, error) {
 					e.mergedInto[id] = twin
 				}
 				id = twin
+				// the same merge rule MergeNodes applies, since this is one
+				e.bounds[id] = e.bounds[id].Union(n.Bounds)
 			} else {
 				seen[k] = id
 				e.placeOf[id] = k
+				e.bounds[id] = n.Bounds
 			}
 			for _, m := range n.MergedIDs {
 				if m != id {
@@ -429,7 +436,9 @@ func (e treeEdits) survivor(id int64) int64 {
 
 // apply writes the edits: a folded-away folder's files and subfolders move
 // onto the folder it was folded into, every folder in the tree takes the
-// parent and name the reviewer gave it, and folders left empty are deleted.
+// parent, name and bounds the reviewer's edits left it with (computed by the
+// rules in edit.go, stored here as they come), and folders left empty are
+// deleted.
 // Folds go first, so a subfolder the tree places explicitly ends up where
 // the tree says.
 func (e treeEdits) apply(ctx context.Context, tx *sqlx.Tx) error {
@@ -453,8 +462,8 @@ func (e treeEdits) apply(ctx context.Context, tx *sqlx.Tx) error {
 	for _, id := range slices.Sorted(maps.Keys(e.placeOf)) {
 		k := e.placeOf[id]
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE folder_nodes SET parent_id = ?, name = ? WHERE id = ?`,
-			nullableID(k.parent), k.name, id); err != nil {
+			`UPDATE folder_nodes SET parent_id = ?, name = ?, bounds = ? WHERE id = ?`,
+			nullableID(k.parent), k.name, e.bounds[id], id); err != nil {
 			return fmt.Errorf("place folder %d: %w", id, err)
 		}
 	}

@@ -1260,6 +1260,22 @@ tree over the whole library.
   submitted tree's IDs are remapped onto it (`remapIDs`). Without it a review
   rename of a shared folder rewrote where the copied files are recorded while
   on disk they stayed put.
+  **Every folder stores what it holds** (`folder_nodes.bounds`, `vfs.Bounds`,
+  spec D13/D14): a JSON array of alternatives (`vfs.Constraint`, an AND of
+  levels, each a set, days too: `{"date":[3,20]}` is the 3rd and the 20th,
+  never between). A file fits a folder if it matches any alternative
+  (`Bounds.Matches`); a folder's full range is its bounds AND its ancestors'.
+  `[{}]` holds anything, `[]` nothing. Alternatives differing on one level
+  fold into one (`Bounds.with`, exact), so an ordinary folder has one. The
+  planner fills them (`boundsFor`, per `dirFor` segment, collected per folder
+  in `persist`, which rewrites them every plan); the review edits transform
+  them in `edit.go` (merge = alternatives side by side, each pick first
+  intersected with the folders between it and the common parent and its
+  subtree with its ancestors (`pushDown`) — "Canon on the 3rd or the 20th",
+  never "any day"; drop = pairwise `Intersect` into each lifted child;
+  flatten/rename unchanged) and `Confirm` stores the result as the tree
+  carries it: the rules live once, and `apply` never re-derives them. Issue
+  14 reads them to route new files.
   `location_node_id` is `ON DELETE SET NULL`: a merge can move a file out
   from under its old place folder, which the save then prunes, and the file
   just loses that GPS link — it isn't under that place any more. (Without it

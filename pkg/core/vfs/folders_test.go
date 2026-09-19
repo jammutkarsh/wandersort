@@ -8,11 +8,14 @@ package vfs
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 )
 
 // folderIDs maps every folder path in the review tree to its ID.
@@ -353,5 +356,128 @@ func TestConfirmStoresTypedNamesNFC(t *testing.T) {
 	}
 	if name != "Caf\u00e9" {
 		t.Errorf("name = %+q, want NFC %+q", name, "Caf\u00e9")
+	}
+}
+
+// folderBounds maps every folder path in the review tree to its bounds.
+func folderBounds(t *testing.T, d *db.DB) map[string]Bounds {
+	t.Helper()
+	tree, err := BuildTree(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]Bounds{}
+	var walk func(nodes []Node, parent string)
+	walk = func(nodes []Node, parent string) {
+		for _, n := range nodes {
+			out[parent+n.Name] = n.Bounds
+			walk(n.Children, parent+n.Name+"/")
+		}
+	}
+	walk(tree, "")
+	return out
+}
+
+// goaDays plans one Calangute photo per day for days, grouped by date then
+// location, so consecutive days fold into one range folder.
+func goaDays(t *testing.T, h *harness, days ...int) {
+	t.Helper()
+	for _, d := range days {
+		h.addFile(t, fmt.Sprintf("dump/D%02d.HEIC", d), "IMAGE",
+			metaWith(fmt.Sprintf("2024:06:%02d 10:00:00", d), 15.5439, 73.7553, 3024, 4032))
+	}
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate, RuleLocation}
+	h.build(t, cfg, installtest.Resolver(t))
+}
+
+// The planner stores what each folder holds, derived from its files rather
+// than its name.
+func TestPlanStoresBounds(t *testing.T) {
+	h := newHarness(t)
+	goaDays(t, h, 1, 2)
+	got := folderBounds(t, h.d)
+	want := map[string]Bounds{
+		"2024":                         {{Year: []int{2024}}},
+		"2024/06_June":                 {{Month: []int{6}}},
+		"2024/06_June/01_02":           {{Date: []int{1, 2}}},
+		"2024/06_June/01_02/Calangute": {{Location: []string{"Calangute"}}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("bounds = %+v, want %+v", got, want)
+	}
+}
+
+// A saved place's folder lists every city folded into it, not only its name.
+func TestPlanSavedPlaceBoundsListFoldedCities(t *testing.T) {
+	h := newHarness(t)
+	h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5439, 73.7553, 3024, 4032))
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleLocation}
+	cfg.SavedPlacesDateOnly = false
+	cfg.Anchors = []location.Anchor{{Name: "Home", FolderName: "Home", Lat: 15.55, Lon: 73.76}}
+	h.build(t, cfg, installtest.Resolver(t))
+
+	if got, want := folderBounds(t, h.d)["2024/06_June/Home"], (Bounds{{Location: []string{"Calangute", "Home"}}}); !reflect.DeepEqual(got, want) {
+		t.Errorf("Home bounds = %+v, want %+v", got, want)
+	}
+}
+
+// Plan, merge in review, save, reload: the stored bounds are the ones the
+// edit produced in memory.
+func TestConfirmStoresEditedBounds(t *testing.T) {
+	h := eventTree(t)
+	ctx := context.Background()
+	tree, err := BuildTree(ctx, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaves := leafNodes(tree)
+	tree, id, _, _, err := MergeNodes(tree, []int64{leaves[0].ID, leaves[1].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := FindNode(tree, id).Bounds
+	if !reflect.DeepEqual(want, Bounds{{Date: []int{3, 20}}}) {
+		t.Fatalf("merged bounds = %+v, want the 3rd and the 20th", want)
+	}
+	if err := Confirm(ctx, h.d, tree); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := BuildTree(ctx, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var walk func(nodes []Node)
+	walk = func(nodes []Node) {
+		for _, n := range nodes {
+			if mem := FindNode(tree, n.ID); mem == nil || !reflect.DeepEqual(n.Bounds, mem.Bounds) {
+				t.Errorf("folder %s stored %+v, edit left %+v", n.Name, n.Bounds, mem)
+			}
+			walk(n.Children)
+		}
+	}
+	walk(reloaded)
+}
+
+// Planning an unchanged library again keeps every folder's id and bounds; a
+// new day joining the range grows the range folder's bounds.
+func TestReplanBounds(t *testing.T) {
+	h := newHarness(t)
+	goaDays(t, h, 1, 2)
+	ids, bounds := folderIDs(t, h.d), folderBounds(t, h.d)
+
+	goaDays(t, h) // nothing new
+	if got := folderIDs(t, h.d); !reflect.DeepEqual(got, ids) {
+		t.Errorf("ids = %v, want %v", got, ids)
+	}
+	if got := folderBounds(t, h.d); !reflect.DeepEqual(got, bounds) {
+		t.Errorf("bounds = %+v, want %+v", got, bounds)
+	}
+
+	goaDays(t, h, 3)
+	if got := folderBounds(t, h.d)["2024/06_June/01_03"]; !reflect.DeepEqual(got, Bounds{{Date: []int{1, 2, 3}}}) {
+		t.Errorf("range folder bounds = %+v, want days 1, 2, 3", got)
 	}
 }

@@ -6,7 +6,10 @@
 
 package vfs
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // pathIDs gives every folder path a test states a stable int ID, so a
 // hand-built tree still reads as paths.
@@ -310,5 +313,214 @@ func TestCloneTreeIsIndependentOfTheOriginal(t *testing.T) {
 	}
 	if len(clone[0].Children[0].Children[0].MergedIDs) != 0 {
 		t.Error("mutating the original mutated the clone's MergedIDs")
+	}
+}
+
+// fullBounds is a folder's whole range: its own Bounds AND every ancestor's.
+func fullBounds(tree []Node, id int64) Bounds {
+	b := Bounds{{}}
+	for _, a := range chainTo(tree, id) {
+		b = b.Intersect(FindNode(tree, a).Bounds)
+	}
+	return b
+}
+
+// matchesChain reports whether a file fits the folder and every ancestor.
+func matchesChain(tree []Node, id int64, file Constraint) bool {
+	for _, a := range chainTo(tree, id) {
+		if !FindNode(tree, a).Bounds.Matches(file) {
+			return false
+		}
+	}
+	return true
+}
+
+// one is a folder's bounds with a single alternative.
+func one(c Constraint) Bounds { return Bounds{c} }
+
+// boundsTree is 2024/03_March/{01_03/{Mumbai,Panji,Baga}, 12/Panji,
+// 20/{Canon,Manali}, 03/{Canon,Goa}}, every folder carrying what the planner
+// would store for it.
+func boundsTree() []Node {
+	leaf := func(p, name string, c Constraint) Node {
+		return Node{ID: pid(p), Name: name, FileCount: 1, Bounds: one(c)}
+	}
+	place := func(p, name string) Node { return leaf(p, name, Constraint{Location: []string{name}}) }
+	canon := func(p string) Node { return leaf(p, "Canon", Constraint{Device: []string{"Canon"}}) }
+	day := func(p, name string, days []int, children ...Node) Node {
+		return Node{ID: pid(p), Name: name, Bounds: one(Constraint{Date: days}), Children: children}
+	}
+	return []Node{{ID: pid("b/2024"), Name: "2024", Bounds: one(Constraint{Year: []int{2024}}), Children: []Node{
+		{ID: pid("b/2024/03"), Name: "03_March", Bounds: one(Constraint{Month: []int{3}}), Children: []Node{
+			day("b/2024/03/01_03", "01_03", []int{1, 2, 3},
+				place("b/2024/03/01_03/Mumbai", "Mumbai"),
+				place("b/2024/03/01_03/Panji", "Panji"),
+				place("b/2024/03/01_03/Baga", "Baga")),
+			day("b/2024/03/12", "12", []int{12}, place("b/2024/03/12/Panji", "Panji")),
+			day("b/2024/03/05", "05", []int{5}, canon("b/2024/03/05/Canon"), place("b/2024/03/05/Goa", "Goa")),
+			day("b/2024/03/20", "20", []int{20}, canon("b/2024/03/20/Canon"), place("b/2024/03/20/Manali", "Manali")),
+		}},
+	}}}
+}
+
+// Each review edit transforms the folders' bounds (spec D14).
+func TestEditsTransformBounds(t *testing.T) {
+	march := Constraint{Year: []int{2024}, Month: []int{3}}
+	with := func(c Constraint, f func(*Constraint)) Constraint { f(&c); return c }
+	merge := func(ids ...string) func(t *testing.T, tree []Node) []Node {
+		return func(t *testing.T, tree []Node) []Node {
+			tree, _, _, _, err := MergeNodes(tree, pids(ids...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return tree
+		}
+	}
+	tests := []struct {
+		name string
+		edit func(t *testing.T, tree []Node) []Node
+		id   string // the folder checked afterwards
+		own  Bounds
+		full Bounds
+		in   []Constraint // files that must fit the folder
+		out  []Constraint // files that must not
+	}{
+		{
+			name: "merge places then rename",
+			edit: func(t *testing.T, tree []Node) []Node {
+				tree = merge("b/2024/03/01_03/Mumbai", "b/2024/03/01_03/Panji", "b/2024/03/01_03/Baga")(t, tree)
+				FindNode(tree, pid("b/2024/03/01_03/Mumbai")).Name = "Goa Trip" // a rename leaves bounds alone
+				return tree
+			},
+			id:  "b/2024/03/01_03/Mumbai",
+			own: one(Constraint{Location: []string{"Baga", "Mumbai", "Panji"}}),
+			full: one(with(march, func(c *Constraint) {
+				c.Date, c.Location = []int{1, 2, 3}, []string{"Baga", "Mumbai", "Panji"}
+			})),
+		},
+		{
+			name: "drop pushes into children",
+			edit: func(t *testing.T, tree []Node) []Node {
+				tree, _, err := DropNodes(tree, pids("b/2024/03/12"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return tree
+			},
+			id:   "b/2024/03/12/Panji",
+			own:  one(Constraint{Date: []int{12}, Location: []string{"Panji"}}),
+			full: one(with(march, func(c *Constraint) { c.Date, c.Location = []int{12}, []string{"Panji"} })),
+		},
+		{
+			name: "flatten keeps its own",
+			edit: func(t *testing.T, tree []Node) []Node {
+				tree, _, _, err := FlattenNodes(tree, pids("b/2024/03"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return tree
+			},
+			id:   "b/2024/03",
+			own:  one(Constraint{Month: []int{3}}),
+			full: one(march),
+		},
+		{
+			name: "merge unions same-named children",
+			edit: merge("b/2024/03/01_03", "b/2024/03/12"),
+			id:   "b/2024/03/01_03/Panji", // the 12/Panji folded into it
+			own:  one(Constraint{Date: []int{1, 2, 3, 12}, Location: []string{"Panji"}}),
+			full: one(with(march, func(c *Constraint) { c.Date, c.Location = []int{1, 2, 3, 12}, []string{"Panji"} })),
+			out:  []Constraint{with(march, func(c *Constraint) { c.Date, c.Location = []int{8}, []string{"Panji"} })},
+		},
+		{
+			name: "merge across days keeps the days",
+			edit: merge("b/2024/03/05/Canon", "b/2024/03/20/Canon"),
+			id:   "b/2024/03/05/Canon",
+			own:  one(Constraint{Date: []int{5, 20}, Device: []string{"Canon"}}),
+			in: []Constraint{
+				with(march, func(c *Constraint) { c.Date, c.Device = []int{5}, []string{"Canon"} }),
+				with(march, func(c *Constraint) { c.Date, c.Device = []int{20}, []string{"Canon"} }),
+			},
+			out: []Constraint{with(march, func(c *Constraint) { c.Date, c.Device = []int{10}, []string{"Canon"} })},
+		},
+		{
+			name: "merge keeps each place to its own day",
+			edit: merge("b/2024/03/05/Goa", "b/2024/03/20/Manali"),
+			id:   "b/2024/03/05/Goa",
+			own: Bounds{
+				{Date: []int{5}, Location: []string{"Goa"}},
+				{Date: []int{20}, Location: []string{"Manali"}},
+			},
+			in: []Constraint{
+				with(march, func(c *Constraint) { c.Date, c.Location = []int{5}, []string{"Goa"} }),
+				with(march, func(c *Constraint) { c.Date, c.Location = []int{20}, []string{"Manali"} }),
+			},
+			out: []Constraint{with(march, func(c *Constraint) { c.Date, c.Location = []int{20}, []string{"Goa"} })},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tree := tt.edit(t, boundsTree())
+			n := FindNode(tree, pid(tt.id))
+			if n == nil {
+				t.Fatalf("%s gone from the tree", tt.id)
+			}
+			if !reflect.DeepEqual(n.Bounds, tt.own) {
+				t.Errorf("own bounds = %+v, want %+v", n.Bounds, tt.own)
+			}
+			if tt.full != nil {
+				if got := fullBounds(tree, n.ID); !reflect.DeepEqual(got, tt.full) {
+					t.Errorf("full bounds = %+v, want %+v", got, tt.full)
+				}
+			}
+			for _, f := range tt.in {
+				if !matchesChain(tree, n.ID, f) {
+					t.Errorf("%+v does not fit, want it to", f)
+				}
+			}
+			for _, f := range tt.out {
+				if matchesChain(tree, n.ID, f) {
+					t.Errorf("%+v fits, want it not to", f)
+				}
+			}
+			if tt.name == "flatten keeps its own" && len(n.Children) != 0 {
+				t.Errorf("children = %v, want none", n.Children)
+			}
+		})
+	}
+}
+
+// Alternatives differing on one level fold into one; on two they stay apart.
+// An intersection with nothing in common matches nothing, not everything.
+func TestBoundsAlternatives(t *testing.T) {
+	goa3 := one(Constraint{Date: []int{3}, Location: []string{"Goa"}})
+	if got, want := goa3.Union(one(Constraint{Date: []int{20}, Location: []string{"Goa"}})),
+		one(Constraint{Date: []int{3, 20}, Location: []string{"Goa"}}); !reflect.DeepEqual(got, want) {
+		t.Errorf("union = %+v, want %+v", got, want)
+	}
+	if got := goa3.Union(one(Constraint{Date: []int{20}, Location: []string{"Manali"}})); len(got) != 2 {
+		t.Errorf("union = %+v, want two alternatives", got)
+	}
+	none := goa3.Intersect(one(Constraint{Location: []string{"Manali"}}))
+	if len(none) != 0 || none.Matches(Constraint{Date: []int{3}, Location: []string{"Goa"}}) {
+		t.Errorf("disjoint intersect = %+v, want no alternatives", none)
+	}
+	if v, err := Bounds(nil).Value(); err != nil || v != "[]" {
+		t.Errorf("stored nothing as %v, want []", v)
+	}
+	if Bounds(nil).Matches(Constraint{}) || !(Bounds{{}}).Matches(Constraint{}) {
+		t.Error("[] must match nothing and [{}] everything")
+	}
+}
+
+// A folder can't be merged with one inside it — there is no common parent to
+// lift both under.
+func TestMergeNodesRejectsAncestor(t *testing.T) {
+	tree := boundsTree()
+	if _, _, _, _, err := MergeNodes(tree, pids("b/2024/03/05", "b/2024/03/05/Goa")); err == nil {
+		t.Error("merged a folder with its own child, want an error")
+	}
+	if _, _, _, _, err := MergeNodes(tree, pids("b/2024/03/05/Goa", "b/2024/03/05")); err == nil {
+		t.Error("merged a folder with its own parent, want an error")
 	}
 }
