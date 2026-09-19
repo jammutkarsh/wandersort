@@ -211,26 +211,40 @@ func TestPlanClusterStartAnchorsYearAndMonth(t *testing.T) {
 
 // TestPlanBoundaryDayDoesNotCollideWithRealDay is the reported bug: Jan 01
 // files pulled into December by their cluster landed in "12_December/01",
-// which is where the library's real Dec 01 files already live.
+// which is where the library's real Dec 01 files already live. Merged, the
+// two days are one run across the year end (D27); unmerged, Jan 01 keeps a
+// month-qualified folder.
 func TestPlanBoundaryDayDoesNotCollideWithRealDay(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Rules = []string{RuleDate, RuleLocation}
-	cfg.CollapseLevels = false
-	cfg.MergeSameLocationDays = true
-
-	got := runPlan(t, []masterFile{
-		{FileDir: "/src", FileName: "dec01.jpg", DBDateTaken: new("2023:12:01 10:00:00"), location: "Banjar"},
-		{FileDir: "/src", FileName: "nye.jpg", DBDateTaken: new("2023:12:31 20:00:00"), location: "Banjar"},
-		{FileDir: "/src", FileName: "jan01.jpg", DBDateTaken: new("2024:01:01 02:00:00"), location: "Banjar"},
-	}, cfg)
-	want := []string{
-		"2023/12_December/01/Banjar/dec01.jpg",
-		"2023/12_December/31/Banjar/nye.jpg",
-		"2023/12_December/Jan_01/Banjar/jan01.jpg",
+	files := func() []masterFile {
+		return []masterFile{
+			{FileDir: "/src", FileName: "dec01.jpg", DBDateTaken: new("2023:12:01 10:00:00"), location: "Banjar"},
+			{FileDir: "/src", FileName: "nye.jpg", DBDateTaken: new("2023:12:31 20:00:00"), location: "Banjar"},
+			{FileDir: "/src", FileName: "jan01.jpg", DBDateTaken: new("2024:01:01 02:00:00"), location: "Banjar"},
+		}
 	}
-	for i, m := range got {
-		if m.targetPath != want[i] {
-			t.Errorf("%s: got %q, want %q", m.FileName, m.targetPath, want[i])
+	for _, tc := range []struct {
+		merge bool
+		want  []string
+	}{
+		{true, []string{
+			"2023/12_December/01/Banjar/dec01.jpg",
+			"2023/12_December/Dec_31-Jan_01/Banjar/nye.jpg",
+			"2023/12_December/Dec_31-Jan_01/Banjar/jan01.jpg",
+		}},
+		{false, []string{
+			"2023/12_December/01/Banjar/dec01.jpg",
+			"2023/12_December/31/Banjar/nye.jpg",
+			"2023/12_December/Jan_01/Banjar/jan01.jpg",
+		}},
+	} {
+		cfg := DefaultConfig()
+		cfg.Rules = []string{RuleDate, RuleLocation}
+		cfg.CollapseLevels = false
+		cfg.MergeSameLocationDays = tc.merge
+		for i, m := range runPlan(t, files(), cfg) {
+			if m.targetPath != tc.want[i] {
+				t.Errorf("merge=%v %s: got %q, want %q", tc.merge, m.FileName, m.targetPath, tc.want[i])
+			}
 		}
 	}
 }
@@ -853,5 +867,57 @@ func TestPairLiveVideosNeedsAgreeingTimes(t *testing.T) {
 	}
 	if ms[3].pairKey == "" || ms[3].pairKey != ms[2].pairKey {
 		t.Errorf("Live Photo not paired: photo %q, video %q", ms[2].pairKey, ms[3].pairKey)
+	}
+}
+
+// A same-place run crossing a month or year end is one run, under its first
+// day's year and month (D27); another place on the crossing day breaks it.
+func TestPlanMergeRunAcrossMonth(t *testing.T) {
+	day := func(name, dto, loc string) masterFile {
+		return masterFile{FileDir: "/src", FileName: name + ".jpg", DBDateTaken: new(dto + " 10:00:00"), location: loc}
+	}
+	for _, tc := range []struct {
+		name  string
+		files []masterFile
+		want  []string
+	}{
+		{"across a month", []masterFile{
+			day("a28", "2024:08:28", "Goa"), day("a29", "2024:08:29", "Goa"), day("a30", "2024:08:30", "Goa"),
+			day("a31", "2024:08:31", "Goa"), day("s01", "2024:09:01", "Goa"), day("s02", "2024:09:02", "Goa"),
+			day("s03", "2024:09:03", "Goa"), day("s04", "2024:09:04", "Goa"),
+		}, []string{
+			"2024/08_August/Aug_28-Sep_04/Goa/a28.jpg", "2024/08_August/Aug_28-Sep_04/Goa/a29.jpg",
+			"2024/08_August/Aug_28-Sep_04/Goa/a30.jpg", "2024/08_August/Aug_28-Sep_04/Goa/a31.jpg",
+			"2024/08_August/Aug_28-Sep_04/Goa/s01.jpg", "2024/08_August/Aug_28-Sep_04/Goa/s02.jpg",
+			"2024/08_August/Aug_28-Sep_04/Goa/s03.jpg", "2024/08_August/Aug_28-Sep_04/Goa/s04.jpg",
+		}},
+		{"across a year", []masterFile{
+			day("d30", "2024:12:30", "Goa"), day("d31", "2024:12:31", "Goa"),
+			day("j01", "2025:01:01", "Goa"), day("j02", "2025:01:02", "Goa"),
+		}, []string{
+			"2024/12_December/Dec_30-Jan_02/Goa/d30.jpg", "2024/12_December/Dec_30-Jan_02/Goa/d31.jpg",
+			"2024/12_December/Dec_30-Jan_02/Goa/j01.jpg", "2024/12_December/Dec_30-Jan_02/Goa/j02.jpg",
+		}},
+		{"another place on the crossing day breaks it", []masterFile{
+			day("a28", "2024:08:28", "Goa"), day("a29", "2024:08:29", "Goa"), day("a30", "2024:08:30", "Goa"),
+			day("a31", "2024:08:31", "Goa"), day("s01", "2024:09:01", "Delhi"), day("s02", "2024:09:02", "Goa"),
+			day("s03", "2024:09:03", "Goa"), day("s04", "2024:09:04", "Goa"),
+		}, []string{
+			"2024/08_August/28_31/Goa/a28.jpg", "2024/08_August/28_31/Goa/a29.jpg",
+			"2024/08_August/28_31/Goa/a30.jpg", "2024/08_August/28_31/Goa/a31.jpg",
+			"2024/09_September/01/Delhi/s01.jpg", "2024/09_September/02_04/Goa/s02.jpg",
+			"2024/09_September/02_04/Goa/s03.jpg", "2024/09_September/02_04/Goa/s04.jpg",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Rules = []string{RuleDate, RuleLocation}
+			cfg.CollapseLevels = false
+			for i, m := range runPlan(t, tc.files, cfg) {
+				if m.targetPath != tc.want[i] {
+					t.Errorf("%s: got %q, want %q", m.FileName, m.targetPath, tc.want[i])
+				}
+			}
+		})
 	}
 }

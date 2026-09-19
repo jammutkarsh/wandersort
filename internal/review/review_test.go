@@ -574,6 +574,25 @@ func TestReview(t *testing.T) {
 		// TestStructuralEditKeepsEarlierRenames covers a silent data-loss bug: merge,
 		// delete and undo all rebuild the row list from the tree. A rename on a row
 		// the edit never touched has to survive that.
+		// Year and month folders are fixed (D26): [r] on one is refused with a
+		// status line, and the tree is left as it was.
+		{"RenameRefusedOnYearAndMonth", func(t *testing.T) {
+			tree := siblingTree()
+			tree[0].Level, tree[0].Children[0].Level = vfs.LevelYear, vfs.LevelMonth
+			for _, row := range []int{0, 1} {
+				m := newModel(vfs.CloneTree(tree), nil, nil, nil, nil, "")
+				m.cursor = row
+				next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+				rm := next.(Model)
+				if rm.editing || !rm.statusIsErr {
+					t.Errorf("row %d: editing = %v, statusIsErr = %v, want a refusal", row, rm.editing, rm.statusIsErr)
+				}
+				rm.applyRename("Renamed")
+				if got := rm.rows[row].node.Name; got == "Renamed" {
+					t.Errorf("row %d renamed to %q, want it unchanged", row, got)
+				}
+			}
+		}},
 		{"StructuralEditKeepsEarlierRenames", func(t *testing.T) {
 			m := newModel(siblingTree(), nil, nil, nil, nil, "")
 			// rows: 0=2024, 1=June, 2=03, 3=09. Rename the year, then merge the leaves.

@@ -7,6 +7,7 @@
 package vfs
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -522,5 +523,35 @@ func TestMergeNodesRejectsAncestor(t *testing.T) {
 	}
 	if _, _, _, _, err := MergeNodes(tree, pids("b/2024/03/05/Goa", "b/2024/03/05")); err == nil {
 		t.Error("merged a folder with its own parent, want an error")
+	}
+}
+
+// Year and month folders are fixed (D26): no merge or drop of either, no
+// flatten of a year. Flattening a month keeps the month, so it stays.
+func TestEditsRefuseFixedFolders(t *testing.T) {
+	tree := func() []Node {
+		return []Node{{ID: pid("2024"), Name: "2024", Level: LevelYear, Children: []Node{
+			{ID: pid("2024/June"), Name: "06_June", Level: LevelMonth, Children: []Node{
+				{ID: pid("2024/June/03"), Name: "03", Level: RuleDate, FileCount: 1},
+			}},
+			{ID: pid("2024/July"), Name: "07_July", Level: LevelMonth, Children: []Node{
+				{ID: pid("2024/July/09"), Name: "09", Level: RuleDate, FileCount: 1},
+			}},
+		}}}
+	}
+	if _, _, _, _, err := MergeNodes(tree(), pids("2024/June", "2024/July")); !errors.Is(err, ErrFixedFolder) {
+		t.Errorf("merge months: err = %v, want ErrFixedFolder", err)
+	}
+	if _, _, err := DropNodes(tree(), pids("2024/June")); !errors.Is(err, ErrFixedFolder) {
+		t.Errorf("drop month: err = %v, want ErrFixedFolder", err)
+	}
+	if _, _, _, err := FlattenNodes(tree(), pids("2024")); !errors.Is(err, ErrFixedFolder) {
+		t.Errorf("flatten year: err = %v, want ErrFixedFolder", err)
+	}
+	if _, _, _, err := FlattenNodes(tree(), pids("2024/June")); err != nil {
+		t.Errorf("flatten month: %v, want it to work", err)
+	}
+	if _, _, _, _, err := MergeNodes(tree(), pids("2024/June/03", "2024/July/09")); err != nil {
+		t.Errorf("merge days across months: %v, want it to work", err)
 	}
 }

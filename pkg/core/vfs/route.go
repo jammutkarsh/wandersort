@@ -132,8 +132,9 @@ func (t *placedTree) matches(r folderRow, file Constraint, want levelBit) (level
 }
 
 // statement is what m's planned path says about it: each level's value from
-// the folder that level made (a year from the year folder, not from a
-// cross-month day folder's own year), and which levels those are.
+// the first folder stating it, and which levels those are. A file shot outside
+// its folder's month states its own full date there (see fullDate), so the
+// September day of an August run states September, the day it was shot.
 func statement(m *masterFile) (Constraint, levelBit) {
 	var file Constraint
 	var want levelBit

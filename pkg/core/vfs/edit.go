@@ -458,6 +458,9 @@ func MergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 		if n == nil {
 			return tree, 0, "", "", fmt.Errorf("internal error locating merge target %d", id)
 		}
+		if n.Fixed() {
+			return tree, 0, "", "", ErrFixedFolder
+		}
 		picks = append(picks, mergePick{id: id, parent: parentOf(tree, id), value: *n})
 	}
 
@@ -546,6 +549,9 @@ func DropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err er
 		if n == nil {
 			return tree, nil, fmt.Errorf("internal error locating drop target %d", id)
 		}
+		if n.Fixed() {
+			return tree, nil, ErrFixedFolder
+		}
 		drops = append(drops, drop{parentID: parent.ID, node: *n})
 	}
 	if len(drops) == 0 {
@@ -578,8 +584,13 @@ func DropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err er
 func FlattenNodes(tree []Node, ids []int64) (newTree []Node, absorbed int, names []string, err error) {
 	var targets []int64
 	for _, id := range ids {
+		n := FindNode(tree, id)
+		// a flattened year would lose its months; a flattened month keeps itself
+		if n != nil && n.Level == LevelYear {
+			return tree, 0, nil, ErrFixedFolder
+		}
 		// childless ids are skipped rather than erroring individually
-		if n := FindNode(tree, id); n != nil && len(n.Children) > 0 {
+		if n != nil && len(n.Children) > 0 {
 			targets = append(targets, id)
 		}
 	}

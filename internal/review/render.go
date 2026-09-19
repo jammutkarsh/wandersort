@@ -201,6 +201,7 @@ func (m Model) helpView() string {
 		}},
 		{"Naming", []key{
 			{"r", "rename — type a name, or ↑/↓ to a nearby place; tab fills the top match"},
+			{"", "year and month folders are fixed — no rename, merge or drop, and a year can't be flattened"},
 		}},
 		{"Reshaping", []key{
 			{"V", "start selecting folders; move the cursor to extend, esc to clear"},

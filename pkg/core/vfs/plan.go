@@ -308,51 +308,44 @@ func locationParent(m *masterFile, skip map[string]bool, cfg Config) string {
 	return strings.Join(parts, "/")
 }
 
-// monthKey is the Year/Month folder pair a file lands in — from folderTime, so
-// a cluster that crosses a boundary counts as the month it started in.
-type monthKey struct {
-	year int
-	mon  time.Month
-}
-
-// dayKey is the date folder a file lands in before any merging: its month plus
-// its own day-of-month. Every file of one dayKey ends up in one folder, which
-// is the invariant mergeSameLocationDays has to keep.
-type dayKey struct {
-	monthKey
-	day int
-}
-
-// runKey is one place's presence in one month — what a merge run is computed
-// over, since only same-location days fold together.
-type runKey struct {
-	monthKey
-	loc string
-}
-
-func (m *masterFile) monthKey() monthKey {
-	t := m.folderTime()
-	return monthKey{t.Year(), t.Month()}
-}
-
-func (m *masterFile) dayKey() dayKey {
-	return dayKey{m.monthKey(), m.takenAt.Day()}
-}
-
 // crossesFolderMonth reports whether m was shot in a different month from the
-// one its cluster filed it under — a New Year's Eve trip shot on Jan 01 and
-// filed under December. Its bare day-of-month is a lie inside that folder
-// ("01" there reads as Dec 01, and lands on top of the real Dec 01 files), so
-// it gets a month-qualified day folder and stays out of the day-merge, whose
-// runs and dayKey space are both day-of-month ints within one month.
+// one its folder is under: a New Year's Eve cluster's Jan 01 shots filed under
+// December, or the September days of a Goa run that started in August. Its
+// bare day-of-month would be a lie inside that folder ("01" there reads as the
+// folder month's 1st), so an unmerged one gets a month-qualified day folder,
+// and every one states its full date in its folders' bounds (see boundsFor).
 func crossesFolderMonth(m *masterFile) bool {
 	t, f := m.takenAt, m.folderTime()
 	return t.Year() != f.Year() || t.Month() != f.Month()
 }
 
+// calendarDay numbers t's date so consecutive dates are consecutive ints
+// across a month or year end, which day-of-month is not.
+func calendarDay(t time.Time) int {
+	return int(time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC).Unix() / 86400)
+}
+
+// dayStart is the midnight calendarDay numbered d.
+func dayStart(d int) time.Time {
+	return time.Unix(int64(d)*86400, 0).UTC()
+}
+
+// dayRange names a merged run: "28_31" inside one month, eventSegment's
+// cross-month shape ("Aug_28-Sep_04", "Dec_30-Jan_02") across one.
+func dayRange(lo, hi time.Time) string {
+	if lo.Year() == hi.Year() && lo.Month() == hi.Month() {
+		return fmt.Sprintf("%02d_%02d", lo.Day(), hi.Day())
+	}
+	return eventSegment(lo, hi)
+}
+
 // mergeSameLocationDays collapses runs of consecutive same-location days into
 // one dated range: 2024/08/{02,03,04}/Goa becomes 2024/08/02_04/Goa. A Pune
 // day interleaved at 03 keeps its own folder; the review TUI can still split one.
+//
+// Days are calendar dates, so a run crossing a month or year end is one run,
+// and the whole of it goes under its first day's year and month (spec D27):
+// Goa from 28 August to 4 September is 2024/08_August/Aug_28-Sep_04/Goa.
 func mergeSameLocationDays(masters []masterFile, cfg Config) {
 	if !cfg.MergeSameLocationDays {
 		return
@@ -365,47 +358,43 @@ func mergeSameLocationDays(masters []masterFile, cfg Config) {
 		return
 	}
 
-	// (year, month, location) → set of day-of-month present. The month is the
-	// *folder's* (folderTime), so a run is grouped by where the days land, not
-	// by where they were shot. A file whose own month differs from that folder
-	// month is left out entirely (see crossesFolderMonth): its day-of-month
-	// isn't a day of this month.
-	//
-	// ponytail: so a cluster crossing a month boundary gives sibling `31` and
-	// `Jan_01` folders under the start month rather than a `31_01` range.
-	// Number days relative to folderTime if that turns up.
-	days := map[runKey]map[int]bool{}
+	// location → calendar days present
+	days := map[string]map[int]bool{}
 	for i := range masters {
 		m := &masters[i]
-		if m.takenAt.IsZero() || m.location == "" || crossesFolderMonth(m) {
+		if !hasLocationLevel(m) || m.location == "" {
 			continue
 		}
-		k := runKey{m.monthKey(), m.location}
-		if days[k] == nil {
-			days[k] = map[int]bool{}
+		if days[m.location] == nil {
+			days[m.location] = map[int]bool{}
 		}
-		days[k][m.takenAt.Day()] = true
+		days[m.location][calendarDay(m.takenAt)] = true
+	}
+
+	// run is the folder a merged day lands in: its label and first day
+	type run struct {
+		label string
+		first int
 	}
 
 	// A day lives in exactly one date folder, so every file of a day has to
-	// agree on the label — one location's run cannot pull half a day into a
+	// agree on the run — one location's run cannot pull half a day into a
 	// range and leave the rest behind as a sibling `02`. Disagreeing days are
 	// dropped from merging and act as breaks, which can settle the runs around
 	// them, so this repeats until nothing new disagrees. Each pass only ever
 	// adds a broken day, so it terminates.
-	broken := map[dayKey]bool{}
-	var label map[runKey]map[int]string
+	broken := map[int]bool{}
 	for {
-		label = map[runKey]map[int]string{}
-		for k, set := range days {
+		runs := map[string]map[int]run{}
+		for loc, set := range days {
 			ds := make([]int, 0, len(set))
 			for d := range set {
-				if !broken[dayKey{k.monthKey, d}] {
+				if !broken[d] {
 					ds = append(ds, d)
 				}
 			}
 			sort.Ints(ds)
-			// label every day inside a run of 2 or more consecutive days
+			// every day inside a run of 2 or more consecutive days
 			for start := 0; start < len(ds); {
 				end := start
 				for end+1 < len(ds) && ds[end+1] == ds[end]+1 {
@@ -413,39 +402,39 @@ func mergeSameLocationDays(masters []masterFile, cfg Config) {
 				}
 				if end > start {
 					lo, hi := ds[start], ds[end]
-					rng := fmt.Sprintf("%02d_%02d", lo, hi)
-					if label[k] == nil {
-						label[k] = map[int]string{}
+					r := run{dayRange(dayStart(lo), dayStart(hi)), lo}
+					if runs[loc] == nil {
+						runs[loc] = map[int]run{}
 					}
 					for d := lo; d <= hi; d++ {
-						label[k][d] = rng
+						runs[loc][d] = r
 					}
 				}
 				start = end + 1
 			}
 		}
 
-		// one label per day, or the day breaks. A file with no location of its
-		// own votes for "no range" — it would be left behind in a plain day
+		// one run per day, or the day breaks. A file with no location of its
+		// own votes for "no run" — it would be left behind in a plain day
 		// folder while its neighbours moved into one.
-		seen := map[dayKey]string{}
+		seen := map[int]run{}
 		found := false
 		for i := range masters {
 			m := &masters[i]
-			if m.takenAt.IsZero() || crossesFolderMonth(m) {
+			if !hasLocationLevel(m) {
 				continue
 			}
-			dk := m.dayKey()
-			if broken[dk] {
+			d := calendarDay(m.takenAt)
+			if broken[d] {
 				continue
 			}
-			lbl := label[runKey{dk.monthKey, m.location}][dk.day]
-			if prev, ok := seen[dk]; ok && prev != lbl {
-				broken[dk] = true
+			r := runs[m.location][d]
+			if prev, ok := seen[d]; ok && prev != r {
+				broken[d] = true
 				found = true
 				continue
 			}
-			seen[dk] = lbl
+			seen[d] = r
 		}
 		if found {
 			continue // a broken day can settle the runs around it — go again
@@ -453,14 +442,12 @@ func mergeSameLocationDays(masters []masterFile, cfg Config) {
 
 		for i := range masters {
 			m := &masters[i]
-			if m.takenAt.IsZero() || m.location == "" || crossesFolderMonth(m) {
+			if !hasLocationLevel(m) || m.location == "" || broken[calendarDay(m.takenAt)] {
 				continue
 			}
-			dk := m.dayKey()
-			if broken[dk] {
-				continue
+			if r, ok := runs[m.location][calendarDay(m.takenAt)]; ok {
+				m.dayOverride, m.folderDate = r.label, dayStart(r.first)
 			}
-			m.dayOverride = label[runKey{dk.monthKey, m.location}][dk.day]
 		}
 		return
 	}
@@ -857,8 +844,14 @@ func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 func boundsFor(m *masterFile, level string) Constraint {
 	switch level {
 	case LevelYear:
+		if m.takenAt.Year() != m.folderTime().Year() {
+			return fullDate(m)
+		}
 		return Constraint{Year: []int{m.folderTime().Year()}}
 	case LevelMonth:
+		if crossesFolderMonth(m) {
+			return fullDate(m)
+		}
 		return Constraint{Month: []int{int(m.folderTime().Month())}}
 	case RuleDate:
 		return dayBounds(m)
@@ -886,14 +879,21 @@ func boundsFor(m *masterFile, level string) Constraint {
 
 // dayBounds is the day m was shot, for a folder named after dates.
 func dayBounds(m *masterFile) Constraint {
-	b := Constraint{Date: []int{m.takenAt.Day()}}
 	if crossesFolderMonth(m) {
-		// a Jan_01 folder under 12_December: its own year and month
-		// contradict its ancestors', so nothing new matches it — the safe
-		// answer, where a bare day would claim Dec 01
-		b.Year, b.Month = []int{m.takenAt.Year()}, []int{int(m.takenAt.Month())}
+		return fullDate(m)
 	}
-	return b
+	return Constraint{Date: []int{m.takenAt.Day()}}
+}
+
+// fullDate is what a file shot outside its folder's month adds to its day
+// folder and every folder above it: year, month and day as one alternative.
+// Apart, they say too much — a bare month:[8,9] on August would admit 28
+// September into August's plain 28, and a December without the year would
+// admit 1 January 2024 into 2024/12_December. The year folder only needs it
+// across a year end; inside one year its own year already admits the file.
+func fullDate(m *masterFile) Constraint {
+	t := m.takenAt
+	return Constraint{Year: []int{t.Year()}, Month: []int{int(t.Month())}, Date: []int{t.Day()}}
 }
 
 // segmentFor is the folder name one grouping level gives this file, or "" when

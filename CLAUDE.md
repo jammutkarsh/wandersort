@@ -570,16 +570,25 @@ one scan ever runs against it at a time (see "Conventions" below):
   the same rule `m` uses) or just the cursor row when there's no selection.
   Nothing acts tree-wide:
   - `d` (`dropFolders` → `vfs.DropNodes`) drops **each selected folder**,
-    lifting its children onto its parent. Refused on a top-level (Year) row:
-    its files would land in the library root.
+    lifting its children onto its parent. Refused on a Year or Month row
+    (see fixed folders below).
   - `D` (`flattenFolders` → `vfs.FlattenNodes`) collapses **everything below** each selected
     folder into it, so the whole subtree's files sit directly in it and the folder
-    itself stays. Works on a Year, since the Year survives to hold them.
+    itself stays. Refused on a Year (its Months would go); works on a Month,
+    since the Month survives to hold them.
     `2023/April/Indore/Apple iPhone 13` flattened at April is
     `2023/April` with all ten files. `FileCount` is unchanged — it already
     counted the subtree. Over a range the folders stay **separate**: several
     locations under one Day each keep their own folder and lose their
     splits. Folding them together is `m`'s job, not `D`'s.
+
+  **Year and Month folders are fixed** (spec D26, `vfs.ErrFixedFolder`,
+  decided by `Node.Level` from `folder_nodes.level`, never by depth): `[r]`,
+  `[m]` over them and `[d]` are refused with a `⚠` status line, `[D]` on a
+  Year too. Settings can't turn them off and new files find them by name
+  (D15), so a renamed month made the next batch plan a second `03_March`
+  beside it. The guards sit in `MergeNodes`/`DropNodes`/`FlattenNodes`
+  and the rename key (`keys.go` + `applyRename`).
 
   **Every structural edit re-sorts the tree by name (`vfs.SortTree`, called
   from `reflow`) and the merge puts the cursor on the surviving folder
@@ -1106,9 +1115,8 @@ tree over the whole library.
   it repeats to a fixed point (each pass only adds a broken day, so it
   terminates). Cost: on a trip where each day holds several places with
   different runs, most days stay unmerged — that is what `[V]`/`[m]` in the
-  review is for. `dayKey`/`runKey`/`monthKey` (plan.go) name the three
-  groupings so the difference between "the folder a file lands in" and "the run
-  it belongs to" is in the type, not in the reader's head.
+  review is for. Days are keyed by calendar date (`calendarDay`, plan.go), and
+  runs by location over those days.
   **`SavedPlacesDateOnly`'s suppression is per day, not per file**
   (`unsuppressMixedSavedPlaces`, which runs *before* `markUnknownLocations` so
   the lifted city is what makes the neighbouring `Unknown` appear at all):
@@ -1222,17 +1230,23 @@ tree over the whole library.
   months away). Read it
   through `masterFile.folderTime()` (folderDate, falling back to takenAt for
   the unclustered `PreviewPaths` samples) — `monthParts` (the Year/Month pair
-  `dirFor` and `locationParent` share) and `mergeSameLocationDays`' month key
-  both go through it, so nothing can disagree
-  about which month a file is in. Known ceiling (`ponytail:` in `plan.go`): the
-  merge's *day* is still the file's own day-of-month, and 31 and 01 aren't
-  consecutive ints, so a boundary-crossing run gives sibling `31` and `Jan_01`
-  folders rather than a `31_01` range. **A file whose own month differs from
-  its cluster's month gets a month-qualified day folder** (`crossesFolderMonth`
-  → `Jan_01`, matching `eventSegment`'s cross-month shape) and is left out of
-  `mergeSameLocationDays` entirely — a bare `01` under `12_December` reads as
-  Dec 01 *and lands on top of the real Dec 01 files*, which was a reported bug
-  (Jan 1 videos filed under `12_December/01/Banjar`).
+  `dirFor` and `locationParent` share) goes through it, so nothing can disagree
+  about which month a file is in. **`mergeSameLocationDays` numbers days by
+  calendar date** (`calendarDay`), so a same-place run crossing a month or
+  year end is one run, and **the whole run takes its first day's Year/Month**
+  (spec D27: it sets every member's `folderDate`): Goa 28 Aug–4 Sep is
+  `2024/08_August/Aug_28-Sep_04/Goa` (`dayRange` — `28_31` inside one month,
+  `eventSegment`'s cross-month shape across one). A crossing day whose files
+  disagree still breaks the run. **A file whose own month differs from its
+  folder's month** (`crossesFolderMonth` — a run's September days, or a short
+  cluster's Jan 01 under December) states its **full date** — year, month and
+  day in one alternative (`fullDate`) — in its day folder's bounds and every
+  folder's above it (the year folder only across a year end), so a later
+  batch's Goa on 2 Sep matches the placed August trip and Goa on 28 Sep
+  doesn't match August's plain `28`. Unmerged, such a file gets a
+  month-qualified day folder (`Jan_01`) — a bare `01` under `12_December`
+  reads as Dec 01 *and lands on top of the real Dec 01 files*, which was a
+  reported bug (Jan 1 videos filed under `12_December/01/Banjar`).
   `BuildTree(ctx, db)` and `Confirm(ctx, db, roots)` always cover the whole
   library — there is no time-slice scoping any more (issue 19).
   `ReopenPlan(ctx, db)` puts every `APPROVED` row back to

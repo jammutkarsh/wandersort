@@ -103,6 +103,9 @@ func (m *Model) applyRename(name string) {
 		if n == nil {
 			return nil, "", fmt.Errorf("internal error locating %q", old)
 		}
+		if n.Fixed() {
+			return nil, "", vfs.ErrFixedFolder
+		}
 		n.Name = name
 		return tree, fmt.Sprintf("renamed %q to %q ([u] to undo)", old, name), nil
 	}); ok {

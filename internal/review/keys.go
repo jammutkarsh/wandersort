@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
@@ -223,6 +224,10 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "N":
 		m.jumpSameDepth(-1)
 	case "r":
+		if m.rows[m.cursor].node.Fixed() {
+			m.statusMsg, m.statusIsErr = vfs.ErrFixedFolder.Error(), true
+			break
+		}
 		m.input = m.rows[m.cursor].node.Name
 		m.editing = true
 		m.radiusDelta = location.NearSearchDegrees

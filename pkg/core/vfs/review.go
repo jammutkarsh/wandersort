@@ -57,6 +57,20 @@ type Node struct {
 	// What the folder holds, as stored; the edits in edit.go transform it and
 	// Confirm writes it back.
 	Bounds Bounds `json:"bounds"`
+	// Level is the level that made the folder (folder_nodes.level): a Rules
+	// name, or one of the Level* constants. Fixed reads it.
+	Level string `json:"level,omitempty"`
+}
+
+// ErrFixedFolder refuses an edit that would rename or remove a year or month
+// folder (spec D26): they are always there, and new files find them by name,
+// so a renamed month gets a second, freshly-planned twin next to it.
+var ErrFixedFolder = errors.New("year and month folders are fixed — new files find them by name")
+
+// Fixed reports whether n is a year or month folder, which the review can't
+// rename, merge or drop.
+func (n Node) Fixed() bool {
+	return n.Level == LevelYear || n.Level == LevelMonth
 }
 
 const maxSamples = 3
@@ -108,7 +122,7 @@ func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 			return t
 		}
 		f := folders[id]
-		t := &tnode{Node: Node{ID: id, Name: f.Name, Bounds: f.Bounds}}
+		t := &tnode{Node: Node{ID: id, Name: f.Name, Bounds: f.Bounds, Level: f.Level}}
 		byID[id] = t
 		parent := root
 		if f.Parent != 0 {

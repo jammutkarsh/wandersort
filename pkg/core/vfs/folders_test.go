@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
@@ -479,5 +480,51 @@ func TestReplanBounds(t *testing.T) {
 	goaDays(t, h, 3)
 	if got := folderBounds(t, h.d)["2024/06_June/01_03"]; !reflect.DeepEqual(got, Bounds{{Date: []int{1, 2, 3}}}) {
 		t.Errorf("range folder bounds = %+v, want days 1, 2, 3", got)
+	}
+}
+
+// A run crossing a month or year end stores each crossing day's full date on
+// its day folder and every folder above it, so a later batch can join it.
+func TestPlanCrossingRunBounds(t *testing.T) {
+	calangute := func(h *harness, from string, n int) {
+		start, err := time.Parse("2006:01:02", from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range n {
+			d := start.AddDate(0, 0, i)
+			h.addFile(t, d.Format("dump/D20060102.HEIC"), "IMAGE",
+				metaWith(d.Format("2006:01:02")+" 10:00:00", 15.5439, 73.7553, 3024, 4032))
+		}
+	}
+	date := func(y, m int, days ...int) Constraint {
+		return Constraint{Year: []int{y}, Month: []int{m}, Date: days}
+	}
+	for _, tc := range []struct {
+		name, from string
+		days       int
+		want       map[string]Bounds
+	}{
+		{"across a month", "2024:08:28", 8, map[string]Bounds{
+			"2024":                                   {{Year: []int{2024}}},
+			"2024/08_August":                         {{Month: []int{8}}, date(2024, 9, 1, 2, 3, 4)},
+			"2024/08_August/Aug_28-Sep_04":           {{Date: []int{28, 29, 30, 31}}, date(2024, 9, 1, 2, 3, 4)},
+			"2024/08_August/Aug_28-Sep_04/Calangute": {{Location: []string{"Calangute"}}},
+		}},
+		{"across a year", "2024:12:30", 4, map[string]Bounds{
+			"2024":                           {{Year: []int{2024}}, date(2025, 1, 1, 2)},
+			"2024/12_December":               {{Month: []int{12}}, date(2025, 1, 1, 2)},
+			"2024/12_December/Dec_30-Jan_02": {{Date: []int{30, 31}}, date(2025, 1, 1, 2)},
+			"2024/12_December/Dec_30-Jan_02/Calangute": {{Location: []string{"Calangute"}}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			calangute(h, tc.from, tc.days)
+			h.build(t, dateLocation(), installtest.Resolver(t))
+			if got := folderBounds(t, h.d); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("bounds = %+v\nwant %+v", got, tc.want)
+			}
+		})
 	}
 }

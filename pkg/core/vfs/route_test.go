@@ -222,3 +222,56 @@ func TestRouteSpecialFolders(t *testing.T) {
 		t.Errorf("photo = %q, want its own day, not Screenshots", got[photo].TargetPath)
 	}
 }
+
+// A placed trip crossing a month or year end takes a later batch's files for
+// its own days and place only (D27).
+func TestRouteIntoCrossingTrip(t *testing.T) {
+	date := func(y, m int, days ...int) Constraint {
+		return Constraint{Year: []int{y}, Month: []int{m}, Date: days}
+	}
+	goa := Bounds{{Location: []string{"Panjim, India"}}}
+	levels := []string{LevelYear, LevelMonth, RuleDate, RuleLocation}
+	acrossMonth := func(t *testing.T, h *harness) {
+		h.placeFile(t, metaWith("2024:08:28 10:00:00", panji[0], panji[1], 3024, 4032),
+			"2024/08_August/Aug_28-Sep_04/Goa/IMG_0001.HEIC", levels, []Bounds{
+				{{Year: []int{2024}}},
+				{{Month: []int{8}}, date(2024, 9, 1, 2, 3, 4)},
+				{{Date: []int{28, 29, 30, 31}}, date(2024, 9, 1, 2, 3, 4)},
+				goa,
+			})
+	}
+	acrossYear := func(t *testing.T, h *harness) {
+		h.placeFile(t, metaWith("2024:12:30 10:00:00", panji[0], panji[1], 3024, 4032),
+			"2024/12_December/Dec_30-Jan_02/Goa/IMG_0001.HEIC", levels, []Bounds{
+				{{Year: []int{2024}}, date(2025, 1, 1, 2)},
+				{{Month: []int{12}}, date(2025, 1, 1, 2)},
+				{{Date: []int{30, 31}}, date(2025, 1, 1, 2)},
+				goa,
+			})
+	}
+	for _, tc := range []struct {
+		name  string
+		place func(*testing.T, *harness)
+		dto   string
+		at    [2]float64
+		want  string
+	}{
+		{"its place on a September day joins it", acrossMonth, "2024:09:02 10:00:00", panji, "2024/08_August/Aug_28-Sep_04/Goa/NEW.HEIC"},
+		{"another place that day gets its own", acrossMonth, "2024:09:02 10:00:00", delhi, "2024/09_September/02/New-Delhi/NEW.HEIC"},
+		{"the same day-of-month a month later", acrossMonth, "2024:09:28 10:00:00", panji, "2024/09_September/28/Panjim-India/NEW.HEIC"},
+		{"the day after the trip", acrossMonth, "2024:09:05 10:00:00", panji, "2024/09_September/05/Panjim-India/NEW.HEIC"},
+		{"its day, another place", acrossMonth, "2024:08:31 10:00:00", delhi, "2024/08_August/31/New-Delhi/NEW.HEIC"},
+		{"its place on a January day joins it", acrossYear, "2025:01:01 10:00:00", panji, "2024/12_December/Dec_30-Jan_02/Goa/NEW.HEIC"},
+		{"another place on that January day", acrossYear, "2025:01:01 10:00:00", delhi, "2025/01_January/01/New-Delhi/NEW.HEIC"},
+		{"the same date a year earlier", acrossYear, "2024:01:01 10:00:00", panji, "2024/01_January/01/Panjim-India/NEW.HEIC"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			tc.place(t, h)
+			id := h.addFile(t, "dump/NEW.HEIC", classifier.MediaTypeImage, metaWith(tc.dto, tc.at[0], tc.at[1], 3024, 4032))
+			if got := h.build(t, dateLocation(), installtest.Resolver(t)); got[id].TargetPath != tc.want {
+				t.Errorf("target = %q, want %q", got[id].TargetPath, tc.want)
+			}
+		})
+	}
+}
