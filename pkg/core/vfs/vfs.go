@@ -13,6 +13,7 @@ package vfs
 import (
 	"context"
 	"fmt"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -149,70 +150,87 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 // longer a live master goes, or the plan would keep promising to move a file
 // that isn't there.
 //
-// The deletes go through the same FIFO writer as the inserts, so a rebuild
-// leaves no stale rows behind.
+// One synchronous transaction: every caller reads the rows straight back (the
+// review rebuilds its tree the moment Propose returns), and the folder rows
+// the entries point at have to exist before the entries do.
 func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
-	// Read the survivors first: the writer is an asynchronous FIFO, so a query
-	// issued after queueing the deletes would still see the rows they remove.
-	// A decided row is one that is approved or already executed; its file must
-	// not be proposed a second time — UNIQUE(file_id) says so too. Same
-	// "protected" set as the delete below (is_master = 1 OR placed = 1): a
-	// placed file is never in masters (loadMasters filters it out), so this
-	// never actually keeps one in practice, but the two queries describing
-	// one invariant should read the same rather than drift apart.
-	var keptIDs []int64
-	if err := v.db.SQL.SelectContext(ctx, &keptIDs, `
-		SELECT file_id FROM virtual_fs_entries
-		WHERE status != ? AND file_id IN (
-			SELECT fr.id FROM file_registry fr
-			JOIN file_metadata fm ON fm.file_id = fr.id
-			WHERE fm.is_master = 1 OR fr.placed = 1)`, db.StatusProposed); err != nil {
-		return 0, fmt.Errorf("load decided vfs entries: %w", err)
-	}
-	kept := make(map[int64]bool, len(keptIDs))
-	for _, id := range keptIDs {
-		kept[id] = true
-	}
+	err := v.db.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+		// A decided row is one that is approved or already executed; its file
+		// must not be proposed a second time — UNIQUE(file_id) says so too.
+		// Same "protected" set as the delete below (is_master = 1 OR placed =
+		// 1): a placed file is never in masters (loadMasters filters it out),
+		// so this never actually keeps one in practice, but the two queries
+		// describing one invariant should read the same rather than drift apart.
+		var keptIDs []int64
+		if err := tx.SelectContext(ctx, &keptIDs, `
+			SELECT file_id FROM virtual_fs_entries
+			WHERE status != ? AND file_id IN (
+				SELECT fr.id FROM file_registry fr
+				JOIN file_metadata fm ON fm.file_id = fr.id
+				WHERE fm.is_master = 1 OR fr.placed = 1)`, db.StatusProposed); err != nil {
+			return fmt.Errorf("load decided vfs entries: %w", err)
+		}
+		kept := make(map[int64]bool, len(keptIDs))
+		for _, id := range keptIDs {
+			kept[id] = true
+		}
 
-	if !v.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries WHERE status = ?`, db.StatusProposed); err != nil {
-			return err
+			return fmt.Errorf("clear previous vfs proposal: %w", err)
 		}
 		// a decided row for a file that is no longer a live master promises a
 		// move that can't happen. A placed file is exempt regardless of
 		// is_master: it already landed, so its row is the one true record of
 		// that (spec D10) — the scorer never demotes a placed file's own hash
 		// group (see scorer.Run), but this is the backstop if it ever did.
-		_, err := tx.ExecContext(ctx, `
+		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM virtual_fs_entries
 			WHERE status != ? AND file_id NOT IN (
 				SELECT fr.id FROM file_registry fr
 				JOIN file_metadata fm ON fm.file_id = fr.id
-				WHERE fm.is_master = 1 OR fr.placed = 1)`, db.StatusProposed)
-		return err
-	}) {
-		return 0, fmt.Errorf("clear previous vfs proposal: writer closed")
-	}
-
-	for chunk := range slices.Chunk(masters, insertChunk) {
-		stmt, args, n := insertStatement(chunk, kept)
-		if n == 0 {
-			continue
+				WHERE fm.is_master = 1 OR fr.placed = 1)`, db.StatusProposed); err != nil {
+			return fmt.Errorf("clear stale vfs entries: %w", err)
 		}
-		if !v.db.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+
+		// files a stopped copy left beside copied ones move to their own chain
+		// first, so the new plan finds that chain by name and joins it instead
+		// of showing a same-named twin next to it until the next review save
+		if _, err := splitPlacedFolders(ctx, tx); err != nil {
+			return err
+		}
+		folders, err := loadFolders(ctx, tx)
+		if err != nil {
+			return err
+		}
+		for i := range masters {
+			m := &masters[i]
+			if kept[m.FileID] {
+				continue
+			}
+			chain, err := folders.ensure(ctx, tx, path.Dir(wspath.ToLibrary(m.targetPath)), m.dirLevels)
+			if err != nil {
+				return err
+			}
+			m.nodeID, m.locationNodeID = chain[len(chain)-1], 0
+			if d := m.locationDepth(); d >= 0 && d < len(chain) {
+				m.locationNodeID = chain[d]
+			}
+		}
+
+		for chunk := range slices.Chunk(masters, insertChunk) {
+			stmt, args, n := insertStatement(chunk, kept)
+			if n == 0 {
+				continue
+			}
 			if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
 				return fmt.Errorf("persist %d vfs entries from file %d: %w", n, chunk[0].FileID, err)
 			}
-			return nil
-		}) {
-			return 0, fmt.Errorf("persist vfs entries: writer closed")
 		}
+		return pruneFolders(ctx, tx)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("persist vfs proposal: %w", err)
 	}
-	// The writer is an asynchronous FIFO, so returning here only means the
-	// rows are *queued*. Every caller reads them back immediately — the review
-	// rebuilds its tree the moment Propose returns — and without this the read
-	// races the batch and shows the proposal this run just replaced.
-	v.db.Writer.Flush()
 	// every live master now has exactly one entry: freshly proposed, or kept
 	return len(masters), nil
 }
@@ -229,9 +247,9 @@ const insertChunk = 50
 func insertStatement(chunk []masterFile, kept map[int64]bool) (stmt string, args []any, n int) {
 	var b strings.Builder
 	b.WriteString(`INSERT INTO virtual_fs_entries
-		(file_id, source_path, target_path, cluster_id, status, location_dir)
+		(file_id, source_path, node_id, target_path, cluster_id, status, location_node_id)
 		VALUES `)
-	args = make([]any, 0, len(chunk)*6)
+	args = make([]any, 0, len(chunk)*7)
 	for i := range chunk {
 		m := &chunk[i]
 		if kept[m.FileID] {
@@ -240,9 +258,9 @@ func insertStatement(chunk []masterFile, kept map[int64]bool) (stmt string, args
 		if n > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString("(?,?,?,?,?,?)")
-		args = append(args, m.FileID, wspath.ToSourcePath(m.absPath), wspath.ToLibrary(m.targetPath),
-			nullable(m.clusterID), db.StatusProposed, nullable(wspath.ToLibrary(m.locationDir)))
+		b.WriteString("(?,?,?,?,?,?,?)")
+		args = append(args, m.FileID, wspath.ToSourcePath(m.absPath), m.nodeID, wspath.ToLibrary(m.targetPath),
+			nullable(m.clusterID), db.StatusProposed, nullableID(m.locationNodeID))
 		n++
 	}
 	return b.String(), args, n
@@ -253,4 +271,11 @@ func nullable(s string) any {
 		return nil
 	}
 	return s
+}
+
+func nullableID(id int64) any {
+	if id == 0 {
+		return nil
+	}
+	return id
 }

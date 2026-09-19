@@ -13,7 +13,7 @@ import (
 )
 
 // ToLibrary normalizes p for storage in an in-library path column
-// (virtual_fs_entries.target_path, location_dir) — a path this app created
+// (virtual_fs_entries.target_path, folder_nodes.name) — a path this app created
 // itself (spec D9). The database travels with the library, so it must not
 // depend on the OS that wrote it (/ separators) or how that OS spelled
 // composed characters (NFC — macOS gives NFD from the filesystem). Safe here

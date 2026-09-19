@@ -68,7 +68,7 @@ func (m *Model) mergeSelection() {
 	// the row [V] was pressed on names the merged folder, whichever direction
 	// the selection was extended in — selectedRows normalizes to tree order,
 	// so the anchor has to be pulled back to the front here
-	ids := make([]string, 0, len(sel))
+	ids := make([]int64, 0, len(sel))
 	ids = append(ids, anchorID)
 	for _, r := range sel {
 		if r.node.ID != anchorID {
@@ -76,7 +76,7 @@ func (m *Model) mergeSelection() {
 		}
 	}
 
-	var mergedID string
+	var mergedID int64
 	if ok := m.applyEdit("merge", func(tree []vfs.Node) ([]vfs.Node, string, error) {
 		newTree, id, name, ancestor, err := vfs.MergeNodes(tree, ids)
 		if err != nil {
@@ -136,7 +136,7 @@ func (m *Model) selectedRows() []*reviewRow {
 // dropFolders removes each selected folder and lifts its children onto its
 // parent, one group-by level shallower. vfs.DropNodes does the reshaping.
 func (m *Model) dropFolders(targets []*reviewRow) {
-	ids := make([]string, len(targets))
+	ids := make([]int64, len(targets))
 	for i, r := range targets {
 		ids[i] = r.node.ID
 	}
@@ -157,7 +157,7 @@ func (m *Model) dropFolders(targets []*reviewRow) {
 // flattenFolders collapses everything below each selected folder into it,
 // the folder itself staying put. vfs.FlattenNodes does the reshaping.
 func (m *Model) flattenFolders(targets []*reviewRow) {
-	ids := make([]string, len(targets))
+	ids := make([]int64, len(targets))
 	for i, r := range targets {
 		ids[i] = r.node.ID
 	}

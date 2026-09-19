@@ -44,11 +44,7 @@ func TestRunExecuteRefusesOnSettingsChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	dbtest.SeedFile(t, d, 1, "/src", "a.jpg", 100)
-	if _, err := d.ExecContext(context.Background(),
-		`INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status) VALUES (?, ?, ?, ?)`,
-		1, "/src/a.jpg", "2024/a.jpg", db.StatusApproved); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SeedEntry(t, d, 1, "/src/a.jpg", "2024/a.jpg", db.StatusApproved)
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}

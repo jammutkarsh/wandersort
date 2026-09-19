@@ -43,7 +43,7 @@ func CloneTree(nodes []Node) []Node {
 			out[i].Samples = append([]string(nil), n.Samples...)
 		}
 		if n.MergedIDs != nil {
-			out[i].MergedIDs = append([]string(nil), n.MergedIDs...)
+			out[i].MergedIDs = append([]int64(nil), n.MergedIDs...)
 		}
 		if n.Lat != nil {
 			lat := *n.Lat
@@ -58,7 +58,7 @@ func CloneTree(nodes []Node) []Node {
 }
 
 // FindNode searches the tree for the node with the given ID.
-func FindNode(nodes []Node, id string) *Node {
+func FindNode(nodes []Node, id int64) *Node {
 	for i := range nodes {
 		if nodes[i].ID == id {
 			return &nodes[i]
@@ -72,7 +72,7 @@ func FindNode(nodes []Node, id string) *Node {
 
 // parentOf finds the parent of the node with the given ID, or nil if id names
 // a top-level node or isn't found at all.
-func parentOf(nodes []Node, id string) *Node {
+func parentOf(nodes []Node, id int64) *Node {
 	for i := range nodes {
 		for _, c := range nodes[i].Children {
 			if c.ID == id {
@@ -88,7 +88,7 @@ func parentOf(nodes []Node, id string) *Node {
 
 // removeChildByID removes the child with the given ID from parent's
 // Children, if present.
-func removeChildByID(parent *Node, id string) {
+func removeChildByID(parent *Node, id int64) {
 	for i, c := range parent.Children {
 		if c.ID == id {
 			parent.Children = append(parent.Children[:i], parent.Children[i+1:]...)
@@ -123,25 +123,36 @@ func mergeInto(dst *Node, src Node) {
 	}
 }
 
-// commonPathPrefix returns the longest shared leading "/"-segment run between
-// two node IDs (their proposed directory paths) — their LCA's ID. "" means
-// no shared ancestor.
-func commonPathPrefix(a, b string) string {
-	as := strings.Split(a, "/")
-	bs := strings.Split(b, "/")
-	n := min(len(as), len(bs))
+// chainTo returns the IDs from the top level down to id, id included, or nil
+// when id isn't in the tree.
+func chainTo(nodes []Node, id int64) []int64 {
+	for i := range nodes {
+		if nodes[i].ID == id {
+			return []int64{id}
+		}
+		if below := chainTo(nodes[i].Children, id); below != nil {
+			return append([]int64{nodes[i].ID}, below...)
+		}
+	}
+	return nil
+}
+
+// commonChain returns the longest shared leading run of two chains — their
+// lowest common ancestor is its last element. Empty means no shared ancestor.
+func commonChain(a, b []int64) []int64 {
+	n := min(len(a), len(b))
 	var i int
 	for i = 0; i < n; i++ {
-		if as[i] != bs[i] {
+		if a[i] != b[i] {
 			break
 		}
 	}
-	return strings.Join(as[:i], "/")
+	return a[:i]
 }
 
 // collectLeafIDs records every childless node's ID, used to tell a real leaf
 // from an ancestor a merge emptied out.
-func collectLeafIDs(nodes []Node, out map[string]bool) {
+func collectLeafIDs(nodes []Node, out map[int64]bool) {
 	for i := range nodes {
 		if len(nodes[i].Children) == 0 {
 			out[nodes[i].ID] = true
@@ -153,7 +164,7 @@ func collectLeafIDs(nodes []Node, out map[string]bool) {
 // pruneEmptied drops ancestors a merge left with no children and refreshes
 // FileCount bottom-up. leafIDs is the pre-merge leaf set: anything childless
 // outside it is an emptied ancestor, not a real leaf.
-func pruneEmptied(nodes []Node, leafIDs map[string]bool) []Node {
+func pruneEmptied(nodes []Node, leafIDs map[int64]bool) []Node {
 	out := nodes[:0]
 	for i := range nodes {
 		n := nodes[i]
@@ -230,45 +241,46 @@ func combinedDayRange(picks []mergePick) (lo, hi int, ok bool) {
 // mergePick is one selected row resolved to its node, its parent (for the
 // splice), and the raw value the merge absorbs.
 type mergePick struct {
-	id     string
+	id     int64
 	parent *Node
 	value  Node
 }
 
 // MergeNodes folds every node in ids into one, under their lowest common
-// ancestor by path. Returns the surviving node's ID, its name, and the
+// ancestor. Returns the surviving node's ID, its name, and the
 // ancestor's name for the caller's status line.
-func MergeNodes(tree []Node, ids []string) (newTree []Node, mergedID, name, ancestorName string, err error) {
+func MergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name, ancestorName string, err error) {
 	// Assumes no id in ids is an ancestor of another — the review TUI's
 	// same-depth-only selection already guarantees that.
 	if len(ids) < 2 {
-		return tree, "", "", "", fmt.Errorf("select at least two folders at the same level to merge")
+		return tree, 0, "", "", fmt.Errorf("select at least two folders at the same level to merge")
 	}
 
 	picks := make([]mergePick, 0, len(ids))
 	for _, id := range ids {
 		n := FindNode(tree, id)
 		if n == nil {
-			return tree, "", "", "", fmt.Errorf("internal error locating merge target %q", id)
+			return tree, 0, "", "", fmt.Errorf("internal error locating merge target %d", id)
 		}
 		picks = append(picks, mergePick{id: id, parent: parentOf(tree, id), value: *n})
 	}
 
-	lcaID := picks[0].id
+	// the picks' lowest common ancestor, found by walking the tree
+	shared := chainTo(tree, picks[0].id)
 	for _, p := range picks[1:] {
-		lcaID = commonPathPrefix(lcaID, p.id)
+		shared = commonChain(shared, chainTo(tree, p.id))
 	}
-	if lcaID == "" {
-		return tree, "", "", "", fmt.Errorf("selected folders share no common ancestor to merge under")
+	if len(shared) == 0 {
+		return tree, 0, "", "", fmt.Errorf("selected folders share no common ancestor to merge under")
 	}
-	lca := FindNode(tree, lcaID)
+	lca := FindNode(tree, shared[len(shared)-1])
 	if lca == nil {
-		return tree, "", "", "", fmt.Errorf("internal error locating merge destination")
+		return tree, 0, "", "", fmt.Errorf("internal error locating merge destination")
 	}
 
 	// leaves *before* the splice — afterwards a childless node is either one of
 	// these or an ancestor the merge emptied out
-	leafIDs := map[string]bool{}
+	leafIDs := map[int64]bool{}
 	collectLeafIDs(tree, leafIDs)
 
 	// the first id's own name — already the reviewer's rename if they typed one,
@@ -305,9 +317,9 @@ func MergeNodes(tree []Node, ids []string) (newTree []Node, mergedID, name, ance
 
 // DropNodes removes each node in ids, lifting its children onto its parent,
 // one group-by level shallower. Returns the dropped nodes' names, in order.
-func DropNodes(tree []Node, ids []string) (newTree []Node, names []string, err error) {
+func DropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err error) {
 	type drop struct {
-		parentID string
+		parentID int64
 		node     Node
 	}
 	drops := make([]drop, 0, len(ids))
@@ -320,7 +332,7 @@ func DropNodes(tree []Node, ids []string) (newTree []Node, names []string, err e
 		}
 		n := FindNode(tree, id)
 		if n == nil {
-			return tree, nil, fmt.Errorf("internal error locating drop target %q", id)
+			return tree, nil, fmt.Errorf("internal error locating drop target %d", id)
 		}
 		drops = append(drops, drop{parentID: parent.ID, node: *n})
 	}
@@ -336,7 +348,7 @@ func DropNodes(tree []Node, ids []string) (newTree []Node, names []string, err e
 		removeChildByID(parent, d.node.ID)
 		parent.Children = append(parent.Children, d.node.Children...)
 		// files sitting directly in the dropped node remap onto the parent
-		parent.MergedIDs = append(parent.MergedIDs, append([]string{d.node.ID}, d.node.MergedIDs...)...)
+		parent.MergedIDs = append(parent.MergedIDs, append([]int64{d.node.ID}, d.node.MergedIDs...)...)
 		names = append(names, d.node.Name)
 	}
 
@@ -346,8 +358,8 @@ func DropNodes(tree []Node, ids []string) (newTree []Node, names []string, err e
 // FlattenNodes collapses everything below each node in ids directly into it
 // (`2023/April/Indore/Apple iPhone 13` flattened at April becomes
 // `2023/April` holding all ten files). Returns the flattened nodes' names.
-func FlattenNodes(tree []Node, ids []string) (newTree []Node, absorbed int, names []string, err error) {
-	var targets []string
+func FlattenNodes(tree []Node, ids []int64) (newTree []Node, absorbed int, names []string, err error) {
+	var targets []int64
 	for _, id := range ids {
 		// childless ids are skipped rather than erroring individually
 		if n := FindNode(tree, id); n != nil && len(n.Children) > 0 {

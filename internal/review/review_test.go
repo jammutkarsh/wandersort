@@ -55,8 +55,8 @@ func usePreviewRoot(t *testing.T) string {
 }
 
 func sampleTree() []vfs.Node {
-	return []vfs.Node{{ID: "2024", Name: "2024", Children: []vfs.Node{
-		{ID: "2024/June", Name: "June", FileCount: 1},
+	return []vfs.Node{{ID: pid("2024"), Name: "2024", Children: []vfs.Node{
+		{ID: pid("2024/June"), Name: "June", FileCount: 1},
 	}}}
 }
 
@@ -100,19 +100,14 @@ func TestReview(t *testing.T) {
 					t.Fatal(err)
 				}
 				target := "2017/April/08/Horizontal/Photos/" + name
-				if _, err := d.ExecContext(ctx, `
-			INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
-			VALUES (?, ?, ?, 'PROPOSED')`,
-					fileID, "/src/"+name, target); err != nil {
-					t.Fatal(err)
-				}
+				dbtest.SeedEntry(t, d, fileID, "/src/"+name, target, db.StatusProposed)
 			}
 
-			parentFiles, err := vfs.FilesUnder(ctx, "2017/April/08", d)
+			parentFiles, err := vfs.FilesUnder(ctx, nodeAt(t, d, "2017/April/08"), d)
 			if err != nil {
 				t.Fatal(err)
 			}
-			leafFiles, err := vfs.FilesUnder(ctx, "2017/April/08/Horizontal/Photos", d)
+			leafFiles, err := vfs.FilesUnder(ctx, nodeAt(t, d, "2017/April/08/Horizontal/Photos"), d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -201,7 +196,7 @@ func TestReview(t *testing.T) {
 			if m.statusIsErr {
 				t.Fatalf("expected success, got error status: %q", m.statusMsg)
 			}
-			r03 := nodeByID(m.rows, "2024/June/03")
+			r03 := nodeByID(m.rows, pid("2024/June/03"))
 			// both are plain unrenamed Date folders, so the merge proposes the day
 			// range they span ("03_09") — written straight onto the node, not as a
 			// pending rename: it's the merge's own output, not something the
@@ -210,10 +205,10 @@ func TestReview(t *testing.T) {
 			if r03 == nil || r03.node.Name != "03_09" {
 				t.Fatalf("want the surviving node named %q, got %+v", "03_09", r03)
 			}
-			if r09 := nodeByID(m.rows, "2024/June/09"); r09 != nil {
+			if r09 := nodeByID(m.rows, pid("2024/June/09")); r09 != nil {
 				t.Error("09 should be folded into 03, not still its own row")
 			}
-			if got := r03.node.MergedIDs; len(got) != 1 || got[0] != "2024/June/09" {
+			if got := r03.node.MergedIDs; len(got) != 1 || got[0] != pid("2024/June/09") {
 				t.Errorf("MergedIDs = %v, want [2024/June/09] so Confirm remaps its files too", got)
 			}
 			if r03.node.FileCount != 2 {
@@ -245,11 +240,11 @@ func TestReview(t *testing.T) {
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 			rm := next.(Model)
 
-			r03 := nodeByID(rm.rows, "2024/June/03")
+			r03 := nodeByID(rm.rows, pid("2024/June/03"))
 			if r03 == nil || r03.node.Name != "03" {
 				t.Errorf("after undo want 03 back on its own under its proposed name, got %+v", r03)
 			}
-			if r09 := nodeByID(rm.rows, "2024/June/09"); r09 == nil || r09.node.Name != "09" {
+			if r09 := nodeByID(rm.rows, pid("2024/June/09")); r09 == nil || r09.node.Name != "09" {
 				t.Errorf("after undo want 09 back as its own row under its proposed name, got %+v", r09)
 			}
 		}},
@@ -262,10 +257,10 @@ func TestReview(t *testing.T) {
 		// (min/max), so it can't tell "anchor" apart from "topmost" — this needs a
 		// case the combine doesn't touch.
 		{"MergeSurvivorIsTheAnchorNotTheTopmostRow", func(t *testing.T) {
-			tree := []vfs.Node{{ID: "2024", Name: "2024", Children: []vfs.Node{
-				{ID: "2024/June", Name: "June", Children: []vfs.Node{
-					{ID: "2024/June/Goa", Name: "Goa", FileCount: 1},
-					{ID: "2024/June/Mumbai", Name: "Mumbai", FileCount: 1},
+			tree := []vfs.Node{{ID: pid("2024"), Name: "2024", Children: []vfs.Node{
+				{ID: pid("2024/June"), Name: "June", Children: []vfs.Node{
+					{ID: pid("2024/June/Goa"), Name: "Goa", FileCount: 1},
+					{ID: pid("2024/June/Mumbai"), Name: "Mumbai", FileCount: 1},
 				}},
 			}}}
 			m := newModel(tree, nil, nil, nil, nil, "")
@@ -279,14 +274,14 @@ func TestReview(t *testing.T) {
 			if m.statusIsErr {
 				t.Fatalf("expected success, got error status: %q", m.statusMsg)
 			}
-			if rGoa := nodeByID(m.rows, "2024/June/Goa"); rGoa != nil {
+			if rGoa := nodeByID(m.rows, pid("2024/June/Goa")); rGoa != nil {
 				t.Error("Goa should be folded into Mumbai (the anchor), not still its own row")
 			}
-			rMumbai := nodeByID(m.rows, "2024/June/Mumbai")
+			rMumbai := nodeByID(m.rows, pid("2024/June/Mumbai"))
 			if rMumbai == nil || rMumbai.node.Name != "Mumbai" {
 				t.Fatalf("want the anchor row still named %q, got %+v", "Mumbai", rMumbai)
 			}
-			if got := rMumbai.node.MergedIDs; len(got) != 1 || got[0] != "2024/June/Goa" {
+			if got := rMumbai.node.MergedIDs; len(got) != 1 || got[0] != pid("2024/June/Goa") {
 				t.Errorf("MergedIDs = %v, want [2024/June/Goa]", got)
 			}
 		}},
@@ -311,7 +306,7 @@ func TestReview(t *testing.T) {
 				t.Fatalf("expected success, got error status: %q", m.statusMsg)
 			}
 
-			year := vfs.FindNode(m.tree, "2017")
+			year := vfs.FindNode(m.tree, pid("2017"))
 			if year == nil {
 				t.Fatal("2017 node missing from tree")
 			}
@@ -329,7 +324,7 @@ func TestReview(t *testing.T) {
 				t.Errorf("2017 FileCount = %d, want 3", year.FileCount)
 			}
 			for _, month := range []string{"April", "August", "October", "April/20"} {
-				if n := vfs.FindNode(m.tree, "2017/"+month); n != nil {
+				if n := vfs.FindNode(m.tree, pid("2017/"+month)); n != nil {
 					t.Errorf("%s should have been pruned — nothing left under it", month)
 				}
 			}
@@ -339,8 +334,8 @@ func TestReview(t *testing.T) {
 		// reparent under.
 		{"MergeAcrossBranchesRejectsWithNoCommonAncestor", func(t *testing.T) {
 			tree := []vfs.Node{
-				{ID: "2017", Name: "2017", Children: []vfs.Node{{ID: "2017/Camera", Name: "Camera", FileCount: 1}}},
-				{ID: "2018", Name: "2018", Children: []vfs.Node{{ID: "2018/Camera", Name: "Camera", FileCount: 1}}},
+				{ID: pid("2017"), Name: "2017", Children: []vfs.Node{{ID: pid("2017/Camera"), Name: "Camera", FileCount: 1}}},
+				{ID: pid("2018"), Name: "2018", Children: []vfs.Node{{ID: pid("2018/Camera"), Name: "Camera", FileCount: 1}}},
 			}
 			m := newModel(tree, nil, nil, nil, nil, "")
 			// rows: 0=2017, 1=2017/Camera, 2=2018, 3=2018/Camera
@@ -367,7 +362,7 @@ func TestReview(t *testing.T) {
 				t.Fatalf("flatten April: %q", rm.statusMsg)
 			}
 
-			april := vfs.FindNode(rm.tree, "2023/April")
+			april := vfs.FindNode(rm.tree, pid("2023/April"))
 			if april == nil || len(april.Children) != 0 {
 				t.Fatalf("April = %+v, want a childless node", april)
 			}
@@ -376,20 +371,20 @@ func TestReview(t *testing.T) {
 			}
 			// both dropped levels must remap, or the files in the deepest one keep
 			// their old target_path when Confirm runs
-			want := map[string]bool{"2023/April/Indore": false, "2023/April/Indore/Apple iPhone 13": false}
+			want := map[int64]bool{pid("2023/April/Indore"): false, pid("2023/April/Indore/Apple iPhone 13"): false}
 			for _, id := range april.MergedIDs {
 				if _, ok := want[id]; !ok {
-					t.Errorf("unexpected MergedID %q", id)
+					t.Errorf("unexpected MergedID %d", id)
 				}
 				want[id] = true
 			}
 			for id, seen := range want {
 				if !seen {
-					t.Errorf("MergedIDs = %v, missing %q", april.MergedIDs, id)
+					t.Errorf("MergedIDs = %v, missing %d", april.MergedIDs, id)
 				}
 			}
 			// August is untouched — [D] acts on the cursor's subtree, nothing else
-			if aug := vfs.FindNode(rm.tree, "2023/August/Indore/Apple iPhone 13"); aug == nil {
+			if aug := vfs.FindNode(rm.tree, pid("2023/August/Indore/Apple iPhone 13")); aug == nil {
 				t.Error("August's subtree should be untouched by a flatten on April")
 			}
 		}},
@@ -405,7 +400,7 @@ func TestReview(t *testing.T) {
 			if rm.statusIsErr {
 				t.Fatalf("expected success, got %q", rm.statusMsg)
 			}
-			if len(rm.rows) != 1 || rm.rows[0].node.ID != "2023" || rm.rows[0].node.FileCount != 13 {
+			if len(rm.rows) != 1 || rm.rows[0].node.ID != pid("2023") || rm.rows[0].node.FileCount != 13 {
 				t.Fatalf("rows = %+v, want just 2023 holding all 13 files", rm.rows)
 			}
 			if len(rm.tree[0].MergedIDs) != 6 {
@@ -438,14 +433,14 @@ func TestReview(t *testing.T) {
 			if rm.statusIsErr {
 				t.Fatalf("expected success, got %q", rm.statusMsg)
 			}
-			april := vfs.FindNode(rm.tree, "2023/April")
+			april := vfs.FindNode(rm.tree, pid("2023/April"))
 			if len(april.Children) != 1 || april.Children[0].Name != "Apple iPhone 13" {
 				t.Fatalf("April children = %+v, want the lifted device node", april.Children)
 			}
-			if vfs.FindNode(rm.tree, "2023/August/Indore") == nil {
+			if vfs.FindNode(rm.tree, pid("2023/August/Indore")) == nil {
 				t.Error("[d] dropped more than the cursor's folder — August's Indore should be untouched")
 			}
-			if got := april.MergedIDs; len(got) != 1 || got[0] != "2023/April/Indore" {
+			if got := april.MergedIDs; len(got) != 1 || got[0] != pid("2023/April/Indore") {
 				t.Errorf("MergedIDs = %v, want just the dropped folder", got)
 			}
 		}},
@@ -476,10 +471,10 @@ func TestReview(t *testing.T) {
 			next2, _ := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 			rm2 := next2.(Model)
 
-			if vfs.FindNode(rm2.tree, "2023/April/Indore/Apple iPhone 13") == nil {
+			if vfs.FindNode(rm2.tree, pid("2023/April/Indore/Apple iPhone 13")) == nil {
 				t.Error("April's subtree should be back after undo")
 			}
-			if april := vfs.FindNode(rm2.tree, "2023/April"); len(april.MergedIDs) != 0 {
+			if april := vfs.FindNode(rm2.tree, pid("2023/April")); len(april.MergedIDs) != 0 {
 				t.Errorf("undo left MergedIDs behind: %v", april.MergedIDs)
 			}
 		}},
@@ -499,11 +494,11 @@ func TestReview(t *testing.T) {
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 			rm := next.(Model)
 
-			april20 := vfs.FindNode(rm.tree, "2017/April/20")
+			april20 := vfs.FindNode(rm.tree, pid("2017/April/20"))
 			if april20 == nil || len(april20.Children) != 1 || april20.Children[0].Name != "Canon EOS 700D" {
 				t.Errorf("2017/April/20 should have its Canon EOS 700D leaf back after undo, got %+v", april20)
 			}
-			year := vfs.FindNode(rm.tree, "2017")
+			year := vfs.FindNode(rm.tree, pid("2017"))
 			for _, c := range year.Children {
 				if c.Name == "Canon EOS 700D" {
 					t.Error("2017 should not have a direct Canon EOS 700D child after undo")
@@ -609,7 +604,7 @@ func TestReview(t *testing.T) {
 			if got := rm.rows[0].node.Name; got != "Renamed Year" {
 				t.Errorf("after undo, year name = %q, want %q", got, "Renamed Year")
 			}
-			if nodeByID(rm.rows, "2024/June/09") == nil {
+			if nodeByID(rm.rows, pid("2024/June/09")) == nil {
 				t.Error("undo should have restored the folded-away leaf")
 			}
 		}},
@@ -731,7 +726,7 @@ func TestReview(t *testing.T) {
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 			rm := next.(Model)
-			if row := nodeByID(rm.rows, "2024/June/03"); row == nil || row.node.Name != "03" {
+			if row := nodeByID(rm.rows, pid("2024/June/03")); row == nil || row.node.Name != "03" {
 				t.Fatalf("after undo want the day back as %q, got %+v", "03", row)
 			}
 			if rm.hasEdits() {
@@ -752,7 +747,7 @@ func TestReview(t *testing.T) {
 			if m.statusIsErr {
 				t.Fatalf("expected success, got %q", m.statusMsg)
 			}
-			june := vfs.FindNode(m.tree, "2024/06_June")
+			june := vfs.FindNode(m.tree, pid("2024/06_June"))
 			if len(june.Children) != 1 {
 				t.Fatalf("June has %d children, want 1 merged day", len(june.Children))
 			}
@@ -790,7 +785,7 @@ func TestReview(t *testing.T) {
 				t.Fatalf("expected success, got %q", m.statusMsg)
 			}
 			// all three Goas merged under their lowest common ancestor, the month
-			june := vfs.FindNode(m.tree, "2024/06_June")
+			june := vfs.FindNode(m.tree, pid("2024/06_June"))
 			if len(june.Children) != 1 || june.Children[0].Name != "Goa" {
 				t.Fatalf("June children = %+v, want one Goa (the days were emptied and pruned)", june.Children)
 			}
@@ -805,7 +800,7 @@ func TestReview(t *testing.T) {
 
 			m.mergeSelection()
 
-			goa := vfs.FindNode(m.tree, "2024/06_June/03/Goa")
+			goa := vfs.FindNode(m.tree, pid("2024/06_June/03/Goa"))
 			if goa == nil || len(goa.Children) != 1 {
 				t.Fatalf("Goa children = %+v, want one — the renamed Canon collapses into iPhone", goa)
 			}
@@ -815,9 +810,9 @@ func TestReview(t *testing.T) {
 		// TestMergeNodesCombinesDayRanges) can't mask what the merge chose: the
 		// survivor is named after the row [V] was pressed on, nothing else.
 		{"MergeKeepsTheAnchorsOwnName", func(t *testing.T) {
-			tree := []vfs.Node{{ID: "2017", Name: "2017", FileCount: 2, Children: []vfs.Node{
-				{ID: "2017/Mumbai", Name: "Mumbai", FileCount: 1},
-				{ID: "2017/Goa", Name: "Goa", FileCount: 1},
+			tree := []vfs.Node{{ID: pid("2017"), Name: "2017", FileCount: 2, Children: []vfs.Node{
+				{ID: pid("2017/Mumbai"), Name: "Mumbai", FileCount: 1},
+				{ID: pid("2017/Goa"), Name: "Goa", FileCount: 1},
 			}}}
 			m := newModel(tree, nil, nil, nil, nil, "")
 			m.visualAnchor, m.cursor, m.visualMode = 1, 2, true
@@ -827,7 +822,7 @@ func TestReview(t *testing.T) {
 			if m.statusIsErr {
 				t.Fatalf("expected success, got %q", m.statusMsg)
 			}
-			row := nodeByID(m.rows, "2017/Mumbai")
+			row := nodeByID(m.rows, pid("2017/Mumbai"))
 			if row == nil {
 				t.Fatal("expected the first pick to survive the merge")
 			}
@@ -846,7 +841,7 @@ func TestReview(t *testing.T) {
 
 			m.mergeSelection()
 
-			row := nodeByID(m.rows, "2024/June/03")
+			row := nodeByID(m.rows, pid("2024/June/03"))
 			if row == nil || row.node.Name != "Goa Trip" {
 				t.Fatalf("want the typed rename carried onto the merged folder, got %+v", row)
 			}
@@ -886,7 +881,7 @@ func TestReview(t *testing.T) {
 			if len(rm.rows) != before {
 				t.Errorf("%d rows after undoing everything, want the original %d", len(rm.rows), before)
 			}
-			if vfs.FindNode(rm.tree, "2023/April/Indore/Apple iPhone 13") == nil {
+			if vfs.FindNode(rm.tree, pid("2023/April/Indore/Apple iPhone 13")) == nil {
 				t.Error("the original tree should be fully restored")
 			}
 
@@ -910,7 +905,7 @@ func TestReview(t *testing.T) {
 				t.Fatalf("expected success, got %q", rm.statusMsg)
 			}
 
-			day := vfs.FindNode(rm.tree, "2024/06_June/03")
+			day := vfs.FindNode(rm.tree, pid("2024/06_June/03"))
 			if len(day.Children) != 3 {
 				t.Fatalf("day has %d children, want the 3 locations still separate", len(day.Children))
 			}
@@ -941,7 +936,7 @@ func TestReview(t *testing.T) {
 				t.Fatalf("expected success, got %q", rm.statusMsg)
 			}
 
-			day := vfs.FindNode(rm.tree, "2024/06_June/03")
+			day := vfs.FindNode(rm.tree, pid("2024/06_June/03"))
 			if len(day.Children) != 3 {
 				t.Fatalf("day children = %d, want the three lifted iPhone folders", len(day.Children))
 			}
@@ -965,10 +960,10 @@ func TestReview(t *testing.T) {
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
 			rm := next.(Model)
 
-			if goa := vfs.FindNode(rm.tree, "2024/06_June/03/Goa"); len(goa.Children) != 0 {
+			if goa := vfs.FindNode(rm.tree, pid("2024/06_June/03/Goa")); len(goa.Children) != 0 {
 				t.Error("Goa should be flattened")
 			}
-			if p := vfs.FindNode(rm.tree, "2024/06_June/03/Panaji"); p == nil || len(p.Children) != 1 {
+			if p := vfs.FindNode(rm.tree, pid("2024/06_June/03/Panaji")); p == nil || len(p.Children) != 1 {
 				t.Error("Panaji was outside the range and must be untouched")
 			}
 		}},
@@ -1039,10 +1034,10 @@ func TestReview(t *testing.T) {
 		// stays in the same name order BuildTree emits.
 		{"StructuralEditsKeepNameOrder", func(t *testing.T) {
 			day := func(n string, files int, kids ...vfs.Node) vfs.Node {
-				return vfs.Node{ID: "2017/12_December/" + n, Name: n, FileCount: files, Children: kids}
+				return vfs.Node{ID: pid("2017/12_December/" + n), Name: n, FileCount: files, Children: kids}
 			}
-			tree := []vfs.Node{{ID: "2017", Name: "2017", FileCount: 40, Children: []vfs.Node{
-				{ID: "2017/12_December", Name: "12_December", FileCount: 40, Children: []vfs.Node{
+			tree := []vfs.Node{{ID: pid("2017"), Name: "2017", FileCount: 40, Children: []vfs.Node{
+				{ID: pid("2017/12_December"), Name: "12_December", FileCount: 40, Children: []vfs.Node{
 					day("16", 4), day("20", 12), day("21", 20), day("22", 3), day("25", 1),
 				}},
 			}}}
@@ -1051,7 +1046,7 @@ func TestReview(t *testing.T) {
 			m.visualAnchor, m.cursor, m.visualMode = 4, 5, true
 			m.mergeSelection()
 
-			dec := vfs.FindNode(m.tree, "2017/12_December")
+			dec := vfs.FindNode(m.tree, pid("2017/12_December"))
 			var names []string
 			for _, c := range dec.Children {
 				names = append(names, c.Name)
@@ -1065,8 +1060,8 @@ func TestReview(t *testing.T) {
 				t.Errorf("children = %v, want the merged 21_22 back in its sorted position", names)
 			}
 			// and the cursor follows the merged folder rather than staying on an index
-			if m.rows[m.cursor].node.ID != "2017/12_December/21" {
-				t.Errorf("cursor is on %q, want the merged folder", m.rows[m.cursor].node.ID)
+			if m.rows[m.cursor].node.ID != pid("2017/12_December/21") {
+				t.Errorf("cursor is on %d, want the merged folder", m.rows[m.cursor].node.ID)
 			}
 		}},
 		// TestDropKeepsNameOrder covers the same for lifted children.
@@ -1075,8 +1070,8 @@ func TestReview(t *testing.T) {
 			m.visualAnchor, m.cursor, m.visualMode = 3, 11, true
 			m.dropFolders(m.selectedRows())
 
-			day := vfs.FindNode(m.tree, "2024/06_June/03")
-			var ids []string
+			day := vfs.FindNode(m.tree, pid("2024/06_June/03"))
+			var ids []int64
 			for _, c := range day.Children {
 				ids = append(ids, c.ID)
 			}
@@ -1101,7 +1096,7 @@ func TestReview(t *testing.T) {
 				"2024/June/09": "   └─ ",
 			}
 			for id, wantGuide := range want {
-				row := nodeByID(m.rows, id)
+				row := nodeByID(m.rows, pid(id))
 				if row == nil {
 					t.Fatalf("no row for %q", id)
 				}
@@ -1204,7 +1199,7 @@ func TestReview(t *testing.T) {
 			d := dbtest.New(t)
 			insertVFSEntry(t, d, 1, "/src/a.jpg", "2024/June/a.jpg")
 
-			s := Screen(ctx, Options{DB: d, Tree: sampleTree(), Log: logger.NewNoopLogger(), OutputDir: t.TempDir()})
+			s := Screen(ctx, Options{DB: d, Tree: dbTree(t, d), Log: logger.NewNoopLogger(), OutputDir: t.TempDir()})
 
 			next, _ := s.Update(tea.KeyMsg{Type: tea.KeyEsc})
 			next, cmd := next.(screen).Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1301,7 +1296,7 @@ func TestReview(t *testing.T) {
 			d := dbtest.New(t)
 			insertVFSEntry(t, d, 1, "/src/a.jpg", "2024/June/a.jpg")
 
-			if err := ConfirmAll(ctx, Options{DB: d, Tree: sampleTree(), Log: logger.NewNoopLogger(), OutputDir: t.TempDir()}); err != nil {
+			if err := ConfirmAll(ctx, Options{DB: d, Tree: dbTree(t, d), Log: logger.NewNoopLogger(), OutputDir: t.TempDir()}); err != nil {
 				t.Fatalf("ConfirmAll: %v", err)
 			}
 
@@ -1328,7 +1323,7 @@ func TestReview(t *testing.T) {
 			}
 			insertVFSEntry(t, d, 1, srcFile, "2024/June/a.jpg")
 
-			node := &vfs.Node{ID: "2024/June"}
+			node := &vfs.Node{ID: nodeAt(t, d, "2024/June")}
 			msg := peekCmd(ctx, d, node)()
 			pm := msg.(previewDoneMsg)
 			if pm.err != nil {
@@ -1362,7 +1357,7 @@ func TestReview(t *testing.T) {
 			}
 			insertVFSEntry(t, d, 1, srcFile, "2024/June/a.jpg")
 
-			node := &vfs.Node{ID: "2024/June"}
+			node := &vfs.Node{ID: nodeAt(t, d, "2024/June")}
 			if pm := peekCmd(ctx, d, node)().(previewDoneMsg); pm.err != nil {
 				t.Fatalf("first peek: %v", pm.err)
 			}
@@ -1408,7 +1403,7 @@ func TestReview(t *testing.T) {
 			insertVFSEntry(t, d, 1, present, "2024/June/a.jpg")
 			insertVFSEntry(t, d, 2, missing, "2024/June/gone.jpg")
 
-			pm := peekCmd(ctx, d, &vfs.Node{ID: "2024/June"})().(previewDoneMsg)
+			pm := peekCmd(ctx, d, &vfs.Node{ID: nodeAt(t, d, "2024/June")})().(previewDoneMsg)
 			if pm.err == nil {
 				t.Fatal("expected an error copying a missing source file")
 			}
@@ -1472,7 +1467,7 @@ func TestReview(t *testing.T) {
 			ctx := context.Background()
 			usePreviewRoot(t)
 			d := dbtest.New(t)
-			node := &vfs.Node{ID: "nowhere"}
+			node := &vfs.Node{ID: 999999}
 			msg := peekCmd(ctx, d, node)()
 			pm := msg.(previewDoneMsg)
 			if pm.err == nil {
@@ -1510,27 +1505,67 @@ func insertVFSEntry(t *testing.T, d *db.DB, fileID int64, sourcePath, targetPath
 		fileID, filepath.Base(sourcePath)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.ExecContext(ctx, `
-		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
-		VALUES (?, ?, ?, 'PROPOSED')`, fileID, sourcePath, targetPath); err != nil {
+	dbtest.SeedEntry(t, d, fileID, sourcePath, targetPath, db.StatusProposed)
+}
+
+// dbTree is the review tree BuildTree reads from d.
+func dbTree(t *testing.T, d *db.DB) []vfs.Node {
+	t.Helper()
+	tree, err := vfs.BuildTree(context.Background(), d)
+	if err != nil {
 		t.Fatal(err)
 	}
+	return tree
+}
+
+// nodeAt is the ID of the folder at path p in d's review tree.
+func nodeAt(t *testing.T, d *db.DB, p string) int64 {
+	t.Helper()
+	nodes := dbTree(t, d)
+	var found *vfs.Node
+	for _, name := range strings.Split(p, "/") {
+		found = nil
+		for i := range nodes {
+			if nodes[i].Name == name {
+				found = &nodes[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("no folder %q in the review tree", p)
+		}
+		nodes = found.Children
+	}
+	return found.ID
+}
+
+// pathIDs gives every folder path a hand-built test tree states a stable int
+// ID, so the tree still reads as paths.
+var pathIDs = map[string]int64{}
+
+func pid(path string) int64 {
+	if id, ok := pathIDs[path]; ok {
+		return id
+	}
+	id := int64(len(pathIDs) + 1)
+	pathIDs[path] = id
+	return id
 }
 
 // siblingTree has two true siblings ("03", "09") under the same parent
 // ("June"), the shape a real merge (two date-fallback clusters that turn out
 // to be the same place) actually happens on.
 func siblingTree() []vfs.Node {
-	return []vfs.Node{{ID: "2024", Name: "2024", Children: []vfs.Node{
-		{ID: "2024/June", Name: "June", Children: []vfs.Node{
-			{ID: "2024/June/03", Name: "03", FileCount: 1},
-			{ID: "2024/June/09", Name: "09", FileCount: 1},
+	return []vfs.Node{{ID: pid("2024"), Name: "2024", Children: []vfs.Node{
+		{ID: pid("2024/June"), Name: "June", Children: []vfs.Node{
+			{ID: pid("2024/June/03"), Name: "03", FileCount: 1},
+			{ID: pid("2024/June/09"), Name: "09", FileCount: 1},
 		}},
 	}}}
 }
 
 // nodeByID finds a row by its node ID, however the merge reshuffled row order.
-func nodeByID(rows []*reviewRow, id string) *reviewRow {
+func nodeByID(rows []*reviewRow, id int64) *reviewRow {
 	for _, r := range rows {
 		if r.node.ID == id {
 			return r
@@ -1542,20 +1577,20 @@ func nodeByID(rows []*reviewRow, id string) *reviewRow {
 // crossBranchTree mirrors the real reported case: the same device's photos
 // spread across three different months, each its own single-file leaf.
 func crossBranchTree() []vfs.Node {
-	leaf := func(id, name string) vfs.Node { return vfs.Node{ID: id, Name: name, FileCount: 1} }
-	return []vfs.Node{{ID: "2017", Name: "2017", Children: []vfs.Node{
-		{ID: "2017/April", Name: "April", Children: []vfs.Node{
-			{ID: "2017/April/20", Name: "20", Children: []vfs.Node{
+	leaf := func(id, name string) vfs.Node { return vfs.Node{ID: pid(id), Name: name, FileCount: 1} }
+	return []vfs.Node{{ID: pid("2017"), Name: "2017", Children: []vfs.Node{
+		{ID: pid("2017/April"), Name: "April", Children: []vfs.Node{
+			{ID: pid("2017/April/20"), Name: "20", Children: []vfs.Node{
 				leaf("2017/April/20/Canon EOS 700D", "Canon EOS 700D"),
 			}},
 		}},
-		{ID: "2017/August", Name: "August", Children: []vfs.Node{
-			{ID: "2017/August/15", Name: "15", Children: []vfs.Node{
+		{ID: pid("2017/August"), Name: "August", Children: []vfs.Node{
+			{ID: pid("2017/August/15"), Name: "15", Children: []vfs.Node{
 				leaf("2017/August/15/Canon EOS 700D", "Canon EOS 700D"),
 			}},
 		}},
-		{ID: "2017/October", Name: "October", Children: []vfs.Node{
-			{ID: "2017/October/19", Name: "19", Children: []vfs.Node{
+		{ID: pid("2017/October"), Name: "October", Children: []vfs.Node{
+			{ID: pid("2017/October/19"), Name: "19", Children: []vfs.Node{
 				leaf("2017/October/19/Canon EOS 700D", "Canon EOS 700D"),
 			}},
 		}},
@@ -1567,13 +1602,13 @@ func crossBranchTree() []vfs.Node {
 // the reviewer doesn't want it.
 func groupedTree() []vfs.Node {
 	month := func(name string, n int) vfs.Node {
-		return vfs.Node{ID: "2023/" + name, Name: name, FileCount: n, Children: []vfs.Node{
-			{ID: "2023/" + name + "/Indore", Name: "Indore", FileCount: n, Children: []vfs.Node{
-				{ID: "2023/" + name + "/Indore/Apple iPhone 13", Name: "Apple iPhone 13", FileCount: n},
+		return vfs.Node{ID: pid("2023/" + name), Name: name, FileCount: n, Children: []vfs.Node{
+			{ID: pid("2023/" + name + "/Indore"), Name: "Indore", FileCount: n, Children: []vfs.Node{
+				{ID: pid("2023/" + name + "/Indore/Apple iPhone 13"), Name: "Apple iPhone 13", FileCount: n},
 			}},
 		}}
 	}
-	return []vfs.Node{{ID: "2023", Name: "2023", FileCount: 13, Children: []vfs.Node{
+	return []vfs.Node{{ID: pid("2023"), Name: "2023", FileCount: 13, Children: []vfs.Node{
 		month("April", 10), month("August", 3),
 	}}}
 }
@@ -1583,14 +1618,14 @@ func groupedTree() []vfs.Node {
 func tripTree() []vfs.Node {
 	day := func(d, device string) vfs.Node {
 		base := "2024/06_June/" + d
-		return vfs.Node{ID: base, Name: d, FileCount: 1, Children: []vfs.Node{
-			{ID: base + "/Goa", Name: "Goa", FileCount: 1, Children: []vfs.Node{
-				{ID: base + "/Goa/" + device, Name: device, FileCount: 1},
+		return vfs.Node{ID: pid(base), Name: d, FileCount: 1, Children: []vfs.Node{
+			{ID: pid(base + "/Goa"), Name: "Goa", FileCount: 1, Children: []vfs.Node{
+				{ID: pid(base + "/Goa/" + device), Name: device, FileCount: 1},
 			}},
 		}}
 	}
-	return []vfs.Node{{ID: "2024", Name: "2024", FileCount: 3, Children: []vfs.Node{
-		{ID: "2024/06_June", Name: "06_June", FileCount: 3, Children: []vfs.Node{
+	return []vfs.Node{{ID: pid("2024"), Name: "2024", FileCount: 3, Children: []vfs.Node{
+		{ID: pid("2024/06_June"), Name: "06_June", FileCount: 3, Children: []vfs.Node{
 			day("03", "iPhone"), day("04", "iPhone"), day("05", "Canon"),
 		}},
 	}}}
@@ -1601,15 +1636,15 @@ func tripTree() []vfs.Node {
 func dayWithLocationsTree() []vfs.Node {
 	loc := func(name string, n int) vfs.Node {
 		base := "2024/06_June/03/" + name
-		return vfs.Node{ID: base, Name: name, FileCount: n, Children: []vfs.Node{
-			{ID: base + "/iPhone", Name: "iPhone", FileCount: n, Children: []vfs.Node{
-				{ID: base + "/iPhone/Vertical", Name: "Vertical", FileCount: n},
+		return vfs.Node{ID: pid(base), Name: name, FileCount: n, Children: []vfs.Node{
+			{ID: pid(base + "/iPhone"), Name: "iPhone", FileCount: n, Children: []vfs.Node{
+				{ID: pid(base + "/iPhone/Vertical"), Name: "Vertical", FileCount: n},
 			}},
 		}}
 	}
-	return []vfs.Node{{ID: "2024", Name: "2024", FileCount: 6, Children: []vfs.Node{
-		{ID: "2024/06_June", Name: "06_June", FileCount: 6, Children: []vfs.Node{
-			{ID: "2024/06_June/03", Name: "03", FileCount: 6, Children: []vfs.Node{
+	return []vfs.Node{{ID: pid("2024"), Name: "2024", FileCount: 6, Children: []vfs.Node{
+		{ID: pid("2024/06_June"), Name: "06_June", FileCount: 6, Children: []vfs.Node{
+			{ID: pid("2024/06_June/03"), Name: "03", FileCount: 6, Children: []vfs.Node{
 				loc("Goa", 1), loc("Panaji", 2), loc("Margao", 3),
 			}},
 		}},

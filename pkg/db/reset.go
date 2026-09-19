@@ -40,6 +40,11 @@ func (d *DB) ResetAll(ctx context.Context) (ResetCounts, error) {
 	count, _ = result.RowsAffected()
 	resp.VFSEntriesDeleted = count
 
+	// the plan's folders go after the entries that reference them
+	if _, err := tx.ExecContext(ctx, `DELETE FROM folder_nodes`); err != nil {
+		return ResetCounts{}, fmt.Errorf("reset: delete folder nodes: %w", err)
+	}
+
 	result, err = tx.ExecContext(ctx, `DELETE FROM file_metadata`)
 	if err != nil {
 		return ResetCounts{}, fmt.Errorf("reset: delete metadata: %w", err)
@@ -77,6 +82,7 @@ func (d *DB) IsEmpty(ctx context.Context) (bool, error) {
 	var found bool
 	err := d.SQL.QueryRowContext(ctx, `SELECT
 		EXISTS (SELECT 1 FROM virtual_fs_entries) OR
+		EXISTS (SELECT 1 FROM folder_nodes) OR
 		EXISTS (SELECT 1 FROM file_metadata) OR
 		EXISTS (SELECT 1 FROM file_registry) OR
 		EXISTS (SELECT 1 FROM user_labels)`).Scan(&found)

@@ -344,7 +344,7 @@ func (m *Model) jumpSameDepth(step int) {
 // focusNode puts the cursor on a node by ID, so an edit that moves a folder
 // leaves the reviewer looking at where it went rather than at whatever row
 // happens to sit at the old index.
-func (m *Model) focusNode(id string) {
+func (m *Model) focusNode(id int64) {
 	for i, r := range m.rows {
 		if r.node.ID == id {
 			m.cursor = i

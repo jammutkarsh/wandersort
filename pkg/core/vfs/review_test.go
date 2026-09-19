@@ -8,7 +8,6 @@ package vfs
 
 import (
 	"context"
-	"path"
 	"slices"
 	"strings"
 	"testing"
@@ -16,6 +15,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 )
 
@@ -33,16 +33,16 @@ func leafNodes(nodes []Node) []*Node {
 	return out
 }
 
-// renameFirstLeaf renames the first leaf folder and returns its immutable ID
-// so the test can assert on the rewrite.
-func renameFirstLeaf(nodes []Node, newName string) (oldID string, ok bool) {
+// renameFirstLeaf renames the first leaf folder and returns its old name so
+// the test can assert on the rewrite.
+func renameFirstLeaf(nodes []Node, newName string) (oldName string, ok bool) {
 	leaves := leafNodes(nodes)
 	if len(leaves) == 0 {
 		return "", false
 	}
-	oldID = leaves[0].ID
+	oldName = leaves[0].Name
 	leaves[0].Name = newName
-	return oldID, true
+	return oldName, true
 }
 
 func TestReview(t *testing.T) {
@@ -69,7 +69,7 @@ func TestReview(t *testing.T) {
 				t.Fatal("empty tree")
 			}
 
-			oldID, ok := renameFirstLeaf(tree, "Manali")
+			oldName, ok := renameFirstLeaf(tree, "Manali")
 			if !ok {
 				t.Fatal("no folder to rename")
 			}
@@ -86,7 +86,7 @@ func TestReview(t *testing.T) {
 				`SELECT target_path, status FROM virtual_fs_entries`); err != nil {
 				t.Fatal(err)
 			}
-			oldSeg := "/" + path.Base(oldID) + "/"
+			oldSeg := "/" + oldName + "/"
 			for _, r := range rows {
 				if r.Status != db.StatusApproved {
 					t.Errorf("status = %q, want APPROVED", r.Status)
@@ -118,7 +118,7 @@ func TestReview(t *testing.T) {
 			h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 			h.build(t, DefaultConfig(), installtest.Resolver(t))
 
-			bogus := []Node{{ID: "not/a/real/path", Name: "x", Children: []Node{}}}
+			bogus := []Node{{ID: 999999, Name: "x", Children: []Node{}}}
 			if err := Confirm(context.Background(), h.d, bogus); err == nil {
 				t.Fatal("expected error for unknown node id")
 			}
@@ -196,7 +196,7 @@ func TestReview(t *testing.T) {
 			}
 			foldedID := suggested[1].ID
 			suggested[0].Name = "Manali"
-			suggested[0].MergedIDs = []string{foldedID}
+			suggested[0].MergedIDs = []int64{foldedID}
 			tree = dropNodeByID(tree, foldedID)
 
 			if err := Confirm(ctx, h.d, tree); err != nil {
@@ -293,18 +293,18 @@ func TestReview(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var bracketed string
+			var bracketed int64
 			var walk func([]Node)
 			walk = func(ns []Node) {
 				for i := range ns {
-					if strings.Contains(ns[i].ID, "[2024]") {
+					if strings.Contains(ns[i].Name, "[2024]") {
 						bracketed = ns[i].ID
 					}
 					walk(ns[i].Children)
 				}
 			}
 			walk(tree)
-			if bracketed == "" {
+			if bracketed == 0 {
 				t.Fatal("rename to a bracketed name did not reach target_path")
 			}
 
@@ -313,7 +313,7 @@ func TestReview(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(files) != 1 {
-				t.Errorf("FilesUnder(%q) = %v, want the one file under it", bracketed, files)
+				t.Errorf("FilesUnder(%d) = %v, want the one file under it", bracketed, files)
 			}
 		}},
 		{"BuildTreeExcludesOrphan", func(t *testing.T) {
@@ -331,7 +331,7 @@ func TestReview(t *testing.T) {
 			walk = func(ns []Node) {
 				for i := range ns {
 					if ns[i].Name == OrphanDir {
-						t.Errorf("orphan folder %q leaked into the review tree", ns[i].ID)
+						t.Errorf("orphan folder %d leaked into the review tree", ns[i].ID)
 					}
 					walk(ns[i].Children)
 				}
@@ -359,7 +359,7 @@ func TestReview(t *testing.T) {
 
 // dropNodeByID removes a node from the tree entirely, the way the review TUI's
 // merge does once it has folded that node into a sibling.
-func dropNodeByID(nodes []Node, id string) []Node {
+func dropNodeByID(nodes []Node, id int64) []Node {
 	out := nodes[:0]
 	for _, n := range nodes {
 		if n.ID == id {
@@ -403,11 +403,7 @@ func TestReviewConfirmAvoidsPlacedNames(t *testing.T) {
 	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.d.ExecContext(ctx, `
-		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
-		VALUES (?, 'lib/a.heic', '2024/06_June/Manali/a.heic', ?)`, placed, db.StatusDone); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SeedEntry(t, h.d, placed, "lib/a.heic", "2024/06_June/Manali/a.heic", db.StatusDone)
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleLocation}
@@ -444,11 +440,7 @@ func TestReviewConfirmKeepsPairSuffix(t *testing.T) {
 	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.d.ExecContext(ctx, `
-		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
-		VALUES (?, 'lib/IMG_0001.HEIC', '2024/06_June/Manali/IMG_0001.HEIC', ?)`, placed, db.StatusDone); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SeedEntry(t, h.d, placed, "lib/IMG_0001.HEIC", "2024/06_June/Manali/IMG_0001.HEIC", db.StatusDone)
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleLocation}

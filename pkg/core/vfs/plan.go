@@ -472,7 +472,7 @@ func buildTargets(ctx context.Context, masters []masterFile, cfg Config) {
 	pairLiveVideos(masters)
 
 	// dirFor reads one master plus the two library-wide maps above, and its only
-	// write is to that master's own locationDir, so the directories fan out.
+	// write is to that master's own dirLevels, so the directories fan out.
 	// The collision loop below deliberately does not: `taken` decides which of
 	// two files landing on the same path keeps it and which gets the _2, and
 	// that is settled by the order it reaches them.
@@ -489,7 +489,7 @@ func buildTargets(ctx context.Context, masters []masterFile, cfg Config) {
 		// the real hierarchy, often alone. Paired sidecars never reach here;
 		// they already got the leader's directory above.
 		if m.MediaType == classifier.MediaTypeSidecar {
-			dirs[i] = OrphanDir
+			dirs[i], m.dirLevels = OrphanDir, []string{LevelOrphan}
 			return
 		}
 		dirs[i] = dirFor(m, skip, cfg)
@@ -764,10 +764,10 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 		for _, i := range g.members {
 			dirs[i] = dir
 			// buildTargets skips dirFor for a group member, so the leader's
-			// locationDir has to come along with the directory — without it
-			// every grouped file wrote a NULL location_dir and the review
-			// tree had no GPS to re-query for that folder's renames
-			masters[i].locationDir = masters[leader].locationDir
+			// levels have to come along with the directory — without them
+			// every grouped file had no location folder and the review tree
+			// no GPS to re-query for that folder's renames
+			masters[i].dirLevels = masters[leader].dirLevels
 			// the leader's time and hash also rank the member when names
 			// collide, so a sidecar keeps its photo's suffix
 			masters[i].orderTime = masters[leader].takenAt
@@ -808,15 +808,18 @@ func monthParts(m *masterFile) []string {
 // order. skip names the levels uninformativeLevels found nothing to say with.
 func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 	if m.takenAt.IsZero() {
+		m.dirLevels = []string{LevelFallback}
 		return path.SanitizeSegment(cfg.Fallback)
 	}
 
 	parts := monthParts(m)
+	levels := []string{LevelYear, LevelMonth}
 
 	// A screenshot has no location/device/orientation worth a folder of its
 	// own — group every screenshot in the month together instead of letting
 	// the configured Rules fragment them.
 	if m.IsScreenshot {
+		m.dirLevels = append(levels, LevelScreenshots)
 		return strings.Join(append(parts, "Screenshots"), "/")
 	}
 
@@ -829,12 +832,9 @@ func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 			continue // level not derivable for this file — skip the folder
 		}
 		parts = append(parts, path.SanitizeSegment(seg))
-		if level == RuleLocation {
-			// recorded by path, not depth, so any Rules order works — this is
-			// where the review tree hangs the file's GPS for rename lookups
-			m.locationDir = strings.Join(parts, "/")
-		}
+		levels = append(levels, level)
 	}
+	m.dirLevels = levels
 	return strings.Join(parts, "/")
 }
 

@@ -7,6 +7,7 @@
 package vfs
 
 import (
+	"slices"
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
@@ -20,6 +21,16 @@ const (
 	RuleDevice      = "device"
 	RuleOrientation = "orientation"
 	RuleMedia       = "media"
+)
+
+// Levels of the fixed folders around Rules, stored as folder_nodes.level next
+// to the Rules names above.
+const (
+	LevelYear        = "year"
+	LevelMonth       = "month"
+	LevelScreenshots = "screenshots"
+	LevelFallback    = "fallback"
+	LevelOrphan      = "orphan"
 )
 
 // defaultClusterGap is the capture-time gap that starts a new event cluster
@@ -158,9 +169,18 @@ type masterFile struct {
 	eventSegment       string // dated segment for unresolved clusters, e.g. "03-05"
 	dayOverride        string // date-level range label from mergeSameLocationDays, e.g. "02_04"
 	targetPath         string
-	// the folder the location level emitted, recorded by dirFor so the review
-	// tree can hang this file's GPS off the right node without guessing a depth
-	locationDir string
+	// the level that made each folder of targetPath's directory, one per
+	// segment — dirFor records it. The location entry is where the review
+	// tree hangs this file's GPS, whatever depth the Rules put it at.
+	dirLevels []string
+	// the folder_nodes rows persist linked this file to: its folder, and its
+	// location folder (0 = none)
+	nodeID, locationNodeID int64
+}
+
+// locationDepth is the index of the location folder in dirLevels, or -1.
+func (m *masterFile) locationDepth() int {
+	return slices.Index(m.dirLevels, RuleLocation)
 }
 
 // folderTime is the instant every dated folder decision is made from — the

@@ -10,6 +10,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 )
 
@@ -23,8 +24,6 @@ func TestResetWipesAllTables(t *testing.T) {
 		args  []any
 	}{
 		{`INSERT INTO file_metadata (file_hash, file_id) VALUES ('abc', 1)`, nil},
-		{`INSERT INTO virtual_fs_entries (file_id, source_path, target_path)
-			VALUES (1, '/src/photo.jpg', '2024/06_June/photo.jpg')`, nil},
 		{`INSERT INTO user_labels (label, kind) VALUES ('Goa Trip', 'EVENT')`, nil},
 	}
 	for _, s := range seed {
@@ -32,6 +31,8 @@ func TestResetWipesAllTables(t *testing.T) {
 			t.Fatalf("seed %q: %v", s.query, err)
 		}
 	}
+
+	dbtest.SeedEntry(t, d, 1, "/src/photo.jpg", "2024/06_June/photo.jpg", db.StatusProposed)
 
 	resp, err := d.ResetAll(ctx)
 	if err != nil {
@@ -55,5 +56,12 @@ func TestResetWipesAllTables(t *testing.T) {
 		if remaining != 0 {
 			t.Errorf("%s has %d rows after reset, want 0", table, remaining)
 		}
+	}
+	var folders int
+	if err := d.SQL.GetContext(ctx, &folders, `SELECT count(*) FROM folder_nodes`); err != nil {
+		t.Fatal(err)
+	}
+	if folders != 0 {
+		t.Errorf("folder_nodes has %d rows after reset, want 0", folders)
 	}
 }

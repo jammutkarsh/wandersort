@@ -450,11 +450,7 @@ func TestScanner(t *testing.T) {
 				`INSERT INTO file_metadata (file_hash, file_id) VALUES ('vanished-hash', 1)`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := d.ExecContext(ctx, `
-				INSERT INTO virtual_fs_entries (file_id, source_path, target_path)
-				VALUES (1, '/gone/vanished.jpg', 'stale/vanished.jpg')`); err != nil {
-				t.Fatal(err)
-			}
+			dbtest.SeedEntry(t, d, 1, "/gone/vanished.jpg", "stale/vanished.jpg", db.StatusProposed)
 
 			if err := sc.sweep(ctx, time.Now(), "/gone"); err != nil {
 				t.Fatalf("sweep: %v", err)

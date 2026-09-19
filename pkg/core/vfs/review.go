@@ -7,9 +7,9 @@
 package vfs
 
 // review.go is the reconcile core behind `wandersort review`: exposes PROPOSED
-// rows as a directory tree, applies edits back onto virtual_fs_entries, and
-// remembers the names the reviewer typed. Nodes match by immutable ID, never
-// by tree diff.
+// rows as a directory tree, applies edits back onto folder_nodes and
+// virtual_fs_entries, and remembers the names the reviewer typed. Nodes match
+// by their folder_nodes id, never by tree diff.
 
 import (
 	"context"
@@ -28,25 +28,6 @@ import (
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 )
 
-// prefixRewriter turns a remap of old-dir → new-dir into a function over any
-// directory: the longest remapped ancestor wins, and the rest of the path
-// rides along behind the new prefix. A renamed leaf is its own remap key; a
-// merged-away node's descendants are covered by the longest-ancestor match.
-func prefixRewriter(remap map[string]string) func(dir string) string {
-	olds := slices.SortedFunc(maps.Keys(remap), func(a, b string) int { return len(b) - len(a) })
-	return func(dir string) string {
-		for _, old := range olds {
-			if dir == old {
-				return remap[old]
-			}
-			if strings.HasPrefix(dir, old+"/") {
-				return remap[old] + dir[len(old):]
-			}
-		}
-		return dir
-	}
-}
-
 // ErrInvalidTree wraps every rejection of a submitted review tree (unknown node
 // id, unsafe name, colliding rename).
 var ErrInvalidTree = errors.New("invalid review tree")
@@ -57,10 +38,10 @@ var ErrInvalidTree = errors.New("invalid review tree")
 var ErrNoProposal = errors.New("no proposal to review")
 
 // Node is one directory in the proposed hierarchy, as the review TUI edits
-// it. ID is the proposed dir path at build time and is
-// immutable — reconcile matches on it. Name is the editable last segment.
+// it. ID is its folder_nodes id — reconcile matches on it. Name is the
+// editable folder name.
 type Node struct {
-	ID        string   `json:"id"`
+	ID        int64    `json:"id"`
 	Name      string   `json:"name"`
 	FileCount int      `json:"fileCount"`
 	Samples   []string `json:"samples,omitempty"`
@@ -70,9 +51,9 @@ type Node struct {
 	Lat *float64 `json:"lat,omitempty"`
 	Lon *float64 `json:"lon,omitempty"`
 	// IDs of nodes a review-time merge folded into this one — gone from the
-	// tree, but their files still live under those old paths, so Confirm
-	// must remap them here too.
-	MergedIDs []string `json:"mergedIds,omitempty"`
+	// tree, but their files and subfolders still point at them, so Confirm
+	// must move those here too.
+	MergedIDs []int64 `json:"mergedIds,omitempty"`
 }
 
 const maxSamples = 3
@@ -83,106 +64,113 @@ const maxSamples = 3
 // decides if that's a 404.
 func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 	var rows []struct {
-		TargetPath  string   `db:"target_path"`
-		SourcePath  string   `db:"source_path"`
-		LocationDir *string  `db:"location_dir"`
-		GPSLat      *float64 `db:"exif_gps_latitude"`
-		GPSLon      *float64 `db:"exif_gps_longitude"`
+		NodeID       int64    `db:"node_id"`
+		SourcePath   string   `db:"source_path"`
+		LocationNode *int64   `db:"location_node_id"`
+		GPSLat       *float64 `db:"exif_gps_latitude"`
+		GPSLon       *float64 `db:"exif_gps_longitude"`
 	}
 	// orphaned sidecars have nothing to review — one flat junk folder, not a
-	// decision — so they never enter the tree at all. substr, not LIKE/GLOB:
-	// see FilesUnder below for why a folder name can't be trusted as a pattern.
-	orphanPrefix := OrphanDir + "/"
+	// decision — so they never enter the tree at all
 	if err := database.SQL.SelectContext(ctx, &rows,
-		`SELECT vfe.target_path, vfe.source_path, vfe.location_dir,
+		`SELECT vfe.node_id, vfe.source_path, vfe.location_node_id,
 		        fm.exif_gps_latitude, fm.exif_gps_longitude
 		 FROM virtual_fs_entries vfe
+		 JOIN folder_nodes fn ON fn.id = vfe.node_id
 		 LEFT JOIN file_metadata fm ON fm.file_id = vfe.file_id
-		 WHERE vfe.status IN (?, ?)
-		   AND substr(vfe.target_path, 1, length(?)) != ?`,
-		db.StatusProposed, db.StatusApproved, orphanPrefix, orphanPrefix); err != nil {
+		 WHERE vfe.status IN (?, ?) AND fn.level != ?
+		 ORDER BY vfe.id`,
+		db.StatusProposed, db.StatusApproved, LevelOrphan); err != nil {
 		return nil, fmt.Errorf("query vfs entries: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	folders, err := loadFolderRows(ctx, database.SQL)
+	if err != nil {
+		return nil, err
 	}
 
 	type tnode struct {
 		Node
-		childIdx map[string]*tnode
+		children []*tnode
 	}
-	newT := func(id, name string) *tnode {
-		return &tnode{Node: Node{ID: id, Name: name}, childIdx: map[string]*tnode{}}
+	byID := map[int64]*tnode{}
+	root := &tnode{}
+	// get returns id's tree node, creating it — and linking it under its
+	// parent — the first time a file below it is seen
+	var get func(id int64) *tnode
+	get = func(id int64) *tnode {
+		if t, ok := byID[id]; ok {
+			return t
+		}
+		f := folders[id]
+		t := &tnode{Node: Node{ID: id, Name: f.Name}}
+		byID[id] = t
+		parent := root
+		if f.Parent != 0 {
+			parent = get(f.Parent)
+		}
+		parent.children = append(parent.children, t)
+		return t
 	}
-	root := newT("", "")
 
 	for _, r := range rows {
-		segs := strings.Split(path.Dir(r.TargetPath), "/")
-		cur := root
-		nodes := make([]*tnode, 0, len(segs))
-		for i, seg := range segs {
-			child, ok := cur.childIdx[seg]
-			if !ok {
-				child = newT(strings.Join(segs[:i+1], "/"), seg)
-				cur.childIdx[seg] = child
-			}
-			cur = child
-			nodes = append(nodes, cur)
-			// counts and samples accumulate on every ancestor, so any node a
-			// reviewer lands on can report its size and open a preview
-			cur.FileCount++
-			if len(cur.Samples) < maxSamples {
-				cur.Samples = append(cur.Samples, r.SourcePath)
+		get(r.NodeID)
+		// counts and samples accumulate on every ancestor, so any node a
+		// reviewer lands on can report its size and open a preview
+		for id := r.NodeID; id != 0; id = folders[id].Parent {
+			t := byID[id]
+			t.FileCount++
+			if len(t.Samples) < maxSamples {
+				t.Samples = append(t.Samples, r.SourcePath)
 			}
 		}
-		// GPS attaches to the exact folder the location level emitted, not a
-		// guessed depth — a guessed depth moved with Rules order and hung one
-		// file's coordinates off whatever shared node sat there.
-		if r.LocationDir == nil || *r.LocationDir == "" {
+		// GPS attaches to the folder the location level made, not a guessed
+		// depth — a guessed depth moved with Rules order
+		if r.LocationNode == nil || r.GPSLat == nil || r.GPSLon == nil {
 			continue
 		}
-		depth := strings.Count(*r.LocationDir, "/")
-		if depth >= len(nodes) || nodes[depth].ID != *r.LocationDir {
-			continue
-		}
-		if loc := nodes[depth]; loc.Lat == nil && r.GPSLat != nil && r.GPSLon != nil {
+		if loc, ok := byID[*r.LocationNode]; ok && loc.Lat == nil {
 			loc.Lat, loc.Lon = r.GPSLat, r.GPSLon
 		}
 	}
-	if len(root.childIdx) == 0 {
-		return nil, nil
-	}
 
-	var finalize func(t *tnode) []Node
-	finalize = func(t *tnode) []Node {
-		names := make([]string, 0, len(t.childIdx))
-		for n := range t.childIdx {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		out := make([]Node, 0, len(names))
-		for _, n := range names {
-			c := t.childIdx[n]
-			node := c.Node
-			node.Children = finalize(c)
+	var finalize func(ts []*tnode) []Node
+	finalize = func(ts []*tnode) []Node {
+		sort.SliceStable(ts, func(i, j int) bool {
+			if ts[i].Name != ts[j].Name {
+				return ts[i].Name < ts[j].Name
+			}
+			return ts[i].ID < ts[j].ID
+		})
+		out := make([]Node, 0, len(ts))
+		for _, t := range ts {
+			node := t.Node
+			node.Children = finalize(t.children)
 			out = append(out, node)
 		}
 		return out
 	}
-	return finalize(root), nil
+	return finalize(root.children), nil
 }
 
 // FilesUnder returns the source paths of every file proposed under nodeID
-// (that directory or any descendant), in a stable order — used by the review
+// (that folder or any below it), in a stable order — used by the review
 // TUI's preview to stage more than the handful of Samples a Node carries.
-func FilesUnder(ctx context.Context, nodeID string, database *db.DB) ([]string, error) {
+func FilesUnder(ctx context.Context, nodeID int64, database *db.DB) ([]string, error) {
 	var paths []string
-	// prefix compare, not GLOB/LIKE: a folder name can legitimately contain
-	// *, ?, [ or ], and a pattern match would read those as wildcards
-	prefix := nodeID + "/"
-	if err := database.SQL.SelectContext(ctx, &paths,
-		`SELECT source_path FROM virtual_fs_entries
-		 WHERE status IN (?, ?) AND substr(target_path, 1, length(?)) = ?
-		 ORDER BY source_path`,
-		db.StatusProposed, db.StatusApproved, prefix, prefix); err != nil {
-		return nil, fmt.Errorf("query files under %q: %w", nodeID, err)
+	if err := database.SQL.SelectContext(ctx, &paths, `
+		WITH RECURSIVE sub(id) AS (
+			SELECT ?
+			UNION ALL
+			SELECT fn.id FROM folder_nodes fn JOIN sub ON fn.parent_id = sub.id
+		)
+		SELECT source_path FROM virtual_fs_entries
+		WHERE status IN (?, ?) AND node_id IN (SELECT id FROM sub)
+		ORDER BY source_path`,
+		nodeID, db.StatusProposed, db.StatusApproved); err != nil {
+		return nil, fmt.Errorf("query files under folder %d: %w", nodeID, err)
 	}
 	return paths, nil
 }
@@ -209,77 +197,31 @@ func Labels(ctx context.Context, database *db.DB, log logger.Logger) []string {
 	return labels
 }
 
-// Confirm applies the (possibly edited) tree back onto the proposal's
-// entries, flips every PROPOSED row to APPROVED, and remembers every name the
-// reviewer typed in user_labels, so the next review's rename completions
+// Confirm applies the (possibly edited) tree back onto the plan's folders
+// and entries, flips every PROPOSED row to APPROVED, and remembers every name
+// the reviewer typed in user_labels, so the next review's rename completions
 // offer it. The write is synchronous: a nil return means committed.
 func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
-	var targets []string
-	if err := database.SQL.SelectContext(ctx, &targets,
-		`SELECT DISTINCT target_path FROM virtual_fs_entries`); err != nil {
-		return fmt.Errorf("load vfs dirs: %w", err)
+	var entryCount int
+	if err := database.SQL.GetContext(ctx, &entryCount,
+		`SELECT COUNT(*) FROM virtual_fs_entries`); err != nil {
+		return fmt.Errorf("count vfs entries: %w", err)
 	}
-	if len(targets) == 0 {
+	if entryCount == 0 {
 		return ErrNoProposal
-	}
-	valid := map[string]bool{}
-	for _, tp := range targets {
-		parts := strings.Split(path.Dir(tp), "/")
-		for i := range parts {
-			valid[strings.Join(parts[:i+1], "/")] = true
-		}
-	}
-
-	// old-path (node ID) → new-path. Two nodes renamed to the same path is a
-	// deliberate merge, not an error — remap tolerates many old IDs
-	// collapsing onto one new path.
-	remap := map[string]string{}
-	learned := map[string]bool{} // names the reviewer gave a folder, deduped
-	var walk func(nodes []Node, parentNew string) error
-	walk = func(nodes []Node, parentNew string) error {
-		for _, n := range nodes {
-			name := strings.TrimSpace(n.Name)
-			if name == "" || name == "." || name == ".." {
-				return fmt.Errorf("%w: invalid node name %q", ErrInvalidTree, n.Name)
-			}
-			name = wspath.SanitizeSegment(name)
-			newPath := name
-			if parentNew != "" {
-				newPath = parentNew + "/" + name
-			}
-			oldDirs := append([]string{n.ID}, n.MergedIDs...)
-			for _, id := range oldDirs {
-				if !valid[id] {
-					return fmt.Errorf("%w: unknown node id %q", ErrInvalidTree, id)
-				}
-				remap[id] = newPath
-			}
-			// compare the *segment*, not the path: a merge moves a node under a
-			// new parent without renaming it, and the name it kept is the
-			// pipeline's own, not something worth completing later
-			if name != path.Base(n.ID) {
-				learned[name] = true
-			}
-			if err := walk(n.Children, newPath); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if err := walk(roots, ""); err != nil {
-		return err
 	}
 
 	if err := database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
-		// only still-reviewable rows are renamed; executed/failed rows keep
+		// only still-reviewable rows are moved; executed/failed rows keep
 		// the paths they were moved under
 		var entries []struct {
 			ID         int64  `db:"id"`
+			NodeID     int64  `db:"node_id"`
 			TargetPath string `db:"target_path"`
 			SourcePath string `db:"source_path"`
 		}
 		if err := tx.SelectContext(ctx, &entries,
-			`SELECT id, target_path, source_path FROM virtual_fs_entries WHERE status IN (?, ?) ORDER BY id`,
+			`SELECT id, node_id, target_path, source_path FROM virtual_fs_entries WHERE status IN (?, ?) ORDER BY id`,
 			db.StatusProposed, db.StatusApproved); err != nil {
 			return err
 		}
@@ -288,6 +230,27 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 		if len(entries) == 0 {
 			return fmt.Errorf("%w: proposal was replaced by a newer scan", ErrNoProposal)
 		}
+
+		twins, err := splitPlacedFolders(ctx, tx)
+		if err != nil {
+			return err
+		}
+		folders, err := loadFolderRows(ctx, tx)
+		if err != nil {
+			return err
+		}
+		edits, err := readTree(remapIDs(roots, twins), folders)
+		if err != nil {
+			return err
+		}
+		if err := edits.apply(ctx, tx); err != nil {
+			return err
+		}
+		if folders, err = loadFolderRows(ctx, tx); err != nil {
+			return err
+		}
+		dirs := map[int64]string{}
+
 		// Collapsing dirs can land two files on the same basename; buildTargets'
 		// uniqueness guarantee only held for its own layout, so re-establish it:
 		// unmoved rows and placed files claim their path first, moved rows take
@@ -313,11 +276,15 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 		}
 		groups := map[string][]move{}
 		var keys []string
-		rewrite := prefixRewriter(remap)
 		for _, e := range entries {
-			dir := path.Dir(e.TargetPath)
-			newDir := rewrite(dir)
-			if newDir == dir {
+			// split and merged-away folders' entries were moved above
+			nodeID := e.NodeID
+			if twin, ok := twins[nodeID]; ok {
+				nodeID = twin
+			}
+			nodeID = edits.survivor(nodeID)
+			newDir := folderPath(folders, dirs, nodeID)
+			if newDir == path.Dir(e.TargetPath) {
 				taken[nameKey(e.TargetPath)] = true
 				continue
 			}
@@ -346,7 +313,7 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 			db.StatusApproved, db.StatusProposed); err != nil {
 			return err
 		}
-		for _, name := range slices.Sorted(maps.Keys(learned)) {
+		for _, name := range edits.learned {
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO user_labels (label, kind) VALUES (?, 'EVENT')`, name); err != nil {
 				return err
@@ -357,6 +324,141 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 		return fmt.Errorf("confirm vfs: %w", err)
 	}
 	return nil
+}
+
+// treeEdits is a submitted review tree read against the stored folders: where
+// each folder now sits, which folders were folded into which, and the names
+// the reviewer typed.
+type treeEdits struct {
+	placeOf    map[int64]folderKey
+	mergedInto map[int64]int64
+	learned    []string
+}
+
+// readTree validates roots against folders and turns it into treeEdits. Two
+// folders the reviewer gave the same name under one parent are one folder on
+// disk, so the later one folds into the first — a deliberate merge, not an
+// error.
+func readTree(roots []Node, folders map[int64]folderRow) (treeEdits, error) {
+	e := treeEdits{placeOf: map[int64]folderKey{}, mergedInto: map[int64]int64{}}
+	seen := map[folderKey]int64{}
+	learned := map[string]bool{}
+	var walk func(nodes []Node, parent int64) error
+	walk = func(nodes []Node, parent int64) error {
+		for _, n := range nodes {
+			name := strings.TrimSpace(n.Name)
+			if name == "" || name == "." || name == ".." {
+				return fmt.Errorf("%w: invalid node name %q", ErrInvalidTree, n.Name)
+			}
+			// NFC like every other folder name, so the collision check and
+			// the stored name compare the same spelling
+			name = wspath.ToLibrary(wspath.SanitizeSegment(name))
+			for _, id := range append([]int64{n.ID}, n.MergedIDs...) {
+				if _, ok := folders[id]; !ok {
+					return fmt.Errorf("%w: unknown node id %d", ErrInvalidTree, id)
+				}
+			}
+			// compare against the stored name: a merge moves a node under a new
+			// parent without renaming it, and the name it kept is the
+			// pipeline's own, not something worth completing later
+			if name != folders[n.ID].Name {
+				learned[name] = true
+			}
+			id := n.ID
+			k := folderKey{parent, name}
+			if twin, ok := seen[k]; ok {
+				// twin == id when a split mapped two tree nodes onto one folder
+				if twin != id {
+					e.mergedInto[id] = twin
+				}
+				id = twin
+			} else {
+				seen[k] = id
+				e.placeOf[id] = k
+			}
+			for _, m := range n.MergedIDs {
+				if m != id {
+					e.mergedInto[m] = id
+				}
+			}
+			if err := walk(n.Children, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk(roots, 0); err != nil {
+		return treeEdits{}, err
+	}
+	e.learned = slices.Sorted(maps.Keys(learned))
+	return e, nil
+}
+
+// remapIDs returns a copy of roots with every node and merged ID in twins
+// swapped for its twin, so edits made on a split folder land on the new one.
+func remapIDs(roots []Node, twins map[int64]int64) []Node {
+	if len(twins) == 0 {
+		return roots
+	}
+	out := CloneTree(roots)
+	var walk func(nodes []Node)
+	walk = func(nodes []Node) {
+		for i := range nodes {
+			if twin, ok := twins[nodes[i].ID]; ok {
+				nodes[i].ID = twin
+			}
+			for j, m := range nodes[i].MergedIDs {
+				if twin, ok := twins[m]; ok {
+					nodes[i].MergedIDs[j] = twin
+				}
+			}
+			walk(nodes[i].Children)
+		}
+	}
+	walk(out)
+	return out
+}
+
+// survivor is the folder id's files live in once the edits are applied.
+func (e treeEdits) survivor(id int64) int64 {
+	if into, ok := e.mergedInto[id]; ok {
+		return into
+	}
+	return id
+}
+
+// apply writes the edits: a folded-away folder's files and subfolders move
+// onto the folder it was folded into, every folder in the tree takes the
+// parent and name the reviewer gave it, and folders left empty are deleted.
+// Folds go first, so a subfolder the tree places explicitly ends up where
+// the tree says.
+func (e treeEdits) apply(ctx context.Context, tx *sqlx.Tx) error {
+	for _, m := range slices.Sorted(maps.Keys(e.mergedInto)) {
+		into := e.mergedInto[m]
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE virtual_fs_entries SET node_id = ? WHERE node_id = ? AND status IN (?, ?)`,
+			into, m, db.StatusProposed, db.StatusApproved); err != nil {
+			return fmt.Errorf("move files of folder %d: %w", m, err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE virtual_fs_entries SET location_node_id = ? WHERE location_node_id = ? AND status IN (?, ?)`,
+			into, m, db.StatusProposed, db.StatusApproved); err != nil {
+			return fmt.Errorf("move location of folder %d: %w", m, err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE folder_nodes SET parent_id = ? WHERE parent_id = ?`, into, m); err != nil {
+			return fmt.Errorf("move subfolders of folder %d: %w", m, err)
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(e.placeOf)) {
+		k := e.placeOf[id]
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE folder_nodes SET parent_id = ?, name = ? WHERE id = ?`,
+			nullableID(k.parent), k.name, id); err != nil {
+			return fmt.Errorf("place folder %d: %w", id, err)
+		}
+	}
+	return pruneFolders(ctx, tx)
 }
 
 // ReopenPlan flips every APPROVED entry in the library back to PROPOSED, so

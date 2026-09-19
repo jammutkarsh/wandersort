@@ -11,7 +11,9 @@ package dbtest
 
 import (
 	"context"
+	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -41,4 +43,36 @@ func SeedFile(t testing.TB, d *db.DB, id int64, dir, name string, size int64) {
 		id, dir, name, size, filepath.Ext(name)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// SeedEntry inserts a virtual_fs_entries row for fileID, creating (or reusing)
+// the folder_nodes chain its target folder needs, and returns the row's
+// node_id. Levels are left blank: a test that cares about them goes through
+// the planner instead.
+func SeedEntry(t testing.TB, d *db.DB, fileID int64, source, target, status string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	var parent any // nil = top level
+	for _, name := range strings.Split(path.Dir(target), "/") {
+		var id int64
+		err := d.QueryRowContext(ctx,
+			`SELECT id FROM folder_nodes WHERE parent_id IS ? AND name = ?`, parent, name).Scan(&id)
+		if err != nil {
+			res, err := d.ExecContext(ctx,
+				`INSERT INTO folder_nodes (parent_id, name, level) VALUES (?, ?, '')`, parent, name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if id, err = res.LastInsertId(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		parent = id
+	}
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO virtual_fs_entries (file_id, source_path, node_id, target_path, status)
+		VALUES (?, ?, ?, ?, ?)`, fileID, source, parent, target, status); err != nil {
+		t.Fatal(err)
+	}
+	return parent.(int64)
 }

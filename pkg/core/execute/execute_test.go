@@ -29,11 +29,7 @@ func seedApproved(t *testing.T, d *db.DB, id int64, targetRel, srcContent string
 		t.Fatal(err)
 	}
 	dbtest.SeedFile(t, d, id, filepath.Dir(src), filepath.Base(src), int64(len(srcContent)))
-	if _, err := d.ExecContext(context.Background(), `
-		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
-		VALUES (?, ?, ?, ?)`, id, src, targetRel, db.StatusApproved); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SeedEntry(t, d, id, src, targetRel, db.StatusApproved)
 	return src
 }
 
@@ -89,11 +85,7 @@ func TestRunCopiesForwardSlashSourcePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	dbtest.SeedFile(t, d, 1, srcDir, "A.jpg", 5)
-	if _, err := d.ExecContext(context.Background(), `
-		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
-		VALUES (?, ?, ?, ?)`, 1, filepath.ToSlash(src), "2024/A.jpg", db.StatusApproved); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SeedEntry(t, d, 1, filepath.ToSlash(src), "2024/A.jpg", db.StatusApproved)
 
 	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
 	if err != nil {
@@ -193,11 +185,7 @@ func TestRunRecordsErrorAndContinuesPastFailure(t *testing.T) {
 	out := t.TempDir()
 	// row 1's source doesn't exist on disk; row 2 is real and must still run.
 	dbtest.SeedFile(t, d, 1, "/no/such/dir", "missing.jpg", 0)
-	if _, err := d.ExecContext(context.Background(), `
-		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
-		VALUES (1, '/no/such/dir/missing.jpg', 'missing.jpg', ?)`, db.StatusApproved); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SeedEntry(t, d, 1, "/no/such/dir/missing.jpg", "missing.jpg", db.StatusApproved)
 	seedApproved(t, d, 2, "B.jpg", "world")
 
 	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
@@ -227,11 +215,7 @@ func TestRunSkipsNonApprovedRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	dbtest.SeedFile(t, d, 1, filepath.Dir(src), filepath.Base(src), 1)
-	if _, err := d.ExecContext(context.Background(), `
-		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
-		VALUES (1, ?, 'still-proposed.jpg', ?)`, src, db.StatusProposed); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SeedEntry(t, d, 1, src, "still-proposed.jpg", db.StatusProposed)
 
 	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
 	if err != nil {
@@ -433,11 +417,7 @@ func TestRunCleanupLeavesErrorRowsAlone(t *testing.T) {
 	seedApproved(t, d, 1, "A.jpg", "hello")
 	// row 2's source doesn't exist on disk, so it lands at ERROR
 	dbtest.SeedFile(t, d, 2, "/no/such/dir", "missing.jpg", 0)
-	if _, err := d.ExecContext(context.Background(), `
-		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
-		VALUES (2, '/no/such/dir/missing.jpg', 'missing.jpg', ?)`, db.StatusApproved); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SeedEntry(t, d, 2, "/no/such/dir/missing.jpg", "missing.jpg", db.StatusApproved)
 	if _, err := d.ExecContext(context.Background(),
 		`INSERT INTO file_metadata (file_hash, file_id) VALUES ('missing-hash', 2)`); err != nil {
 		t.Fatal(err)

@@ -80,7 +80,7 @@ func peekCmd(ctx context.Context, database *db.DB, node *vfs.Node) tea.Cmd {
 		var files []string
 		// a merged node's files still live under the folded-away paths until
 		// Confirm rewrites them, so look under each
-		for _, id := range append([]string{node.ID}, node.MergedIDs...) {
+		for _, id := range append([]int64{node.ID}, node.MergedIDs...) {
 			under, err := vfs.FilesUnder(ctx, id, database)
 			if err != nil {
 				return previewDoneMsg{err: err}

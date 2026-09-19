@@ -576,7 +576,7 @@ func fanoutFixture() []masterFile {
 // the build surfaces rather than only a differing target path.
 func derived(m *masterFile) string {
 	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%v",
-		m.FileID, m.targetPath, m.locationDir,
+		m.FileID, m.targetPath, m.dirLevels,
 		m.clusterID, m.location, m.eventSegment, m.atSavedPlace)
 }
 

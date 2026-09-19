@@ -513,10 +513,11 @@ one scan ever runs against it at a time (see "Conventions" below):
   Vim-style merge: `V` starts a contiguous range (sequential — no picking
   rows out of order), `m` **folds every row in the range at the anchor row's
   depth into one node under their lowest common ancestor**
-  (`vfs.MergeNodes`, via `commonPathPrefix` + `FindNode`/`removeChildByID` —
-  a real tree-splice, not just a rename), named after **the row `V` was
-  pressed on** — its own name, which is already the rename the reviewer typed
-  on it, since a rename is written straight onto the node — with the summed
+  (`vfs.MergeNodes`, via `chainTo`/`commonChain` +
+  `FindNode`/`removeChildByID` — a real tree-splice, not just a rename),
+  named after **the row `V` was pressed on** — its own name, which is
+  already the rename the reviewer typed on it, since a rename is written
+  straight onto the node — with the summed
   `FileCount`. `mergeSelection` pulls the anchor's ID to the front of the
   slice it hands `vfs.MergeNodes` (which always keeps `ids[0]`) precisely so
   this holds regardless of which direction the range was extended in:
@@ -548,10 +549,9 @@ one scan ever runs against it at a time (see "Conventions" below):
   under the Year) — a plain same-path rename only merges nodes that already
   share a parent, since the final path is parent-path + name. **The
   folded-away leaves leave the tree entirely** — their IDs ride along on
-  `vfs.Node.MergedIDs`, which is what `Confirm` remaps their files by
-  (`prefixRewriter` also covers anything *below* a merged node, since it
-  rewrites on the longest remapped ancestor rather than on an exact path
-  match). An earlier version
+  `vfs.Node.MergedIDs`, which is what `Confirm` moves their files by (a
+  folded folder's subfolders move onto the survivor too, so anything *below*
+  it follows). An earlier version
   left them in place as same-named siblings and let `Confirm`'s
   same-path-collapses-to-one-folder behavior sort it out at write time —
   correct on disk, but the reviewer saw three "Canon EOS 700D" rows next to
@@ -590,8 +590,8 @@ one scan ever runs against it at a time (see "Conventions" below):
 
   Both record the removed IDs (plus anything already folded into them) on
   the surviving node's `MergedIDs`, so files sitting directly in a removed
-  folder remap onto it — same machinery as merge, with `prefixRewriter`
-  covering anything deeper. Both undo via `[u]`.
+  folder remap onto it — same machinery as merge, subfolders included. Both
+  undo via `[u]`.
   **`esc` is the only way out, and the only thing that writes** — there is no
   separate save key any more. It raises a full-screen Save/Discard ask
   (`askExit`/`exitChoice`, drawn the same way the config wizard's own `[esc]`
@@ -1081,7 +1081,7 @@ tree over the whole library.
   the device name, which put a location folder named after the camera right
   next to the real device folder (`…/Canon EOS 700D/Canon EOS 700D/`) — wrong
   information, and duplicated. Unknown location now means the level is simply
-  absent for that file, and `location_dir` stays NULL — *unless* located
+  absent for that file, and `location_node_id` stays NULL — *unless* located
   siblings share its parent folder, in which case `markUnknownLocations`
   (`plan.go`) names it `Unknown` (`vfs.UnknownLocation`) so it stops sitting
   loose next to real location folders. Only then: a folder whose files are
@@ -1215,7 +1215,7 @@ tree over the whole library.
   days into ranges as usual. The cap is a whole-cluster decision, never per
   member, so one day can never be split across two month folders.
   `captureDirs` copies the group leader's `folderTime()` onto every member for
-  the same reason it copies `locationDir`: a member takes the leader's
+  the same reason it copies `dirLevels`: a member takes the leader's
   *directory*, so its own folder date has to be the one that directory came
   from, or it surfaces in the review tree as one lone folder out of another
   year (reported — a sidecar has no EXIF time and falls back to a file mtime
@@ -1234,35 +1234,69 @@ tree over the whole library.
   Dec 01 *and lands on top of the real Dec 01 files*, which was a reported bug
   (Jan 1 videos filed under `12_December/01/Banjar`).
   `BuildTree(ctx, db)` and `Confirm(ctx, db, roots)` always cover the whole
-  library — there is no time-slice scoping any more (issue 19). Renames go
-  through `prefixRewriter` (longest remapped ancestor wins), which is what
-  lets a review-time merge's folded-away node remap its descendants onto the
-  survivor. `ReopenPlan(ctx, db)` puts every `APPROVED` row back to
+  library — there is no time-slice scoping any more (issue 19).
+  `ReopenPlan(ctx, db)` puts every `APPROVED` row back to
   `PROPOSED` (never `DONE`), for a settings re-plan or `[R]`.
+  **The plan is a persisted folder tree** (`folder_nodes`, spec D12,
+  `folders.go`): `id`, `parent_id`, `name`, `level`. Every entry points at
+  its folder (`virtual_fs_entries.node_id`); a folder's path is its
+  ancestors' names joined, and `vfs.Node.ID` is the folder's row id, so a
+  rename or move never changes it. `target_path` stays on the entry as
+  folder path + file name — `execute` reads it — and `Confirm` rewrites it
+  from the folders whenever an edit moves a file. `dirFor` records the level
+  of every segment it emits (`masterFile.dirLevels`: `year`, `month`,
+  `screenshots`, `fallback`, `orphan`, or a Rules name); `persist` stores it
+  as `folder_nodes.level`. `persist` finds-or-creates each folder chain by
+  (parent, name) (`folderIndex.ensure`), so re-planning an unchanged library
+  gives every folder back its id. **A folder holding a placed file (or above
+  one) is never reused by a new proposal** (`loadFolders`): a review rename
+  of a shared folder would rename where the placed file is recorded, and
+  placed files never move. The cost (`ponytail:` there) is a same-named twin
+  folder next to a placed one; issue 14 is where they should share.
+  **`Confirm` applies the same rule at save time** (`splitPlacedFolders`,
+  before the edits): a copy stopped partway leaves approved files beside or
+  under copied ones, so every still-reviewable row whose folder chain touches
+  a placed file's folder moves onto a same-path chain of its own, and the
+  submitted tree's IDs are remapped onto it (`remapIDs`). Without it a review
+  rename of a shared folder rewrote where the copied files are recorded while
+  on disk they stayed put.
+  `location_node_id` is `ON DELETE SET NULL`: a merge can move a file out
+  from under its old place folder, which the save then prunes, and the file
+  just loses that GPS link — it isn't under that place any more. (Without it
+  the prune failed on the foreign key: a reported bug.) Names typed in review
+  go through `path.ToLibrary` (NFC) in `readTree`, like every planner name.
+  **Folders are hard-deleted, not soft-deleted**: `pruneFolders` (end of
+  `persist` and of `Confirm`) deletes every folder no entry sits in, directly
+  or below. `AUTOINCREMENT` never hands an id out twice, so a stale id (a
+  future draft file's) can only miss, never hit a different folder — which
+  was the only thing a `deleted_at` would have bought. A placed file's folder
+  holds an entry, so it is never pruned.
   `review.go` (issue #8's reconcile core, read by the CLI TUI) exposes the
   proposal as a directory tree the reviewer edits
   before `Confirm` writes it back: `BuildTree` also carries one exemplar
   GPS coordinate per location node (`Node.Lat/Lon`) for the TUI's expand-radius
   rename, and `FilesUnder` lists a node's source files for the preview-copy
-  feature. **The GPS attaches by path, not by depth:** `dirFor` records the
-  folder it emitted for the location level as
-  `virtual_fs_entries.location_dir`, and `BuildTree` hangs the coordinate off
-  exactly that node. The old fixed `suggestionDepth = 2` assumed location was
-  Rules' first level, so any other order (`rules: [device, location]`, or a
-  `date` level in front) hung it on whatever shared Device/Day node sat at
-  depth 2. No `location_dir` (no location level in this proposal) means no
-  GPS-bearing node, rather than a wrong one. `captureDirs` copies the group
-  leader's `locationDir` onto every member: `buildTargets` short-circuits
-  `dirFor` for a grouped file, so without that copy the file wrote a NULL
-  `location_dir` and its folder silently lost GPS-radius renames (8185 of
-  15024 entries in one real library). `location_dir` is a column of
-  **003's `CREATE TABLE`**, not its own migration — the pre-tag rule (no tag
+  feature. **The GPS attaches to a folder, not a depth:** the segment
+  `dirFor` marks with the `location` level is stored as
+  `virtual_fs_entries.location_node_id`, and `BuildTree` hangs the coordinate
+  off exactly that folder. The old fixed `suggestionDepth = 2` assumed
+  location was Rules' first level, so any other order (`rules: [device,
+  location]`, or a `date` level in front) hung it on whatever shared Device/Day
+  node sat at depth 2. No location folder (no location level in this
+  proposal) means no GPS-bearing node, rather than a wrong one. `captureDirs`
+  copies the group leader's `dirLevels` onto every member: `buildTargets`
+  short-circuits `dirFor` for a grouped file, so without that copy the file
+  had no location folder and its folder silently lost GPS-radius renames
+  (8185 of 15024 entries in one real library). `folder_nodes`, `node_id` and
+  `location_node_id` are part of **003's `CREATE TABLE`**, not their own
+  migration — the pre-tag rule (no tag
   yet, so no users) says edit the existing migration rather than stack an
   `ALTER` on it. The cost is that `migrations.Run` tracks versions
   individually: a database where 003 is already recorded will never get the
-  column, and the vfs phase then fails at runtime on the INSERT. **Deleting
-  `.wandersort.db` *and* `.wandersort.cfg` (or the whole library folder) is
-  the fix**, and `wandersort reset` is not — the file itself has to go. The
+  new table or columns, and the vfs phase then fails at runtime on the
+  INSERT. **Deleting `.wandersort.db` *and* `.wandersort.cfg` (or the whole
+  library folder) is the fix**, and `wandersort reset` is not — the file
+  itself has to go. The
   stamp matters because `config.CheckLibrary` refuses a folder holding our
   leftovers without a database (D1: a library whose database was deleted),
   until ticket 10 removes the stamp. Same applies to any future edit of an already-run
@@ -1274,15 +1308,18 @@ tree over the whole library.
   placed copy and is proposed and copied again, and `cleanupPlacedDuplicates`
   never removes it. Delete `.wandersort.db` and `.wandersort.cfg` (or the
   whole library folder) before scanning again.
-  **`Confirm` merges, it doesn't reject:** two nodes renamed to the
-  same final path collapse onto one folder (e.g. two unresolved date clusters
-  turning out to be the same place) — this used to be an error before a real
-  user hit exactly that case. `Node.MergedIDs` is the other merge path: nodes
-  the review TUI folded away are absent from the submitted tree entirely, so
-  their IDs — and, via `prefixRewriter`, anything below them — remap onto
-  the survivor's path from there. A longest-ancestor-wins rewriter is what
-  makes a rename or merge on a Year node carry onto every row nested under
-  it, without a second remap pass that could disagree with the first.
+  **`Confirm` merges, it doesn't reject:** two sibling folders renamed to the
+  same name become one folder — the later folds into the first (`readTree`)
+  — (e.g. two unresolved date clusters turning out to be the same place);
+  this used to be an error before a real user hit exactly that case.
+  `Node.MergedIDs` is the other merge path: nodes the review TUI folded away
+  are absent from the submitted tree entirely, so `treeEdits.apply` moves
+  their still-reviewable files and all their subfolders onto the survivor,
+  then gives every folder in the tree the parent and name the reviewer left
+  it with (folds first, so a subfolder the tree places explicitly lands where
+  the tree says). Because a file's path is its folder's ancestors, a rename
+  or merge on a Year folder carries onto every row nested under it with no
+  path rewriting at all.
 - `execute/` — the phase `vfs.go`'s package doc used to call "future work":
   the one thing in this codebase that writes the user's media files. Reads
   every `APPROVED` row of `virtual_fs_entries`, places `source_path` at
@@ -1596,8 +1633,8 @@ tree over the whole library.
   builds every candidate path through `RelativeToHome` and reads typed input
   back through `ExpandPath`, so a suggestion is never shown with the raw home
   directory spelled out. `ToLibrary`/`FromLibrary` (NFC + `/`) are for
-  in-library path columns (`target_path`, `location_dir`) — paths this app
-  built itself, so folding every segment to one spelling costs nothing.
+  in-library path columns (`target_path`, `folder_nodes.name`) — paths this
+  app built itself, so folding every segment to one spelling costs nothing.
   `ToSourcePath`/`FromSourcePath` (separator only, real `filepath.ToSlash`/
   `FromSlash`) are for source-path columns (`source_path`,
   `file_registry.file_dir`/`file_name`) — paths the filesystem handed the

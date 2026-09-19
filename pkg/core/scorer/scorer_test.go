@@ -253,12 +253,7 @@ func TestRunNeverDemotesAPlacedFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := d.ExecContext(ctx, `
-		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
-		VALUES (1, '2024/06_June/Goa/Photos/IMG_1234.jpg', '2024/06_June/Goa/Photos/IMG_1234.jpg', ?)`,
-		db.StatusDone); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SeedEntry(t, d, 1, "2024/06_June/Goa/Photos/IMG_1234.jpg", "2024/06_June/Goa/Photos/IMG_1234.jpg", db.StatusDone)
 
 	if _, err := (&Scorer{db: d, log: logger.NewNoopLogger()}).Run(ctx); err != nil {
 		t.Fatal(err)

@@ -715,12 +715,7 @@ func TestLibraryScopeAcrossRuns(t *testing.T) {
 	// File already indexed by an earlier run…
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 	// …with a stale proposal that earlier run persisted
-	if _, err := h.d.ExecContext(context.Background(), `
-		INSERT INTO virtual_fs_entries (file_id, source_path, target_path)
-		VALUES (?, '/src/dump/IMG_0001.HEIC', 'stale/IMG_0001.HEIC')`,
-		id); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SeedEntry(t, h.d, id, "/src/dump/IMG_0001.HEIC", "stale/IMG_0001.HEIC", db.StatusProposed)
 
 	vfs := &VFS{
 		db:  h.d,
@@ -780,12 +775,7 @@ func TestPlacedFileIsNeverReproposed(t *testing.T) {
 	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.d.ExecContext(ctx, `
-		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
-		VALUES (?, '2024/06_June/Goa/Photos/IMG_0001.HEIC', '2024/06_June/Goa/Photos/IMG_0001.HEIC', ?)`,
-		placed, db.StatusDone); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SeedEntry(t, h.d, placed, "2024/06_June/Goa/Photos/IMG_0001.HEIC", "2024/06_June/Goa/Photos/IMG_0001.HEIC", db.StatusDone)
 
 	vfs := &VFS{db: h.d, log: logger.NewNoopLogger(), cfg: DefaultConfig()}
 	if _, err := vfs.Run(ctx); err != nil {
@@ -857,11 +847,11 @@ func TestUnknownLocationEmitsNoLocationFolder(t *testing.T) {
 
 	var withDir int
 	if err := h.d.SQL.Get(&withDir,
-		`SELECT COUNT(*) FROM virtual_fs_entries WHERE location_dir IS NOT NULL`); err != nil {
+		`SELECT COUNT(*) FROM virtual_fs_entries WHERE location_node_id IS NOT NULL`); err != nil {
 		t.Fatal(err)
 	}
 	if withDir != 0 {
-		t.Errorf("%d rows carry a location_dir, want 0 — there is no location folder in this proposal", withDir)
+		t.Errorf("%d rows carry a location folder, want 0 — there is no location folder in this proposal", withDir)
 	}
 }
 
@@ -875,14 +865,18 @@ func TestLocationDirTracksTheLocationLevel(t *testing.T) {
 	cfg.Rules = []string{RuleDate, RuleLocation}
 	h.build(t, cfg, installtest.Resolver(t))
 
-	var dirs []string
-	if err := h.d.SQL.Select(&dirs,
-		`SELECT location_dir FROM virtual_fs_entries`); err != nil {
+	var ids []int64
+	if err := h.d.SQL.Select(&ids,
+		`SELECT location_node_id FROM virtual_fs_entries`); err != nil {
+		t.Fatal(err)
+	}
+	folders, err := loadFolderRows(context.Background(), h.d.SQL)
+	if err != nil {
 		t.Fatal(err)
 	}
 	want := "2024/06_June/03/Calangute"
-	if len(dirs) != 1 || dirs[0] != want {
-		t.Errorf("location_dir = %v, want [%q] — the location folder, not the Day", dirs, want)
+	if len(ids) != 1 || folderPath(folders, map[int64]string{}, ids[0]) != want {
+		t.Errorf("location folders = %v, want [%q] — the location folder, not the Day", ids, want)
 	}
 }
 
