@@ -1163,6 +1163,22 @@ tree over the whole library.
     because it carries no derived data of its own and would otherwise drag a
     whole group into whatever its file mtime implied.
 
+  **Name collisions** (`buildTargets`, spec D25): the earlier capture keeps the
+  plain name and later ones get `_2`, `_3` — ranked by capture time then hash
+  of the file's *group leader* (`orderTime`/`orderHash`), then its own name,
+  never by source path, so the same files get the same names from any folder
+  layout. **A capture group takes one suffix** (`pairKey` + `assignSuffix`: the
+  lowest number free for every member): Apple Photos pairs an `.AAE` with its
+  photo by name, so a photo that collides while its edit doesn't must still
+  drag the edit to `_2` with it. A Live Photo `.MOV` joins its photo's group
+  when within `captureAgreementWindow` (`pairLiveVideos`) — suffix only, never
+  folder. Names compare as `nameKey` (NFC, lowercased — a map key, not
+  `EqualFold`), and files already placed in the library (`Config.Placed`, from
+  `placedPaths`) hold their names. `Confirm` re-resolves review collisions
+  through the same `assignSuffix` and placed set, grouping by source dir +
+  `captureStem` in row order (`ponytail:` there — no time window, not D25's
+  capture-time order).
+
   Known gap: a sidecar whose only sibling is a video has no group at all —
   `captureDirs` skips videos so a Live Photo `.MOV` isn't forced across the
   Photos/Videos split.

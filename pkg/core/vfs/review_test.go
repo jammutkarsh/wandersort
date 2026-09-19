@@ -391,3 +391,90 @@ func TestConfigForNoneSentinel(t *testing.T) {
 		t.Errorf("ConfigFor(nil).Rules = %v, want DefaultConfig's levels", got)
 	}
 }
+
+// A file already in the library holds its name: a rename that lands a new file
+// on it gets the next _N, compared NFC- and case-insensitively, the same rule
+// buildTargets follows.
+func TestReviewConfirmAvoidsPlacedNames(t *testing.T) {
+	h := newHarness(t)
+	fresh := h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
+	placed := h.addFile(t, "lib/a.heic", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
+	ctx := context.Background()
+	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.d.ExecContext(ctx, `
+		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
+		VALUES (?, 'lib/a.heic', '2024/06_June/Manali/a.heic', ?)`, placed, db.StatusDone); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleLocation}
+	h.build(t, cfg, installtest.Resolver(t))
+
+	tree, err := BuildTree(ctx, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := renameFirstLeaf(tree, "Manali"); !ok {
+		t.Fatal("no leaf to rename")
+	}
+	if err := Confirm(ctx, h.d, tree); err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+
+	var got string
+	if err := h.d.SQL.Get(&got, `SELECT target_path FROM virtual_fs_entries WHERE file_id = ?`, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if want := "2024/06_June/Manali/A_2.HEIC"; got != want {
+		t.Errorf("target_path = %q, want %q (a.heic is already placed there)", got, want)
+	}
+}
+
+// A review rename landing a photo on a placed name moves its edit to the same
+// _N, even though the edit's own name was free.
+func TestReviewConfirmKeepsPairSuffix(t *testing.T) {
+	h := newHarness(t)
+	photo := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
+	edit := h.addFile(t, "dump/IMG_0001.AAE", classifier.MediaTypeSidecar, classifier.CommonMetadata{})
+	placed := h.addFile(t, "lib/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
+	ctx := context.Background()
+	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.d.ExecContext(ctx, `
+		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
+		VALUES (?, 'lib/IMG_0001.HEIC', '2024/06_June/Manali/IMG_0001.HEIC', ?)`, placed, db.StatusDone); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleLocation}
+	h.build(t, cfg, installtest.Resolver(t))
+
+	tree, err := BuildTree(ctx, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := renameFirstLeaf(tree, "Manali"); !ok {
+		t.Fatal("no leaf to rename")
+	}
+	if err := Confirm(ctx, h.d, tree); err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+
+	for id, want := range map[int64]string{
+		photo: "2024/06_June/Manali/IMG_0001_2.HEIC",
+		edit:  "2024/06_June/Manali/IMG_0001_2.AAE",
+	} {
+		var got string
+		if err := h.d.SQL.Get(&got, `SELECT target_path FROM virtual_fs_entries WHERE file_id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("file %d: target_path = %q, want %q", id, got, want)
+		}
+	}
+}

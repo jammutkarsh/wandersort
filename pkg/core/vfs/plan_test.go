@@ -9,6 +9,7 @@ package vfs
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"golang.org/x/text/unicode/norm"
 )
 
 // runPlan builds the target path for each master under cfg, with no
@@ -651,5 +653,205 @@ func TestPlanDegenerateInputs(t *testing.T) {
 		if err := Plan(ctx, fanoutFixture(), c, nil, log); err == nil {
 			t.Errorf("workers=%d: cancelled Plan returned nil, so a partial proposal would reach persist", workers)
 		}
+	}
+}
+
+// collisionFixture is three files that all land on one path: same folder,
+// same name (modulo case / normalization), captured a minute apart.
+func collisionFixture() []masterFile {
+	mk := func(dir, name, hash, taken string) masterFile {
+		return masterFile{
+			FileDir: dir, FileName: name, FileHash: hash, MediaType: classifier.MediaTypeImage,
+			DBDateTaken: &taken, location: "Goa",
+		}
+	}
+	return []masterFile{
+		mk("/a", "IMG.JPG", "h3", "2024:07:04 12:02:00"),
+		mk("/b", "img.jpg", "h1", "2024:07:04 12:00:00"),
+		mk("/c", "IMG.jpg", "h2", "2024:07:04 12:01:00"),
+	}
+}
+
+func targetsByHash(ms []masterFile) map[string]string {
+	out := map[string]string{}
+	for _, m := range ms {
+		out[m.FileHash] = m.targetPath
+	}
+	return out
+}
+
+func TestBuildTargetsSuffixOrderIgnoresInputOrder(t *testing.T) {
+	cfg := DefaultConfig()
+	want := targetsByHash(runPlan(t, collisionFixture(), cfg))
+
+	rev := collisionFixture()
+	slices.Reverse(rev)
+	got := targetsByHash(runPlan(t, rev, cfg))
+	for h, p := range want {
+		if got[h] != p {
+			t.Errorf("hash %s: %q after shuffle, want %q", h, got[h], p)
+		}
+	}
+	// earliest capture keeps the bare name
+	if strings.Contains(filepath.Base(want["h1"]), "_") || !strings.Contains(want["h2"], "_2") || !strings.Contains(want["h3"], "_3") {
+		t.Errorf("suffixes not in capture order: %v", want)
+	}
+}
+
+func TestBuildTargetsFoldsNFDAndCase(t *testing.T) {
+	taken := "2024:07:04 12:00:00"
+	nfc, nfd := "Caf\u00e9.jpg", norm.NFD.String("Caf\u00e9.jpg")
+	if nfc == nfd {
+		t.Fatal("fixture: NFC and NFD spellings must differ in bytes")
+	}
+	got := runPlan(t, []masterFile{
+		{FileDir: "/a", FileName: nfc, FileHash: "a", MediaType: classifier.MediaTypeImage, DBDateTaken: &taken},
+		{FileDir: "/b", FileName: nfd, FileHash: "b", MediaType: classifier.MediaTypeImage, DBDateTaken: &taken},
+	}, DefaultConfig())
+	if !strings.Contains(filepath.Base(got[1].targetPath), "_2") {
+		t.Errorf("NFC/NFD pair did not collide: %q, %q", got[0].targetPath, got[1].targetPath)
+	}
+}
+
+// Apple Photos pairs an .AAE edit with its photo by name, so each folder's pair
+// has to end up with the same suffix. The sidecars carry file dates unrelated
+// to their photos', which used to swap them across folders.
+func TestBuildTargetsKeepsSidecarSuffixWithItsPhoto(t *testing.T) {
+	mk := func(dir, name, hash, taken, mtime, media string) masterFile {
+		m := masterFile{FileDir: dir, FileName: name, FileHash: hash, MediaType: media, ModifiedAt: mtime}
+		if taken != "" {
+			m.DBDateTaken = &taken
+		}
+		return m
+	}
+	const early, late = "2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"
+	got := runPlan(t, []masterFile{
+		mk("/a", "IMG_0001.HEIC", "a", "2024:07:04 12:00:00", early, classifier.MediaTypeImage),
+		mk("/a", "IMG_0001.AAE", "a-aae", "", late, classifier.MediaTypeSidecar),
+		mk("/b", "IMG_0001.HEIC", "b", "2024:07:04 12:00:30", early, classifier.MediaTypeImage),
+		mk("/b", "IMG_0001.AAE", "b-aae", "", early, classifier.MediaTypeSidecar),
+	}, DefaultConfig())
+	// Plan reorders masters, so look files up by source path
+	base := func(src string) string {
+		for _, m := range got {
+			if m.FileDir+"/"+m.FileName == src {
+				return filepath.Base(m.targetPath)
+			}
+		}
+		return ""
+	}
+	if a, b := base("/a/IMG_0001.HEIC"), base("/a/IMG_0001.AAE"); strings.TrimSuffix(a, ".HEIC") != strings.TrimSuffix(b, ".AAE") {
+		t.Errorf("/a edit split from its photo: %s vs %s", a, b)
+	}
+	if a, b := base("/b/IMG_0001.HEIC"), base("/b/IMG_0001.AAE"); strings.TrimSuffix(a, ".HEIC") != strings.TrimSuffix(b, ".AAE") {
+		t.Errorf("/b edit split from its photo: %s vs %s", a, b)
+	}
+	if base("/a/IMG_0001.HEIC") != "IMG_0001.HEIC" || base("/b/IMG_0001.HEIC") != "IMG_0001_2.HEIC" {
+		t.Errorf("photos not in capture order: %s, %s", base("/a/IMG_0001.HEIC"), base("/b/IMG_0001.HEIC"))
+	}
+}
+
+// A Live Photo's .MOV isn't in a capture group but pairs with its .HEIC by name
+// all the same.
+func TestBuildTargetsKeepsLiveVideoSuffixWithItsPhoto(t *testing.T) {
+	mk := func(dir, name, hash, taken, media string) masterFile {
+		return masterFile{FileDir: dir, FileName: name, FileHash: hash, MediaType: media, DBDateTaken: &taken}
+	}
+	// a's video was written after b's photo, so own-time order would cross them
+	got := runPlan(t, []masterFile{
+		mk("/a", "IMG_0002.HEIC", "a", "2024:07:04 12:00:00", classifier.MediaTypeImage),
+		mk("/a", "IMG_0002.MOV", "a-mov", "2024:07:04 12:00:02", classifier.MediaTypeVideo),
+		mk("/b", "IMG_0002.HEIC", "b", "2024:07:04 12:00:01", classifier.MediaTypeImage),
+		mk("/b", "IMG_0002.MOV", "b-mov", "2024:07:04 12:00:01", classifier.MediaTypeVideo),
+	}, DefaultConfig())
+	base := func(src string) string {
+		for _, m := range got {
+			if m.FileDir+"/"+m.FileName == src {
+				return filepath.Base(m.targetPath)
+			}
+		}
+		return ""
+	}
+	if base("/a/IMG_0002.HEIC") != "IMG_0002.HEIC" || base("/a/IMG_0002.MOV") != "IMG_0002.MOV" ||
+		base("/b/IMG_0002.HEIC") != "IMG_0002_2.HEIC" || base("/b/IMG_0002.MOV") != "IMG_0002_2.MOV" {
+		t.Errorf("video split from its photo: %s %s %s %s",
+			base("/a/IMG_0002.HEIC"), base("/a/IMG_0002.MOV"), base("/b/IMG_0002.HEIC"), base("/b/IMG_0002.MOV"))
+	}
+}
+
+func TestBuildTargetsAvoidsPlacedNames(t *testing.T) {
+	cfg := DefaultConfig()
+	first := runPlan(t, collisionFixture()[:1], cfg)[0].targetPath
+
+	cfg.Placed = []string{strings.ToUpper(first)} // case-only difference still holds the name
+	got := runPlan(t, collisionFixture()[:1], cfg)[0].targetPath
+	if got == first || !strings.Contains(got, "_2") {
+		t.Errorf("new file took a placed name: %q (placed %q)", got, first)
+	}
+}
+
+// pairFixture: /a holds a photo, /b a photo plus its edit, all landing in one
+// folder. Only /b's photo name collides; its edit's name doesn't, which is
+// exactly when a per-file suffix used to pair the edit with /a's photo.
+func pairFixture() []masterFile {
+	return []masterFile{
+		{FileDir: "/a", FileName: "IMG_0001.HEIC", FileHash: "a", MediaType: classifier.MediaTypeImage, DBDateTaken: new("2024:07:04 12:00:00")},
+		{FileDir: "/b", FileName: "IMG_0001.HEIC", FileHash: "b", MediaType: classifier.MediaTypeImage, DBDateTaken: new("2024:07:04 12:00:30")},
+		{FileDir: "/b", FileName: "IMG_0001.AAE", FileHash: "b-aae", MediaType: classifier.MediaTypeSidecar, ModifiedAt: "2023-01-01T00:00:00Z"},
+	}
+}
+
+func baseOf(ms []masterFile, src string) string {
+	for _, m := range ms {
+		if m.FileDir+"/"+m.FileName == src {
+			return filepath.Base(m.targetPath)
+		}
+	}
+	return ""
+}
+
+func TestBuildTargetsGroupSharesSuffixWhenOnlyPhotoCollides(t *testing.T) {
+	got := runPlan(t, pairFixture(), DefaultConfig())
+	if p, e := baseOf(got, "/b/IMG_0001.HEIC"), baseOf(got, "/b/IMG_0001.AAE"); p != "IMG_0001_2.HEIC" || e != "IMG_0001_2.AAE" {
+		t.Errorf("/b pair = %s, %s; want both _2", p, e)
+	}
+}
+
+// The ordinary re-import: the same counter from a new card, with an edit, and
+// the old photo already placed in the library.
+func TestBuildTargetsGroupSharesSuffixAgainstPlacedPhoto(t *testing.T) {
+	cfg := DefaultConfig()
+	ms := runPlan(t, pairFixture()[1:], cfg)
+	var photoPath string
+	for _, m := range ms {
+		if m.MediaType == classifier.MediaTypeImage {
+			photoPath = m.targetPath
+		}
+	}
+	cfg.Placed = []string{photoPath}
+	got := runPlan(t, pairFixture()[1:], cfg)
+	if p, e := baseOf(got, "/b/IMG_0001.HEIC"), baseOf(got, "/b/IMG_0001.AAE"); p != "IMG_0001_2.HEIC" || e != "IMG_0001_2.AAE" {
+		t.Errorf("/b pair = %s, %s; want both _2 (IMG_0001.HEIC is placed)", p, e)
+	}
+}
+
+// A reused counter is not a Live Photo: a .MOV weeks away from the .HEIC keeps
+// its own suffix rather than being dragged along with an unrelated photo.
+func TestPairLiveVideosNeedsAgreeingTimes(t *testing.T) {
+	ms := []masterFile{
+		{FileDir: "/a", FileName: "IMG_1051.HEIC", MediaType: classifier.MediaTypeImage, takenAt: time.Date(2024, 7, 14, 12, 0, 0, 0, time.UTC)},
+		{FileDir: "/a", FileName: "IMG_1051.MOV", MediaType: classifier.MediaTypeVideo, takenAt: time.Date(2024, 7, 28, 12, 0, 0, 0, time.UTC)},
+		{FileDir: "/a", FileName: "IMG_2000.HEIC", MediaType: classifier.MediaTypeImage, takenAt: time.Date(2024, 7, 14, 12, 0, 0, 0, time.UTC)},
+		{FileDir: "/a", FileName: "IMG_2000.MOV", MediaType: classifier.MediaTypeVideo, takenAt: time.Date(2024, 7, 14, 12, 0, 2, 0, time.UTC)},
+	}
+	for i := range ms {
+		ms[i].absPath = ms[i].FileDir + "/" + ms[i].FileName
+	}
+	pairLiveVideos(ms)
+	if ms[1].pairKey != "" {
+		t.Errorf("weeks-apart video paired: %q", ms[1].pairKey)
+	}
+	if ms[3].pairKey == "" || ms[3].pairKey != ms[2].pairKey {
+		t.Errorf("Live Photo not paired: photo %q, video %q", ms[2].pairKey, ms[3].pairKey)
 	}
 }

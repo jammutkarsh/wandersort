@@ -84,7 +84,12 @@ func (v *VFS) Run(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	if err := Plan(ctx, masters, v.cfg, v.resolver, v.log); err != nil {
+	cfg := v.cfg
+	if cfg.Placed, err = placedPaths(ctx, v.db.SQL); err != nil {
+		return 0, err
+	}
+
+	if err := Plan(ctx, masters, cfg, v.resolver, v.log); err != nil {
 		return 0, err
 	}
 
@@ -97,6 +102,20 @@ func (v *VFS) Run(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// placedPaths is every library-relative path a placed file already holds. Both
+// planners that hand out names (buildTargets, Confirm) seed from it, so a new
+// file never takes one.
+func placedPaths(ctx context.Context, q sqlx.QueryerContext) ([]string, error) {
+	var paths []string
+	if err := sqlx.SelectContext(ctx, q, &paths, `
+		SELECT vfe.target_path FROM virtual_fs_entries vfe
+		JOIN file_registry fr ON fr.id = vfe.file_id
+		WHERE fr.placed = 1`); err != nil {
+		return nil, fmt.Errorf("load placed paths: %w", err)
+	}
+	return paths, nil
+}
+
 // loadMasters reads every live, not-yet-placed master in the library with its
 // hashed metadata. A placed file is never re-proposed — its DONE row is
 // already the plan, and persist's kept-row logic leaves it alone — so there
@@ -107,7 +126,7 @@ func (v *VFS) Run(ctx context.Context) (int, error) {
 func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 	var masters []masterFile
 	if err := v.db.SQL.SelectContext(ctx, &masters, `
-		SELECT fr.id, fr.file_dir, fr.file_name, fr.media_type, fr.file_extension, fr.file_modified_at,
+		SELECT fr.id, fr.file_dir, fr.file_name, fm.file_hash, fr.media_type, fr.file_extension, fr.file_modified_at,
 			fm.exif_image_width, fm.exif_image_height, fm.exif_orientation,
 			fm.exif_gps_latitude, fm.exif_gps_longitude,
 			fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date,

@@ -7,6 +7,7 @@
 package vfs
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Plan turns loaded master rows into their proposed destinations. It touches
@@ -463,7 +465,11 @@ func mergeSameLocationDays(masters []masterFile, cfg Config) {
 // bundle into one shared directory.
 func buildTargets(ctx context.Context, masters []masterFile, cfg Config) {
 	skip := uninformativeLevels(masters, cfg)
+	for i := range masters {
+		masters[i].orderTime, masters[i].orderHash = masters[i].takenAt, masters[i].FileHash
+	}
 	groupDirs := captureDirs(masters, skip, cfg)
+	pairLiveVideos(masters)
 
 	// dirFor reads one master plus the two library-wide maps above, and its only
 	// write is to that master's own locationDir, so the directories fan out.
@@ -489,29 +495,143 @@ func buildTargets(ctx context.Context, masters []masterFile, cfg Config) {
 		dirs[i] = dirFor(m, skip, cfg)
 	})
 
-	taken := map[string]bool{}
-	for i := range masters {
-		dir := dirs[i]
-		name := masters[i].FileName
-		stem := strings.TrimSuffix(name, filepath.Ext(name))
-		ext := filepath.Ext(name)
+	// Seeded with what is already on disk in the library: a new file must never
+	// take a name a placed file holds, even though placed files aren't masters.
+	taken := make(map[string]bool, len(cfg.Placed)+len(masters))
+	for _, p := range cfg.Placed {
+		taken[nameKey(p)] = true
+	}
 
-		// only on a genuine collision: two files landing on the same
-		// dir+stem+ext
-		suffix := ""
-		for n := 1; ; n++ {
-			if n > 1 {
-				suffix = fmt.Sprintf("_%d", n)
-			}
-			p := dir + "/" + stem + suffix + ext
-			key := strings.ToLower(p)
-			if !taken[key] {
-				masters[i].targetPath = p
-				taken[key] = true
-				break
-			}
+	// Who gets the bare name and who gets _2 is decided by capture time, then
+	// hash — not by source path — so the same files scanned from a different
+	// folder layout get the same suffixes. Both are the capture group's leader's
+	// (orderTime/orderHash), then the file's own name: Apple Photos pairs an
+	// .AAE edit with its photo by name, so a sidecar (no EXIF, arbitrary file
+	// date) has to take the same suffix its photo does. absPath only breaks a
+	// tie nothing about the content can.
+	order := make([]int, len(masters))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int {
+		ma, mb := &masters[a], &masters[b]
+		return cmp.Or(
+			ma.orderTime.Compare(mb.orderTime),
+			strings.Compare(ma.orderHash, mb.orderHash),
+			strings.Compare(ma.FileName, mb.FileName),
+			strings.Compare(ma.absPath, mb.absPath),
+		)
+	})
+
+	// A capture group takes one suffix: the lowest number free for every
+	// member, so an edit never ends up paired with another photo just because
+	// the photo's name was taken and its own wasn't.
+	groups := map[string][]int{}
+	for _, i := range order {
+		if k := masters[i].pairKey; k != "" {
+			groups[k] = append(groups[k], i)
 		}
 	}
+	done := make([]bool, len(masters))
+	for _, i := range order {
+		if done[i] {
+			continue
+		}
+		members := []int{i}
+		if k := masters[i].pairKey; k != "" {
+			members = groups[k]
+		}
+		paths := make([]string, len(members))
+		for _, j := range members {
+			done[j] = true
+		}
+		assignSuffix(taken, paths, func(k int) (string, string) {
+			return dirs[members[k]], masters[members[k]].FileName
+		})
+		for k, j := range members {
+			masters[j].targetPath = paths[k]
+		}
+	}
+}
+
+// assignSuffix fills paths with dir/stem[_N]ext for every member, using the
+// lowest N (1 = no suffix) at which all of them are free in taken and distinct
+// from each other, and marks them taken. Shared by buildTargets and Confirm so
+// the two planners can't disagree about what a collision is.
+func assignSuffix(taken map[string]bool, paths []string, member func(k int) (dir, name string)) {
+	for n := 1; ; n++ {
+		suffix := ""
+		if n > 1 {
+			suffix = fmt.Sprintf("_%d", n)
+		}
+		free := true
+		seen := make(map[string]bool, len(paths))
+		for k := range paths {
+			dir, name := member(k)
+			ext := filepath.Ext(name)
+			paths[k] = dir + "/" + strings.TrimSuffix(name, ext) + suffix + ext
+			key := nameKey(paths[k])
+			if taken[key] || seen[key] {
+				free = false
+				break
+			}
+			seen[key] = true
+		}
+		if free {
+			for _, p := range paths {
+				taken[nameKey(p)] = true
+			}
+			return
+		}
+	}
+}
+
+// pairLiveVideos puts a Live Photo's .MOV in its photo's capture group — it
+// pairs with the .HEIC by name too. captureDirs leaves videos out (they must
+// not be pushed across the Photos/Videos split), so this only shares the
+// suffix and ordering key, never the folder. Same agreement window as
+// captureDirs: a reused counter (a .HEIC on the 14th, a .MOV on the 28th) is
+// not a pair. Several photos in range: the closest in time, then orderHash.
+func pairLiveVideos(masters []masterFile) {
+	photos := map[string][]int{}
+	for i := range masters {
+		if masters[i].MediaType == classifier.MediaTypeVideo || masters[i].MediaType == classifier.MediaTypeSidecar {
+			continue
+		}
+		key := masters[i].FileDir + "|" + captureStem(masters[i].FileName)
+		photos[key] = append(photos[key], i)
+	}
+	for i := range masters {
+		v := &masters[i]
+		if v.MediaType != classifier.MediaTypeVideo {
+			continue
+		}
+		var best *masterFile
+		var bestGap time.Duration
+		for _, j := range photos[v.FileDir+"|"+captureStem(v.FileName)] {
+			p := &masters[j]
+			gap := v.takenAt.Sub(p.takenAt).Abs()
+			if gap > captureAgreementWindow {
+				continue
+			}
+			if best == nil || cmp.Or(cmp.Compare(gap, bestGap), strings.Compare(p.orderHash, best.orderHash)) < 0 {
+				best, bestGap = p, gap
+			}
+		}
+		if best == nil {
+			continue
+		}
+		if best.pairKey == "" {
+			best.pairKey = best.absPath // ungrouped photo: its own path names the pair
+		}
+		v.pairKey, v.orderTime, v.orderHash = best.pairKey, best.orderTime, best.orderHash
+	}
+}
+
+// nameKey is what two paths are compared by: NFC and case-folded, because
+// Café in NFC and NFD, or IMG.JPG and img.jpg, are one name on macOS and Windows.
+func nameKey(p string) string {
+	return strings.ToLower(norm.NFC.String(p))
 }
 
 // variantPrefixes folds an iPhone filename role marker to its canonical
@@ -573,7 +693,7 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 	}
 
 	dirs := map[int]string{}
-	for _, g := range groups {
+	for key, g := range groups {
 		if len(g.members) < 2 {
 			continue
 		}
@@ -648,6 +768,11 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 			// every grouped file wrote a NULL location_dir and the review
 			// tree had no GPS to re-query for that folder's renames
 			masters[i].locationDir = masters[leader].locationDir
+			// the leader's time and hash also rank the member when names
+			// collide, so a sidecar keeps its photo's suffix
+			masters[i].orderTime = masters[leader].takenAt
+			masters[i].orderHash = masters[leader].FileHash
+			masters[i].pairKey = key
 			// …and so does the time the directory was derived from, or the
 			// member's own folder date disagrees with its path: a sidecar has
 			// no EXIF time of its own (it rides along on the group, see the

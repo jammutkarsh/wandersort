@@ -276,9 +276,10 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 		var entries []struct {
 			ID         int64  `db:"id"`
 			TargetPath string `db:"target_path"`
+			SourcePath string `db:"source_path"`
 		}
 		if err := tx.SelectContext(ctx, &entries,
-			`SELECT id, target_path FROM virtual_fs_entries WHERE status IN (?, ?)`,
+			`SELECT id, target_path, source_path FROM virtual_fs_entries WHERE status IN (?, ?) ORDER BY id`,
 			db.StatusProposed, db.StatusApproved); err != nil {
 			return err
 		}
@@ -289,44 +290,55 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 		}
 		// Collapsing dirs can land two files on the same basename; buildTargets'
 		// uniqueness guarantee only held for its own layout, so re-establish it:
-		// unmoved rows claim their path first, moved rows take the next _N.
-		taken := map[string]bool{}
-		type move struct {
-			id      int64
-			dir     string
-			base    string
-			oldPath string
+		// unmoved rows and placed files claim their path first, moved rows take
+		// the next _N — one number per capture group (assignSuffix), so an edit
+		// and its photo keep matching names.
+		//
+		// ponytail: groups are rebuilt from source dir + captureStem, with no
+		// time window, and numbers go out in row order, not capture time (D25).
+		// Both are stable run to run; a pair split across folders only stays
+		// matched when both folders move. Persist the pair key if that bites.
+		placed, err := placedPaths(ctx, tx)
+		if err != nil {
+			return err
 		}
-		var moves []move
+		taken := make(map[string]bool, len(placed)+len(entries))
+		for _, p := range placed {
+			taken[nameKey(p)] = true
+		}
+		type move struct {
+			id   int64
+			dir  string
+			base string
+		}
+		groups := map[string][]move{}
+		var keys []string
 		rewrite := prefixRewriter(remap)
 		for _, e := range entries {
 			dir := path.Dir(e.TargetPath)
 			newDir := rewrite(dir)
 			if newDir == dir {
-				taken[strings.ToLower(e.TargetPath)] = true
+				taken[nameKey(e.TargetPath)] = true
 				continue
 			}
-			moves = append(moves, move{e.ID, newDir, path.Base(e.TargetPath), e.TargetPath})
-		}
-		for _, mv := range moves {
-			ext := path.Ext(mv.base)
-			stem := strings.TrimSuffix(mv.base, ext)
-			var newPath string
-			for n := 1; ; n++ {
-				suffix := ""
-				if n > 1 {
-					suffix = fmt.Sprintf("_%d", n)
-				}
-				newPath = mv.dir + "/" + stem + suffix + ext
-				if !taken[strings.ToLower(newPath)] {
-					taken[strings.ToLower(newPath)] = true
-					break
-				}
+			key := path.Dir(e.SourcePath) + "|" + captureStem(path.Base(e.SourcePath))
+			if groups[key] == nil {
+				keys = append(keys, key)
 			}
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE virtual_fs_entries SET target_path = ? WHERE id = ?`,
-				newPath, mv.id); err != nil {
-				return err
+			groups[key] = append(groups[key], move{e.ID, newDir, path.Base(e.TargetPath)})
+		}
+		for _, key := range keys {
+			members := groups[key]
+			paths := make([]string, len(members))
+			assignSuffix(taken, paths, func(k int) (string, string) {
+				return members[k].dir, members[k].base
+			})
+			for k, mv := range members {
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE virtual_fs_entries SET target_path = ? WHERE id = ?`,
+					paths[k], mv.id); err != nil {
+					return err
+				}
 			}
 		}
 		if _, err := tx.ExecContext(ctx,

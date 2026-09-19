@@ -50,6 +50,9 @@ type Config struct {
 	// resolveLocations, applyNameCase and buildTargets (see forEachMaster).
 	// 0 or 1 runs them inline.
 	Workers int
+	// Placed is the library-relative path of every file already placed, loaded
+	// by Run. buildTargets never hands one of these names to a new file.
+	Placed []string
 }
 
 func DefaultConfig() Config {
@@ -107,6 +110,7 @@ type masterFile struct {
 	FileID     int64  `db:"id"`
 	FileDir    string `db:"file_dir"`
 	FileName   string `db:"file_name"`
+	FileHash   string `db:"file_hash"`
 	MediaType  string `db:"media_type"`
 	Extension  string `db:"file_extension"`
 	ModifiedAt string `db:"file_modified_at"`
@@ -132,7 +136,15 @@ type masterFile struct {
 	// folder instead of being torn across two Year trees. Zero until
 	// clusterAndSpill runs (PreviewPaths never clusters) — read it through
 	// folderTime, never directly.
-	folderDate    time.Time
+	folderDate time.Time
+	// orderTime/orderHash are what buildTargets ranks a file by when names
+	// collide: its own capture time and hash, or its capture group's leader's
+	// (see captureDirs), so a sidecar keeps the same suffix as its photo.
+	orderTime time.Time
+	orderHash string
+	// pairKey names the capture group this file shares one _N suffix with
+	// (captureDirs, pairLiveVideos); "" = a group of one.
+	pairKey       string
 	width, height int64
 	hasGPS        bool
 	lat, lon      float64
