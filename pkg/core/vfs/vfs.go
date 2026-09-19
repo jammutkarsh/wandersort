@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 
@@ -89,6 +90,16 @@ func (v *VFS) Run(ctx context.Context) (int, error) {
 	if cfg.Placed, err = placedPaths(ctx, v.db.SQL); err != nil {
 		return 0, err
 	}
+	var tree []folderRow
+	if err := v.db.SQL.SelectContext(ctx, &tree, placedFoldersCTE+`
+		SELECT id, COALESCE(parent_id, 0) AS parent_id, name, level, bounds FROM folder_nodes
+		WHERE id IN (SELECT id FROM placed_folders)`); err != nil {
+		return 0, fmt.Errorf("load placed folders: %w", err)
+	}
+	cfg.placedTree = newPlacedTree(tree)
+	if cfg.placedTimes, err = v.placedTimes(ctx); err != nil {
+		return 0, err
+	}
 
 	if err := Plan(ctx, masters, cfg, v.resolver, v.log); err != nil {
 		return 0, err
@@ -117,6 +128,32 @@ func placedPaths(ctx context.Context, q sqlx.QueryerContext) ([]string, error) {
 	return paths, nil
 }
 
+// masterColumns is what loadMasters and placedTimes read of a file.
+const masterColumns = `
+	SELECT fr.id, fr.file_dir, fr.file_name, fm.file_hash, fr.media_type, fr.file_extension, fr.file_modified_at,
+		fm.exif_image_width, fm.exif_image_height, fm.exif_orientation,
+		fm.exif_gps_latitude, fm.exif_gps_longitude,
+		fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date,
+		fm.exif_creation_date, fm.exif_media_create_date, fm.is_screenshot
+	FROM file_registry fr
+	JOIN file_metadata fm ON fm.file_id = fr.id`
+
+// placedTimes is the capture time of every placed file, for the clustering to
+// read (spec D16). Undated files are left out: they join no cluster.
+func (v *VFS) placedTimes(ctx context.Context) ([]time.Time, error) {
+	var placed []masterFile
+	if err := v.db.SQL.SelectContext(ctx, &placed, masterColumns+` WHERE fr.placed = 1`); err != nil {
+		return nil, fmt.Errorf("query placed files: %w", err)
+	}
+	times := make([]time.Time, 0, len(placed))
+	for i := range placed {
+		if t := placed[i].captureTime(); !t.IsZero() {
+			times = append(times, t)
+		}
+	}
+	return times, nil
+}
+
 // loadMasters reads every live, not-yet-placed master in the library with its
 // hashed metadata. A placed file is never re-proposed — its DONE row is
 // already the plan, and persist's kept-row logic leaves it alone — so there
@@ -126,14 +163,7 @@ func placedPaths(ctx context.Context, q sqlx.QueryerContext) ([]string, error) {
 // collision suffixes don't vary with worker order.
 func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 	var masters []masterFile
-	if err := v.db.SQL.SelectContext(ctx, &masters, `
-		SELECT fr.id, fr.file_dir, fr.file_name, fm.file_hash, fr.media_type, fr.file_extension, fr.file_modified_at,
-			fm.exif_image_width, fm.exif_image_height, fm.exif_orientation,
-			fm.exif_gps_latitude, fm.exif_gps_longitude,
-			fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date,
-			fm.exif_creation_date, fm.exif_media_create_date, fm.is_screenshot
-		FROM file_registry fr
-		JOIN file_metadata fm ON fm.file_id = fr.id
+	if err := v.db.SQL.SelectContext(ctx, &masters, masterColumns+`
 		WHERE fm.is_master = 1 AND fr.placed = 0
 		ORDER BY fr.file_dir, fr.file_name`); err != nil {
 		return nil, fmt.Errorf("query master files: %w", err)
@@ -228,7 +258,7 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 				m.locationNodeID = chain[d]
 			}
 			for d, id := range chain {
-				var c Constraint
+				c := Bounds{{}}
 				if d < len(m.dirBounds) {
 					c = m.dirBounds[d]
 				}
@@ -236,7 +266,7 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 				if !ok {
 					b = occupied[id] // nil unless the folder holds a decided file
 				}
-				bounds[id] = b.with(c)
+				bounds[id] = b.Union(c)
 			}
 		}
 		// rewritten on every plan, reused folders included: a range folder a

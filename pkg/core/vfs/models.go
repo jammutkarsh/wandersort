@@ -64,6 +64,13 @@ type Config struct {
 	// Placed is the library-relative path of every file already placed, loaded
 	// by Run. buildTargets never hands one of these names to a new file.
 	Placed []string
+	// placedTree is the folders placed files sit in, loaded by Run; route
+	// sends a new file into one when it matches completely (spec D15).
+	placedTree *placedTree
+	// placedTimes is every placed file's capture time, loaded by Run. The
+	// clustering reads them read-only (spec D16), so a new file continuing a
+	// placed cluster gets that cluster's folder month.
+	placedTimes []time.Time
 }
 
 func DefaultConfig() Config {
@@ -176,8 +183,9 @@ type masterFile struct {
 	// segment — dirFor records it. The location entry is where the review
 	// tree hangs this file's GPS, whatever depth the Rules put it at.
 	dirLevels []string
-	// what each of those folders holds, one per segment — see boundsFor
-	dirBounds []Constraint
+	// what each of those folders holds, one per segment — see boundsFor, or
+	// the placed folder's own bounds when route sent the file into one
+	dirBounds []Bounds
 	// the folder_nodes rows persist linked this file to: its folder, and its
 	// location folder (0 = none)
 	nodeID, locationNodeID int64

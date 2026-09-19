@@ -1251,8 +1251,13 @@ tree over the whole library.
   gives every folder back its id. **A folder holding a placed file (or above
   one) is never reused by a new proposal** (`loadFolders`): a review rename
   of a shared folder would rename where the placed file is recorded, and
-  placed files never move. The cost (`ponytail:` there) is a same-named twin
-  folder next to a placed one; issue 14 is where they should share.
+  placed files never move. A failed transfer's (`ERROR`) folder counts as
+  placed here (`placedFoldersCTE`): its row keeps the `target_path` it
+  failed at, so a shared-folder rename would leave that path stale. A new
+  file routed into a placed folder (below) gets a same-path twin chain
+  instead — one folder on disk, two rows (`ponytail:` there: each transfer
+  into a twin adds another placed row at that path; `route` takes the
+  oldest).
   **`Confirm` applies the same rule at save time** (`splitPlacedFolders`,
   before the edits): a copy stopped partway leaves approved files beside or
   under copied ones, so every still-reviewable row whose folder chain touches
@@ -1274,8 +1279,28 @@ tree over the whole library.
   subtree with its ancestors (`pushDown`) — "Canon on the 3rd or the 20th",
   never "any day"; drop = pairwise `Intersect` into each lifted child;
   flatten/rename unchanged) and `Confirm` stores the result as the tree
-  carries it: the rules live once, and `apply` never re-derives them. Issue
-  14 reads them to route new files.
+  carries it: the rules live once, and `apply` never re-derives them.
+  **New files are placed through the placed tree** (`route.go`, spec D15):
+  after `dirFor`, `buildTargets` asks `placedTree.route` for the deepest
+  placed folder the file matches *completely* — walk from the root, descend
+  into a child only if a complete match exists beneath it (first in id
+  order). "Complete" means the chain's bounds cover every level the file's
+  own planned path states (`statement`: each level's value from the folder
+  that level made, so a cross-month `Jan_01` day's own year never overrides
+  the year folder's). Screenshots/fallback/orphan folders bound nothing, so
+  they match only a file whose rules put it in one (`specialLevels`). A hit
+  replaces the path and points `dirLevels`/`dirBounds` at the placed chain
+  (`dirBounds` is `[]Bounds` for that reason); a miss keeps the planned
+  path, which already reaches every placed ancestor it matches by name —
+  Delhi on 2 March next to placed `01_03/Goa Trip` lands in `02/Delhi`.
+  With location turned off, a file states no place, so a placed city
+  folder never matches it and it stays in the day (D6: new rules for new
+  batches). The planner never touches placed files; `Run` loads the tree
+  (`placedFoldersCTE`) and every placed file's capture time, which
+  `clusterAndSpill` reads read-only (D16): placed times move a cluster's
+  start and end, never join its members, so 00:30 on Jan 1 continuing a
+  placed Dec 31 evening lands under `12_December`. The event segment is
+  still the new members' own days.
   `location_node_id` is `ON DELETE SET NULL`: a merge can move a file out
   from under its old place folder, which the save then prunes, and the file
   just loses that GPS link — it isn't under that place any more. (Without it

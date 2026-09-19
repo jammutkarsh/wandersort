@@ -92,11 +92,13 @@ type folderIndex struct {
 // loadFolders indexes the folders a new proposal may reuse, so a folder that
 // is planned again keeps its id. Folders holding a placed file, or above one,
 // are left out: a review rename of a folder the proposal shares would also
-// rename where the placed file is recorded, and placed files never move.
+// rename where the placed file is recorded, and placed files never move. A
+// new file routed into a placed folder (route.go) gets a twin at the same
+// path instead, which is the same folder on disk.
 //
-// ponytail: a new file for a placed folder gets a same-named twin folder
-// instead of joining it. Issue 14 (placing new files through the tree) is
-// where they should share.
+// ponytail: each transfer into a twin leaves one more placed folder at that
+// path in folder_nodes. route takes the oldest, so it is only rows; fold
+// same-path placed folders together after execute if the count ever matters.
 func loadFolders(ctx context.Context, tx *sqlx.Tx) (*folderIndex, error) {
 	var rows []folderRow
 	if err := tx.SelectContext(ctx, &rows, placedFoldersCTE+`
@@ -116,12 +118,14 @@ func loadFolders(ctx context.Context, tx *sqlx.Tx) (*folderIndex, error) {
 }
 
 // placedFoldersCTE names every folder holding a placed file, or above one, as
-// placed_folders.
+// placed_folders. A failed transfer's folder counts too: its row keeps the
+// target_path it failed at, so a review rename of a folder it shared would
+// leave that path pointing somewhere the folder no longer is.
 const placedFoldersCTE = `
 	WITH RECURSIVE placed_folders(id) AS (
 		SELECT vfe.node_id FROM virtual_fs_entries vfe
 		JOIN file_registry fr ON fr.id = vfe.file_id
-		WHERE fr.placed = 1
+		WHERE fr.placed = 1 OR vfe.status = 'ERROR'
 		UNION
 		SELECT fn.parent_id FROM folder_nodes fn
 		JOIN placed_folders pf ON fn.id = pf.id

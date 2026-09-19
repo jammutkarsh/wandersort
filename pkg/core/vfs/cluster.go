@@ -39,22 +39,37 @@ type cluster struct {
 // them after the saved place. A GPS-less file now keeps no location and
 // markUnknownLocations (plan.go) puts it in an Unknown folder beside its
 // located siblings, which says what is actually known.
-func clusterAndSpill(masters []masterFile, gap time.Duration) {
+func clusterAndSpill(masters []masterFile, placed []time.Time, gap time.Duration) {
 	if gap <= 0 {
 		gap = defaultClusterGap
 	}
 
 	sortByCaptureTime(masters)
+	placed = slices.SortedFunc(slices.Values(placed), time.Time.Compare)
 
+	// Placed files join the clusters read-only (spec D16): they move a
+	// cluster's start and end, so a new file continuing a placed evening gets
+	// its month, but they are never members and nothing here writes to them.
 	var clusters []cluster
-	for i := range masters {
-		t := masters[i].takenAt
+	add := func(t time.Time, member int) {
 		if len(clusters) == 0 || t.Sub(clusters[len(clusters)-1].end) > gap {
 			clusters = append(clusters, cluster{start: t, end: t})
 		}
 		c := &clusters[len(clusters)-1]
-		c.members = append(c.members, i)
+		if member >= 0 {
+			c.members = append(c.members, member)
+		}
 		c.end = t
+	}
+	p := 0
+	for i := range masters {
+		for ; p < len(placed) && placed[p].Before(masters[i].takenAt); p++ {
+			add(placed[p], -1)
+		}
+		add(masters[i].takenAt, i)
+	}
+	for ; p < len(placed); p++ {
+		add(placed[p], -1)
 	}
 
 	clusterNum := 0
@@ -92,7 +107,8 @@ func clusterAndSpill(masters []masterFile, gap time.Duration) {
 
 		// nothing located: fall back to a dated segment. No member here is
 		// atSavedPlace — that always carries a real location.
-		seg := eventSegment(c.start, c.end)
+		// the new files' own days, not the placed ones around them
+		seg := eventSegment(masters[c.members[0]].takenAt, masters[c.members[len(c.members)-1]].takenAt)
 		for _, i := range c.members {
 			masters[i].clusterID = id
 			masters[i].eventSegment = seg

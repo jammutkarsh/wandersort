@@ -31,7 +31,7 @@ import (
 func Plan(ctx context.Context, masters []masterFile, cfg Config, geo *location.Resolver, log logger.Logger) error {
 	deriveAll(ctx, masters, cfg.Workers)
 	resolveLocations(ctx, masters, cfg, geo, log)
-	clusterAndSpill(masters, cfg.ClusterGap)
+	clusterAndSpill(masters, cfg.placedTimes, cfg.ClusterGap)
 	applyNameCase(ctx, masters, cfg.Workers)
 	unsuppressMixedSavedPlaces(masters, cfg)
 	markUnknownLocations(masters, cfg)
@@ -139,10 +139,7 @@ func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn fu
 // VFS phase never has to touch the files on disk again
 func deriveAll(ctx context.Context, masters []masterFile, workers int) {
 	forEachMaster(ctx, masters, workers, func(_ int, m *masterFile) {
-		// CreationDate (iOS video) carries a timezone offset; applying it as-is
-		// would shift the video away from same-moment photos, which are all
-		// naive local wall-clock, so stripOffset drops the offset first.
-		m.takenAt = firstTime(deref(m.DBDateTaken), stripOffset(deref(m.DBCreationDate)), deref(m.DBCreateDate), deref(m.DBMediaCreateDate), m.ModifiedAt)
+		m.takenAt = m.captureTime()
 		if m.DBWidth != nil {
 			m.width = *m.DBWidth
 		}
@@ -161,6 +158,14 @@ func deriveAll(ctx context.Context, masters []masterFile, workers int) {
 
 		m.device = deviceName(deref(m.DBMake), deref(m.DBModel))
 	})
+}
+
+// captureTime is when m was shot, from the metadata persisted during hashing.
+// CreationDate (iOS video) carries a timezone offset; applying it as-is would
+// shift the video away from same-moment photos, which are all naive local
+// wall-clock, so stripOffset drops the offset first.
+func (m *masterFile) captureTime() time.Time {
+	return firstTime(deref(m.DBDateTaken), stripOffset(deref(m.DBCreationDate)), deref(m.DBCreateDate), deref(m.DBMediaCreateDate), m.ModifiedAt)
 }
 
 // resolveLocations reverse-geocodes every GPS-tagged master, then folds the
@@ -482,18 +487,21 @@ func buildTargets(ctx context.Context, masters []masterFile, cfg Config) {
 		// captureDirs wins when it named a shared directory for this file's group
 		if dir, ok := groupDirs[i]; ok {
 			dirs[i] = dir
-			return
+		} else if m.MediaType == classifier.MediaTypeSidecar {
+			// A sidecar captureDirs couldn't pair with a photo (missing pair,
+			// rejected time/device agreement) has nothing of its own to derive a
+			// folder from — its mtime fallback would otherwise scatter it through
+			// the real hierarchy, often alone. Paired sidecars never reach here;
+			// they already got the leader's directory above.
+			dirs[i], m.dirLevels, m.dirBounds = OrphanDir, []string{LevelOrphan}, []Bounds{{{}}}
+		} else {
+			dirs[i] = dirFor(m, skip, cfg)
 		}
-		// A sidecar captureDirs couldn't pair with a photo (missing pair,
-		// rejected time/device agreement) has nothing of its own to derive a
-		// folder from — its mtime fallback would otherwise scatter it through
-		// the real hierarchy, often alone. Paired sidecars never reach here;
-		// they already got the leader's directory above.
-		if m.MediaType == classifier.MediaTypeSidecar {
-			dirs[i], m.dirLevels, m.dirBounds = OrphanDir, []string{LevelOrphan}, []Constraint{{}}
-			return
+		// a placed folder the file matches completely wins over what the
+		// rules would build for it (spec D15)
+		if dir, ok := cfg.placedTree.route(m); ok {
+			dirs[i] = dir
 		}
-		dirs[i] = dirFor(m, skip, cfg)
 	})
 
 	// Seeded with what is already on disk in the library: a new file must never
@@ -810,19 +818,19 @@ func monthParts(m *masterFile) []string {
 // order. skip names the levels uninformativeLevels found nothing to say with.
 func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 	if m.takenAt.IsZero() {
-		m.dirLevels, m.dirBounds = []string{LevelFallback}, []Constraint{{}}
+		m.dirLevels, m.dirBounds = []string{LevelFallback}, []Bounds{{{}}}
 		return path.SanitizeSegment(cfg.Fallback)
 	}
 
 	parts := monthParts(m)
 	levels := []string{LevelYear, LevelMonth}
-	bounds := []Constraint{boundsFor(m, LevelYear), boundsFor(m, LevelMonth)}
+	bounds := []Bounds{{boundsFor(m, LevelYear)}, {boundsFor(m, LevelMonth)}}
 
 	// A screenshot has no location/device/orientation worth a folder of its
 	// own — group every screenshot in the month together instead of letting
 	// the configured Rules fragment them.
 	if m.IsScreenshot {
-		m.dirLevels, m.dirBounds = append(levels, LevelScreenshots), append(bounds, Constraint{})
+		m.dirLevels, m.dirBounds = append(levels, LevelScreenshots), append(bounds, Bounds{{}})
 		return strings.Join(append(parts, "Screenshots"), "/")
 	}
 
@@ -836,7 +844,7 @@ func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 		}
 		parts = append(parts, path.SanitizeSegment(seg))
 		levels = append(levels, level)
-		bounds = append(bounds, boundsFor(m, level))
+		bounds = append(bounds, Bounds{boundsFor(m, level)})
 	}
 	m.dirLevels, m.dirBounds = levels, bounds
 	return strings.Join(parts, "/")
