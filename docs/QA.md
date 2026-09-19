@@ -180,9 +180,7 @@ Execute/move stage isn't written yet, so it isn't here.
 ## 13. Config precedence & global config file (cross-cutting)
 
 129. `[A]` `WORKERS=2 wandersort scan -p <dir>` → env ignored (worker count is not a setting); `-w 8` is rejected as an unknown flag.
-129b. `[A]` scan a folder holding two files of a unique length and two of a shared length → `sqlite3 .wandersort.db "SELECT hash_kind FROM file_metadata"` shows `size` for the unique pair (never read) and `content` for the shared pair.
-129c. `[A]` add a file matching a previously-unique length and re-scan → one `Re-reading files that are no longer a unique size` line, the incumbent's `hash_kind` flips to `content`, and identical content lands both in one duplicate group. **This is the case the prefilter can silently corrupt** — if the incumbent stays `size`, two identical files are reported as distinct.
-129d. `[A]` any scan against a `.wandersort.db` created before `hash_kind` existed → fails with `no such column: m.hash_kind`; deleting `.wandersort.db` and `.wandersort.cfg`, or the whole library folder (not `wandersort reset`), is the fix — the database alone leaves a folder `CheckLibrary` refuses.
+129b. `[A]` scan a folder holding a file of a length nothing else has → `sqlite3 .wandersort.db "SELECT file_hash FROM file_metadata"` shows `blake3:<64 hex>` for every row, including that one; no `size:` value anywhere.
 129a. `[H]` `wandersort scan -p <dir>` on an external spinning disk → one `Storage detected` line per volume names `class=rotational` and `concurrentReads=1`; on the internal SSD it names `solid-state` and the full budget. A library spanning both reads the SSD's files first.
 130. `[A]` `OUTPUT_PATH=/tmp/ws wandersort scan -p <dir>` → DB, lock and stamp written under `/tmp/ws`; the log goes to `~/.wandersort/logs/`, not the library.
 131. `[A]` `wandersort scan -p <dir> --plain` → console shows the plain line log; the JSON log file holds the full developer detail either way.

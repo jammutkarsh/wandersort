@@ -935,24 +935,13 @@ tree over the whole library.
   hash clears the file's stale metadata row and parks it at `ERROR`.
   **Known gap:** full-byte hash means pixel-identical files with differing
   metadata land in separate groups.
-  **A file whose byte length occurs exactly once in the library is never
-  read** (`uniqueSizes`, `fileRecord.sizeUnique`): nothing can share its
-  content, so the hash would confirm a duplicate group of one. Measured on a
-  107k-file library: 15,246 files, **187.5 GiB, 23.9% of the bytes**. Its
-  `file_metadata` row carries `hash_kind = 'size'` (`db.HashSize`) and a
-  `sizeDerivedHash(fileID)` stand-in in `file_hash`. **That stand-in must stay
-  unique per file** — the scorer groups duplicates by `file_hash` alone, so a
-  shared sentinel would report every unread file as a copy of every other one.
-  exiftool still runs on it; only the byte read is skipped.
-  **`rehashOutdatedSizeHashes` is the other half, and is not optional.** "No
-  other file is this long" is true only of the library as it stood; a later
-  scan that adds a same-size file makes it false, and the failure is silent —
-  two identical files reported as distinct, which is worse than the read it
-  saved. It runs first thing in `Run`, before the count and the claim, and
-  sends every stale `hash_kind = 'size'` row back to `DISCOVERED` (the
-  newcomer is already there). `metadata_test.go` covers exactly that
-  two-scan case; deleting the call makes it fail with the corruption in the
-  message.
+  **Every file is read in full — there is no unique-size skip** (spec D7): a
+  size stand-in cannot verify a copy or match a file seen again, and
+  placement, duplicate detection and copy verification all key on content.
+  Stored as `blake3:<hex>` (`hashPrefix`), so the algorithm is named in the
+  value. The old `uniqueSizes`/`sizeDerivedHash`/`rehashOutdatedSizeHashes`
+  prefilter and `file_metadata.hash_kind` are gone; the cost is ~29 minutes
+  of extra reading on the 783 GiB HDD run.
   **The read itself streams through a pooled 1 MiB buffer**
   (`hashBufferSize`, `hashBuffers`) rather than `io.Copy`'s 32 KiB — 783 GiB
   at 32 KiB is ~25.6 million read syscalls. It goes through `readerOnly`,
@@ -1261,9 +1250,14 @@ tree over the whole library.
   stamp matters because `config.CheckLibrary` refuses a folder holding our
   leftovers without a database (D1: a library whose database was deleted),
   until ticket 10 removes the stamp. Same applies to any future edit of an already-run
-  migration — `file_metadata.hash_kind` was added to **002's `CREATE TABLE`**
-  the same way, and a pre-existing database fails the metadata phase with
-  `no such column: m.hash_kind` until it is deleted.
+  migration. `file_metadata.hash_kind` was removed from **002's `CREATE TABLE`**
+  and `file_hash` gained its `blake3:` prefix the same way: **every hash in an
+  older database is in the old format** (bare hex, or a `size:<id>` stand-in),
+  and nothing rewrites them. A file read before and after that change would
+  look like two different files, so the same card photo never matches its
+  placed copy and is proposed and copied again, and `cleanupPlacedDuplicates`
+  never removes it. Delete `.wandersort.db` and `.wandersort.cfg` (or the
+  whole library folder) before scanning again.
   **`Confirm` merges, it doesn't reject:** two nodes renamed to the
   same final path collapse onto one folder (e.g. two unresolved date clusters
   turning out to be the same place) — this used to be an error before a real
