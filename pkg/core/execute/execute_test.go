@@ -327,6 +327,145 @@ func TestRunMoveKeepsSourceWhenNothingLanded(t *testing.T) {
 	}
 }
 
+// After a transfer lands, the row's own source_path and the file's registry
+// entry point at the library, not the source — the same relative value as
+// target_path (spec D9/D10).
+func TestRunRepointsToLibraryRelativePath(t *testing.T) {
+	for _, mode := range []Mode{ModeCopy, ModeMove} {
+		t.Run(mode.String(), func(t *testing.T) {
+			d := dbtest.New(t)
+			out := t.TempDir()
+			seedApproved(t, d, 1, "2024/A.jpg", "hello")
+
+			if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: mode}); err != nil {
+				t.Fatal(err)
+			}
+
+			var row struct {
+				SourcePath string `db:"source_path"`
+				TargetPath string `db:"target_path"`
+			}
+			if err := d.SQL.Get(&row, `SELECT source_path, target_path FROM virtual_fs_entries WHERE file_id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if row.SourcePath != row.TargetPath {
+				t.Errorf("source_path = %q, want it to equal target_path %q", row.SourcePath, row.TargetPath)
+			}
+			if filepath.IsAbs(row.SourcePath) {
+				t.Errorf("source_path = %q, want library-relative", row.SourcePath)
+			}
+
+			var reg struct {
+				FileDir  string `db:"file_dir"`
+				FileName string `db:"file_name"`
+				Placed   bool   `db:"placed"`
+			}
+			if err := d.SQL.Get(&reg, `SELECT file_dir, file_name, placed FROM file_registry WHERE id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if got := reg.FileDir + "/" + reg.FileName; got != row.TargetPath {
+				t.Errorf("file_registry points at %q, want %q", got, row.TargetPath)
+			}
+			if !reg.Placed {
+				t.Error("placed = false after a successful transfer, want true")
+			}
+		})
+	}
+}
+
+// seedHashedFile writes a file_registry row with a file_metadata hash but no
+// virtual_fs_entries row — the shape of a duplicate the scorer never elected
+// (is_master = 0, never proposed) or a copy of an already-placed file a
+// later scan saw again.
+func seedHashedFile(t *testing.T, d *db.DB, id int64, dir, name, hash string) {
+	t.Helper()
+	dbtest.SeedFile(t, d, id, dir, name, 5)
+	if _, err := d.ExecContext(context.Background(),
+		`INSERT INTO file_metadata (file_hash, file_id) VALUES (?, ?)`, hash, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunCleansUpDuplicatesOfPlacedFiles(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	seedApproved(t, d, 1, "A.jpg", "hello")
+	if _, err := d.ExecContext(context.Background(),
+		`INSERT INTO file_metadata (file_hash, file_id) VALUES ('shared-hash', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	// A loser duplicate: same hash, never proposed
+	seedHashedFile(t, d, 2, "/backup", "dupe.jpg", "shared-hash")
+	// An unrelated file: different hash, must survive
+	seedHashedFile(t, d, 3, "/backup", "other.jpg", "other-hash")
+
+	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	if err := d.SQL.Get(&count, `SELECT COUNT(*) FROM file_registry WHERE id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Error("duplicate of a placed file survived execute's cleanup")
+	}
+	if err := d.SQL.Get(&count, `SELECT COUNT(*) FROM file_metadata WHERE file_id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Error("duplicate's metadata row survived execute's cleanup")
+	}
+	if err := d.SQL.Get(&count, `SELECT COUNT(*) FROM file_registry WHERE id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Error("unrelated file was removed by execute's cleanup")
+	}
+}
+
+// An ERROR row (a file execute itself couldn't place) is never a cleanup
+// target: only one file per hash is ever a master, so an ERROR row's hash
+// can't also belong to a DONE row.
+func TestRunCleanupLeavesErrorRowsAlone(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	seedApproved(t, d, 1, "A.jpg", "hello")
+	// row 2's source doesn't exist on disk, so it lands at ERROR
+	dbtest.SeedFile(t, d, 2, "/no/such/dir", "missing.jpg", 0)
+	if _, err := d.ExecContext(context.Background(), `
+		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
+		VALUES (2, '/no/such/dir/missing.jpg', 'missing.jpg', ?)`, db.StatusApproved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(context.Background(),
+		`INSERT INTO file_metadata (file_hash, file_id) VALUES ('missing-hash', 2)`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, _ := rowStatus(t, d, 2)
+	if status != db.StatusError {
+		t.Fatalf("status = %q, want %q", status, db.StatusError)
+	}
+	var reg struct {
+		Count  int  `db:"count"`
+		Placed bool `db:"placed"`
+	}
+	if err := d.SQL.Get(&reg, `SELECT COUNT(*) AS count, COALESCE(MAX(placed), 0) AS placed FROM file_registry WHERE id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if reg.Count != 1 {
+		t.Error("ERROR row was removed by execute's cleanup")
+	}
+	if reg.Placed {
+		t.Error("placed = true on a row that failed to transfer, want false")
+	}
+}
+
 func TestWithSuffix(t *testing.T) {
 	for _, c := range []struct {
 		in   string

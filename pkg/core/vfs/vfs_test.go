@@ -752,6 +752,62 @@ func TestLibraryScopeAcrossRuns(t *testing.T) {
 	}
 }
 
+// TestPlacedFileIsNeverReproposed covers the SD card case (spec D11, issue
+// 06/07): a placed file's DONE row is the plan from here on. A re-scanned
+// duplicate the scorer has already demoted (is_master = 0) must not revive a
+// proposal for it, and the placed file's own row must survive persist's
+// "no longer a live master" cleanup regardless of its own is_master flag —
+// loadMasters excludes it outright, and the delete treats placed = 1 the
+// same as is_master = 1 as a backstop.
+func TestPlacedFileIsNeverReproposed(t *testing.T) {
+	h := newHarness(t)
+	placed := h.addFile(t, "library/2024/06_June/Goa/Photos/IMG_0001.HEIC", "IMAGE",
+		metaWith("2024:06:03 14:00:00", 15.5439, 73.7553, 3024, 4032))
+	dup := h.addFile(t, "card/Goa Trip/IMG_0001.HEIC", "IMAGE",
+		metaWith("2024:06:03 14:00:00", 15.5439, 73.7553, 3024, 4032))
+
+	ctx := context.Background()
+	if _, err := h.d.ExecContext(ctx,
+		`UPDATE file_metadata SET file_hash = 'shared' WHERE file_id IN (?, ?)`, placed, dup); err != nil {
+		t.Fatal(err)
+	}
+	// The scorer's decision, made ahead of this vfs run: the placed copy kept
+	// the election, the re-scanned duplicate lost it (TestRunNeverDemotesAPlacedFile
+	// in pkg/core/scorer covers that election itself)
+	if _, err := h.d.ExecContext(ctx, `UPDATE file_metadata SET is_master = 0 WHERE file_id = ?`, dup); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.d.ExecContext(ctx, `
+		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
+		VALUES (?, '2024/06_June/Goa/Photos/IMG_0001.HEIC', '2024/06_June/Goa/Photos/IMG_0001.HEIC', ?)`,
+		placed, db.StatusDone); err != nil {
+		t.Fatal(err)
+	}
+
+	vfs := &VFS{db: h.d, log: logger.NewNoopLogger(), cfg: DefaultConfig()}
+	if _, err := vfs.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.d.Writer.Flush()
+
+	var rows []entryRow
+	if err := h.d.SQL.Select(&rows, `SELECT file_id, target_path, cluster_id, status FROM virtual_fs_entries`); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("proposal has %d rows, want 1 (only the placed file's untouched DONE row)", len(rows))
+	}
+	if rows[0].FileID != placed {
+		t.Errorf("proposal row belongs to file %d, want the placed file %d", rows[0].FileID, placed)
+	}
+	if rows[0].Status != db.StatusDone {
+		t.Errorf("placed file's row status = %q, want unchanged %q", rows[0].Status, db.StatusDone)
+	}
+}
+
 // TestMonthFoldersSortChronologically covers the reported ordering bug: bare
 // month names sort alphabetically, so December came before November in the
 // review tree (and in any file browser). The segment is number-first now.

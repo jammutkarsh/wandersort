@@ -373,7 +373,7 @@ func PendingBytes(ctx context.Context, database *db.DB) (int64, error) {
 	var n int64
 	if err := database.SQL.GetContext(ctx, &n,
 		`SELECT COALESCE(SUM(fr.file_size), 0) FROM virtual_fs_entries vfe
-		 JOIN live_files fr ON fr.id = vfe.file_id
+		 JOIN file_registry fr ON fr.id = vfe.file_id
 		 WHERE vfe.status IN (?, ?)`, db.StatusProposed, db.StatusApproved); err != nil {
 		return 0, fmt.Errorf("size pending files: %w", err)
 	}

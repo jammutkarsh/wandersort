@@ -10,6 +10,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -195,10 +196,13 @@ func TestRun(t *testing.T) {
 	}
 	assertMasters()
 
-	// A soft-deleted duplicate must stop counting as a group member: file 2
-	// vanishes, so file 1 becomes a solo master and file 2 keeps its demotion
-	if _, err := d.ExecContext(ctx,
-		`UPDATE file_registry SET deleted_at = '2026-01-01T00:00:00.000000000Z' WHERE id = 2`); err != nil {
+	// A vanished duplicate must stop counting as a group member: file 2 is
+	// hard-deleted (as a real sweep would delete it, metadata row included),
+	// so file 1 becomes a solo master
+	if _, err := d.ExecContext(ctx, `DELETE FROM file_metadata WHERE file_id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx, `DELETE FROM file_registry WHERE id = 2`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := (&Scorer{db: d, log: logger.NewNoopLogger()}).Run(ctx); err != nil {
@@ -211,16 +215,72 @@ func TestRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !master1 {
-		t.Error("survivor of a soft-deleted group was not re-promoted")
+		t.Error("survivor of a vanished group was not re-promoted")
 	}
-	// The soft-deleted member must not be re-promoted alongside the survivor
-	var master2 bool
-	if err := d.SQL.GetContext(ctx, &master2,
-		`SELECT is_master FROM file_metadata WHERE file_id = 2`); err != nil {
+	var remaining int
+	if err := d.SQL.GetContext(ctx, &remaining, `SELECT COUNT(*) FROM file_metadata WHERE file_id = 2`); err != nil {
 		t.Fatal(err)
 	}
-	if master2 {
-		t.Error("soft-deleted member was re-promoted to master")
+	if remaining != 0 {
+		t.Error("vanished member's metadata row survived")
+	}
+}
+
+// A placed file always keeps the election for its hash, even when a
+// re-scanned duplicate out-scores it on path heuristics alone — otherwise
+// execute proposes and copies the duplicate again, and the placed file's own
+// row gets deleted for having "lost", leaving an orphaned second copy on
+// disk with no database record (issue 06).
+func TestRunNeverDemotesAPlacedFile(t *testing.T) {
+	ctx := context.Background()
+	d := dbtest.New(t)
+
+	// file 1: already placed, in the app's own low-scoring default folder
+	dbtest.SeedFile(t, d, 1, "/library/2024/06_June/Goa/Photos", "IMG_1234.jpg", 1024)
+	if _, err := d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	// file 2: a re-scanned duplicate sitting in a meaningfully-named folder,
+	// which perFileScore favors over "Photos"
+	dbtest.SeedFile(t, d, 2, "/card/Goa Trip", "IMG_1234.jpg", 1024)
+
+	for _, seed := range []struct {
+		hash   string
+		fileID int64
+	}{{"same-hash", 1}, {"same-hash", 2}} {
+		if _, err := d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES (?, ?)`,
+			seed.hash, seed.fileID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO virtual_fs_entries (file_id, source_path, target_path, status)
+		VALUES (1, '2024/06_June/Goa/Photos/IMG_1234.jpg', '2024/06_June/Goa/Photos/IMG_1234.jpg', ?)`,
+		db.StatusDone); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&Scorer{db: d, log: logger.NewNoopLogger()}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d.Writer.Flush()
+
+	masters := map[int64]bool{}
+	rows := []struct {
+		FileID   int64 `db:"file_id"`
+		IsMaster bool  `db:"is_master"`
+	}{}
+	if err := d.SQL.SelectContext(ctx, &rows, `SELECT file_id, is_master FROM file_metadata`); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		masters[r.FileID] = r.IsMaster
+	}
+	if !masters[1] {
+		t.Error("placed file lost the election to a higher-scoring re-scanned duplicate")
+	}
+	if masters[2] {
+		t.Error("re-scanned duplicate was elected master over the placed file")
 	}
 }
 

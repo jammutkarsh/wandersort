@@ -24,7 +24,7 @@ func CheckOutputSpace(ctx context.Context, database *db.DB, log logger.Logger, o
 	// will actually write, sometimes double so.
 	var librarySize int64
 	if err := database.SQL.GetContext(ctx, &librarySize,
-		`SELECT COALESCE(SUM(fr.file_size), 0) FROM live_files fr
+		`SELECT COALESCE(SUM(fr.file_size), 0) FROM file_registry fr
 		 JOIN file_metadata fm ON fm.file_id = fr.id
 		 WHERE fm.is_master = 1`); err != nil {
 		log.Error("Failed to size the library", "error", err)

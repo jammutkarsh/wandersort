@@ -225,8 +225,8 @@ func TestScanner(t *testing.T) {
 			d.Writer.Flush()
 
 			rows = registryByName(t, d)
-			if len(rows) != 4 {
-				t.Fatalf("re-scan left %d rows, want 4 (keep, modify, new + soft-deleted delete)", len(rows))
+			if len(rows) != 3 {
+				t.Fatalf("re-scan left %d rows, want 3 (keep, modify, new; delete hard-deleted)", len(rows))
 			}
 			if got := rows["keep.jpg"].Status; got != db.StatusAnalyzed {
 				t.Errorf("unchanged file scan_status = %s, want ANALYZED", got)
@@ -237,16 +237,19 @@ func TestScanner(t *testing.T) {
 			if got := rows["new.jpg"].Status; got != db.StatusDiscovered {
 				t.Errorf("added file scan_status = %s, want DISCOVERED", got)
 			}
-			for _, name := range []string{"keep.jpg", "modify.jpg", "new.jpg"} {
-				if rows[name].DeletedAt != nil {
-					t.Errorf("live file %s carries deleted_at %v", name, *rows[name].DeletedAt)
-				}
+			if _, ok := rows["delete.jpg"]; ok {
+				t.Error("vanished file was not hard-deleted by the sweep")
 			}
-			if rows["delete.jpg"].DeletedAt == nil {
-				t.Error("vanished file was not soft-deleted by the sweep")
+			var metaCount int
+			if err := d.SQL.Get(&metaCount, `SELECT COUNT(*) FROM file_metadata WHERE file_hash = 'hash-delete.jpg'`); err != nil {
+				t.Fatal(err)
+			}
+			if metaCount != 0 {
+				t.Error("vanished file's metadata row survived the sweep")
 			}
 
-			// The vanished file resurrects when it reappears on disk unchanged
+			// A reappearing file is a fresh row, not a resurrection — its old
+			// row (and metadata) were already gone
 			if err := os.WriteFile(filepath.Join(root, "delete.jpg"), []byte("doomed bytes"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -255,8 +258,8 @@ func TestScanner(t *testing.T) {
 			}
 			d.Writer.Flush()
 			rows = registryByName(t, d)
-			if rows["delete.jpg"].DeletedAt != nil {
-				t.Error("reappeared file is still marked deleted")
+			if got := rows["delete.jpg"].Status; got != db.StatusDiscovered {
+				t.Errorf("reappeared file scan_status = %s, want DISCOVERED", got)
 			}
 		}},
 		// TestRunForceRescan: an unchanged file (same size/mtime) normally keeps
@@ -292,8 +295,8 @@ func TestScanner(t *testing.T) {
 				t.Errorf("unchanged file scan_status = %s, want DISCOVERED (forced)", got)
 			}
 		}},
-		// RunRescanPreservesNFDName guards a real reviewer-found bug: forcing
-		// a disk-given name to NFC on write folds it the same wrong way on
+		// RunRescanPreservesNFDName guards against forcing a disk-given name
+		// to NFC on write, which folds it the same wrong way on
 		// every scan, so the rescan itself never marks it vanished — what
 		// actually broke was opening the stored NFC spelling against the
 		// real NFD-named file on Linux, where lookup is byte-exact. Kept
@@ -318,17 +321,13 @@ func TestScanner(t *testing.T) {
 			d.Writer.Flush()
 
 			var rows []struct {
-				FileName  string  `db:"file_name"`
-				DeletedAt *string `db:"deleted_at"`
+				FileName string `db:"file_name"`
 			}
-			if err := d.SQL.Select(&rows, `SELECT file_name, deleted_at FROM file_registry`); err != nil {
+			if err := d.SQL.Select(&rows, `SELECT file_name FROM file_registry`); err != nil {
 				t.Fatal(err)
 			}
 			if len(rows) != 1 {
-				t.Fatalf("got %d rows after two scans, want 1: %+v", len(rows), rows)
-			}
-			if rows[0].DeletedAt != nil {
-				t.Errorf("unchanged NFD-named file marked vanished on rescan")
+				t.Fatalf("got %d rows after two scans, want 1 (unchanged NFD-named file marked vanished on rescan): %+v", len(rows), rows)
 			}
 			if rows[0].FileName != nfdName {
 				t.Errorf("file_name = %q, want unchanged %q (no NFC folding)", rows[0].FileName, nfdName)
@@ -351,7 +350,7 @@ func TestScanner(t *testing.T) {
 
 			rows := registryByName(t, d)
 			for _, name := range []string{"gone.jpg", "root.jpg"} {
-				if rows[name].DeletedAt == nil {
+				if _, ok := rows[name]; ok {
 					t.Errorf("%s not swept under filesystem root", name)
 				}
 			}
@@ -384,8 +383,8 @@ func TestScanner(t *testing.T) {
 			if len(rows) != 1 {
 				t.Fatalf("missing root swept the index: %d rows left, want 1", len(rows))
 			}
-			if rows["photo.jpg"].DeletedAt != nil {
-				t.Error("missing root soft-deleted a file it never scanned")
+			if _, ok := rows["photo.jpg"]; !ok {
+				t.Error("missing root deleted a file it never scanned")
 			}
 			if rows["photo.jpg"].LastSeenAt != seenAfterFirst {
 				t.Errorf("surviving row's last_seen_at changed to %s, want unchanged %s", rows["photo.jpg"].LastSeenAt, seenAfterFirst)
@@ -426,74 +425,59 @@ func TestScanner(t *testing.T) {
 			d.Writer.Flush()
 
 			rows := registryByName(t, d)
-			if rows["gone.jpg"].DeletedAt == nil {
+			if _, ok := rows["gone.jpg"]; ok {
 				t.Error("clean root's vanished file was not swept")
 			}
-			if rows["keep.jpg"].DeletedAt != nil {
+			if _, ok := rows["keep.jpg"]; !ok {
 				t.Error("clean root's live file was swept")
 			}
-			if rows["photo.jpg"].DeletedAt != nil {
+			if _, ok := rows["photo.jpg"]; !ok {
 				t.Error("failed root's file was swept despite the walk never running")
 			}
 			if rows["photo.jpg"].LastSeenAt != seenAfterFirst {
 				t.Errorf("failed root's row last_seen_at changed to %s, want unchanged %s", rows["photo.jpg"].LastSeenAt, seenAfterFirst)
 			}
 		}},
-		{"RunPurgesExpiredRows", func(t *testing.T) {
+		// TestSweepDeletesDependentRowsInFKOrder: a vanished file's metadata and
+		// vfs-plan rows go with it — no grace window and no leftovers for
+		// foreign_keys=ON to reject
+		{"SweepDeletesDependentRows", func(t *testing.T) {
 			ctx := context.Background()
 			sc, d := newDBScanner(t)
 
-			// A file soft-deleted beyond the retention window, with dependent
-			// metadata and vfs rows that must be purged in FK order
-			dbtest.SeedFile(t, d, 1, "/gone", "expired.jpg", 10)
+			dbtest.SeedFile(t, d, 1, "/gone", "vanished.jpg", 10)
 			if _, err := d.ExecContext(ctx,
-				`UPDATE file_registry SET deleted_at = ? WHERE id = 1`,
-				db.FormatTime(time.Now().Add(-deletedRetention-time.Hour))); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := d.ExecContext(ctx,
-				`INSERT INTO file_metadata (file_hash, file_id) VALUES ('expired-hash', 1)`); err != nil {
+				`INSERT INTO file_metadata (file_hash, file_id) VALUES ('vanished-hash', 1)`); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := d.ExecContext(ctx, `
-		INSERT INTO virtual_fs_entries (file_id, source_path, target_path)
-		VALUES (1, '/gone/expired.jpg', 'stale/expired.jpg')`); err != nil {
-				t.Fatal(err)
-			}
-			// A file inside the retention window survives the purge
-			dbtest.SeedFile(t, d, 2, "/gone", "recent.jpg", 10)
-			if _, err := d.ExecContext(ctx,
-				`UPDATE file_registry SET deleted_at = ? WHERE id = 2`,
-				db.FormatTime(time.Now().Add(-time.Hour))); err != nil {
+				INSERT INTO virtual_fs_entries (file_id, source_path, target_path)
+				VALUES (1, '/gone/vanished.jpg', 'stale/vanished.jpg')`); err != nil {
 				t.Fatal(err)
 			}
 
-			if _, err := sc.Run(ctx, []string{t.TempDir()}, false); err != nil {
-				t.Fatalf("scan: %v", err)
+			if err := sc.sweep(ctx, time.Now(), "/gone"); err != nil {
+				t.Fatalf("sweep: %v", err)
 			}
-			d.Writer.Flush()
 
-			rows := registryByName(t, d)
-			if _, ok := rows["expired.jpg"]; ok {
-				t.Error("expired soft-deleted row survived the purge")
-			}
-			if _, ok := rows["recent.jpg"]; !ok {
-				t.Error("recently soft-deleted row was purged before its retention ran out")
-			}
 			var leftovers int
-			if err := d.SQL.Get(&leftovers, `
-		SELECT count(*) FROM file_metadata WHERE file_id = 1`); err != nil {
+			if err := d.SQL.Get(&leftovers, `SELECT count(*) FROM file_registry WHERE id = 1`); err != nil {
 				t.Fatal(err)
 			}
 			if leftovers != 0 {
-				t.Error("purged file left metadata rows behind")
+				t.Error("swept file's registry row survived")
 			}
-			if err := d.SQL.Get(&leftovers, `
-		SELECT count(*) FROM virtual_fs_entries WHERE file_id = 1`); err != nil {
+			if err := d.SQL.Get(&leftovers, `SELECT count(*) FROM file_metadata WHERE file_id = 1`); err != nil {
 				t.Fatal(err)
 			}
 			if leftovers != 0 {
-				t.Error("purged file left vfs rows behind")
+				t.Error("swept file left a metadata row behind")
+			}
+			if err := d.SQL.Get(&leftovers, `SELECT count(*) FROM virtual_fs_entries WHERE file_id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if leftovers != 0 {
+				t.Error("swept file left a vfs row behind")
 			}
 		}},
 	}
@@ -513,11 +497,10 @@ func newDBScanner(t *testing.T) (*Scanner, *db.DB) {
 }
 
 type registryRow struct {
-	ID         int64   `db:"id"`
-	FileName   string  `db:"file_name"`
-	Status     string  `db:"scan_status"`
-	LastSeenAt string  `db:"last_seen_at"`
-	DeletedAt  *string `db:"deleted_at"`
+	ID         int64  `db:"id"`
+	FileName   string `db:"file_name"`
+	Status     string `db:"scan_status"`
+	LastSeenAt string `db:"last_seen_at"`
 }
 
 // registryByName keys every registry row by file name; test trees use unique
@@ -526,7 +509,7 @@ func registryByName(t *testing.T, d *db.DB) map[string]registryRow {
 	t.Helper()
 	var rows []registryRow
 	if err := d.SQL.Select(&rows,
-		`SELECT id, file_name, scan_status, last_seen_at, deleted_at FROM file_registry`); err != nil {
+		`SELECT id, file_name, scan_status, last_seen_at FROM file_registry`); err != nil {
 		t.Fatal(err)
 	}
 	byName := map[string]registryRow{}

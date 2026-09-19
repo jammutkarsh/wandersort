@@ -97,10 +97,13 @@ func (v *VFS) Run(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// loadMasters reads every live master in the library with its hashed metadata.
-// Not session-scoped: the proposal must cover earlier sessions' files too, or
-// the output would depend on scan history. Ordered by (file_dir, file_name),
-// not id, so clustering and collision suffixes don't vary with worker order.
+// loadMasters reads every live, not-yet-placed master in the library with its
+// hashed metadata. A placed file is never re-proposed — its DONE row is
+// already the plan, and persist's kept-row logic leaves it alone — so there
+// is nothing here for it to win or lose. Not session-scoped: the proposal
+// must cover earlier sessions' files too, or the output would depend on scan
+// history. Ordered by (file_dir, file_name), not id, so clustering and
+// collision suffixes don't vary with worker order.
 func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 	var masters []masterFile
 	if err := v.db.SQL.SelectContext(ctx, &masters, `
@@ -109,9 +112,9 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 			fm.exif_gps_latitude, fm.exif_gps_longitude,
 			fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date,
 			fm.exif_creation_date, fm.exif_media_create_date, fm.is_screenshot
-		FROM live_files fr
+		FROM file_registry fr
 		JOIN file_metadata fm ON fm.file_id = fr.id
-		WHERE fm.is_master = 1
+		WHERE fm.is_master = 1 AND fr.placed = 0
 		ORDER BY fr.file_dir, fr.file_name`); err != nil {
 		return nil, fmt.Errorf("query master files: %w", err)
 	}
@@ -133,14 +136,18 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 	// Read the survivors first: the writer is an asynchronous FIFO, so a query
 	// issued after queueing the deletes would still see the rows they remove.
 	// A decided row is one that is approved or already executed; its file must
-	// not be proposed a second time — UNIQUE(file_id) says so too.
+	// not be proposed a second time — UNIQUE(file_id) says so too. Same
+	// "protected" set as the delete below (is_master = 1 OR placed = 1): a
+	// placed file is never in masters (loadMasters filters it out), so this
+	// never actually keeps one in practice, but the two queries describing
+	// one invariant should read the same rather than drift apart.
 	var keptIDs []int64
 	if err := v.db.SQL.SelectContext(ctx, &keptIDs, `
 		SELECT file_id FROM virtual_fs_entries
 		WHERE status != ? AND file_id IN (
-			SELECT fr.id FROM live_files fr
+			SELECT fr.id FROM file_registry fr
 			JOIN file_metadata fm ON fm.file_id = fr.id
-			WHERE fm.is_master = 1)`, db.StatusProposed); err != nil {
+			WHERE fm.is_master = 1 OR fr.placed = 1)`, db.StatusProposed); err != nil {
 		return 0, fmt.Errorf("load decided vfs entries: %w", err)
 	}
 	kept := make(map[int64]bool, len(keptIDs))
@@ -153,13 +160,16 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 			return err
 		}
 		// a decided row for a file that is no longer a live master promises a
-		// move that can't happen
+		// move that can't happen. A placed file is exempt regardless of
+		// is_master: it already landed, so its row is the one true record of
+		// that (spec D10) — the scorer never demotes a placed file's own hash
+		// group (see scorer.Run), but this is the backstop if it ever did.
 		_, err := tx.ExecContext(ctx, `
 			DELETE FROM virtual_fs_entries
 			WHERE status != ? AND file_id NOT IN (
-				SELECT fr.id FROM live_files fr
+				SELECT fr.id FROM file_registry fr
 				JOIN file_metadata fm ON fm.file_id = fr.id
-				WHERE fm.is_master = 1)`, db.StatusProposed)
+				WHERE fm.is_master = 1 OR fr.placed = 1)`, db.StatusProposed)
 		return err
 	}) {
 		return 0, fmt.Errorf("clear previous vfs proposal: writer closed")

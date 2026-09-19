@@ -24,11 +24,6 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
-// deletedRetention is the grace window before a vanished file's rows are
-// hard-purged: long enough to survive an unplugged drive or a temporarily
-// unreadable subtree, short enough that the index doesn't hoard ghosts
-const deletedRetention = 30 * 24 * time.Hour
-
 // Scanner is stateless across runs — mutable state lives in per-call
 // locals, so concurrent scans need no locking on Scanner itself.
 type Scanner struct {
@@ -144,11 +139,6 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 		}
 	}
 
-	// GC failure keeps ghosts a little longer; never fail the scan over it
-	if err := s.purgeExpired(ctx); err != nil {
-		s.log.Error("Failed to purge expired files", "error", err)
-	}
-
 	return totalFiles, firstScanErr
 }
 
@@ -258,10 +248,13 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 	return nil
 }
 
-// sweep soft-deletes rows under root not re-seen this scan (last_seen_at
-// still older than scanStartedAt). Only called for roots whose walk
-// finished cleanly; purgeExpired hard-deletes the swept rows later, so a
-// transient failure elsewhere heals on the next clean scan.
+// sweep hard-deletes rows under root not re-seen this scan (last_seen_at
+// still older than scanStartedAt), plan and metadata rows included. Only
+// called for roots whose walk finished cleanly, so a transient failure
+// elsewhere heals on the next clean scan instead of losing rows. No grace
+// window: a placed file's row was already repointed at a library-relative
+// path by execute, which is never under a scan root, so it is never a sweep
+// candidate — nothing else needs the retention a soft delete used to buy.
 func (s *Scanner) sweep(ctx context.Context, scanStartedAt time.Time, root string) error {
 	// Range match on (file_dir, file_name) avoids a full table scan and
 	// needs no LIKE escaping for roots containing % or _. file_dir is stored
@@ -272,57 +265,38 @@ func (s *Scanner) sweep(ctx context.Context, scanStartedAt time.Time, root strin
 	trimmed := strings.TrimSuffix(path.ToSourcePath(root), "/")
 	prefix := trimmed + "/"
 	prefixEnd := trimmed + string(rune('/'+1))
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE file_registry SET deleted_at = ?
-		WHERE deleted_at IS NULL
-			AND last_seen_at < ?
-			AND (file_dir = ? OR (file_dir >= ? AND file_dir < ?))`,
-		db.FormatTime(time.Now()), db.FormatTime(scanStartedAt), trimmed, prefix, prefixEnd)
-	if err != nil {
-		return fmt.Errorf("sweep %q: %w", root, err)
-	}
-
-	if swept, _ := result.RowsAffected(); swept > 0 {
-		s.log.Info("Marked vanished files", "path", root, "filesRemoved", swept)
-	}
-	return nil
-}
-
-// purgeExpired hard-deletes rows soft-deleted longer than deletedRetention ago
-func (s *Scanner) purgeExpired(ctx context.Context) error {
-	cutoff := db.FormatTime(time.Now().Add(-deletedRetention))
+	cutoff := db.FormatTime(scanStartedAt)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("purge expired: begin tx: %w", err)
+		return fmt.Errorf("sweep %q: begin tx: %w", root, err)
 	}
 	defer tx.Rollback()
 
 	// Delete order is forced by foreign keys: virtual_fs_entries.file_id has
 	// no ON DELETE action, and file_metadata's SET NULL would leave orphan
 	// rows that still participate in the scorer's hash grouping
+	const vanished = `last_seen_at < ? AND (file_dir = ? OR (file_dir >= ? AND file_dir < ?))`
 	statements := []string{
-		`DELETE FROM virtual_fs_entries WHERE file_id IN
-			(SELECT id FROM file_registry WHERE deleted_at < ?)`,
-		`DELETE FROM file_metadata WHERE file_id IN
-			(SELECT id FROM file_registry WHERE deleted_at < ?)`,
-		`DELETE FROM file_registry WHERE deleted_at < ?`,
+		`DELETE FROM virtual_fs_entries WHERE file_id IN (SELECT id FROM file_registry WHERE ` + vanished + `)`,
+		`DELETE FROM file_metadata WHERE file_id IN (SELECT id FROM file_registry WHERE ` + vanished + `)`,
+		`DELETE FROM file_registry WHERE ` + vanished,
 	}
-	var purged int64
+	var swept int64
 	for _, stmt := range statements {
-		result, err := tx.ExecContext(ctx, stmt, cutoff)
+		result, err := tx.ExecContext(ctx, stmt, cutoff, trimmed, prefix, prefixEnd)
 		if err != nil {
-			return fmt.Errorf("purge expired: %w", err)
+			return fmt.Errorf("sweep %q: %w", root, err)
 		}
-		purged, _ = result.RowsAffected()
+		swept, _ = result.RowsAffected()
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("purge expired: commit: %w", err)
+		return fmt.Errorf("sweep %q: commit: %w", root, err)
 	}
 
-	if purged > 0 {
-		s.log.Info("Purged expired files", "filesPurged", purged)
+	if swept > 0 {
+		s.log.Info("Removed vanished files", "path", root, "filesRemoved", swept)
 	}
 	return nil
 }
@@ -364,7 +338,6 @@ func (s *Scanner) storeScan(ctx context.Context, dbWritesWG *sync.WaitGroup, sto
 			file_size = excluded.file_size,
 			file_modified_at = excluded.file_modified_at,
 			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid),
-			deleted_at = NULL,
 			scan_status = CASE
 				-- ANALYZING means an interrupted metadata phase left this row
 				-- claimed with nothing persisted for it — one phase writes the

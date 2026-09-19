@@ -889,16 +889,22 @@ tree over the whole library.
 - `scanner/` — phase 1. Bounded-worker directory walk. Files are identified by
   absolute `(file_dir, file_name)`; each root's volume UUID is stamped for
   future drive re-anchoring. `Run` captures `scanStartedAt := time.Now()`
-  once, before any walking begins; after a clean walk, `sweep` **soft-deletes**
-  (`deleted_at`) rows under that root whose `last_seen_at` is still older than
+  once, before any walking begins; after a clean walk, `sweep` **hard-deletes**
+  rows under that root whose `last_seen_at` is still older than
   `scanStartedAt` — i.e. the walk didn't re-see them. This replaced an earlier
   session-identity check (`scan_session_id != this session`) with a pure
   wall-clock cutoff once sessions were removed: `storeScan`'s upsert always
   sets `last_seen_at` to the write-time `now()` for every file it touches,
   which is guaranteed to land after `scanStartedAt`, so the two checks are
   equivalent — one just doesn't need an identity to compare against.
-  `purgeExpired` hard-deletes swept rows after 30 days (`deletedRetention`),
-  so unplugged drives and transient errors self-heal. **No filename-stem
+  **There is no soft delete, no `deleted_at`, and no retention window any
+  more** (spec D10: only what is in the library matters) — `sweep` deletes
+  the vanished file's `virtual_fs_entries` and `file_metadata` rows alongside
+  `file_registry` itself, in that FK order, in one transaction, immediately.
+  A placed file is never a sweep candidate: `execute` repoints its
+  `file_dir`/`file_name` at a library-relative path once it lands (see
+  `execute/` below), and a relative path is never under an absolute scan
+  root. **No filename-stem
   capture-grouping** (there used to be
   one, `capture.go`'s `DeriveCapture` — deleted): it force-paired files
   sharing a base filename (e.g. `IMG_8017.HEIC`+`.MOV`+`.JPG`) into one target
@@ -994,17 +1000,35 @@ tree over the whole library.
   parsing (see `deriveAll`'s `takenAt` comment), because every *other*
   timestamp here is naive local wall-clock and applying the real offset would
   shift the video away from siblings that never had one applied.
-- `scorer/` — phase 3. Elects master via folder-naming heuristics over live
-  (`deleted_at IS NULL`) rows; re-promotes solo survivors of shrunken groups.
+- `scorer/` — phase 3. Elects master via folder-naming heuristics over
+  `file_registry`; re-promotes solo survivors of shrunken groups. **A placed
+  file (`file_registry.placed = 1`) always keeps the election for its hash,
+  full stop, no scoring** — `Run`'s per-group loop checks `placed` first and
+  short-circuits to that member the instant it sees one. `placed` is a fact
+  about the file, not the plan (`execute.markResult` sets it once the file
+  actually lands, copy or move alike; nothing ever clears it), so it survives
+  a re-scan that only replaces `virtual_fs_entries`. Without this, a
+  re-scanned duplicate could out-score the placed copy on path heuristics
+  alone (a card photo in `Goa Trip` beats the same file already placed under
+  the generic `…/Photos`), which used to demote the placed file, get it
+  deleted by `vfs.persist`'s "no longer a live master" cleanup, and propose
+  the duplicate for copying again — a reported bug (issue 06/07, spec D11,
+  the SD-card re-import case).
 - `vfs/` — phase 4. **`docs/vfs-pipeline.md` is the long-form walkthrough of
   this package** — every SQL query, all eight `Plan` passes in call order, the
   concurrency patterns, and an edge-case catalogue naming the bug behind each
   rule. Read it before changing anything here; the notes below are the map,
   that document is the territory.
-  Proposes destinations for every live master in the library
+  Proposes destinations for every live, not-yet-placed master in the library
   from the persisted metadata (never re-reads files); each run replaces every
   *unapproved* row and leaves an approved plan alone (safe to call again
-  mid-review — see `cli/review.go`'s `rebuildTree`). `persist` **flushes the
+  mid-review — see `cli/review.go`'s `rebuildTree`). **A placed file
+  (`file_registry.placed = 1`) is never re-proposed**: `loadMasters` filters
+  `placed = 0` outright, and `persist`'s "no longer a live master" delete
+  treats `is_master = 1 OR placed = 1` as protected — the scorer already
+  never lets a placed file lose `is_master` (see `scorer/` above), so this is
+  the backstop, not the primary defense. Its `DONE` row is the plan from
+  here on; nothing here touches it. `persist` **flushes the
   writer before returning**: the
   writer is an async FIFO, and every caller reads the rows straight back
   (`rebuildTree` re-proposes then calls `BuildTree` immediately), so without it
@@ -1275,7 +1299,13 @@ tree over the whole library.
   destination is verified complete by size. **Never overwrites** (spec D21):
   both fail with `fs.ErrExist` on an occupied destination, and that error
   alone moves on to `name_1.ext`, `name_2.ext`…; `markResult` writes the
-  landed name back to `target_path`) and `dryRunTransfer` (does
+  landed name back to `target_path`, and to `source_path` and
+  `file_registry.file_dir`/`file_name` too — **library-relative, the same
+  value as `target_path`** (spec D9/D10: the database travels with the
+  library, so a placed file's path must not depend on where it's mounted).
+  `markResult` also sets `file_registry.placed = 1` on success, copy and
+  move alike; the `ERROR` branch never touches it, so a failed transfer
+  stays `placed = 0`) and `dryRunTransfer` (does
   nothing — `Run` already `os.Stat`s the source before calling `transfer`,
   so a dry run's `Report` is real byte/file counts for zero I/O). Reports
   through the same contract every other phase does
@@ -1291,7 +1321,19 @@ tree over the whole library.
   stamps a `wandersort_backup` row into the copy, which the live database
   never holds. Size is only a best effort: the copy is padded a page if it
   matches the live file *when taken*, but the live file keeps changing after
-  that. **The caller holds the output lock**
+  that. **At the end of every run (not on a dry run), `cleanupPlacedDuplicates`
+  hard-deletes every other `file_registry`/`file_metadata` row sharing a
+  placed file's hash** — the duplicates the scorer never elected, and a copy
+  of an already-placed file a later scan saw again. It reads
+  `file_registry.placed = 1` fresh every run (so a run that stops early is
+  picked up by the next one), collects the target ids in one query up front,
+  and deletes in the same FK order the scanner's `sweep` uses
+  (`virtual_fs_entries`, then `file_metadata`, then `file_registry`) — a
+  fixed id list, not a delete relying on `ON DELETE SET NULL` having already
+  run to make the next statement's `WHERE` match. An `ERROR` row is never a
+  target: the scorer guard (see `scorer/` above) means a placed file's hash
+  never has a second live master to begin with. **The caller holds the
+  output lock**
   (`lock.AcquireOutput`), same contract `scan` has — `execute.Run` assumes
   it, it does not take it.
 

@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	stdpath "path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -145,7 +146,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		}
 
 		if !o.DryRun {
-			markResult(database, r.ID, r.FileID, dst, target, xerr)
+			markResult(database, r.ID, r.FileID, target, xerr)
 		}
 		if xerr != nil {
 			rep.Failed++
@@ -164,10 +165,77 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	}
 	database.Writer.Flush()
 
+	if !o.DryRun {
+		// GC failure leaves duplicates a little longer; never fail the run over it
+		if err := cleanupPlacedDuplicates(ctx, database); err != nil {
+			log.Warn("could not clean up placed duplicates", "error", err)
+		}
+	}
+
 	elapsed := time.Since(start).Round(time.Millisecond)
 	log.Info(summary(o, rep, elapsed), logger.UserKey, true,
 		logger.PhaseKey, "execute", logger.EventKey, "done", logger.ElapsedKey, elapsed.String())
 	return rep, nil
+}
+
+// cleanupPlacedDuplicates hard-deletes every file_registry row (and its
+// file_metadata row) whose content hash matches a placed file — the
+// duplicates the scorer didn't elect, and a copy of an already-placed file a
+// later scan saw again. Spec D10: only what is still in the library matters,
+// and a placed file's own row is the one true record from here on. Keyed off
+// file_registry.placed read fresh every run, so a run that stops early is
+// picked up by the next one; nothing here touches an ERROR row or a file
+// unrelated to any placed hash.
+func cleanupPlacedDuplicates(ctx context.Context, database *db.DB) error {
+	// Every file_metadata row sharing a hash with a placed file, except the
+	// placed file's own row. Read up front, before anything is deleted, so
+	// the three statements below share one fixed id list instead of each
+	// re-deriving it against tables the earlier ones already changed.
+	var ids []int64
+	if err := database.SQL.SelectContext(ctx, &ids, `
+		SELECT fm.file_id FROM file_metadata fm
+		JOIN file_registry fr ON fr.id = fm.file_id
+		WHERE fr.placed = 0
+		AND fm.file_hash IN (
+			SELECT fm2.file_hash FROM file_metadata fm2
+			JOIN file_registry fr2 ON fr2.id = fm2.file_id
+			WHERE fr2.placed = 1)`); err != nil {
+		return fmt.Errorf("find placed duplicates: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("clean up placed duplicates: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Same FK order as the scanner's sweep (vfs entries, then metadata, then
+	// the registry row) — an explicit id list, not a reliance on file_id
+	// happening to go NULL after the registry row is gone.
+	statements := []string{
+		`DELETE FROM virtual_fs_entries WHERE file_id IN (` + placeholders + `)`,
+		`DELETE FROM file_metadata WHERE file_id IN (` + placeholders + `)`,
+		`DELETE FROM file_registry WHERE id IN (` + placeholders + `)`,
+	}
+	for _, stmt := range statements {
+		if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
+			return fmt.Errorf("clean up placed duplicates: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("clean up placed duplicates: commit: %w", err)
+	}
+	return nil
 }
 
 func summary(o Options, rep Report, elapsed time.Duration) string {
@@ -188,16 +256,17 @@ func summary(o Options, rep Report, elapsed time.Duration) string {
 }
 
 // markResult flips one row to DONE or ERROR. On success it also repoints
-// file_registry and the row's own source_path at newPath, and target_path at
-// target (newPath relative to the output folder, which differs from the plan
-// when the planned name was taken on disk) — the file really
-// lives there now, so a stale old path would break the next thing that reads
-// it: a Move's source is gone outright, and a Copy's row would otherwise keep
-// pointing reorg attempts at a location that no longer reflects the plan
-// that was executed. Fire-and-forget through the same FIFO writer every phase
-// uses; Run's Flush before returning is what makes the caller's very next
-// read (the CLI's summary, the review tree's status line) see it.
-func markResult(database *db.DB, id, fileID int64, newPath, target string, xerr error) {
+// file_registry and the row's own source_path at target — library-relative,
+// the same value target_path already holds (spec D9/D10): the file now lives
+// under outputDir, not wherever it was scanned from, and a database that
+// travels with the library must not depend on where the library is mounted.
+// A stale source_path would also break a Move outright (the source is gone)
+// and would leave a Copy's row pointing a reorg attempt at a location that no
+// longer reflects the plan that was executed. Fire-and-forget through the
+// same FIFO writer every phase uses; Run's Flush before returning is what
+// makes the caller's very next read (the CLI's summary, the review tree's
+// status line) see it.
+func markResult(database *db.DB, id, fileID int64, target string, xerr error) {
 	if xerr != nil {
 		msg := xerr.Error()
 		database.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
@@ -207,15 +276,15 @@ func markResult(database *db.DB, id, fileID int64, newPath, target string, xerr 
 		})
 		return
 	}
-	dir, name := wspath.ToSourcePath(filepath.Dir(newPath)), filepath.Base(newPath)
+	dir, name := stdpath.Dir(target), stdpath.Base(target)
 	database.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE virtual_fs_entries SET status = ?, error = NULL, source_path = ?, target_path = ? WHERE id = ?`,
-			db.StatusDone, wspath.ToSourcePath(newPath), target, id); err != nil {
+			db.StatusDone, target, target, id); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx,
-			`UPDATE file_registry SET file_dir = ?, file_name = ? WHERE id = ?`, dir, name, fileID)
+			`UPDATE file_registry SET file_dir = ?, file_name = ?, placed = 1 WHERE id = ?`, dir, name, fileID)
 		return err
 	})
 }

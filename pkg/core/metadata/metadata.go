@@ -172,7 +172,7 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 
 	var total int
 	if err := e.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM live_files WHERE scan_status = ?
+		SELECT COUNT(*) FROM file_registry WHERE scan_status = ?
 	`, db.StatusDiscovered).Scan(&total); err != nil {
 		e.log.Warn("Failed to count files to read", "error", err)
 	}
@@ -257,7 +257,7 @@ func (e *Extractor) producer(ctx context.Context, cancel context.CancelFunc, toR
 // finished, and claiming a file only moves its status
 func (e *Extractor) uniqueSizes(ctx context.Context) (map[int64]struct{}, error) {
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT file_size FROM live_files GROUP BY file_size HAVING COUNT(*) = 1
+		SELECT file_size FROM file_registry GROUP BY file_size HAVING COUNT(*) = 1
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("find unique file sizes: %w", err)
@@ -295,10 +295,10 @@ func (e *Extractor) rehashOutdatedSizeHashes(ctx context.Context) error {
 		WHERE id IN (
 			SELECT m.file_id
 			FROM file_metadata m
-			JOIN live_files f ON f.id = m.file_id
+			JOIN file_registry f ON f.id = m.file_id
 			WHERE m.hash_kind = ?
 			  AND f.file_size IN (
-				SELECT file_size FROM live_files GROUP BY file_size HAVING COUNT(*) > 1
+				SELECT file_size FROM file_registry GROUP BY file_size HAVING COUNT(*) > 1
 			  )
 		)`, db.StatusDiscovered, db.HashSize)
 	if err != nil {
@@ -329,7 +329,7 @@ type pendingVolume struct {
 func (e *Extractor) pendingVolumes(ctx context.Context) ([]pendingVolume, error) {
 	rows, err := e.db.QueryContext(ctx, `
 		SELECT COALESCE(volume_uuid, ''), MIN(file_dir)
-		FROM live_files
+		FROM file_registry
 		WHERE scan_status = ?
 		GROUP BY COALESCE(volume_uuid, '')
 	`, db.StatusDiscovered)
@@ -394,7 +394,7 @@ func (e *Extractor) getFile(ctx context.Context, v pendingVolume) (fileRecord, b
 	SET scan_status = ?
 	WHERE id = (
 		SELECT id
-		FROM live_files
+		FROM file_registry
 		WHERE scan_status = ?
 		  AND (? OR COALESCE(volume_uuid, '') = ?)
 		ORDER BY id

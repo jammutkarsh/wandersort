@@ -63,10 +63,10 @@ func (s *Scorer) Run(ctx context.Context) (int, error) {
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE file_metadata SET is_master = 1
 		WHERE is_master = 0
-		AND EXISTS (SELECT 1 FROM live_files lf WHERE lf.id = file_metadata.file_id)
+		AND EXISTS (SELECT 1 FROM file_registry lf WHERE lf.id = file_metadata.file_id)
 		AND file_hash IN (
 			SELECT fm.file_hash FROM file_metadata fm
-			JOIN live_files fr ON fr.id = fm.file_id
+			JOIN file_registry fr ON fr.id = fm.file_id
 			GROUP BY fm.file_hash HAVING COUNT(*) = 1)`); err != nil {
 		return 0, fmt.Errorf("re-promote solo masters: %w", err)
 	}
@@ -76,6 +76,10 @@ func (s *Scorer) Run(ctx context.Context) (int, error) {
 		FileID   int64  `db:"file_id"`
 		FileDir  string `db:"file_dir"`
 		FileName string `db:"file_name"`
+		// Placed is true once this file has actually landed at its target —
+		// a real file already sitting on disk beats any path heuristic about
+		// where a not-yet-placed duplicate merely looks like it should live
+		Placed bool `db:"placed"`
 	}
 
 	// Ordering by (file_dir, file_name) within each hash makes the election
@@ -84,12 +88,12 @@ func (s *Scorer) Run(ctx context.Context) (int, error) {
 	var rows []member
 	if err := s.db.SQL.SelectContext(ctx, &rows, `
 		SELECT fm.file_hash, fm.file_id,
-			fr.file_dir, fr.file_name
+			fr.file_dir, fr.file_name, fr.placed
 		FROM file_metadata fm
-		JOIN live_files fr ON fr.id = fm.file_id
+		JOIN file_registry fr ON fr.id = fm.file_id
 		WHERE fm.file_hash IN (
 			SELECT fm2.file_hash FROM file_metadata fm2
-			JOIN live_files fr2 ON fr2.id = fm2.file_id
+			JOIN file_registry fr2 ON fr2.id = fm2.file_id
 			GROUP BY fm2.file_hash HAVING COUNT(*) > 1 )
 		ORDER BY fm.file_hash, fr.file_dir, fr.file_name`); err != nil {
 		return 0, fmt.Errorf("query members: %w", err)
@@ -106,8 +110,18 @@ func (s *Scorer) Run(ctx context.Context) (int, error) {
 		start = end
 		count++
 
+		// A file that already landed at its target keeps the election, full
+		// stop — only one member can ever be placed (spec D10, issue 06's
+		// cleanup keeps it that way), so there's nothing left to score.
+		// Without this, a re-scanned duplicate can out-score the placed copy
+		// on path heuristics alone, get proposed and copied again, and the
+		// placed copy's own row is deleted for having "lost" the election.
 		bestScore, bestPathLen, master := math.MinInt, math.MaxInt, member{}
 		for _, dupe := range duplicates {
+			if dupe.Placed {
+				master = dupe
+				break
+			}
 			score := perFileScore(filepath.Join(dupe.FileDir, dupe.FileName))
 			pathLen := len(dupe.FileDir) + len(dupe.FileName)
 			if score > bestScore || (score == bestScore && pathLen < bestPathLen) {
