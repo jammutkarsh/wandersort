@@ -76,7 +76,7 @@ func (a *app) runConfig(cmd *cobra.Command) error {
 // (and creating) a library nobody asked for.
 func (a *app) printSettings(ctx context.Context) error {
 	settings := config.DefaultSettings()
-	if a.hasProposal() {
+	if a.libraryExists() {
 		if err := a.openLibrary(ctx); err != nil {
 			return err
 		}

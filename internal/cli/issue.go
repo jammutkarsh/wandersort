@@ -158,7 +158,7 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 // missing or busy database (another wandersort holds it) costs the error
 // report, never the logs.
 func (a *app) exportErrors(redactPaths bool) ([]report.Row, []string) {
-	if _, err := os.Stat(a.Config.AppDBPath); err != nil {
+	if !a.libraryExists() {
 		return nil, nil
 	}
 	conn, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: a.Config.AppDBPath, RawQuery: "mode=ro"}).String())

@@ -61,7 +61,7 @@ func (a *app) runReset(cmd *cobra.Command) error {
 }
 
 func (a *app) resetDB(cmd *cobra.Command) error {
-	if _, err := os.Stat(a.Config.AppDBPath); os.IsNotExist(err) {
+	if !a.libraryExists() {
 		return fmt.Errorf("no database found — nothing to reset")
 	}
 

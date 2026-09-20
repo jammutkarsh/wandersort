@@ -21,6 +21,8 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
@@ -48,7 +50,7 @@ func (p *probe) got(msg tea.Msg) bool {
 }
 
 // fakeProposal leaves behind what an earlier run would: a database file where
-// the output path says. hasProposal only stats it, so it needn't be a real one.
+// the output path says. libraryExists only stats it, so it needn't be a real one.
 func fakeProposal(t *testing.T, a *app) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(a.Config.AppDBPath), 0o755); err != nil {
@@ -73,6 +75,27 @@ func finishedScan(t *testing.T, err error) tui.ScanModel {
 		t.Fatal("the scan should have finished")
 	}
 	return m
+}
+
+// seedProposal leaves a real library behind: a database holding one file that
+// is planned and not yet placed. fakeProposal is enough while the library is
+// shut — the tab is gated on the file being there — but once the shell opens
+// it the count is the answer, and an empty database honestly has nothing to
+// review.
+func seedProposal(t *testing.T, a *app) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(a.Config.AppDBPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.New(context.Background(), a.Config.AppDBPath, db.AppDB, logger.NewNoopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbtest.SeedFile(t, d, 1, "/src", "A.jpg", 5)
+	dbtest.SeedEntry(t, d, 1, "/src/A.jpg", "2024/A.jpg")
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testShell(t *testing.T) shellModel {
@@ -256,8 +279,11 @@ func TestShellModel(t *testing.T) {
 			}
 
 			// An earlier run's database, no prefetched screen — exactly the
-			// state a relaunch (or a finished save) leaves behind.
-			fakeProposal(t, m.a)
+			// state a relaunch (or a finished save) leaves behind. The library
+			// is read at the points where it can have changed rather than per
+			// frame, and ctrl+t is one of them.
+			seedProposal(t, m.a)
+			m.refresh()
 			if !m.canReview() {
 				t.Fatal("a proposal on disk must be reviewable without scanning again")
 			}
@@ -283,6 +309,7 @@ func TestShellModel(t *testing.T) {
 		{"ReviewIsClosedWhileAScanRuns", func(t *testing.T) {
 			m := testShell(t)
 			fakeProposal(t, m.a)
+			m.refresh()
 			m.screens[tabScan] = tui.NewScanModel(tui.ScanConfig{})
 			if m.canReview() {
 				t.Error("review must stay closed while a scan is running")

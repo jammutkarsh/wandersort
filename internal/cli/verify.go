@@ -46,7 +46,7 @@ wandersort verify --full`,
 func (a *app) runVerify(cmd *cobra.Command) error {
 	full, _ := cmd.Flags().GetBool(flagFull)
 
-	if _, err := os.Stat(a.Config.AppDBPath); os.IsNotExist(err) {
+	if !a.libraryExists() {
 		return fmt.Errorf("no library found at %s — run 'wandersort scan' first", a.Config.OutputDir())
 	}
 

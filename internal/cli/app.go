@@ -90,15 +90,6 @@ func (a *app) lockOutput() (*lock.Lock, error) {
 	return l, nil
 }
 
-// hasProposal reports whether an earlier run left something to review. The
-// database file is the proxy — nothing else writes one, and answering it for
-// real means opening the database, which is exactly what the caller is
-// deciding whether to do.
-func (a *app) hasProposal() bool {
-	_, err := os.Stat(a.Config.AppDBPath)
-	return err == nil
-}
-
 // openLibrary opens the output folder as a library, once per session: check
 // it may be one, take the output lock, then open (or create) the database.
 // The order is the point — nothing is written into the folder before the

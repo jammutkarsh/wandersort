@@ -54,7 +54,7 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 	dryRun, _ := cmd.Flags().GetBool(flagDryRun)
 	yes, _ := cmd.Flags().GetBool(flagYes)
 
-	if _, err := os.Stat(a.Config.AppDBPath); os.IsNotExist(err) {
+	if !a.libraryExists() {
 		return fmt.Errorf("no database found — run 'wandersort scan' first")
 	}
 

@@ -10,14 +10,12 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
-	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
@@ -80,8 +78,12 @@ type shellModel struct {
 	reviewReady bool
 	opening     bool // a review is being built off the UI goroutine
 	quitReq     bool // ctrl+c is waiting on the active screen to let go
-	exitErr     error
 	w, h        int
+
+	// lib is what the library looks like right now, read at the points where
+	// it can have changed rather than re-derived per frame. View() used to run
+	// a filesystem syscall for the tab bar on every render.
+	lib libraryState
 
 	// settingsBefore is the library's settings as the wizard opened on them,
 	// so a save that changes nothing costs nothing (see configSaved).
@@ -124,6 +126,7 @@ func (a *app) runShell(start shellStart) error {
 
 	m := shellModel{a: a, ctx: ctx, cancel: cancel, start: start}
 	m.screens[tabScan] = a.newHomeScreen(nil)
+	m.lib = a.readState(ctx)
 
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
 	// One eager Start: the Coordinator closes its readiness channels, so it can
@@ -166,9 +169,6 @@ func (a *app) runShell(start shellStart) error {
 // — a session has three of them, so "the current screen" is not the answer.
 // Review outcomes are reported as each review finishes (see handleSwitch).
 func (m shellModel) exitStatus() error {
-	if m.exitErr != nil {
-		return m.exitErr
-	}
 	if s, ok := m.screens[tabScan].(tui.ScanModel); ok {
 		if err := s.DepsFailure(); err != nil {
 			return err
@@ -229,11 +229,13 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A new scan re-proposes the whole hierarchy, so whatever review was
 		// prefetched is stale; the new run's vfs phase repopulates it.
 		m.screens[tabReview], m.reviewReady = nil, false
+		m.refresh() // the library is open now, so the counts are real
 		m.tab = tabScan
 		screen := m.a.newScanScreen(m.ctx, m.cancel, msg.paths, msg.force)
 		return m, m.place(tabScan, screen)
 
 	case replanDoneMsg:
+		m.refresh() // the plan was just rewritten
 		if msg.err != nil {
 			return m, m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})
 		}
@@ -259,6 +261,10 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if k.String() == "ctrl+t" {
+		// The one key that asks "where can I go?", so it is the one place
+		// worth paying for a fresh answer — a scan that finished underneath
+		// the wizard has changed it.
+		m.refresh()
 		next := m.nextTab()
 		if next == tabReview && m.screens[tabReview] == nil {
 			// Nothing prefetched: build it from what's on disk. The tab stays
@@ -374,6 +380,7 @@ func (m shellModel) handleSwitch(msg tui.SwitchMsg) (tea.Model, tea.Cmd) {
 		// user is watching the scan and wrong when they're half-way through a
 		// form — the tab bar says it's ready instead.
 		m.reviewReady = true
+		m.refresh() // the scan that produced it is done
 		cmd := m.place(tabReview, msg.Next)
 		if m.tab == tabScan {
 			m.tab = tabReview
@@ -385,8 +392,10 @@ func (m shellModel) handleSwitch(msg tui.SwitchMsg) (tea.Model, tea.Cmd) {
 	// screen says where they go next, since the session outlives the review.
 	// Only when there are some — a look around that changed nothing has
 	// nothing kept to mention.
+	hadScreen := m.screens[tabReview] != nil
+	m.refresh()
 	note := ""
-	if m.screens[tabReview] != nil && m.hasDraft() {
+	if hadScreen && m.lib.HasEdits() {
 		note = "Review edits kept — run 'wandersort execute' to apply them and copy the files."
 		m.a.Log.Info(note, logger.UserKey, true)
 	}
@@ -453,7 +462,15 @@ func (m shellModel) canReview() bool {
 	if m.scanRunning() {
 		return false
 	}
-	return m.reviewReady || m.a.hasProposal()
+	return m.reviewReady || m.lib.CanReview()
+}
+
+// refresh re-reads the library after something that can have changed it: a
+// scan opening it, a review closing, a settings save re-planning. Cheap while
+// the library is shut (a stat and the draft file) and one count once it is
+// open — but never per frame, which is what View() used to do.
+func (m *shellModel) refresh() {
+	m.lib = m.a.readState(m.ctx)
 }
 
 // openConfig places the settings wizard, seeded from the library's own
@@ -591,7 +608,7 @@ func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, path
 // with no library in it yet stays untouched — the form asks for the output
 // path instead, and the save creates it.
 func (a *app) newConfigScreen(ctx context.Context) (tea.Model, error) {
-	if a.AppDB == nil && a.hasProposal() {
+	if a.AppDB == nil && a.libraryExists() {
 		if err := a.openLibrary(ctx); err != nil {
 			return nil, err
 		}
@@ -611,11 +628,4 @@ func (a *app) runRoot(cmd *cobra.Command) error {
 		return cmd.Help()
 	}
 	return a.runShell(shellStart{tab: tabScan})
-}
-
-// hasDraft reports whether review edits are waiting for execute. An unreadable
-// draft counts: execute is where that surfaces, and the note points there.
-func (m shellModel) hasDraft() bool {
-	edits, err := vfs.ReadDraft(filepath.Dir(m.a.Config.AppDBPath))
-	return err != nil || len(edits) > 0
 }

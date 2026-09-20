@@ -740,6 +740,28 @@ Back in `internal/cli/`:
 - `app.go`'s `confirm` is the one yes/no prompt (`execute --move`,
     `reset --db`, `recover`): a `tui.ConfirmModel` in the TUI, y/N on stdin
     under `--plain`/non-TTY.
+- `state.go` — **the one answer to "what can the user do next?"**
+    (`libraryState`, `app.readState`, `app.libraryExists`). It used to be
+    eighteen predicates across four packages: five spellings of "is there a
+    plan" alone — one method and four inline `os.Stat(AppDBPath)` calls with
+    four different error strings — two of "are there review edits" that
+    disagreed about an unreadable draft, and a tab bar running a filesystem
+    syscall from `View()` on **every rendered frame**. Each was right alone
+    and they drifted as a set.
+    The struct is in two halves, and the split is load-bearing rather than
+    tidy: opening a library takes the exclusive lock and creates the database
+    if it isn't there, and a session that only looks around must do neither
+    (`openLibrary`). So `Exists` (a stat) and `Edits` (the draft) are always
+    true, while `Open` and `Planned` are zero until this session has really
+    opened it. `CanReview()` reads `Exists` when shut and `Planned > 0` when
+    open — so a library with everything already organized stops saying
+    `✓ ready` and then telling the reviewer there is nothing there. A count
+    that fails is treated as "reachable": a library we can't count is still a
+    library, and the screen behind the tab reports the real error.
+    `shellModel.lib` caches it, refreshed only where it can have changed —
+    `scanReadyMsg` (the library just opened), `handleSwitch` (a scan handed
+    over its review, or a review handed back), `replanDoneMsg`, and `ctrl+t`,
+    which is the one key that asks the question.
 - `help.go` — custom lipgloss-styled help renderer. Kept in `cli` (unlike
     `lock.go`) since it's a one-off cobra `SetHelpFunc`, not reusable
     logic another entry point would need.
