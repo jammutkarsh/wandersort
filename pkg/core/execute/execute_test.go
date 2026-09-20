@@ -10,12 +10,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -192,7 +195,26 @@ func TestRunBacksUpPreRunPlan(t *testing.T) {
 	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil {
 		t.Fatal(err)
 	}
-	b, err := sql.Open("sqlite", filepath.Join(out, db.BackupFileName))
+	bak, err := os.Open(filepath.Join(out, db.BackupFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bak.Close()
+	zr, err := zstd.NewReader(bak)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	plain := filepath.Join(t.TempDir(), "backup.db")
+	pf, err := os.Create(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(pf, zr); err != nil {
+		t.Fatal(err)
+	}
+	pf.Close()
+	b, err := sql.Open("sqlite", plain)
 	if err != nil {
 		t.Fatal(err)
 	}

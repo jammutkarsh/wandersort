@@ -703,19 +703,22 @@ Back in `internal/cli/`:
     backup would replace the one holding what the earlier reset deleted with
     an empty copy, leaving `recover` nothing to bring back. Otherwise it
     **backs the database up first** (`db.Backup`, the same
-    `.wandersort.db.bak` execute writes — a failed backup stops the wipe),
+    `.wandersort.db.zst` execute writes — a failed backup stops the wipe),
     then clears the rows, the review draft — which describes a proposal that
     no longer exists — and the peek copies, which outlive a review session.
     **The library's settings row survives a reset** (`db.ResetAll` doesn't
     touch `library_settings`): a factory wipe of the *data* is not a request
     to forget which folders the user wants. `config.CheckLibrary` points a folder holding the backup
     but no database at `recover` instead of refusing it as foreign.
-- `recover.go` — `recover`: `db.Restore` puts `.wandersort.db.bak` back
+- `recover.go` — `recover`: `db.Restore` puts `.wandersort.db.zst` back
     (confirm unless `--yes`), which is what makes both `reset --db` and an
     execute run undoable. The backup is kept. **Not `openLibrary`**: that
     would open the very database being replaced. It takes the output lock
     (keeps other wandersort processes out), then `Restore`:
-  - checks the backup first (our `application_id`, `PRAGMA quick_check`);
+  - **decompresses the backup** (zstd) into a temp file beside the live
+      database, removed on every path, then checks that (our
+      `application_id`, `PRAGMA quick_check`) — a corrupt or truncated
+      backup is refused, by name, before anything is written;
   - refuses with `db.ErrInUse` while **any** connection has the live file
       open, even an idle sqlite browser — detected by
       `locking_mode=EXCLUSIVE` + `journal_mode=DELETE`, which SQLite only
@@ -724,8 +727,7 @@ Back in `internal/cli/`:
   - copies through SQLite's online backup API (`NewRestore`) on that same
       connection — **never a file swap**: the pages go through SQLite's own
       rollback journal, so a crash rolls back to the old database, and there
-      is no `-wal` file to delete by hand and get wrong;
-  - drops the `wandersort_backup` stamp table.
+      is no `-wal` file to delete by hand and get wrong.
     Then it opens the result once with `db.New` to prove it is a library.
 - `app.go`'s `confirm` is the one yes/no prompt (`execute --move`,
     `reset --db`, `recover`): a `tui.ConfirmModel` in the TUI, y/N on stdin
@@ -1393,16 +1395,15 @@ tree over the whole library.
   (`logger.PhaseKey`/`EventKey`/`ElapsedKey`, `UserKey` line with the byte
   total from `volume.HumanBytes`), per that same ticket's ask for phase
   timing and bytes-not-just-files. Before any transfer (not on a dry run)
-  it writes `.wandersort.db.bak` via `db.Backup` (spec D24; a failed backup
-  stops the run). The copy is built as `.wandersort.db.bak.tmp`, verified
-  (`application_id`, `quick_check`) and only then renamed over the old
-  backup, so a failed backup never costs the previous one. **The backup
-  never has the live database's hash** — `VACUUM INTO` alone can match it,
-  and a duplicate finder would then offer to delete one of the two; `Backup`
-  stamps a `wandersort_backup` row into the copy, which the live database
-  never holds. Size is only a best effort: the copy is padded a page if it
-  matches the live file *when taken*, but the live file keeps changing after
-  that. **At the end of every run (not on a dry run), `cleanupPlacedDuplicates`
+  it writes `.wandersort.db.zst` via `db.Backup` (spec D24; a failed backup
+  stops the run). `VACUUM INTO` a plain `.db.tmp`, verified (`application_id`,
+  `quick_check` — a compressed file can't be checked, so verify first), then
+  zstd-compressed into `.zst.tmp` and renamed over the old backup, so a
+  failed backup never costs the previous one. **The backup never has the
+  live database's bytes (zstd magic vs the SQLite header), and in practice
+  not its size,** because it is compressed — there is no
+  stamp table and no padding any more (they existed only to keep a
+  duplicate finder from pairing the two). **At the end of every run (not on a dry run), `cleanupPlacedDuplicates`
   hard-deletes every other `file_registry`/`file_metadata` row sharing a
   placed file's hash** — the duplicates the scorer never elected, and a copy
   of an already-placed file a later scan saw again. It reads

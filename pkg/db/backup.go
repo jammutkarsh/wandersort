@@ -11,54 +11,49 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
-	"time"
 
+	"github.com/klauspost/compress/zstd"
 	sqlite "modernc.org/sqlite"
 )
 
 // BackupFileName is the one backup kept beside the library database (spec
-// D24), overwritten by every execute run and every `reset --db`.
-const BackupFileName = ".wandersort.db.bak"
-
-// backupTable is the stamp Backup writes into the copy and Restore drops.
-const backupTable = "wandersort_backup"
+// D24), overwritten by every execute run and every `reset --db`: the database
+// zstd-compressed, named for what is inside and what compressed it.
+const BackupFileName = ".wandersort.db.zst"
 
 // ErrInUse means another connection — another program, or a sqlite browser —
 // has the database open, so it cannot be replaced safely.
 var ErrInUse = errors.New("the database is open in another program")
 
-// Backup writes a consistent copy of the database to dest via VACUUM INTO.
-// The copy is built beside dest and only renamed over it once it has been
-// verified, so a failure at any point leaves the previous backup intact.
-//
-// The copy is stamped with a wandersort_backup row, so it never holds the
-// same bytes as the live database: a duplicate finder or cleanup tool would
-// otherwise pair the two and offer to delete one — possibly the live one. If
-// the sizes match when it is taken, it is padded by a page, since most such
-// tools group by size before hashing. That part is best effort: the live file
-// keeps changing afterwards. The differing hash is the guarantee.
+// Backup writes a consistent, zstd-compressed copy of the database to dest via
+// VACUUM INTO. The copy is verified while still plain SQLite (a compressed file
+// cannot be checked) and only then compressed beside dest and renamed over it,
+// so a failure at any point leaves the previous backup intact. A compressed
+// stream never holds the same bytes as the live database (zstd magic vs the
+// SQLite header), and in practice not the same size.
 func (d *DB) Backup(ctx context.Context, dest string) error {
 	// Writes still queued in the async writer belong to the state being
 	// backed up; without this the backup could miss the last edits.
 	if d.Writer != nil {
 		d.Writer.Flush()
 	}
-	tmp := dest + ".tmp"
-	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove leftover backup: %w", err)
+	plain, tmp := dest+".db.tmp", dest+".tmp"
+	for _, f := range []string{plain, tmp} {
+		if err := os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove leftover backup: %w", err)
+		}
+		defer os.Remove(f) // no-op once renamed
 	}
-	defer os.Remove(tmp) // no-op once renamed
-	if _, err := d.SQL.ExecContext(ctx, `VACUUM INTO ?`, tmp); err != nil {
-		return fmt.Errorf("vacuum into %s: %w", tmp, err)
+	if _, err := d.SQL.ExecContext(ctx, `VACUUM INTO ?`, plain); err != nil {
+		return fmt.Errorf("vacuum into %s: %w", plain, err)
 	}
-
-	var live string
-	if err := d.SQL.QueryRowContext(ctx, `SELECT file FROM pragma_database_list WHERE name = 'main'`).Scan(&live); err != nil {
-		return fmt.Errorf("locate live database: %w", err)
+	if err := verifyPlain(ctx, plain); err != nil {
+		return err
 	}
-	if err := stampBackup(ctx, tmp, live); err != nil {
+	if err := compressFile(plain, tmp); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, dest); err != nil {
@@ -67,44 +62,74 @@ func (d *DB) Backup(ctx context.Context, dest string) error {
 	return nil
 }
 
-func stampBackup(ctx context.Context, path, live string) error {
+// verifyPlain opens the uncompressed copy and runs checkBackup on it.
+func verifyPlain(ctx context.Context, path string) error {
 	b, err := sql.Open("sqlite", path)
 	if err != nil {
 		return fmt.Errorf("open backup: %w", err)
 	}
 	defer b.Close()
-	for _, q := range []string{
-		`PRAGMA journal_mode=DELETE`, // no -wal sidecar left next to the backup
-		// A database restored from an older backup may still carry one.
-		`DROP TABLE IF EXISTS ` + backupTable,
-		`CREATE TABLE ` + backupTable + ` (taken_at TEXT NOT NULL, pad BLOB)`,
-	} {
-		if _, err := b.ExecContext(ctx, q); err != nil {
-			return fmt.Errorf("stamp backup: %w", err)
-		}
+	// No -wal sidecar left next to the copy.
+	if _, err := b.ExecContext(ctx, `PRAGMA journal_mode=DELETE`); err != nil {
+		return fmt.Errorf("check backup: %w", err)
 	}
-	if _, err := b.ExecContext(ctx, `INSERT INTO `+backupTable+` (taken_at) VALUES (?)`, FormatTime(time.Now())); err != nil {
-		return fmt.Errorf("stamp backup: %w", err)
-	}
+	return checkBackup(ctx, b)
+}
 
-	liveInfo, err := os.Stat(live)
+func compressFile(src, dst string) (err error) {
+	in, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("stat live database: %w", err)
+		return fmt.Errorf("compress backup: %w", err)
 	}
-	bakInfo, err := os.Stat(path)
+	defer in.Close()
+	out, err := os.Create(dst)
 	if err != nil {
-		return fmt.Errorf("stat backup: %w", err)
+		return fmt.Errorf("compress backup: %w", err)
 	}
-	if liveInfo.Size() == bakInfo.Size() {
-		if _, err := b.ExecContext(ctx,
-			`UPDATE `+backupTable+` SET pad = zeroblob((SELECT page_size FROM pragma_page_size))`); err != nil {
-			return fmt.Errorf("pad backup: %w", err)
+	defer func() {
+		if cerr := out.Close(); err == nil && cerr != nil {
+			err = fmt.Errorf("compress backup: %w", cerr)
 		}
+	}()
+	zw, err := zstd.NewWriter(out, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	if err != nil {
+		return fmt.Errorf("compress backup: %w", err)
 	}
-	if err := checkBackup(ctx, b); err != nil {
-		return err
+	if _, err := io.Copy(zw, in); err != nil {
+		zw.Close()
+		return fmt.Errorf("compress backup: %w", err)
 	}
-	return b.Close()
+	if err := zw.Close(); err != nil {
+		return fmt.Errorf("compress backup: %w", err)
+	}
+	return nil
+}
+
+// decompressFile writes the zstd file src out as plain bytes at dst.
+func decompressFile(src, dst string) (err error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("decompress backup: %w", err)
+	}
+	defer in.Close()
+	zr, err := zstd.NewReader(in)
+	if err != nil {
+		return fmt.Errorf("decompress backup: %w", err)
+	}
+	defer zr.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("decompress backup: %w", err)
+	}
+	defer func() {
+		if cerr := out.Close(); err == nil && cerr != nil {
+			err = fmt.Errorf("decompress backup: %w", cerr)
+		}
+	}()
+	if _, err := io.Copy(out, zr); err != nil {
+		return fmt.Errorf("decompress backup: %w", err)
+	}
+	return nil
 }
 
 // checkBackup proves a backup is worth trusting: ours, and intact.
@@ -139,14 +164,22 @@ func Restore(ctx context.Context, backup, live string) error {
 	if _, err := os.Stat(backup); err != nil {
 		return fmt.Errorf("no backup: %w", err)
 	}
-	src, err := sql.Open("sqlite", backup)
+	// SQLite cannot read the compressed file, so it is unpacked beside the
+	// live database first (same folder, same filesystem).
+	plain := live + ".restore.tmp"
+	os.Remove(plain)
+	defer os.Remove(plain)
+	if err := decompressFile(backup, plain); err != nil {
+		return fmt.Errorf("backup %s is unreadable: %w", backup, err)
+	}
+	src, err := sql.Open("sqlite", plain)
 	if err != nil {
 		return fmt.Errorf("open backup: %w", err)
 	}
 	err = checkBackup(ctx, src)
 	src.Close()
 	if err != nil {
-		return err
+		return fmt.Errorf("backup %s: %w", backup, err)
 	}
 
 	dbh, err := sql.Open("sqlite", live)
@@ -181,7 +214,7 @@ func Restore(ctx context.Context, backup, live string) error {
 	err = c.Raw(func(dc any) error {
 		r, err := dc.(interface {
 			NewRestore(string) (*sqlite.Backup, error)
-		}).NewRestore(backup)
+		}).NewRestore(plain)
 		if err != nil {
 			return err
 		}
@@ -193,9 +226,6 @@ func Restore(ctx context.Context, backup, live string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("restore: %w", err)
-	}
-	if _, err := c.ExecContext(ctx, `DROP TABLE IF EXISTS `+backupTable); err != nil {
-		return fmt.Errorf("unstamp restored database: %w", err)
 	}
 	return nil
 }

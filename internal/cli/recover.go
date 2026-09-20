@@ -22,7 +22,7 @@ func (a *app) newRecoverCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "recover",
 		Short: "Restore the library database from its backup",
-		Long: `Replaces the library database with .wandersort.db.bak, the backup taken
+		Long: `Replaces the library database with .wandersort.db.zst, the backup taken
 before the last 'wandersort execute' or 'wandersort reset --db'. The plan, your
 review edits and approvals go back to that point; anything since is lost. The
 backup itself is kept. Asks for confirmation unless --yes is given.`,

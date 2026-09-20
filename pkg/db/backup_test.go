@@ -13,12 +13,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-func TestBackupDiffersFromLiveDatabase(t *testing.T) {
+func TestBackupIsCompressedAndVerified(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	live := filepath.Join(dir, ".wandersort.db")
@@ -35,8 +36,6 @@ func TestBackupDiffersFromLiveDatabase(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The live file on disk after a checkpoint is the worst case: fully
-	// compacted content the backup could otherwise match byte for byte.
 	if err := d.Checkpoint(); err != nil {
 		t.Fatal(err)
 	}
@@ -49,14 +48,19 @@ func TestBackupDiffersFromLiveDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(liveBytes) == len(bakBytes) {
-		t.Errorf("backup and live database are both %d bytes", len(bakBytes))
+	// Trips if a future change stores the backup uncompressed.
+	if bytes.Equal(liveBytes, bakBytes) || len(bakBytes) >= len(liveBytes) {
+		t.Errorf("backup is %d bytes, live database %d: want smaller and different", len(bakBytes), len(liveBytes))
 	}
-	if bytes.Equal(liveBytes, bakBytes) {
-		t.Error("backup is byte-identical to the live database")
+	if left, _ := filepath.Glob(dest + "*.tmp"); len(left) != 0 {
+		t.Errorf("temp files left behind: %v", left)
 	}
 
-	b, err := sql.Open("sqlite", dest)
+	plain := filepath.Join(dir, "plain.db")
+	if err := decompressFile(dest, plain); err != nil {
+		t.Fatal(err)
+	}
+	b, err := sql.Open("sqlite", plain)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +68,10 @@ func TestBackupDiffersFromLiveDatabase(t *testing.T) {
 	var n int
 	if err := b.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&n); err != nil || n == 0 {
 		t.Errorf("backup not readable: n=%d err=%v", n, err)
+	}
+	var check string
+	if err := b.QueryRow(`PRAGMA quick_check`).Scan(&check); err != nil || check != "ok" {
+		t.Errorf("quick_check = %q, %v", check, err)
 	}
 }
 
@@ -106,11 +114,14 @@ func TestRestoreBringsBackBackedUpState(t *testing.T) {
 	if labels != 1 {
 		t.Errorf("user_labels = %d rows, want the backed-up 1", labels)
 	}
-	if err := d.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE name = ?`, backupTable).Scan(&stamps); err != nil {
+	if err := d.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE name = 'wandersort_backup'`).Scan(&stamps); err != nil {
 		t.Fatal(err)
 	}
 	if stamps != 0 {
-		t.Error("restored database still carries the backup stamp")
+		t.Error("restored database carries a backup stamp")
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(left) != 0 {
+		t.Errorf("restore left temp files: %v", left)
 	}
 	// A restored library backs up again like any other.
 	if err := d.Backup(ctx, dest); err != nil {
@@ -185,7 +196,8 @@ func TestRestoreRefusesWhileDatabaseIsOpen(t *testing.T) {
 func TestRestoreRefusesForeignBackup(t *testing.T) {
 	ctx := context.Background()
 	live, dest := newBackedUp(t)
-	foreign, err := sql.Open("sqlite", dest+".foreign")
+	plain := dest + ".foreign.db"
+	foreign, err := sql.Open("sqlite", plain)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,6 +205,9 @@ func TestRestoreRefusesForeignBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	foreign.Close()
+	if err := compressFile(plain, dest+".foreign"); err != nil {
+		t.Fatal(err)
+	}
 	before, _ := os.ReadFile(live)
 
 	if err := Restore(ctx, dest+".foreign", live); err == nil {
@@ -200,6 +215,36 @@ func TestRestoreRefusesForeignBackup(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(live); !bytes.Equal(before, after) {
 		t.Error("a refused restore changed the database")
+	}
+}
+
+// A truncated or garbage backup is refused, naming the file, before the live
+// database is touched, and no temp file is left on the failure path.
+func TestRestoreRefusesCorruptBackup(t *testing.T) {
+	ctx := context.Background()
+	live, dest := newBackedUp(t)
+	good, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(live)
+	for name, data := range map[string][]byte{
+		"truncated": good[:len(good)/2],
+		"garbage":   []byte("not zstd at all"),
+	} {
+		if err := os.WriteFile(dest, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		err := Restore(ctx, dest, live)
+		if err == nil || !strings.Contains(err.Error(), dest) {
+			t.Errorf("%s: Restore = %v, want an error naming %s", name, err, dest)
+		}
+		if after, _ := os.ReadFile(live); !bytes.Equal(before, after) {
+			t.Errorf("%s: a refused restore changed the database", name)
+		}
+		if left, _ := filepath.Glob(filepath.Join(filepath.Dir(live), "*.tmp")); len(left) != 0 {
+			t.Errorf("%s: temp files left: %v", name, left)
+		}
 	}
 }
 
@@ -215,11 +260,14 @@ func TestBackupKeepsPreviousOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	// A directory where the temp copy goes makes VACUUM INTO fail.
-	if err := os.Mkdir(dest+".tmp", 0o755); err != nil {
+	// A non-empty directory where the plain temp copy goes fails Backup at its
+	// leftover-cleanup step, before VACUUM INTO. Only the "previous backup
+	// survives a failure" contract is tested; the compress step has no failure
+	// injection (not worth a seam).
+	if err := os.Mkdir(dest+".db.tmp", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dest+".tmp", "x"), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dest+".db.tmp", "x"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.Backup(ctx, dest); err == nil {
