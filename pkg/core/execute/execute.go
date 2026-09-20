@@ -34,6 +34,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
+	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
@@ -76,11 +77,12 @@ type Report struct {
 
 // transfer places src at dst, creating dst's parent directories, and returns
 // where the file actually landed — dst, or the next free _N name beside it
-// when dst is already taken. Atomic: the landing path either does not exist,
-// or holds the complete file. The seam a fake implementation sits behind for
-// tests — not an FS interface, because one function is the only behaviour
-// that varies.
-type transfer func(ctx context.Context, mode Mode, src, dst string) (string, error)
+// when dst is already taken. want is the file_hash the scan stored: a copy
+// whose bytes don't hash to it never lands. Atomic: the landing path either
+// does not exist, or holds the complete file. The seam a fake implementation
+// sits behind for tests — not an FS interface, because one function is the
+// only behaviour that varies.
+type transfer func(ctx context.Context, mode Mode, src, dst, want string) (string, error)
 
 // Run performs o.Mode over every APPROVED entry in database, placing each at
 // outputDir/target_path, and reports what happened. The caller holds the
@@ -100,6 +102,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		FileID     int64  `db:"file_id"`
 		SourcePath string `db:"source_path"`
 		TargetPath string `db:"target_path"`
+		FileHash   string `db:"file_hash"`
 	}
 	// A dry run also counts the plan not yet approved — execute approves it
 	// only once it really transfers, so otherwise a first dry run reports
@@ -110,7 +113,9 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		pending = db.StatusProposed
 	}
 	if err := database.SQL.SelectContext(ctx, &rows,
-		`SELECT id, file_id, source_path, target_path FROM virtual_fs_entries WHERE status IN (?, ?) ORDER BY id`,
+		`SELECT ve.id, ve.file_id, ve.source_path, ve.target_path, COALESCE(fm.file_hash, '') AS file_hash
+		FROM virtual_fs_entries ve LEFT JOIN file_metadata fm ON fm.file_id = ve.file_id
+		WHERE ve.status IN (?, ?) ORDER BY ve.id`,
 		db.StatusApproved, pending); err != nil {
 		return Report{}, fmt.Errorf("load approved entries: %w", err)
 	}
@@ -146,7 +151,14 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		case statErr != nil:
 			xerr = fmt.Errorf("source missing: %w", statErr)
 		default:
-			dst, xerr = xfer(ctx, o.Mode, src, dst)
+			dst, xerr = xfer(ctx, o.Mode, src, dst, r.FileHash)
+		}
+		if errors.Is(xerr, errSourceNotRemoved) {
+			// The file is in the library, verified: record it there, or the
+			// library holds a file the database doesn't know about. The
+			// source stays behind as a duplicate the next scan cleans up.
+			log.Warn("placed file but could not remove its source", "source", src, "target", dst, "error", xerr)
+			xerr = nil
 		}
 		target := r.TargetPath
 		if rel, err := filepath.Rel(outputDir, dst); err == nil {
@@ -297,6 +309,10 @@ func markResult(database *db.DB, id, fileID int64, target string, xerr error) {
 	})
 }
 
+// errSourceNotRemoved means the file landed, verified, but a move could not remove
+// its source. Run records the row DONE anyway: the library holds the file.
+var errSourceNotRemoved = errors.New("placed, but the source could not be removed")
+
 // productionTransfer places src at dst, or at the first free dst_N beside
 // it: nothing on disk is ever replaced (spec D21). vfs.Confirm already made
 // every planned path unique among the rows it knows; this is the net for
@@ -304,13 +320,11 @@ func markResult(database *db.DB, id, fileID int64, target string, xerr error) {
 // Copy fail with fs.ErrExist instead of overwriting, and that is the only
 // error that moves on to the next name.
 //
-// ponytail: results reach the database through the async writer (~100ms
-// batches), so a hard crash (SIGKILL, power loss) can leave a copied file on
-// disk with its row still APPROVED; the next run finds the name taken and
-// places a second copy at name_1. A half-done same-device move resumes
-// cleanly (atomicfile.Rename finishes it). Ticket 08 closes the copy case by
-// recognising an existing file whose hash matches the source's.
-func productionTransfer(ctx context.Context, mode Mode, src, dst string) (string, error) {
+// A taken name already holding this very file is where it lands: a crash
+// before the async writer recorded an earlier copy, or `wandersort recover`
+// putting rows back to APPROVED whose files are already placed. Taking the
+// next _N there would place the file twice.
+func productionTransfer(ctx context.Context, mode Mode, src, dst, want string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return dst, err
 	}
@@ -319,10 +333,51 @@ func productionTransfer(ctx context.Context, mode Mode, src, dst string) (string
 	}
 	for n := 0; ; n++ {
 		target := withSuffix(dst, n)
-		if err := place(mode, src, target); !errors.Is(err, fs.ErrExist) {
+		err := place(mode, src, target, want)
+		if !errors.Is(err, fs.ErrExist) {
 			return target, err
 		}
+		if holds(target, src, want) {
+			if mode != ModeMove {
+				return target, nil
+			}
+			// The library copy matching the scan says nothing about the
+			// source: an edit since then, same size, would be deleted here
+			// for good (spec D22). Rare path, so the extra read is cheap.
+			got, err := metadata.HashFile(src)
+			if err != nil {
+				return target, fmt.Errorf("verify source before removing it: %w", err)
+			}
+			if got != want {
+				return target, fmt.Errorf("source changed since it was scanned: source %s, scanned %q", got, want)
+			}
+			return target, removeSource(src)
+		}
 	}
+}
+
+// holds reports whether p is already a copy of src: the same size, and the
+// hash the scan stored for src. Size first, so an unrelated file taking the
+// name is never read.
+func holds(p, src, want string) bool {
+	pi, err := os.Stat(p)
+	if err != nil || want == "" {
+		return false
+	}
+	si, err := os.Stat(src)
+	if err != nil || si.Size() != pi.Size() {
+		return false
+	}
+	got, err := metadata.HashFile(p)
+	return err == nil && got == want
+}
+
+// removeSource finishes a move whose file is already verified in place.
+func removeSource(src string) error {
+	if err := os.Remove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %w", errSourceNotRemoved, err)
+	}
+	return nil
 }
 
 // withSuffix names the n-th alternative for p: p itself, then name_1.ext,
@@ -336,13 +391,15 @@ func withSuffix(p string, n int) string {
 }
 
 // place puts src at exactly dst, failing with fs.ErrExist if dst is taken.
-// Move tries a same-device no-replace rename first — atomic, nothing copied;
-// any other failure (cross-device, mostly) falls back to copy, except a
-// source that can't be removed, which a copy would fail on too. Copy never
-// unlinks src; Move only does once the destination is verified complete by
-// size, so a crash mid-copy never loses the source over a partial write, and
-// an occupied dst never loses it at all.
-func place(mode Mode, src, dst string) error {
+// Move tries a same-device no-replace rename first — atomic, nothing copied,
+// so nothing to verify; any other failure (cross-device, mostly) falls back
+// to copy, except a source that can't be removed, which a copy would fail on
+// too. A copy hashes the bytes as it writes them and lands only if they hash
+// to want (spec D22) — a source changed since the scan is not the file that
+// was planned. Copy never unlinks src; Move only does once the copy is
+// verified, so the source is never lost to a partial or wrong write, and an
+// occupied dst never loses it at all.
+func place(mode Mode, src, dst, want string) error {
 	if mode == ModeMove {
 		err := atomicfile.Rename(src, dst)
 		if err == nil || errors.Is(err, fs.ErrExist) || errors.Is(err, atomicfile.ErrSourceKept) {
@@ -350,28 +407,23 @@ func place(mode Mode, src, dst string) error {
 		}
 	}
 
-	n, err := atomicfile.Copy(src, dst)
-	if err != nil {
+	h := metadata.NewHasher()
+	if _, err := atomicfile.Copy(src, dst, h, func() error {
+		if got := metadata.HashString(h); got != want {
+			return fmt.Errorf("source changed since it was scanned: copied %s, scanned %q", got, want)
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
 	if mode != ModeMove {
 		return nil
 	}
-	info, err := os.Stat(src)
-	if err != nil {
-		return fmt.Errorf("verify source before removing it: %w", err)
-	}
-	if info.Size() != n {
-		return fmt.Errorf("copied %d bytes but source is %d — refusing to remove source", n, info.Size())
-	}
-	if err := os.Remove(src); err != nil {
-		return fmt.Errorf("copied successfully but could not remove source: %w", err)
-	}
-	return nil
+	return removeSource(src)
 }
 
 // dryRunTransfer does nothing — Run already sized and error-checked the
 // source via os.Stat before calling the transfer, so a dry run's Report is
 // real numbers for zero I/O. It reports the planned name: a real run may land
 // on name_N instead if that name is already taken on disk.
-func dryRunTransfer(_ context.Context, _ Mode, _, dst string) (string, error) { return dst, nil }
+func dryRunTransfer(_ context.Context, _ Mode, _, dst, _ string) (string, error) { return dst, nil }

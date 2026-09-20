@@ -12,7 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 func write(t *testing.T, p, body string) {
@@ -37,7 +39,7 @@ func TestCopyNeverReplacesDest(t *testing.T) {
 	write(t, src, "new")
 	write(t, dest, "old")
 
-	if _, err := Copy(src, dest); !errors.Is(err, fs.ErrExist) {
+	if _, err := Copy(src, dest, nil, nil); !errors.Is(err, fs.ErrExist) {
 		t.Fatalf("err = %v, want fs.ErrExist", err)
 	}
 	if got := read(t, dest); got != "old" {
@@ -54,12 +56,59 @@ func TestCopyCreatesDest(t *testing.T) {
 	src, dest := filepath.Join(dir, "src"), filepath.Join(dir, "sub", "dest")
 	write(t, src, "hello")
 
-	n, err := Copy(src, dest)
+	n, err := Copy(src, dest, nil, nil)
 	if err != nil || n != 5 {
 		t.Fatalf("n, err = %d, %v", n, err)
 	}
 	if got := read(t, dest); got != "hello" {
 		t.Errorf("dest = %q", got)
+	}
+}
+
+// A failed check leaves nothing behind: no dest, no temp file. The tee saw
+// every byte before the check ran.
+func TestCopyCheckFailureLeavesNoDest(t *testing.T) {
+	dir := t.TempDir()
+	src, dest := filepath.Join(dir, "src"), filepath.Join(dir, "sub", "dest")
+	write(t, src, "hello")
+
+	var seen strings.Builder
+	errBad := errors.New("bad")
+	if _, err := Copy(src, dest, &seen, func() error { return errBad }); !errors.Is(err, errBad) {
+		t.Fatalf("err = %v, want the check's error", err)
+	}
+	if seen.String() != "hello" {
+		t.Errorf("tee saw %q, want every byte", seen.String())
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(dest)); len(entries) != 0 {
+		t.Errorf("left behind: %v", entries)
+	}
+}
+
+func TestCopyKeepsModeAndMtime(t *testing.T) {
+	dir := t.TempDir()
+	src, dest := filepath.Join(dir, "src"), filepath.Join(dir, "dest")
+	write(t, src, "hello")
+	mtime := time.Date(2019, 3, 4, 5, 6, 7, 0, time.UTC)
+	if err := os.Chmod(src, 0o755); err != nil { // an exFAT card's 0777, near enough
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(src, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Copy(src, dest, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o644 {
+		t.Errorf("mode = %v, want 0644 (execute bits dropped)", info.Mode().Perm())
+	}
+	if !info.ModTime().Equal(mtime) {
+		t.Errorf("mtime = %v, want %v", info.ModTime(), mtime)
 	}
 }
 

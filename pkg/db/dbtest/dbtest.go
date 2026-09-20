@@ -45,6 +45,16 @@ func SeedFile(t testing.TB, d *db.DB, id int64, dir, name string, size int64) {
 	}
 }
 
+// SeedHash gives fileID the file_metadata row a scan would have written,
+// holding only its hash — what execute verifies a copy against.
+func SeedHash(t testing.TB, d *db.DB, fileID int64, hash string) {
+	t.Helper()
+	if _, err := d.ExecContext(context.Background(),
+		`INSERT INTO file_metadata (file_hash, file_id) VALUES (?, ?)`, hash, fileID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // SeedEntry inserts a virtual_fs_entries row for fileID, creating (or reusing)
 // the folder_nodes chain its target folder needs, and returns the row's
 // node_id. Levels are left blank: a test that cares about them goes through

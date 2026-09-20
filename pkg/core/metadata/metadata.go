@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -404,7 +405,7 @@ func (e *Extractor) readFile(ctx context.Context, file fileRecord) (string, erro
 		return "", err // cancelled
 	}
 	defer e.reads.Release(file.cost)
-	return hashFile(file.absPath)
+	return HashFile(file.absPath)
 }
 
 // hashBufferSize is how much of a file is pulled per read syscall. io.Copy's
@@ -431,25 +432,35 @@ var hashBuffers = sync.Pool{
 // socket, and this destination is a hasher.
 type readerOnly struct{ io.Reader }
 
-// hashFile computes the BLAKE3 hash of a file, streaming it through a pooled
-// buffer so memory stays flat whatever the file size
-func hashFile(filePath string) (string, error) {
+// NewHasher returns the hasher every stored file_hash is computed with.
+// Execute feeds the bytes it copies through one, so the copy is checked
+// against the scan without reading anything twice.
+func NewHasher() hash.Hash { return blake3.New(hashOutputSize, nil) }
+
+// HashString is h's sum spelled the way file_hash stores it — the algorithm,
+// then hex — so a caller compares against the database without ever writing
+// the prefix itself.
+func HashString(h hash.Hash) string {
+	return hashPrefix + hex.EncodeToString(h.Sum(make([]byte, 0, hashOutputSize)))
+}
+
+// HashFile computes a file's file_hash, streaming it through a pooled buffer
+// so memory stays flat whatever the file size
+func HashFile(filePath string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
-	hasher := blake3.New(hashOutputSize, nil)
+	hasher := NewHasher()
 
 	buf := hashBuffers.Get().(*[]byte)
 	defer hashBuffers.Put(buf)
 	if _, err := io.CopyBuffer(hasher, readerOnly{file}, *buf); err != nil {
 		return "", fmt.Errorf("failed to hash file: %w", err)
 	}
-
-	sum := make([]byte, 0, hashOutputSize)
-	return hashPrefix + hex.EncodeToString(hasher.Sum(sum)), nil
+	return HashString(hasher), nil
 }
 
 // store writes the hash and the EXIF columns as one row and marks the file read

@@ -18,16 +18,28 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/text/unicode/norm"
 )
+
+// copyBufferSize is how much is read per syscall; same reasoning as the
+// metadata phase's hash buffer.
+const copyBufferSize = 1 << 20
 
 // Copy copies src to dest atomically: a temp file in dest's directory, then a
 // no-replace Rename, so a failure partway never leaves a partial file at dest
 // and an existing dest is never touched — that comes back as an error
 // matching fs.ErrExist. Creates dest's parent directory if needed. Returns
 // bytes written.
-func Copy(src, dest string) (int64, error) {
+//
+// tee, when non-nil, is sent every byte as it is copied, and check runs once
+// they are all written, before dest is linked into place: an error from it
+// removes the temp file and leaves dest untouched. Execute passes a hasher
+// and a comparison against the scan, so the copy is verified with no second
+// read. The copy keeps src's permission bits, less any execute bits, and its
+// modification time.
+func Copy(src, dest string, tee io.Writer, check func() error) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return 0, fmt.Errorf("create dest dir %s: %w", filepath.Dir(dest), err)
 	}
@@ -48,12 +60,39 @@ func Copy(src, dest string) (int64, error) {
 		os.Remove(tmpName) // no-op once Rename moved it
 	}()
 
-	n, err := io.Copy(tmp, in)
+	var w io.Writer = tmp
+	if tee != nil {
+		w = io.MultiWriter(tmp, tee)
+	}
+	// io.Copy would hand the copy to in.WriteTo, which has no fast path for
+	// a file or a MultiWriter and falls back to 32 KiB reads — 25 million
+	// syscalls on a 783 GiB library. Hiding WriteTo makes the 1 MiB buffer
+	// stick.
+	n, err := io.CopyBuffer(w, struct{ io.Reader }{in}, make([]byte, copyBufferSize))
 	if err != nil {
 		return 0, fmt.Errorf("copy %s: %w", src, err)
 	}
 	if err := tmp.Close(); err != nil {
 		return 0, fmt.Errorf("close temp file: %w", err)
+	}
+	if check != nil {
+		if err := check(); err != nil {
+			return 0, err
+		}
+	}
+	// CreateTemp makes the file 0600, which a media server or another user
+	// can't read, and a fresh mtime loses the date a file without EXIF is
+	// planned by. Execute bits are dropped: FAT/exFAT cards report every
+	// file as 0777, and a photo is never a program.
+	info, err := in.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("stat %s: %w", src, err)
+	}
+	if err := os.Chmod(tmpName, info.Mode().Perm()&^0o111); err != nil {
+		return 0, fmt.Errorf("set mode on temp file: %w", err)
+	}
+	if err := os.Chtimes(tmpName, time.Time{}, info.ModTime()); err != nil {
+		return 0, fmt.Errorf("set mtime on temp file: %w", err)
 	}
 	if err := Rename(tmpName, dest); err != nil {
 		return 0, err

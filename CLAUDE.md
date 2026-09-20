@@ -1350,13 +1350,29 @@ tree over the whole library.
   `file_registry.scan_status` already has. The seam is one function, not an
   `FS` interface (that shape was considered and rejected — a large interface
   learned to vary one behaviour is a shallow adapter): `transfer(ctx, mode,
-  src, dst) (string, error)` places one file, atomically, and returns where it
-  landed. Two real implementations —
+  src, dst, want) (string, error)` places one file, atomically, and returns
+  where it landed. Two real implementations —
   `productionTransfer` (a same-device `atomicfile.Rename` for `Move`, else
   `atomicfile.Copy`; `Copy` never unlinks `src`, `Move` only does once the
-  destination is verified complete by size. **Never overwrites** (spec D21):
+  copy is verified. **Every copy is hash-verified** (spec D22): the bytes
+  stream through `metadata.NewHasher` as they are written, and the temp file
+  is linked into place only if `metadata.HashString` matches the stored
+  `file_hash` (`want`) — a mismatch (source changed since the scan) is an
+  `ERROR` row naming both hashes, nothing at the destination, source kept.
+  A same-device rename copies no bytes and is not checked. **Never
+  overwrites** (spec D21):
   both fail with `fs.ErrExist` on an occupied destination, and that error
-  alone moves on to `name_1.ext`, `name_2.ext`…; `markResult` writes the
+  moves on to `name_1.ext`, `name_2.ext`… — **unless the taken name already
+  holds this file** (`holds`: same size, then `metadata.HashFile` equals
+  `want`), which is where it lands: a crash before the async writer recorded
+  an earlier copy, or `recover` putting placed rows back to `APPROVED`, would
+  otherwise place a second copy at `_1`. A move there hashes the **source**
+  too before deleting it — the library copy matching the scan says nothing
+  about a source edited since (same size), and deleting that edit was a bug
+  caught in review. A move whose file landed verified but
+  whose source can't be removed (`errSourceNotRemoved`) is recorded `DONE`
+  with a warning, not `ERROR` — the library holds the file, so the database
+  must too. `markResult` writes the
   landed name back to `target_path`, and to `source_path` and
   `file_registry.file_dir`/`file_name` too — **library-relative, the same
   value as `target_path`** (spec D9/D10: the database travels with the
@@ -1660,9 +1676,15 @@ tree over the whole library.
   next to its only caller, and stays that way — it streams from an
   `http.Response.Body`, not a local file, so it is a genuinely different
   shape from the copy below rather than the same rule twice.
-- `atomicfile/` — `Copy(src, dest) (int64, error)`: a temp file in dest's
-  directory, then `Rename`, so a failure partway never leaves a partial
-  file at dest. `Rename` is the **no-replace** rename (`os.Rename` silently
+- `atomicfile/` — `Copy(src, dest, tee, check) (int64, error)`: a temp file
+  in dest's directory, then `Rename`, so a failure partway never leaves a
+  partial file at dest. `tee` sees every byte copied and `check` runs before
+  the link (execute's hash verify; preview passes `nil, nil`); the copy keeps
+  src's permission bits minus execute bits (FAT/exFAT cards report 0777) and
+  its mtime (`CreateTemp`'s 0600 hid the library from a media server, and a
+  fresh mtime lost the date EXIF-less files plan by). Reads go through
+  `io.CopyBuffer` with a 1 MiB buffer and `WriteTo` hidden — the same trap
+  as `metadata`'s `readerOnly`. `Rename` is the **no-replace** rename (`os.Rename` silently
   replaces on macOS/Linux): hard link then unlink, `fs.ErrExist` when the
   target is taken, `ErrSourceKept` (link undone) when the source can't be
   removed, check-then-rename where hard links don't exist (exFAT, some

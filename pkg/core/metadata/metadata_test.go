@@ -112,17 +112,17 @@ func TestHashFile(t *testing.T) {
 			copyPath := helperWritePatternFile(t, largeFileSizeBytes, 0x11)
 			mutatedPath := helperWritePatternFile(t, largeFileSizeBytes, 0x12)
 
-			originalHash, err := hashFile(path)
+			originalHash, err := HashFile(path)
 			if err != nil {
-				t.Fatalf("hashFile(%d bytes): %v", largeFileSizeBytes, err)
+				t.Fatalf("HashFile(%d bytes): %v", largeFileSizeBytes, err)
 			}
-			copyHash, err := hashFile(copyPath)
+			copyHash, err := HashFile(copyPath)
 			if err != nil {
-				t.Fatalf("hashFile(copy %d bytes): %v", largeFileSizeBytes, err)
+				t.Fatalf("HashFile(copy %d bytes): %v", largeFileSizeBytes, err)
 			}
-			mutatedHash, err := hashFile(mutatedPath)
+			mutatedHash, err := HashFile(mutatedPath)
 			if err != nil {
-				t.Fatalf("hashFile(mutated %d bytes): %v", largeFileSizeBytes, err)
+				t.Fatalf("HashFile(mutated %d bytes): %v", largeFileSizeBytes, err)
 			}
 
 			if originalHash != copyHash {
@@ -152,7 +152,7 @@ func TestHashFile(t *testing.T) {
 				if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				hash, err := hashFile(p)
+				hash, err := HashFile(p)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -247,7 +247,7 @@ func TestExtractor(t *testing.T) {
 			if err := d.SQL.Get(&hash, `SELECT file_hash FROM file_metadata WHERE file_id = 1`); err != nil {
 				t.Fatal(err)
 			}
-			want, err := hashFile(filepath.Join(root, "IMG_0001.AAE"))
+			want, err := HashFile(filepath.Join(root, "IMG_0001.AAE"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -292,7 +292,7 @@ func TestExtractor(t *testing.T) {
 			if len(rows) != 1 {
 				t.Fatalf("file has %d metadata rows after re-read, want exactly 1", len(rows))
 			}
-			wantHash, err := hashFile(filepath.Join(root, "photo.jpg"))
+			wantHash, err := HashFile(filepath.Join(root, "photo.jpg"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -513,7 +513,7 @@ func TestExtractor(t *testing.T) {
 			}
 			d.Writer.Flush()
 
-			want, err := hashFile(filepath.Join(root, "solo.jpg"))
+			want, err := HashFile(filepath.Join(root, "solo.jpg"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -609,11 +609,11 @@ func TestHashFile_ResourceConstrainedSingleFileHelper(t *testing.T) {
 	underLimitPath := helperWritePatternFile(t, fileFitsWithinMemoryBytes, 0x21)
 	overLimitPath := helperWritePatternFile(t, fileExceedsMemoryBytes, 0x22)
 
-	underLimitHash, err := hashFile(underLimitPath)
+	underLimitHash, err := HashFile(underLimitPath)
 	if err != nil {
 		t.Fatalf("hashing %d-byte file below memory limit %s failed: %v", fileFitsWithinMemoryBytes, constrainedMemoryLimit, err)
 	}
-	overLimitHash, err := hashFile(overLimitPath)
+	overLimitHash, err := HashFile(overLimitPath)
 	if err != nil {
 		t.Fatalf("hashing %d-byte file above memory limit %s failed: %v", fileExceedsMemoryBytes, constrainedMemoryLimit, err)
 	}
@@ -648,7 +648,7 @@ func TestHashFile_ConcurrentLargeFilesUnderMemoryLimitHelper(t *testing.T) {
 		wg.Add(1)
 		go func(index int, filePath string) {
 			defer wg.Done()
-			hash, err := hashFile(filePath)
+			hash, err := HashFile(filePath)
 			results <- result{index: index, hash: hash, err: err}
 		}(i, path)
 	}

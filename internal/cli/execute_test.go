@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
@@ -111,6 +112,11 @@ func TestRunExecuteAppliesDraft(t *testing.T) {
 	}
 	dbtest.SeedFile(t, d, 1, src, "a.jpg", 5)
 	day := dbtest.SeedEntry(t, d, 1, filepath.Join(src, "a.jpg"), "2024/06_June/03/a.jpg", db.StatusProposed)
+	hash, err := metadata.HashFile(filepath.Join(src, "a.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbtest.SeedHash(t, d, 1, hash)
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
