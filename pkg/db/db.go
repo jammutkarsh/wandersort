@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -108,10 +109,17 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 		return nil, fmt.Errorf("creating database directory: %w", err)
 	}
 
-	sqlDB, err := sql.Open("sqlite", dbPath)
+	sqlDB, err := sql.Open("sqlite", appDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("unable to open database: %w", err)
 	}
+
+	// Pin the pool before the first query, not after the pragmas: every
+	// connection-scoped setting now rides in the DSN, and this makes sure
+	// there is only ever the one connection carrying them.
+	sqlDB.SetMaxOpenConns(maxOpenConns)
+	sqlDB.SetMaxIdleConns(maxIdleConns)
+	sqlDB.SetConnMaxLifetime(connMaxLifetime)
 
 	appID := appIDFromTag()
 	if err := verifyAppID(sqlDB, dbPath, appID); err != nil {
@@ -119,23 +127,13 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 		return nil, err
 	}
 
+	// What is left here is database-scoped: it is written into the file's own
+	// header once and every later connection reads it back, so it belongs in a
+	// statement rather than in the DSN.
 	pragmas := []string{
-		// Hold the file lock for the whole session: while wandersort has the
-		// library open, any other client — the sqlite3 CLI, a DB browser —
-		// gets "database is locked" instead of reading a half-written run or
-		// writing under the pipeline. Safe because the pool is one connection.
-		"PRAGMA locking_mode=EXCLUSIVE",
-		"PRAGMA page_size=32768",             //  32KB for better I/O efficiency
-		"PRAGMA journal_mode=WAL",            // Better concurrency and durability
-		"PRAGMA synchronous=NORMAL",          // Reduces fsync frequency to improve write performance with acceptable safety
-		"PRAGMA cache_size=-256000",          // ~256MB page cache in memory (negative = size in KB)
-		"PRAGMA busy_timeout=5000",           // Wait 5s in database lock before failing
-		"PRAGMA temp_store=MEMORY",           // Stores temporary tables and indices in RAM instead of disk
-		"PRAGMA mmap_size=1073741824",        // 1GB memory-mapped I/O to reduce system calls
-		"PRAGMA foreign_keys=ON",             // Enforces foreign key constraints
-		"PRAGMA auto_vacuum=INCREMENTAL",     // Enables incremental space reclamation
-		"PRAGMA journal_size_limit=67108864", // Limits WAL file size to ~64MB before truncation
-		"PRAGMA wal_autocheckpoint=2000",     // Automatically checkpoints WAL after 2000 pages written
+		"PRAGMA page_size=32768",         //  32KB for better I/O efficiency
+		"PRAGMA journal_mode=WAL",        // Better concurrency and durability
+		"PRAGMA auto_vacuum=INCREMENTAL", // Enables incremental space reclamation
 
 		fmt.Sprintf("PRAGMA application_id=%d", appID), // Unique identifier for the application
 	}
@@ -147,15 +145,9 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 		}
 	}
 
-	// Single connection: SQLite is single-writer; one connection serializes all
-	// access at the Go level and avoids SQLITE_BUSY lock contention entirely
-	sqlDB.SetMaxOpenConns(maxOpenConns)
-	sqlDB.SetMaxIdleConns(maxIdleConns)
-	sqlDB.SetConnMaxLifetime(connMaxLifetime)
-
-	if err := sqlDB.Ping(); err != nil {
+	if err := assertPragmas(sqlDB); err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("appDB: unable to ping - %w", err)
+		return nil, err
 	}
 
 	log.Info("Database connection established", "path", dbPath)
@@ -222,6 +214,69 @@ func (db *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql
 
 func (db *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	return db.SQL.QueryRowContext(ctx, query, args...)
+}
+
+// appDSN spells the library's connection-scoped settings into the DSN so the
+// driver applies them to *every* connection it opens, not just to whichever
+// one a startup statement happened to land on. These are per-connection
+// settings in SQLite: a replacement connection (a retired bad conn, a second
+// one opened before the pool was pinned) that missed them would run with
+// foreign keys OFF, which turns every cascading delete in this codebase — the
+// scanner's sweep, execute's duplicate cleanup, ResetAll — into an orphan-row
+// generator, silently. The driver applies _pragma entries in lexicographic
+// order, so nothing here may depend on running before anything else here.
+func appDSN(dbPath string) string {
+	pragmas := []string{
+		"busy_timeout(5000)",  // wait 5s on a locked database before failing
+		"cache_size(-256000)", // ~256MB page cache (negative = size in KiB)
+		"foreign_keys(1)",     // every ON DELETE CASCADE in this codebase
+		"fullfsync(1)",        // darwin: flush the drive's own cache, not just the OS
+		"journal_size_limit(67108864)",
+		// Hold the file lock for the whole session: while wandersort has the
+		// library open, any other client — the sqlite3 CLI, a DB browser —
+		// gets "database is locked" instead of reading a half-written run or
+		// writing under the pipeline. Safe because the pool is one connection.
+		"locking_mode(exclusive)",
+		"mmap_size(1073741824)", // 1GB memory-mapped I/O to reduce syscalls
+		// FULL, not NORMAL: under NORMAL, WAL mode does not fsync at commit, so
+		// a power loss drops an unbounded tail of *committed* transactions —
+		// including the rows saying a photo was copied into the library and its
+		// source may be deleted. Writes are batched (see BulkWriter), so the
+		// cost is a handful of fsyncs a second, not one per row.
+		"synchronous(full)",
+		"temp_store(memory)", // temp tables and indices in RAM
+		"wal_autocheckpoint(2000)",
+	}
+	u := url.URL{Scheme: "file", Path: dbPath}
+	q := url.Values{}
+	for _, p := range pragmas {
+		q.Add("_pragma", p)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// assertPragmas reads back the two settings whose silent absence would be a
+// correctness bug rather than a slowdown. A DSN typo, or a driver that stops
+// honouring _pragma, otherwise costs an invariant with no symptom until the
+// first orphaned row.
+func assertPragmas(sqlDB *sql.DB) error {
+	var fk int
+	if err := sqlDB.QueryRow("PRAGMA foreign_keys").Scan(&fk); err != nil {
+		return fmt.Errorf("reading foreign_keys: %w", err)
+	}
+	if fk != 1 {
+		return fmt.Errorf("foreign keys are off on this connection; refusing to open the library")
+	}
+	var sync int
+	if err := sqlDB.QueryRow("PRAGMA synchronous").Scan(&sync); err != nil {
+		return fmt.Errorf("reading synchronous: %w", err)
+	}
+	// 2 is FULL, 3 is EXTRA; anything below 2 does not fsync at commit.
+	if sync < 2 {
+		return fmt.Errorf("database commits are not durable (synchronous=%d); refusing to open the library", sync)
+	}
+	return nil
 }
 
 func appIDFromTag() int32 {

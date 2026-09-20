@@ -83,6 +83,43 @@ func TestDB(t *testing.T) {
 				t.Errorf("application_id = %d, want %d", appID, appIDFromTag())
 			}
 		}},
+		{"ConnectionPragmasTakeEffect", func(t *testing.T) {
+			// The DSN is the only thing carrying these; a driver that stopped
+			// honouring _pragma would cost foreign keys and durable commits
+			// with no other symptom.
+			d, err := New(context.Background(), filepath.Join(t.TempDir(), "pragmas.db"), AppDB, logger.NewNoopLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+
+			for _, want := range []struct {
+				pragma string
+				value  int
+			}{
+				{"foreign_keys", 1},
+				{"synchronous", 2}, // FULL: fsync at every commit
+				{"busy_timeout", 5000},
+			} {
+				var got int
+				if err := d.SQL.QueryRow("PRAGMA " + want.pragma).Scan(&got); err != nil {
+					t.Fatalf("read %s: %v", want.pragma, err)
+				}
+				if got != want.value {
+					t.Errorf("%s = %d, want %d", want.pragma, got, want.value)
+				}
+			}
+
+			// foreign_keys on is what makes a cascade a cascade rather than an
+			// orphan-row generator.
+			var mode string
+			if err := d.SQL.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.EqualFold(mode, "wal") {
+				t.Errorf("journal_mode = %q, want wal", mode)
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
