@@ -46,7 +46,7 @@ func TestRunExecuteAppliesDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	dbtest.SeedFile(t, d, 1, src, "a.jpg", 5)
-	day := dbtest.SeedEntry(t, d, 1, filepath.Join(src, "a.jpg"), "2024/06_June/03/a.jpg", db.StatusProposed)
+	day := dbtest.SeedEntry(t, d, 1, filepath.Join(src, "a.jpg"), "2024/06_June/03/a.jpg")
 	hash, err := metadata.HashFile(filepath.Join(src, "a.jpg"))
 	if err != nil {
 		t.Fatal(err)

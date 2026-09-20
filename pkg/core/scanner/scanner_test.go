@@ -191,18 +191,14 @@ func TestScanner(t *testing.T) {
 				t.Fatalf("first scan indexed %d files, want 3", len(rows))
 			}
 
-			// Simulate a completed pipeline: the metadata phase writes the row
-			// and marks the file ANALYZED
+			// Simulate a completed pipeline: every file read, planned and
+			// carrying a failed-transfer row, so a replaced row's cascade shows
 			for _, name := range []string{"keep.jpg", "modify.jpg", "delete.jpg"} {
-				if _, err := d.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES (?, ?)`,
-					"hash-"+name, rows[name].ID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := d.ExecContext(ctx, `UPDATE file_registry SET scan_status = ? WHERE id = ?`,
-					db.StatusAnalyzed, rows[name].ID); err != nil {
-					t.Fatal(err)
-				}
+				dbtest.SeedHash(t, d, rows[name].ID, "hash-"+name)
+				dbtest.SeedEntry(t, d, rows[name].ID, "/src/"+name, "plan/"+name)
+				dbtest.SeedTransferError(t, d, rows[name].ID, "boom")
 			}
+			modifyID := rows["modify.jpg"].ID
 
 			// Mutate the tree: touch one file, remove one, add one
 			if err := os.WriteFile(filepath.Join(root, "modify.jpg"), []byte("changed bytes, new size"), 0o644); err != nil {
@@ -228,14 +224,15 @@ func TestScanner(t *testing.T) {
 			if len(rows) != 3 {
 				t.Fatalf("re-scan left %d rows, want 3 (keep, modify, new; delete hard-deleted)", len(rows))
 			}
-			if got := rows["keep.jpg"].Status; got != db.StatusAnalyzed {
-				t.Errorf("unchanged file scan_status = %s, want ANALYZED", got)
+			if !rows["keep.jpg"].Read || rows["keep.jpg"].Errors != 1 {
+				t.Errorf("unchanged file = %+v, want its metadata and error rows kept", rows["keep.jpg"])
 			}
-			if got := rows["modify.jpg"].Status; got != db.StatusDiscovered {
-				t.Errorf("modified file scan_status = %s, want DISCOVERED (re-read)", got)
+			// a changed file is a new file: new id, and nothing of the old one
+			if got := rows["modify.jpg"]; got.ID == modifyID || got.Read || got.Errors != 0 || got.Planned {
+				t.Errorf("modified file = %+v (old id %d), want a fresh unread, unplanned row", got, modifyID)
 			}
-			if got := rows["new.jpg"].Status; got != db.StatusDiscovered {
-				t.Errorf("added file scan_status = %s, want DISCOVERED", got)
+			if got := rows["new.jpg"]; got.Read || got.Errors != 0 {
+				t.Errorf("added file = %+v, want unread", got)
 			}
 			if _, ok := rows["delete.jpg"]; ok {
 				t.Error("vanished file was not hard-deleted by the sweep")
@@ -258,13 +255,13 @@ func TestScanner(t *testing.T) {
 			}
 			d.Writer.Flush()
 			rows = registryByName(t, d)
-			if got := rows["delete.jpg"].Status; got != db.StatusDiscovered {
-				t.Errorf("reappeared file scan_status = %s, want DISCOVERED", got)
+			if got := rows["delete.jpg"]; got.Read || got.Errors != 0 {
+				t.Errorf("reappeared file = %+v, want unread", got)
 			}
 		}},
 		// TestRunForceRescan: an unchanged file (same size/mtime) normally keeps
-		// its ANALYZED status; force=true resets it back to DISCOVERED anyway, so
-		// a later metadata phase re-reads it instead of skipping it
+		// its metadata; force=true replaces its row anyway, so a later
+		// metadata phase reads it again instead of skipping it
 		{"RunForceRescan", func(t *testing.T) {
 			ctx := context.Background()
 			sc, d := newDBScanner(t)
@@ -279,10 +276,7 @@ func TestScanner(t *testing.T) {
 			d.Writer.Flush()
 
 			rows := registryByName(t, d)
-			if _, err := d.ExecContext(ctx, `UPDATE file_registry SET scan_status = ? WHERE id = ?`,
-				db.StatusAnalyzed, rows["keep.jpg"].ID); err != nil {
-				t.Fatal(err)
-			}
+			dbtest.SeedHash(t, d, rows["keep.jpg"].ID, "hash-keep")
 
 			// Nothing on disk changes between scans
 			if _, err := sc.Run(ctx, []string{root}, true); err != nil {
@@ -291,8 +285,8 @@ func TestScanner(t *testing.T) {
 			d.Writer.Flush()
 
 			rows = registryByName(t, d)
-			if got := rows["keep.jpg"].Status; got != db.StatusDiscovered {
-				t.Errorf("unchanged file scan_status = %s, want DISCOVERED (forced)", got)
+			if rows["keep.jpg"].Read {
+				t.Error("forced re-scan kept the file's metadata, want it read again")
 			}
 		}},
 		// RunRescanPreservesNFDName guards against forcing a disk-given name
@@ -438,9 +432,8 @@ func TestScanner(t *testing.T) {
 				t.Errorf("failed root's row last_seen_at changed to %s, want unchanged %s", rows["photo.jpg"].LastSeenAt, seenAfterFirst)
 			}
 		}},
-		// TestSweepDeletesDependentRowsInFKOrder: a vanished file's metadata and
-		// vfs-plan rows go with it — no grace window and no leftovers for
-		// foreign_keys=ON to reject
+		// TestSweepDeletesDependentRows: a vanished file's metadata, vfs-plan and
+		// error rows go with it by cascade — no grace window, no leftovers
 		{"SweepDeletesDependentRows", func(t *testing.T) {
 			ctx := context.Background()
 			sc, d := newDBScanner(t)
@@ -450,7 +443,8 @@ func TestScanner(t *testing.T) {
 				`INSERT INTO file_metadata (file_hash, file_id) VALUES ('vanished-hash', 1)`); err != nil {
 				t.Fatal(err)
 			}
-			dbtest.SeedEntry(t, d, 1, "/gone/vanished.jpg", "stale/vanished.jpg", db.StatusProposed)
+			dbtest.SeedEntry(t, d, 1, "/gone/vanished.jpg", "stale/vanished.jpg")
+			dbtest.SeedTransferError(t, d, 1, "boom")
 
 			if err := sc.sweep(ctx, time.Now(), "/gone"); err != nil {
 				t.Fatalf("sweep: %v", err)
@@ -475,6 +469,12 @@ func TestScanner(t *testing.T) {
 			if leftovers != 0 {
 				t.Error("swept file left a vfs row behind")
 			}
+			if err := d.SQL.Get(&leftovers, `SELECT count(*) FROM errors WHERE file_id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if leftovers != 0 {
+				t.Error("swept file left an error row behind")
+			}
 		}},
 	}
 	for _, tt := range tests {
@@ -495,7 +495,9 @@ func newDBScanner(t *testing.T) (*Scanner, *db.DB) {
 type registryRow struct {
 	ID         int64  `db:"id"`
 	FileName   string `db:"file_name"`
-	Status     string `db:"scan_status"`
+	Read       bool   `db:"read"`
+	Planned    bool   `db:"planned"`
+	Errors     int    `db:"errors"`
 	LastSeenAt string `db:"last_seen_at"`
 }
 
@@ -505,7 +507,11 @@ func registryByName(t *testing.T, d *db.DB) map[string]registryRow {
 	t.Helper()
 	var rows []registryRow
 	if err := d.SQL.Select(&rows,
-		`SELECT id, file_name, scan_status, last_seen_at FROM file_registry`); err != nil {
+		`SELECT id, file_name, last_seen_at,
+			EXISTS (SELECT 1 FROM file_metadata WHERE file_id = file_registry.id) AS read,
+			EXISTS (SELECT 1 FROM virtual_fs_entries WHERE file_id = file_registry.id) AS planned,
+			(SELECT COUNT(*) FROM errors WHERE file_id = file_registry.id) AS errors
+		FROM file_registry`); err != nil {
 		t.Fatal(err)
 	}
 	byName := map[string]registryRow{}

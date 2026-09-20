@@ -27,7 +27,7 @@ type entryRow struct {
 	FileID     int64   `db:"file_id"`
 	TargetPath string  `db:"target_path"`
 	ClusterID  *string `db:"cluster_id"`
-	Status     string  `db:"status"`
+	Placed     bool    `db:"placed"`
 }
 
 type harness struct {
@@ -100,7 +100,8 @@ func (h *harness) build(t *testing.T, cfg Config, geo *location.Resolver) map[in
 
 	var rows []entryRow
 	if err := h.d.SQL.Select(&rows, `
-		SELECT file_id, target_path, cluster_id, status
+		SELECT file_id, target_path, cluster_id,
+			(SELECT placed FROM file_registry WHERE id = file_id) AS placed
 		FROM virtual_fs_entries`); err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +142,8 @@ func TestBuildFullExif(t *testing.T) {
 	if rows[id].TargetPath != want {
 		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 	}
-	if rows[id].Status != db.StatusProposed {
-		t.Errorf("status = %q, want PROPOSED", rows[id].Status)
+	if rows[id].Placed {
+		t.Errorf("a fresh proposal must not be placed")
 	}
 	if rows[id].ClusterID != nil {
 		t.Errorf("directly located file should have NULL cluster_id, got %v", *rows[id].ClusterID)
@@ -715,7 +716,7 @@ func TestLibraryScopeAcrossRuns(t *testing.T) {
 	// File already indexed by an earlier run…
 	id := h.addFile(t, "dump/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 	// …with a stale proposal that earlier run persisted
-	dbtest.SeedEntry(t, h.d, id, "/src/dump/IMG_0001.HEIC", "stale/IMG_0001.HEIC", db.StatusProposed)
+	dbtest.SeedEntry(t, h.d, id, "/src/dump/IMG_0001.HEIC", "stale/IMG_0001.HEIC")
 
 	vfs := &VFS{
 		db:  h.d,
@@ -733,7 +734,7 @@ func TestLibraryScopeAcrossRuns(t *testing.T) {
 
 	var rows []entryRow
 	if err := h.d.SQL.Select(&rows,
-		`SELECT file_id, target_path, cluster_id, status FROM virtual_fs_entries`); err != nil {
+		`SELECT file_id, target_path, cluster_id, (SELECT placed FROM file_registry WHERE id = file_id) AS placed FROM virtual_fs_entries`); err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 {
@@ -775,7 +776,8 @@ func TestPlacedFileIsNeverReproposed(t *testing.T) {
 	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.SeedEntry(t, h.d, placed, "2024/06_June/Goa/Photos/IMG_0001.HEIC", "2024/06_June/Goa/Photos/IMG_0001.HEIC", db.StatusDone)
+	dbtest.SeedEntry(t, h.d, placed, "2024/06_June/Goa/Photos/IMG_0001.HEIC", "2024/06_June/Goa/Photos/IMG_0001.HEIC")
+	dbtest.SeedPlaced(t, h.d, placed)
 
 	vfs := &VFS{db: h.d, log: logger.NewNoopLogger(), cfg: DefaultConfig()}
 	if _, err := vfs.Run(ctx); err != nil {
@@ -784,7 +786,7 @@ func TestPlacedFileIsNeverReproposed(t *testing.T) {
 	h.d.Writer.Flush()
 
 	var rows []entryRow
-	if err := h.d.SQL.Select(&rows, `SELECT file_id, target_path, cluster_id, status FROM virtual_fs_entries`); err != nil {
+	if err := h.d.SQL.Select(&rows, `SELECT file_id, target_path, cluster_id, (SELECT placed FROM file_registry WHERE id = file_id) AS placed FROM virtual_fs_entries`); err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 {
@@ -793,8 +795,8 @@ func TestPlacedFileIsNeverReproposed(t *testing.T) {
 	if rows[0].FileID != placed {
 		t.Errorf("proposal row belongs to file %d, want the placed file %d", rows[0].FileID, placed)
 	}
-	if rows[0].Status != db.StatusDone {
-		t.Errorf("placed file's row status = %q, want unchanged %q", rows[0].Status, db.StatusDone)
+	if !rows[0].Placed {
+		t.Errorf("placed file's row lost its placed flag")
 	}
 }
 

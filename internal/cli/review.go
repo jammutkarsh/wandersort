@@ -51,20 +51,14 @@ wandersort review`,
 // something, which is the only way the settings can move under a plan now
 // that they live in the library's own database (see shell.configSaved).
 //
-// It reopens every approved-but-not-transferred row first, so a re-plan
-// really does replan everything. Keeping them was a reported bug: change the
-// settings, and the rows already signed off still read `✓ saved` while
-// holding folders the new settings would never have proposed. An approval is
-// given to a specific plan; replacing that plan takes it back.
+// Every row not yet transferred is re-proposed, so a re-plan really does
+// replan everything; a file already placed or failed keeps its row.
 func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
 	resolver, err := a.Deps.Location()
 	if err != nil {
 		return nil, fmt.Errorf("dependencies: %w", err)
 	}
 	a.Log.Info("Settings changed — re-proposing the folder structure", logger.UserKey, true)
-	if err := vfs.ReopenPlan(ctx, a.AppDB); err != nil {
-		return nil, err
-	}
 	if _, err := vfs.Propose(ctx, a.AppDB, resolver, a.Config, a.Log); err != nil {
 		return nil, fmt.Errorf("re-plan proposal: %w", err)
 	}
@@ -76,7 +70,7 @@ func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
 // it finds always matches the current settings: a save re-plans on the spot
 // (shell.configSaved), so there is nothing stale to check for here.
 //
-// An empty tree means every master is already DONE from an earlier execute —
+// An empty tree means every master is already placed by an earlier execute —
 // a fully organized library, not a plan to rebuild.
 func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	// Doesn't block: a.Deps was started by the scan and vfs already ran, so

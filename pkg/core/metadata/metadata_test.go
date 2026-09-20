@@ -42,13 +42,30 @@ func missingExiftool(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "missing-exiftool")
 }
 
-func status(t *testing.T, d *db.DB, id int64) string {
+// Where a file stands: it is read once it has a metadata row, failed once it
+// has a READ error, unread otherwise. There is no status column to ask.
+const (
+	stateRead   = "read"
+	stateFailed = "failed"
+	stateUnread = "unread"
+)
+
+func state(t *testing.T, d *db.DB, id int64) string {
 	t.Helper()
-	var s string
-	if err := d.SQL.Get(&s, `SELECT scan_status FROM file_registry WHERE id = ?`, id); err != nil {
+	var read, failed bool
+	if err := d.SQL.Get(&read, `SELECT EXISTS (SELECT 1 FROM file_metadata WHERE file_id = ?)`, id); err != nil {
 		t.Fatal(err)
 	}
-	return s
+	if err := d.SQL.Get(&failed, `SELECT EXISTS (SELECT 1 FROM errors WHERE file_id = ? AND stage = ?)`, id, db.StageRead); err != nil {
+		t.Fatal(err)
+	}
+	switch {
+	case read:
+		return stateRead
+	case failed:
+		return stateFailed
+	}
+	return stateUnread
 }
 
 // helperWritePatternFile writes a deterministic file of the requested size
@@ -179,7 +196,7 @@ func TestExtractor(t *testing.T) {
 	}{
 		// A file exiftool cannot read is still a usable file: the pipeline knows
 		// its hash and its folder, so the phase persists empty metadata, marks it
-		// ANALYZED, and never fails the session
+		// read, and never fails the session
 		{"RunToleratesExtractionFailure", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
@@ -200,8 +217,8 @@ func TestExtractor(t *testing.T) {
 			}
 			d.Writer.Flush()
 
-			if got := status(t, d, 1); got != db.StatusAnalyzed {
-				t.Errorf("scan_status = %s, want %s", got, db.StatusAnalyzed)
+			if got := state(t, d, 1); got != stateRead {
+				t.Errorf("state = %s, want %s (an extraction failure is not a file failure)", got, stateRead)
 			}
 			// the hash is still persisted; only the exif columns stay NULL
 			var rows int
@@ -215,7 +232,7 @@ func TestExtractor(t *testing.T) {
 			}
 		}},
 		// Sidecars (.AAE) carry no EXIF of their own, so running exiftool on them
-		// is wasted work — they are still hashed and marked ANALYZED
+		// is wasted work — they are still hashed and counted as read
 		{"RunHashesSidecarsWithoutExiftool", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
@@ -240,8 +257,8 @@ func TestExtractor(t *testing.T) {
 			}
 			d.Writer.Flush()
 
-			if got := status(t, d, 1); got != db.StatusAnalyzed {
-				t.Errorf("sidecar scan_status = %s, want %s", got, db.StatusAnalyzed)
+			if got := state(t, d, 1); got != stateRead {
+				t.Errorf("sidecar state = %s, want %s", got, stateRead)
 			}
 			var hash string
 			if err := d.SQL.Get(&hash, `SELECT file_hash FROM file_metadata WHERE file_id = 1`); err != nil {
@@ -255,9 +272,9 @@ func TestExtractor(t *testing.T) {
 				t.Errorf("sidecar file_hash = %s, want %s", hash, want)
 			}
 		}},
-		// A re-read file must end up with exactly one metadata row carrying the
-		// current bytes' hash, not a second row next to the stale one
-		{"RunReplacesStaleMetadata", func(t *testing.T) {
+		// A file that already has a metadata row is read: nothing to do, and
+		// nothing rewritten
+		{"RunSkipsReadFiles", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
 
@@ -265,60 +282,33 @@ func TestExtractor(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "photo.jpg"), []byte("current bytes"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-
 			dbtest.SeedFile(t, d, 1, root, "photo.jpg", 13)
-			if _, err := d.ExecContext(ctx,
-				`INSERT INTO file_metadata (file_hash, file_id, is_master) VALUES ('stale-hash', 1, 0)`); err != nil {
-				t.Fatal(err)
-			}
+			dbtest.SeedHash(t, d, 1, "earlier-hash")
 
 			e := New(d, logger.NewNoopLogger(), missingExiftool(t), 1)
 			count, err := e.Run(ctx)
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
-			if count != 1 {
-				t.Fatalf("Run read %d files, want 1", count)
+			if count != 0 {
+				t.Fatalf("Run read %d files, want 0", count)
 			}
-			d.Writer.Flush()
-
-			var rows []struct {
-				FileHash string `db:"file_hash"`
-				IsMaster bool   `db:"is_master"`
-			}
-			if err := d.SQL.Select(&rows, `SELECT file_hash, is_master FROM file_metadata WHERE file_id = 1`); err != nil {
+			var hash string
+			if err := d.SQL.Get(&hash, `SELECT file_hash FROM file_metadata WHERE file_id = 1`); err != nil {
 				t.Fatal(err)
 			}
-			if len(rows) != 1 {
-				t.Fatalf("file has %d metadata rows after re-read, want exactly 1", len(rows))
-			}
-			wantHash, err := HashFile(filepath.Join(root, "photo.jpg"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if rows[0].FileHash != wantHash {
-				t.Errorf("re-read metadata hash = %s, want %s", rows[0].FileHash, wantHash)
-			}
-			if !rows[0].IsMaster {
-				t.Error("re-read metadata should return to the is_master default (1)")
-			}
-			if got := status(t, d, 1); got != db.StatusAnalyzed {
-				t.Errorf("scan_status = %s, want %s", got, db.StatusAnalyzed)
+			if hash != "earlier-hash" {
+				t.Errorf("a read file's metadata was rewritten: %s", hash)
 			}
 		}},
-		// A file whose hash fails must not keep its previous metadata row — the
-		// content is unknown, so the old hash would keep feeding the scorer and VFS
-		{"RunHashFailureClearsStaleMetadata", func(t *testing.T) {
+		// A file that cannot be read gets a READ error and no metadata, and is
+		// not attempted again until its row is replaced
+		{"RunRecordsHashFailureAndSkipsItNextTime", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
 
-			// Registry points at a file that does not exist, so hashing fails
-			root := t.TempDir()
-			dbtest.SeedFile(t, d, 1, root, "gone.jpg", 13)
-			if _, err := d.ExecContext(ctx,
-				`INSERT INTO file_metadata (file_hash, file_id) VALUES ('stale-hash', 1)`); err != nil {
-				t.Fatal(err)
-			}
+			// Registry points at a file that does not exist, so opening fails
+			dbtest.SeedFile(t, d, 1, t.TempDir(), "gone.jpg", 13)
 
 			e := New(d, logger.NewNoopLogger(), missingExiftool(t), 1)
 			if _, err := e.Run(ctx); err != nil {
@@ -326,15 +316,130 @@ func TestExtractor(t *testing.T) {
 			}
 			d.Writer.Flush()
 
-			var metadataRows int
-			if err := d.SQL.Get(&metadataRows, `SELECT count(*) FROM file_metadata WHERE file_id = 1`); err != nil {
+			if got := state(t, d, 1); got != stateFailed {
+				t.Errorf("state = %s, want %s", got, stateFailed)
+			}
+			var row struct {
+				Op       string `db:"op"`
+				Kind     string `db:"kind"`
+				Attempts int    `db:"attempts"`
+				Detail   string `db:"detail"`
+			}
+			if err := d.SQL.Get(&row, `SELECT op, kind, attempts, detail FROM errors WHERE file_id = 1`); err != nil {
 				t.Fatal(err)
 			}
-			if metadataRows != 0 {
-				t.Errorf("failed hash left %d stale metadata rows, want 0", metadataRows)
+			if row.Op != "open" || row.Kind != db.KindNotFound || row.Attempts != 1 {
+				t.Errorf("error row = %+v, want op open, kind not-found, 1 attempt", row)
 			}
-			if got := status(t, d, 1); got != db.StatusError {
-				t.Errorf("scan_status = %s, want ERROR", got)
+			if !strings.Contains(row.Detail, "gone.jpg") || !strings.Contains(row.Detail, `"frames"`) {
+				t.Errorf("detail = %s, want the message and frames", row.Detail)
+			}
+
+			count, err := New(d, logger.NewNoopLogger(), missingExiftool(t), 1).Run(ctx)
+			if err != nil {
+				t.Fatalf("second Run: %v", err)
+			}
+			d.Writer.Flush()
+			if err := d.SQL.Get(&row.Attempts, `SELECT attempts FROM errors WHERE file_id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if count != 0 || row.Attempts != 1 {
+				t.Errorf("second run read %d files, attempts = %d; a failed file must be skipped", count, row.Attempts)
+			}
+		}},
+		// A read that works clears the failure it superseded, in the same
+		// transaction that writes the metadata row
+		{"StoreClearsReadError", func(t *testing.T) {
+			d := dbtest.New(t)
+			dbtest.SeedFile(t, d, 1, t.TempDir(), "photo.jpg", 13)
+			if !d.Writer.Write(storeFailure(1, "open", fmt.Errorf("boom"))) {
+				t.Fatal("writer refused the failure")
+			}
+			d.Writer.Flush()
+			if got := state(t, d, 1); got != stateFailed {
+				t.Fatalf("setup: state = %s, want failed", got)
+			}
+
+			e := New(d, logger.NewNoopLogger(), "exiftool", 1)
+			d.Writer.Write(e.store(1, "hash", classifier.CommonMetadata{}))
+			d.Writer.Flush()
+			if got := state(t, d, 1); got != stateRead {
+				t.Errorf("state = %s, want read", got)
+			}
+			var errorRows int
+			if err := d.SQL.Get(&errorRows, `SELECT COUNT(*) FROM errors WHERE file_id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if errorRows != 0 {
+				t.Errorf("%d error rows left after a successful read", errorRows)
+			}
+		}},
+		// A panic on one file is recorded with its stack and the run finishes.
+		// A nil semaphore panics on the first Acquire, so every file panics.
+		{"RunSurvivesWorkerPanic", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+
+			root := t.TempDir()
+			for i := 1; i <= 3; i++ {
+				name := fmt.Sprintf("photo-%d.jpg", i)
+				if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				dbtest.SeedFile(t, d, int64(i), root, name, int64(len(name)))
+			}
+
+			e := New(d, logger.NewNoopLogger(), missingExiftool(t), 2)
+			e.reads = nil
+			if _, err := e.Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			d.Writer.Flush()
+
+			for i := 1; i <= 3; i++ {
+				var row struct {
+					Kind   string `db:"kind"`
+					Detail string `db:"detail"`
+				}
+				if err := d.SQL.Get(&row, `SELECT kind, detail FROM errors WHERE file_id = ? AND stage = 'READ'`, i); err != nil {
+					t.Fatalf("file %d: %v", i, err)
+				}
+				if row.Kind != db.KindPanic || !strings.Contains(row.Detail, "metadata.(*Extractor).readFile") {
+					t.Errorf("file %d: kind %q, detail %s; want a panic with the real stack", i, row.Kind, row.Detail)
+				}
+			}
+		}},
+		// More files than one page holds: every one is read exactly once, and
+		// the closing unscoped pass does not hand the last ones out again
+		{"RunPagesPastOneBatch", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+
+			root := t.TempDir()
+			files := readBatchSize*2 + 50
+			for i := 1; i <= files; i++ {
+				name := fmt.Sprintf("photo-%d.jpg", i)
+				if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				dbtest.SeedFile(t, d, int64(i), root, name, int64(len(name)))
+			}
+
+			e := New(d, logger.NewNoopLogger(), missingExiftool(t), 4)
+			count, err := e.Run(ctx)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			d.Writer.Flush()
+			if count != files {
+				t.Errorf("Run read %d files, want %d exactly once each", count, files)
+			}
+			var read int
+			if err := d.SQL.Get(&read, `SELECT COUNT(*) FROM file_metadata`); err != nil {
+				t.Fatal(err)
+			}
+			if read != files {
+				t.Errorf("%d metadata rows, want %d", read, files)
 			}
 		}},
 		// The write itself: hash and extracted values land on one row
@@ -394,8 +499,8 @@ func TestExtractor(t *testing.T) {
 			if row.CreateDate != nil {
 				t.Errorf("exif_create_date = %v, want NULL for an absent tag", *row.CreateDate)
 			}
-			if got := status(t, d, 1); got != db.StatusAnalyzed {
-				t.Errorf("scan_status = %s, want %s", got, db.StatusAnalyzed)
+			if got := state(t, d, 1); got != stateRead {
+				t.Errorf("state = %s, want %s", got, stateRead)
 			}
 		}},
 		// The read budget throttles concurrency; it must never strand a file.
@@ -430,8 +535,8 @@ func TestExtractor(t *testing.T) {
 			}
 			d.Writer.Flush()
 			for i := 1; i <= files; i++ {
-				if got := status(t, d, int64(i)); got != db.StatusAnalyzed {
-					t.Errorf("file %d scan_status = %s, want %s", i, got, db.StatusAnalyzed)
+				if got := state(t, d, int64(i)); got != stateRead {
+					t.Errorf("file %d state = %s, want %s", i, got, stateRead)
 				}
 			}
 		}},

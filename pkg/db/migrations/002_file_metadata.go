@@ -18,7 +18,7 @@ const fileMetadata = `
 CREATE TABLE IF NOT EXISTS file_metadata (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_hash TEXT NOT NULL,
-    file_id INTEGER REFERENCES file_registry(id) ON DELETE SET NULL,
+    file_id INTEGER NOT NULL REFERENCES file_registry(id) ON DELETE CASCADE,
 
     exif_image_width        INTEGER,
     exif_image_height       INTEGER,

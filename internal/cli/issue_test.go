@@ -8,13 +8,21 @@ package cli
 
 import (
 	"archive/zip"
+	"context"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/jmoiron/sqlx"
+
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -50,7 +58,7 @@ func TestRunIssueNoLogData(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a, _ := issueApp(t, tt.logs)
-			if err := a.runIssue(false); err == nil {
+			if err := a.runIssue(false, false); err == nil {
 				t.Fatal("runIssue with nothing logged must fail")
 			}
 		})
@@ -69,7 +77,7 @@ func TestRunIssuePackagesRecentLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := a.runIssue(false); err != nil {
+	if err := a.runIssue(false, false); err != nil {
 		t.Fatalf("runIssue: %v", err)
 	}
 	entries, names := readZips(t, dir)
@@ -94,12 +102,66 @@ func TestRunIssueIncludesDBWhenRequested(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := a.runIssue(true); err != nil {
+	if err := a.runIssue(true, false); err != nil {
 		t.Fatalf("runIssue: %v", err)
 	}
 	_, names := readZips(t, dir)
 	if !names["wandersort.db"] {
 		t.Errorf("--include-db must package the database, got entries %v", names)
+	}
+}
+
+// The error report ships without --include-db, and the home directory's
+// username appears nowhere in it.
+func TestRunIssueShipsScrubbedErrors(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	a, dir := issueApp(t, map[string]string{"2026-01-01T10-00-00_1.log": "some log data\n"})
+	if err := os.MkdirAll(filepath.Dir(a.Config.AppDBPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.New(context.Background(), a.Config.AppDBPath, db.AppDB, logger.NewNoopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbtest.SeedFile(t, d, 1, filepath.Join(home, "Pictures"), "IMG_1.HEIC", 10)
+	failure := db.WithStack(fmt.Errorf("open %s: %w", filepath.Join(home, "Pictures", "IMG_1.HEIC"), fs.ErrPermission))
+	d.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+		return db.RecordError(ctx, tx, 1, db.StageRead, "open", failure)
+	})
+	d.Writer.Flush()
+	d.Close() // the live database is exclusively locked while open
+
+	if err := a.runIssue(false, false); err != nil {
+		t.Fatalf("runIssue: %v", err)
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, "wandersort-issue-*.zip"))
+	zr, err := zip.OpenReader(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	var got string
+	for _, f := range zr.File {
+		if f.Name != "errors.json" {
+			continue
+		}
+		r, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(r)
+		r.Close()
+		got = string(b)
+	}
+	if got == "" {
+		t.Fatal("no errors.json in the zip")
+	}
+	if strings.Contains(got, home) {
+		t.Errorf("home directory %q survived in errors.json:\n%s", home, got)
+	}
+	if !strings.Contains(got, "$HOME/Pictures/IMG_1.HEIC") {
+		t.Errorf("errors.json lost the folder structure:\n%s", got)
 	}
 }
 

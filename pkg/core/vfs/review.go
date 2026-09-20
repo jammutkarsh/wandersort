@@ -6,8 +6,8 @@
 
 package vfs
 
-// review.go is the reconcile core behind `wandersort review`: exposes PROPOSED
-// rows as a directory tree, applies edits back onto folder_nodes and
+// review.go is the reconcile core behind `wandersort review`: exposes the
+// pending plan as a directory tree, applies edits back onto folder_nodes and
 // virtual_fs_entries, and remembers the names the reviewer typed. Nodes match
 // by their folder_nodes id, never by tree diff.
 
@@ -95,9 +95,9 @@ func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 		 FROM virtual_fs_entries vfe
 		 JOIN folder_nodes fn ON fn.id = vfe.node_id
 		 LEFT JOIN file_metadata fm ON fm.file_id = vfe.file_id
-		 WHERE vfe.status IN (?, ?) AND fn.level != ?
+		 WHERE `+db.PendingTransfer("vfe.file_id")+` AND fn.level != ?
 		 ORDER BY vfe.id`,
-		db.StatusProposed, db.StatusApproved, LevelOrphan); err != nil {
+		LevelOrphan); err != nil {
 		return nil, fmt.Errorf("query vfs entries: %w", err)
 	}
 	if len(rows) == 0 {
@@ -184,9 +184,9 @@ func FilesUnder(ctx context.Context, nodeID int64, database *db.DB) ([]string, e
 			SELECT fn.id FROM folder_nodes fn JOIN sub ON fn.parent_id = sub.id
 		)
 		SELECT source_path FROM virtual_fs_entries
-		WHERE status IN (?, ?) AND node_id IN (SELECT id FROM sub)
+		WHERE `+db.PendingTransfer("file_id")+` AND node_id IN (SELECT id FROM sub)
 		ORDER BY source_path`,
-		nodeID, db.StatusProposed, db.StatusApproved); err != nil {
+		nodeID); err != nil {
 		return nil, fmt.Errorf("query files under folder %d: %w", nodeID, err)
 	}
 	return paths, nil
@@ -215,9 +215,8 @@ func Labels(ctx context.Context, database *db.DB, log logger.Logger) []string {
 }
 
 // Confirm applies the (possibly edited) tree back onto the plan's folders
-// and entries, flips every PROPOSED row to APPROVED, and remembers every name
-// the reviewer typed in user_labels, so the next review's rename completions
-// offer it. The write is synchronous: a nil return means committed.
+// and entries, and remembers every name the reviewer typed in user_labels, so
+// the next review's rename completions offer it. The write is synchronous: a nil return means committed.
 func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 	var entryCount int
 	if err := database.SQL.GetContext(ctx, &entryCount,
@@ -238,8 +237,8 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 			SourcePath string `db:"source_path"`
 		}
 		if err := tx.SelectContext(ctx, &entries,
-			`SELECT id, node_id, target_path, source_path FROM virtual_fs_entries WHERE status IN (?, ?) ORDER BY id`,
-			db.StatusProposed, db.StatusApproved); err != nil {
+			`SELECT id, node_id, target_path, source_path FROM virtual_fs_entries WHERE `+
+				db.PendingTransfer("file_id")+` ORDER BY id`); err != nil {
 			return err
 		}
 		// a rescan replaces the proposal set wholesale; if it won the race the
@@ -324,11 +323,6 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 					return err
 				}
 			}
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE virtual_fs_entries SET status = ? WHERE status = ?`,
-			db.StatusApproved, db.StatusProposed); err != nil {
-			return err
 		}
 		for _, name := range edits.learned {
 			if _, err := tx.ExecContext(ctx,
@@ -459,13 +453,13 @@ func (e treeEdits) apply(ctx context.Context, tx *sqlx.Tx) error {
 	for _, m := range slices.Sorted(maps.Keys(e.mergedInto)) {
 		into := e.mergedInto[m]
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE virtual_fs_entries SET node_id = ? WHERE node_id = ? AND status IN (?, ?)`,
-			into, m, db.StatusProposed, db.StatusApproved); err != nil {
+			`UPDATE virtual_fs_entries SET node_id = ? WHERE node_id = ? AND `+db.PendingTransfer("file_id"),
+			into, m); err != nil {
 			return fmt.Errorf("move files of folder %d: %w", m, err)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE virtual_fs_entries SET location_node_id = ? WHERE location_node_id = ? AND status IN (?, ?)`,
-			into, m, db.StatusProposed, db.StatusApproved); err != nil {
+			`UPDATE virtual_fs_entries SET location_node_id = ? WHERE location_node_id = ? AND `+db.PendingTransfer("file_id"),
+			into, m); err != nil {
 			return fmt.Errorf("move location of folder %d: %w", m, err)
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -484,34 +478,16 @@ func (e treeEdits) apply(ctx context.Context, tx *sqlx.Tx) error {
 	return pruneFolders(ctx, tx)
 }
 
-// ReopenPlan flips every APPROVED entry in the library back to PROPOSED, so
-// a settings change (or a reviewer's [R]) can re-plan without touching rows a
-// transfer has already made real: DONE is never reopened, since a transferred
-// file's folder is a fact on disk now, not a proposal to revisit.
-func ReopenPlan(ctx context.Context, database *db.DB) error {
-	if err := database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
-		_, err := tx.ExecContext(ctx,
-			`UPDATE virtual_fs_entries SET status = ? WHERE status = ?`,
-			db.StatusProposed, db.StatusApproved)
-		return err
-	}); err != nil {
-		return fmt.Errorf("reopen the plan: %w", err)
-	}
-	return nil
-}
-
-// PendingBytes sums the size of every still-untransferred file — PROPOSED or
-// APPROVED — what a transfer started right now would actually write, before
-// a single byte moves. Both statuses count because the free-space check runs
-// *before* the save that flips PROPOSED to APPROVED: a rename doesn't change
-// a file's size, so the total is the same either way, and checking first
-// means a refusal changes nothing rather than undoing a save.
+// PendingBytes sums the size of every still-untransferred file — what a
+// transfer started right now would actually write, before a single byte
+// moves. A rename doesn't change a file's size, so checking before the review's
+// edits are applied gives the same total, and a refusal changes nothing.
 func PendingBytes(ctx context.Context, database *db.DB) (int64, error) {
 	var n int64
 	if err := database.SQL.GetContext(ctx, &n,
 		`SELECT COALESCE(SUM(fr.file_size), 0) FROM virtual_fs_entries vfe
 		 JOIN file_registry fr ON fr.id = vfe.file_id
-		 WHERE vfe.status IN (?, ?)`, db.StatusProposed, db.StatusApproved); err != nil {
+		 WHERE `+db.PendingTransfer("vfe.file_id")); err != nil {
 		return 0, fmt.Errorf("size pending files: %w", err)
 	}
 	return n, nil

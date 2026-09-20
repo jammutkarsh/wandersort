@@ -31,8 +31,7 @@ func (d *DB) ResetAll(ctx context.Context) (ResetCounts, error) {
 
 	var count int64
 
-	// virtual_fs_entries references file_registry with no ON DELETE action,
-	// so it must go before the registry delete
+	// entries first so the count is theirs; the cascade would delete them anyway
 	result, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries`)
 	if err != nil {
 		return ResetCounts{}, fmt.Errorf("reset: delete vfs entries: %w", err)
@@ -45,6 +44,7 @@ func (d *DB) ResetAll(ctx context.Context) (ResetCounts, error) {
 		return ResetCounts{}, fmt.Errorf("reset: delete folder nodes: %w", err)
 	}
 
+	// deleting the registry cascades to metadata and errors; count metadata first
 	result, err = tx.ExecContext(ctx, `DELETE FROM file_metadata`)
 	if err != nil {
 		return ResetCounts{}, fmt.Errorf("reset: delete metadata: %w", err)

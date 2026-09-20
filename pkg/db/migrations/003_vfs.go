@@ -63,38 +63,32 @@ CREATE TABLE IF NOT EXISTS folder_nodes (
 CREATE INDEX IF NOT EXISTS idx_folder_nodes_parent ON folder_nodes(parent_id);
 `
 
-// virtual_fs_entries holds the proposed destination for every master file of a
-// session. The VFS phase writes PROPOSED rows; the review flow flips them to
-// APPROVED; the Execute phase marks DONE/ERROR.
+// virtual_fs_entries holds the planned destination for every master file in
+// the library. A row has no state of its own: it is not transferred yet while
+// its file is unplaced (file_registry.placed = 0) with no TRANSFER row in
+// errors, failed with one, and in the library once placed.
 const virtualFSEntries = `
 CREATE TABLE IF NOT EXISTS virtual_fs_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    file_id INTEGER NOT NULL REFERENCES file_registry(id),
+    file_id INTEGER NOT NULL REFERENCES file_registry(id) ON DELETE CASCADE,
     source_path TEXT NOT NULL,
     -- the folder the file goes in. target_path repeats that folder's path
     -- plus the file name, kept in step by the planner and the review save.
     node_id INTEGER NOT NULL REFERENCES folder_nodes(id),
     target_path TEXT NOT NULL,
     cluster_id TEXT,
-    status TEXT NOT NULL DEFAULT 'PROPOSED'
-        CHECK (status IN ('PROPOSED','APPROVED','DONE','ERROR')),
     -- the folder the location level made for this file, so the review tree
     -- can hang the file's GPS off it (any rules order puts it at a different
     -- depth). NULL when the file has no location folder — or no longer has
     -- one: a review merge can move the file out from under it, and the
     -- emptied place folder is then deleted.
     location_node_id INTEGER REFERENCES folder_nodes(id) ON DELETE SET NULL,
-    -- why an ERROR row failed. The log line has the same text, but a phase
-    -- that moves the user's files needs "which ones failed and why" to be a
-    -- query, not a grep. NULL for every other status.
-    error TEXT,
     created_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
 );
 
 -- one proposal row per file, ever — the VFS phase always wholesale-replaces
 -- the whole table, so there is never more than one live batch to disambiguate
 CREATE UNIQUE INDEX IF NOT EXISTS idx_vfs_file ON virtual_fs_entries(file_id);
-CREATE INDEX IF NOT EXISTS idx_vfs_status ON virtual_fs_entries(status);
 CREATE INDEX IF NOT EXISTS idx_vfs_node ON virtual_fs_entries(node_id);
 `
 

@@ -46,9 +46,9 @@ func New(db *db.DB, log logger.Logger, workers int) *Scanner {
 	}
 }
 
-// Run orchestrates concurrent directory scans across all paths. force resets
-// every touched file back to DISCOVERED regardless of size/mtime, so a later
-// phase re-reads it from disk instead of skipping it as unchanged.
+// Run orchestrates concurrent directory scans across all paths. force replaces
+// every touched file's row regardless of size/mtime, so a later phase reads it
+// from disk again instead of skipping it as unchanged.
 // It returns the total number of files discovered (new + previously seen) and
 // any first error encountered
 func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, error) {
@@ -273,23 +273,15 @@ func (s *Scanner) sweep(ctx context.Context, scanStartedAt time.Time, root strin
 	}
 	defer tx.Rollback()
 
-	// Delete order is forced by foreign keys: virtual_fs_entries.file_id has
-	// no ON DELETE action, and file_metadata's SET NULL would leave orphan
-	// rows that still participate in the scorer's hash grouping
-	const vanished = `last_seen_at < ? AND (file_dir = ? OR (file_dir >= ? AND file_dir < ?))`
-	statements := []string{
-		`DELETE FROM virtual_fs_entries WHERE file_id IN (SELECT id FROM file_registry WHERE ` + vanished + `)`,
-		`DELETE FROM file_metadata WHERE file_id IN (SELECT id FROM file_registry WHERE ` + vanished + `)`,
-		`DELETE FROM file_registry WHERE ` + vanished,
+	// The registry row alone: metadata, plan and error rows go with it, by
+	// ON DELETE CASCADE
+	result, err := tx.ExecContext(ctx,
+		`DELETE FROM file_registry WHERE last_seen_at < ? AND (file_dir = ? OR (file_dir >= ? AND file_dir < ?))`,
+		cutoff, trimmed, prefix, prefixEnd)
+	if err != nil {
+		return fmt.Errorf("sweep %q: %w", root, err)
 	}
-	var swept int64
-	for _, stmt := range statements {
-		result, err := tx.ExecContext(ctx, stmt, cutoff, trimmed, prefix, prefixEnd)
-		if err != nil {
-			return fmt.Errorf("sweep %q: %w", root, err)
-		}
-		swept, _ = result.RowsAffected()
-	}
+	swept, _ := result.RowsAffected()
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sweep %q: commit: %w", root, err)
@@ -325,32 +317,25 @@ func (s *Scanner) store(ctx context.Context, discoveries <-chan FileDiscovery, s
 // db.DBOperation shape (func(ctx, tx) error) has no return value, so fileID
 // is written into the local file copy and sent downstream during execution.
 func (s *Scanner) storeScan(ctx context.Context, dbWritesWG *sync.WaitGroup, storedFiles chan<- FileDiscovery, file FileDiscovery, force bool) db.DBOperation {
+	// A file whose size or mtime moved (or any file under force) is not the
+	// file that was read: its hash, tags and planned folder describe something
+	// else. Delete the row — metadata, plan and error rows cascade — and let
+	// the insert below make a fresh one. An unchanged file only gets seen.
+	const replaceChanged = `
+		DELETE FROM file_registry
+		WHERE file_dir = ? AND file_name = ?
+		  AND (file_size != ? OR file_modified_at != ? OR ? = 1)`
 	const query = `
 		INSERT INTO file_registry (
 			file_dir, file_name, file_size, file_modified_at,
 			volume_uuid, media_type, file_extension,
-			scan_status, file_origin,
+			file_origin,
 			discovered_at, last_seen_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (file_dir, file_name) DO UPDATE SET
 			last_seen_at = excluded.last_seen_at,
 			file_origin = excluded.file_origin,
-			file_size = excluded.file_size,
-			file_modified_at = excluded.file_modified_at,
-			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid),
-			scan_status = CASE
-				-- ANALYZING means an interrupted metadata phase left this row
-				-- claimed with nothing persisted for it — one phase writes the
-				-- hash and the EXIF together, so there is no partial result to
-				-- resume from. Read it again. force (--force / ctrl+f) resets an
-				-- unchanged file too, for re-reading files after an upgrade to
-				-- WanderSort's own extraction logic.
-				WHEN file_registry.file_size != excluded.file_size
-					OR file_registry.file_modified_at != excluded.file_modified_at
-					OR file_registry.scan_status IN ('ANALYZING','ERROR')
-					OR ? = 1
-					THEN 'DISCOVERED'
-				ELSE file_registry.scan_status END
+			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid)
 		RETURNING id`
 
 	forceInt := 0
@@ -361,21 +346,24 @@ func (s *Scanner) storeScan(ctx context.Context, dbWritesWG *sync.WaitGroup, sto
 	queryFileState := func(dbCtx context.Context, tx *sqlx.Tx) (int64, error) {
 		var fileID int64
 		now := db.FormatTime(time.Now())
+		modifiedAt := db.FormatTime(file.ModTime)
+		if _, err := tx.ExecContext(dbCtx, replaceChanged,
+			file.Dir, file.Name, file.Size, modifiedAt, forceInt); err != nil {
+			return 0, err
+		}
 		err := tx.QueryRowContext(
 			dbCtx,
 			query,
 			file.Dir,
 			file.Name,
 			file.Size,
-			db.FormatTime(file.ModTime),
+			modifiedAt,
 			db.StrOrNil(file.VolumeUUID),
 			file.MediaType,
 			file.Extension,
-			db.StatusDiscovered,
 			FileOriginSource,
 			now,
 			now,
-			forceInt,
 		).Scan(&fileID)
 		return fileID, err
 	}

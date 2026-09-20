@@ -364,19 +364,13 @@ one scan ever runs against it at a time (see "Conventions" below):
     check either**: settings live in the library's own database and only the
     wizard can change them, and that save re-plans on the spot
     (`shell.configSaved`), so a tree `newReviewScreen` finds always matches
-    the settings that built it. `rebuildTree` calls
-    `vfs.ReopenPlan(ctx, db)` before `Propose`, flipping every
-    **unapproved-or-approved** row back to PROPOSED (never `DONE` — see
-    `ReopenPlan` in `pkg/core/vfs/review.go`) so the whole library is
-    re-proposed under the settings as they now stand. `persist`'s
-    keep-decided-rows rule is for the *scan* phase; a re-plan is the one
-    caller that means to throw an approval away, since it was given to the
-    plan being replaced — an approved row still reading `✓ saved` after a
-    settings change was a reported bug. **A re-plan touching a *transferred*
-    file is a bug of the same shape, caught reversing it**: `ReopenPlan`
-    used to flip `DONE` rows too (so an already-organized library was
-    "redoable"), which meant a save could quietly move files that were
-    already on disk. It also
+    the settings that built it. `rebuildTree` just calls `Propose`: **there
+    is no `ReopenPlan` and no plan status to reopen** (issue 20) — every row
+    whose file is not yet placed and has no `TRANSFER` error is pending, and
+    `persist` replaces exactly those, so the whole library is re-proposed
+    under the settings as they now stand while a file already placed or
+    failed keeps its row (a re-plan moving a *transferred* file was a bug
+    once). It also
     holds `newReviewScreen`, which builds the embedded screen `scan` swaps
     into, and is also where a shell-side settings save re-plans from
     (`shell.configSaved`, see above, which routes through `newReviewScreen`)
@@ -394,12 +388,12 @@ one scan ever runs against it at a time (see "Conventions" below):
     default, never does — it never touches a source); `checkPlanFits`
     (`vfs.PendingBytes` against `volume.FreeBytes`, a hard stop before
     anything changes, `ponytail:` it refuses a same-volume move too);
-    `vfs.ApplyDraft` (replay the draft, `Confirm` it — which applies and
-    approves in one transaction — then delete the file); `CleanPreviews`;
-    `execute.Run`. `--dry-run` skips the apply and reports `PROPOSED` and
-    `APPROVED` rows at their proposed paths (without the draft's edits).
-    Safe to re-run: `execute.Run` only ever selects still-`APPROVED` rows,
-    so a file already `DONE` is skipped and a run stopped partway resumes on
+    `vfs.ApplyDraft` (replay the draft, `Confirm` it — which applies the
+    edits in one transaction — then delete the file); `CleanPreviews`;
+    `execute.Run`. `--dry-run` skips the apply and reports the same pending
+    rows at their proposed paths (without the draft's edits).
+    Safe to re-run: `execute.Run` only ever selects pending rows (file not
+    placed, no `TRANSFER` error), so a placed file is skipped and a run stopped partway resumes on
     its own next time; a crash between the apply and the draft's removal
     replays as a no-op.
 
@@ -699,6 +693,8 @@ Back in `internal/cli/`:
 - `issue.go` — `issue` cmd: zips the newest `issueLogs` (5) non-empty logs
     other than its own run's, under `logs/`, + `about.txt`, into the **current
     directory**, not the library; db opt-in via `--include-db` (holds paths/GPS).
+    Always ships `errors.json` from the `errors` table (see `pkg/report`),
+    home directory rewritten to `$HOME`; `--redact-paths` replaces every path.
 - `reset.go` — bare `reset` clears only the peek copies
     (`review.CleanPreviews()`), asks nothing, and names `--db` for the rest:
     nothing about throwing away a cache is worth a question. `reset --db` is
@@ -719,17 +715,17 @@ Back in `internal/cli/`:
     execute run undoable. The backup is kept. **Not `openLibrary`**: that
     would open the very database being replaced. It takes the output lock
     (keeps other wandersort processes out), then `Restore`:
-    - checks the backup first (our `application_id`, `PRAGMA quick_check`);
-    - refuses with `db.ErrInUse` while **any** connection has the live file
+  - checks the backup first (our `application_id`, `PRAGMA quick_check`);
+  - refuses with `db.ErrInUse` while **any** connection has the live file
       open, even an idle sqlite browser — detected by
       `locking_mode=EXCLUSIVE` + `journal_mode=DELETE`, which SQLite only
       allows with every other connection gone, and whose lock is then held
       until close so nobody opens it mid-restore;
-    - copies through SQLite's online backup API (`NewRestore`) on that same
+  - copies through SQLite's online backup API (`NewRestore`) on that same
       connection — **never a file swap**: the pages go through SQLite's own
       rollback journal, so a crash rolls back to the old database, and there
       is no `-wal` file to delete by hand and get wrong;
-    - drops the `wandersort_backup` stamp table.
+  - drops the `wandersort_backup` stamp table.
     Then it opens the result once with `db.New` to prove it is a library.
 - `app.go`'s `confirm` is the one yes/no prompt (`execute --move`,
     `reset --db`, `recover`): a `tui.ConfirmModel` in the TUI, y/N on stdin
@@ -867,8 +863,13 @@ tree over the whole library.
   equivalent — one just doesn't need an identity to compare against.
   **There is no soft delete, no `deleted_at`, and no retention window any
   more** (spec D10: only what is in the library matters) — `sweep` deletes
-  the vanished file's `virtual_fs_entries` and `file_metadata` rows alongside
-  `file_registry` itself, in that FK order, in one transaction, immediately.
+  the vanished file's `file_registry` row, in one transaction, immediately;
+  its metadata, plan and error rows go by `ON DELETE CASCADE` (`file_metadata`,
+  `virtual_fs_entries` and `errors` all cascade from `file_registry`).
+  **A changed file is a new file** (issue 20): `storeScan` deletes the row
+  when size or mtime differs (or under `--force`) and inserts a fresh one, so
+  the file is read and planned from scratch — nothing in the pipeline moves a
+  row backwards any more, and there is no reset path in the upsert.
   A placed file is never a sweep candidate: `execute` repoints its
   `file_dir`/`file_name` at a library-relative path once it lands (see
   `execute/` below), and a relative path is never under an absolute scan
@@ -893,14 +894,20 @@ tree over the whole library.
   files thousands of files later, by which point the cache had evicted them and
   the header read went to disk a second time. Reading each file once, with the
   two consumers adjacent, is the entire point of this package; **don't split
-  them again for tidiness**. A merged phase also collapses the state machine to
-  `DISCOVERED → ANALYZING → ANALYZED`: there is no `HASHING`/`HASHED` any more
-  (dropped from `file_registry`'s CHECK constraint, along with 002's
-  `trg_file_metadata_hashed` trigger, which existed to flip a file to `HASHED`
-  on the hash-only insert). Nothing is half-persisted, so `scanner`'s upsert
-  resets a stuck `ANALYZING` straight back to `DISCOVERED` — an interrupted run
-  re-reads the file rather than resuming from a hash it never wrote. A failed
-  hash clears the file's stale metadata row and parks it at `ERROR`.
+  them again for tidiness**. **There is no scan status at all** (issue 20;
+  `file_registry.scan_status` is gone): a file is *unread* when it has no
+  `file_metadata` row and no `READ` row in `errors` (`unreadFiles`, one
+  predicate shared by the progress total, `pendingVolumes` and the producer's
+  pages). Hash and EXIF land in one row, so nothing is half-persisted, and
+  **handing a file out writes nothing**: the producer pages through the unread
+  files per volume (`nextBatch`, `readBatchSize` = 256, forward-only `id`
+  cursor — the predicate only ever shrinks, so it can neither repeat a file
+  nor skip one). An interrupted run left no claim to reset; the files in flight
+  are simply read again. A file that cannot be read gets a `READ` `errors` row
+  (op `open`/`hash`) and is skipped until its bytes change or `--force`; when
+  only failures remain the run says so (`N files could not be read`) and
+  finishes. A panic in a worker is recovered per file (`readOne`), recorded as
+  `kind = 'panic'` with the real stack, and the run goes on.
   **Known gap:** full-byte hash means pixel-identical files with differing
   metadata land in separate groups.
   **Every file is read in full — there is no unique-size skip** (spec D7): a
@@ -937,15 +944,16 @@ tree over the whole library.
   but front-loads progress so an interrupted run has the cheap files done;
   **`ORDER BY id` within a volume is untouched**, because id is discovery
   order is walk order is roughly directory order, which is as seek-friendly as
-  a claim order gets — don't "improve" it. A closing unscoped pass
+  a read order gets — don't "improve" it. A closing unscoped pass
   (`pendingVolume.all`, which is *not* the same as an empty `uuid`) catches
-  any straggler the grouping missed. `readCost` clamps to `[1, budget]`: a
+  any volume the grouping missed; it excludes the volumes already drained,
+  since their last files may still be in flight and would look unread. `readCost` clamps to `[1, budget]`: a
   cost above the budget would block forever.
-  Sidecars (`.AAE`) are claimed and hashed like anything else but never handed
+  Sidecars (`.AAE`) are read and hashed like anything else but never handed
   to exiftool (`fileRecord.mediaType`, checked in the worker) — they carry no
   EXIF, so spawning exiftool on them is pure waste. **An extraction failure is
-  not a file failure**: it warns, persists empty EXIF columns, and marks the
-  file `ANALYZED` (the hash and folder context are still enough for the VFS to
+  not a file failure**: it warns, persists empty EXIF columns, and the
+  file counts as read, with no `errors` row (the hash and folder context are still enough for the VFS to
   place it). Workers write straight through `db.Writer` — it already serializes
   every operation, so a separate store goroutine would only add a channel.
   Persists `exif_creation_date` alongside `exif_create_date` — a real
@@ -984,7 +992,7 @@ tree over the whole library.
   `placed = 0` outright, and `persist`'s "no longer a live master" delete
   treats `is_master = 1 OR placed = 1` as protected — the scorer already
   never lets a placed file lose `is_master` (see `scorer/` above), so this is
-  the backstop, not the primary defense. Its `DONE` row is the plan from
+  the backstop, not the primary defense. Its row is the plan from
   here on; nothing here touches it. `persist` **flushes the
   writer before returning**: the
   writer is an async FIFO, and every caller reads the rows straight back
@@ -1136,7 +1144,7 @@ tree over the whole library.
   lowest number free for every member): Apple Photos pairs an `.AAE` with its
   photo by name, so a photo that collides while its edit doesn't must still
   drag the edit to `_2` with it. A Live Photo `.MOV` joins its photo's group
-  when within `captureAgreementWindow` (`pairLiveVideos`) — suffix only, never
+  when within `liveVideoWindow` (1 second — one shutter press; the edit group keeps 5 minutes) and not naming a different device (`pairLiveVideos`) — suffix only, never
   folder. Names compare as `nameKey` (NFC, lowercased — a map key, not
   `EqualFold`), and files already placed in the library (`Config.Placed`, from
   `placedPaths`) hold their names. `Confirm` re-resolves review collisions
@@ -1161,9 +1169,8 @@ tree over the whole library.
   before this check ever runs. `OrphanDir` is excluded from `BuildTree`
   (`review.go`, the same `substr` prefix-compare `FilesUnder` uses, not
   `LIKE` — nothing to review about junk) and therefore never renamed,
-  merged, or seen by a reviewer; `Confirm`'s blanket
-  `PROPOSED → APPROVED` still sweeps its rows up with everything else in
-  scope, so no separate sign-off is needed. It still flows through Execute
+  merged, or seen by a reviewer; `Confirm` never
+  asks about it, and there is no sign-off state to sweep it into. It still flows through Execute
   like any other row, landing at `<output>/orphan/` on disk.
   **A file's folder date is a stored fact, not a folder name**
   (`masterFile.folderDate`, in-memory only — nothing persists it as its own
@@ -1206,8 +1213,7 @@ tree over the whole library.
   reported bug (Jan 1 videos filed under `12_December/01/Banjar`).
   `BuildTree(ctx, db)` and `Confirm(ctx, db, roots)` always cover the whole
   library — there is no time-slice scoping any more (issue 19).
-  `ReopenPlan(ctx, db)` puts every `APPROVED` row back to
-  `PROPOSED` (never `DONE`), for a settings re-plan or `[R]`.
+  There is no `ReopenPlan`: a plan row has no status (issue 20).
   **The plan is a persisted folder tree** (`folder_nodes`, spec D12,
   `folders.go`): `id`, `parent_id`, `name`, `level`. Every entry points at
   its folder (`virtual_fs_entries.node_id`); a folder's path is its
@@ -1222,7 +1228,7 @@ tree over the whole library.
   gives every folder back its id. **A folder holding a placed file (or above
   one) is never reused by a new proposal** (`loadFolders`): a review rename
   of a shared folder would rename where the placed file is recorded, and
-  placed files never move. A failed transfer's (`ERROR`) folder counts as
+  placed files never move. A failed transfer's (`TRANSFER` error) folder counts as
   placed here (`placedFoldersCTE`): its row keeps the `target_path` it
   failed at, so a shared-folder rename would leave that path stale. A new
   file routed into a placed folder (below) gets a same-path twin chain
@@ -1332,21 +1338,23 @@ tree over the whole library.
   path rewriting at all.
 - `execute/` — the phase `vfs.go`'s package doc used to call "future work":
   the one thing in this codebase that writes the user's media files. Reads
-  every `APPROVED` row of `virtual_fs_entries`, places `source_path` at
-  `outputDir/target_path`, and marks the row `DONE` or `ERROR` (+ a nullable
-  `error` column on the row itself — added to migration 003 in place, pre-tag
-  rule — so "which files failed and why" is a query, not a grep through the
-  log). `Run(ctx, db, log, outputDir, Options{Mode, DryRun})` is the whole
+  every pending row of `virtual_fs_entries` (`db.PendingTransfer`: file not
+  placed, no `TRANSFER` error), places `source_path` at `outputDir/target_path`,
+  and records the outcome: success sets `file_registry.placed` and deletes the
+  file's `errors` rows, failure writes a `TRANSFER` row (op `stat`/`mkdir`/
+  `copy`/`rename`/`hash`/`remove-source`, from `stepError`) through
+  `db.RecordError` — so "which files failed and why" is a query. There is no
+  row status any more. `Run(ctx, db, log, outputDir, Options{Mode, DryRun})` is the whole
   surface; `Mode` is `Copy` (the zero value — ship the safe default) or
   `Move`. **Deliberately sequential**, per
   `.tickets/apply-phase-unmeasured.md`: nothing has ever measured this
   phase's throughput, so there is nothing yet to size a worker pool against
   — don't add one speculatively. **Resumable by construction, not by an
-  explicit state machine**: it only ever selects `APPROVED` rows, so a run
+  explicit state machine**: it only ever selects pending rows, so a run
   that stops partway (crash, ctrl+c, a bad file) leaves every untouched row
-  exactly where the next run picks it up; a row that failed stays at `ERROR`
-  and is not retried automatically, the same contract
-  `file_registry.scan_status` already has. The seam is one function, not an
+  exactly where the next run picks it up; a file that failed keeps its
+  `TRANSFER` row (and the folder it was planned into) and is not retried
+  automatically. The seam is one function, not an
   `FS` interface (that shape was considered and rejected — a large interface
   learned to vary one behaviour is a shallow adapter): `transfer(ctx, mode,
   src, dst, want) (string, error)` places one file, atomically, and returns
@@ -1356,28 +1364,28 @@ tree over the whole library.
   copy is verified. **Every copy is hash-verified** (spec D22): the bytes
   stream through `metadata.NewHasher` as they are written, and the temp file
   is linked into place only if `metadata.HashString` matches the stored
-  `file_hash` (`want`) — a mismatch (source changed since the scan) is an
-  `ERROR` row naming both hashes, nothing at the destination, source kept.
+  `file_hash` (`want`) — a mismatch (source changed since the scan) is a
+  `TRANSFER` error (`checksum-mismatch`) naming both hashes, nothing at the destination, source kept.
   A same-device rename copies no bytes and is not checked. **Never
   overwrites** (spec D21):
   both fail with `fs.ErrExist` on an occupied destination, and that error
   moves on to `name_1.ext`, `name_2.ext`… — **unless the taken name already
   holds this file** (`holds`: same size, then `metadata.HashFile` equals
   `want`), which is where it lands: a crash before the async writer recorded
-  an earlier copy, or `recover` putting placed rows back to `APPROVED`, would
+  an earlier copy, or `recover` putting placed rows back to pending, would
   otherwise place a second copy at `_1`. A move there hashes the **source**
   too before deleting it — the library copy matching the scan says nothing
   about a source edited since (same size), and deleting that edit was a bug
   caught in review. A move whose file landed verified but
-  whose source can't be removed (`errSourceNotRemoved`) is recorded `DONE`
-  with a warning, not `ERROR` — the library holds the file, so the database
+  whose source can't be removed (`errSourceNotRemoved`) is recorded placed
+  with a warning, not as an error — the library holds the file, so the database
   must too. `markResult` writes the
   landed name back to `target_path`, and to `source_path` and
   `file_registry.file_dir`/`file_name` too — **library-relative, the same
   value as `target_path`** (spec D9/D10: the database travels with the
   library, so a placed file's path must not depend on where it's mounted).
   `markResult` also sets `file_registry.placed = 1` on success, copy and
-  move alike; the `ERROR` branch never touches it, so a failed transfer
+  move alike; the failure branch never touches it, so a failed transfer
   stays `placed = 0`) and `dryRunTransfer` (does
   nothing — `Run` already `os.Stat`s the source before calling `transfer`,
   so a dry run's `Report` is real byte/file counts for zero I/O). Reports
@@ -1400,11 +1408,9 @@ tree over the whole library.
   of an already-placed file a later scan saw again. It reads
   `file_registry.placed = 1` fresh every run (so a run that stops early is
   picked up by the next one), collects the target ids in one query up front,
-  and deletes in the same FK order the scanner's `sweep` uses
-  (`virtual_fs_entries`, then `file_metadata`, then `file_registry`) — a
-  fixed id list, not a delete relying on `ON DELETE SET NULL` having already
-  run to make the next statement's `WHERE` match. An `ERROR` row is never a
-  target: the scorer guard (see `scorer/` above) means a placed file's hash
+  and deletes the `file_registry` rows alone — a fixed id list; metadata, plan and
+  error rows go by `ON DELETE CASCADE`, which is what orders it now. A file
+  with a `READ` error has no metadata row, so it is never a target: the scorer guard (see `scorer/` above) means a placed file's hash
   never has a second live master to begin with. **The caller holds the
   output lock**
   (`lock.AcquireOutput`), same contract `scan` has — `execute.Run` assumes
@@ -1489,7 +1495,33 @@ tree over the whole library.
   reads, no flag layering, no CLI framework** — the precedence chain,
   `Overrides`/`TriBool` and the whole `config.yaml` machinery went with issue
   10.
-- `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry. The app DB runs
+- `report/` — what `wandersort issue` ships from the `errors` table
+  (`report.Errors`): every row as named fields (stage, op, kind, attempts,
+  the file's media type/extension/size/volume class, `detail` nested) with
+  paths replaced — the home directory becomes the literal `$HOME` by exact,
+  segment-bounded replacement (no guessing); `--redact-paths` swaps every path
+  for `<source>/<name>/<target>/<library>/<path>`. Also a grouped summary
+  (`31 x READ/open/permission-denied at metadata.go:412, .HEIC, removable`)
+  for `about.txt`. `issue` opens the database read-only on its own, never
+  through `openLibrary`.
+- `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry. `errors.go`:
+  the `errors` table's writer, `RecordError(ctx, tx, fileID, stage, op, err)`
+  — one row per (file, stage), replaced with `attempts` bumped; derives `kind`
+  from the error, stores `detail` as JSON (message, unwrapped chain, frames,
+  errno). Go errors carry no stack, so frames are taken where the pipeline
+  sees the failure (`db.WithStack`, before the write is queued on the writer's
+  goroutine; `db.PanicError` for a recovered panic's real stack) — they name a
+  code path, no more. `db.PendingTransfer(col)` is the one SQL definition of
+  "not placed and no `TRANSFER` error". There are no `db.Status*` file states.
+  **The `errors` table is part of 001's `CREATE TABLE`**, beside the registry
+  it points at, not its own migration — the same pre-tag rule the vfs notes
+  above spell out, and the same cost, except harsher: 001 also lost
+  `scan_status`, so a database that already recorded it has **no `errors`
+  table at all** and fails on the first query any phase runs, not just on one
+  column. 002's `file_metadata.file_id` became `NOT NULL … ON DELETE CASCADE`
+  and 003 lost `virtual_fs_entries.status`/`error` the same way. **Delete
+  `.wandersort.db` (or the whole library folder)** — `wandersort reset` does
+  not do it, the file itself has to go. The app DB runs
   `locking_mode=EXCLUSIVE` on its one pooled connection, so while wandersort
   has a library open every other client (sqlite3 CLI, DB browsers) gets
   "database is locked" — reads included. Nothing in-process may open a second

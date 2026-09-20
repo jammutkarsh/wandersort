@@ -100,20 +100,48 @@ Auto-created by the migration runner. Tracks which migrations have been applied.
   - `UNKNOWN` → Matched extension filter but couldn't classify
 - `file_extension`: Normalized lowercase extension (`.jpg` not `.JPG`). **Why?** Fast filtering in queries without string operations on the full path. Also used by the classifier to determine `media_type`.
 
+**There is no workflow-state column** (issue 20). There used to be a
+`scan_status` state machine here (`DISCOVERED`/`ANALYZING`/`ANALYZED`/`ERROR`)
+and it answered three separate questions at once — has this file been read,
+is somebody reading it right now, and did reading it fail — only one of which
+needs storing:
+
+- **Has it been read?** The `file_metadata` row exists. The hash and the EXIF
+  are written together, so a row is never half-there.
+- **Is somebody reading it?** Nobody needs to know. The metadata phase pages
+  through the unread files with a forward-only id cursor instead of stamping a
+  claim, so an interrupted run leaves nothing to reset — the files that were
+  in flight wrote nothing and are simply read again.
+- **Did it fail?** A row in `errors` with `stage = 'READ'` (below).
+
+"Still to read" is therefore `NOT EXISTS (file_metadata) AND NOT EXISTS
+(errors WHERE stage = 'READ')`, written once in `pkg/core/metadata` and shared
+by the progress count, the per-volume grouping and the producer's pages.
+
 ```sql
-    scan_status TEXT NOT NULL DEFAULT 'DISCOVERED'
-        CHECK(scan_status IN ('DISCOVERED','ANALYZING','ANALYZED','ERROR')),
+CREATE TABLE errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL REFERENCES file_registry(id) ON DELETE CASCADE,
+    stage TEXT NOT NULL CHECK (stage IN ('READ', 'TRANSFER')),
+    op TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    UNIQUE (file_id, stage)
+);
 ```
 
-**The "workflow state" column:**
-
-- `scan_status`: State machine. **Why?** The processing pipeline happens in stages:
-  1. `DISCOVERED` → File found during walk
-  2. `ANALYZING` → Metadata extraction in progress (in-progress marker)
-  3. `ANALYZED` → BLAKE3 hash and EXIF both persisted
-  4. `ERROR` → Something failed (permission denied, corrupt file)
-
-  This lets you **resume interrupted work**: "Read all files where `scan_status = 'DISCOVERED'`". The `ANALYZING` in-progress state prevents two workers from processing the same file; because the hash and the EXIF are written together, an interrupted run has nothing half-persisted and the scanner just resets those rows to `DISCOVERED`.
+- One row per (file, stage), and **only while it is still true**: it goes the
+  moment the read or the transfer works, or the file's own row does. **Why a
+  table and not a column?** A failure has more to say than a status can hold —
+  which step (`op`), which bucket (`kind`), how many attempts, and a whole
+  keyed-JSON `detail` (message, unwrapped chain, frames, errno) that
+  `wandersort issue` ships with paths scrubbed. A column per table would have
+  meant two half-answers and nothing to export.
+- Only two stages can fail *a file*: planning is library-wide, so it fails the
+  run instead.
 
 ```sql
     path_type TEXT NOT NULL DEFAULT 'RELATIVE' CHECK(path_type IN ('RELATIVE','ABSOLUTE')),
@@ -145,7 +173,7 @@ Auto-created by the migration runner. Tracks which migrations have been applied.
 - `UNIQUE(file_path, source_root)`: Prevent duplicate entries. One row per file path per root. **Why compound?** The same relative path `Photos/IMG_001.jpg` could exist under two different roots.
 - `idx_file_registry_hash`: **Critical for deduplication.** Query "find all files with this hash" in milliseconds, not full table scan.
 - `idx_file_registry_session`: Fast lookup of all files found in a specific scan.
-- `idx_file_registry_status`: Query "get next batch of files to hash" efficiently. The worker pool queries this constantly.
+- `UNIQUE (file_id, stage)` on `errors`: one failure per file per stage, and what makes recording the same failure again an upsert that bumps `attempts`. The "still to read" predicate probes it per file, so it carries that too.
 - `idx_file_registry_source_root`: Filter files by which root they came from.
 - `idx_file_registry_media_type`: Filter by media type (e.g., "show me only videos").
 - `idx_file_registry_origin`: Filter by file origin.

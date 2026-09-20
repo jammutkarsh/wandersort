@@ -10,7 +10,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -253,7 +252,8 @@ func TestRunNeverDemotesAPlacedFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	dbtest.SeedEntry(t, d, 1, "2024/06_June/Goa/Photos/IMG_1234.jpg", "2024/06_June/Goa/Photos/IMG_1234.jpg", db.StatusDone)
+	dbtest.SeedEntry(t, d, 1, "2024/06_June/Goa/Photos/IMG_1234.jpg", "2024/06_June/Goa/Photos/IMG_1234.jpg")
+	dbtest.SeedPlaced(t, d, 1)
 
 	if _, err := (&Scorer{db: d, log: logger.NewNoopLogger()}).Run(ctx); err != nil {
 		t.Fatal(err)

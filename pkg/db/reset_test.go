@@ -10,7 +10,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 )
 
@@ -32,7 +31,7 @@ func TestResetWipesAllTables(t *testing.T) {
 		}
 	}
 
-	dbtest.SeedEntry(t, d, 1, "/src/photo.jpg", "2024/06_June/photo.jpg", db.StatusProposed)
+	dbtest.SeedEntry(t, d, 1, "/src/photo.jpg", "2024/06_June/photo.jpg")
 
 	resp, err := d.ResetAll(ctx)
 	if err != nil {

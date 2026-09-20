@@ -11,6 +11,7 @@ var schema001 = Migration{
 	Description: "scanner_schema",
 	SQL: []string{
 		fileRegistry,
+		errorsTable,
 	},
 }
 
@@ -38,9 +39,6 @@ CREATE TABLE IF NOT EXISTS file_registry (
     media_type     TEXT,
     file_extension TEXT NOT NULL,
 
-    -- Processing state machine
-    scan_status TEXT NOT NULL DEFAULT 'DISCOVERED',
-
     file_origin TEXT NOT NULL DEFAULT 'SOURCE',
 
     -- Set once execute lands this file at its target, copy or move alike.
@@ -50,10 +48,39 @@ CREATE TABLE IF NOT EXISTS file_registry (
     -- the vfs phase never re-proposes or deletes its plan row (spec D10/D11)
     placed INTEGER NOT NULL DEFAULT 0,
 
-    CHECK (media_type  IN ('IMAGE', 'VIDEO', 'SIDECAR', 'RAW', 'UNKNOWN')),
-    CHECK (scan_status IN ('DISCOVERED', 'ANALYZING', 'ANALYZED', 'ERROR'))
+    CHECK (media_type IN ('IMAGE', 'VIDEO', 'SIDECAR', 'RAW', 'UNKNOWN'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_registry_dir_name ON file_registry(file_dir, file_name);
-CREATE INDEX IF NOT EXISTS idx_file_registry_status ON file_registry(scan_status);
+`
+
+// errors holds the one failure a stage can have for a file, and only while it
+// is true: the row goes the moment the read or transfer works, or the file's
+// own row does (a changed file, --force, a sweep — all cascade). One row per
+// (file, stage), replaced when it fails again. The file's path, size, type and
+// volume are one join away, so nothing about the file is copied here.
+const errorsTable = `
+CREATE TABLE IF NOT EXISTS errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL REFERENCES file_registry(id) ON DELETE CASCADE,
+    stage TEXT NOT NULL CHECK (stage IN ('READ', 'TRANSFER')),
+    -- the step inside the stage: open, hash, exiftool, stat, mkdir, copy,
+    -- rename, remove-source
+    op TEXT NOT NULL,
+    -- the bucket, derived from the error (errors.Is against fs.ErrPermission,
+    -- fs.ErrNotExist, ENOSPC, ...): permission-denied, not-found, io-error,
+    -- no-space, checksum-mismatch, panic, other
+    kind TEXT NOT NULL,
+    -- everything that varies, as one JSON object of named fields: message,
+    -- chain (the unwrapped errors), frames, syscall. Stored whole; only the
+    -- export (wandersort issue) has its paths replaced. Go errors carry no
+    -- stack, so "frames" is where the pipeline recorded the failure, not where
+    -- the OS call returned: it names the code path, it is no post-mortem
+    -- trace. A caught panic puts its real stack there. Read in Go only.
+    detail TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    UNIQUE (file_id, stage)
+);
 `

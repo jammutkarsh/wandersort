@@ -14,6 +14,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 )
 
@@ -50,10 +51,11 @@ func (h *harness) placeFile(t *testing.T, meta classifier.CommonMetadata, target
 		}
 		parent = folder
 	}
-	if _, err := h.d.ExecContext(ctx, `INSERT INTO virtual_fs_entries (file_id, source_path, node_id, target_path, status)
-		VALUES (?, ?, ?, ?, ?)`, id, target, parent, target, db.StatusDone); err != nil {
+	if _, err := h.d.ExecContext(ctx, `INSERT INTO virtual_fs_entries (file_id, source_path, node_id, target_path)
+		VALUES (?, ?, ?, ?)`, id, target, parent, target); err != nil {
 		t.Fatal(err)
 	}
+	dbtest.SeedPlaced(t, h.d, id)
 	return parent
 }
 
@@ -150,7 +152,7 @@ func TestRouteAfterRulesChange(t *testing.T) {
 	if got[id].TargetPath != "2024/03_March/02/NEW.HEIC" {
 		t.Errorf("new file = %q, want 2024/03_March/02/NEW.HEIC", got[id].TargetPath)
 	}
-	if got[1].TargetPath != placedPath || got[1].Status != db.StatusDone {
+	if got[1].TargetPath != placedPath || !got[1].Placed {
 		t.Errorf("placed file = %+v, want it untouched at %s", got[1], placedPath)
 	}
 }
@@ -197,7 +199,7 @@ func TestRouteReplan(t *testing.T) {
 func proposedCount(t *testing.T, h *harness) int {
 	t.Helper()
 	var n int
-	if err := h.d.SQL.Get(&n, `SELECT COUNT(*) FROM virtual_fs_entries WHERE status = ?`, db.StatusProposed); err != nil {
+	if err := h.d.SQL.Get(&n, `SELECT COUNT(*) FROM virtual_fs_entries WHERE `+db.PendingTransfer("file_id")); err != nil {
 		t.Fatal(err)
 	}
 	return n

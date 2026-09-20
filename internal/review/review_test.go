@@ -101,7 +101,7 @@ func TestReview(t *testing.T) {
 					t.Fatal(err)
 				}
 				target := "2017/April/08/Horizontal/Photos/" + name
-				dbtest.SeedEntry(t, d, fileID, "/src/"+name, target, db.StatusProposed)
+				dbtest.SeedEntry(t, d, fileID, "/src/"+name, target)
 			}
 
 			parentFiles, err := vfs.FilesUnder(ctx, nodeAt(t, d, "2017/April/08"), d)
@@ -1341,7 +1341,7 @@ func insertVFSEntry(t *testing.T, d *db.DB, fileID int64, sourcePath, targetPath
 		fileID, filepath.Base(sourcePath)); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.SeedEntry(t, d, fileID, sourcePath, targetPath, db.StatusProposed)
+	dbtest.SeedEntry(t, d, fileID, sourcePath, targetPath)
 }
 
 // dbTree is the review tree BuildTree reads from d.

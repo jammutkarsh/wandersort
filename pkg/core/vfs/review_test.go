@@ -14,7 +14,6 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/config"
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 )
@@ -80,17 +79,13 @@ func TestReview(t *testing.T) {
 
 			var rows []struct {
 				TargetPath string `db:"target_path"`
-				Status     string `db:"status"`
 			}
 			if err := h.d.SQL.Select(&rows,
-				`SELECT target_path, status FROM virtual_fs_entries`); err != nil {
+				`SELECT target_path FROM virtual_fs_entries`); err != nil {
 				t.Fatal(err)
 			}
 			oldSeg := "/" + oldName + "/"
 			for _, r := range rows {
-				if r.Status != db.StatusApproved {
-					t.Errorf("status = %q, want APPROVED", r.Status)
-				}
 				if !strings.Contains("/"+r.TargetPath, "/Manali/") {
 					t.Errorf("target %q not rewritten to Manali", r.TargetPath)
 				}
@@ -342,13 +337,13 @@ func TestReview(t *testing.T) {
 			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatal(err)
 			}
-			var status string
-			if err := h.d.SQL.Get(&status,
-				`SELECT status FROM virtual_fs_entries WHERE target_path = ?`, OrphanDir+"/IMG_0042.AAE"); err != nil {
+			var n int
+			if err := h.d.SQL.Get(&n,
+				`SELECT COUNT(*) FROM virtual_fs_entries WHERE target_path = ?`, OrphanDir+"/IMG_0042.AAE"); err != nil {
 				t.Fatal(err)
 			}
-			if status != db.StatusApproved {
-				t.Errorf("orphan row status = %q, want %q (approved along with everything else)", status, db.StatusApproved)
+			if n != 1 {
+				t.Errorf("orphan rows = %d, want the one row untouched", n)
 			}
 		}},
 	}
@@ -403,7 +398,8 @@ func TestReviewConfirmAvoidsPlacedNames(t *testing.T) {
 	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.SeedEntry(t, h.d, placed, "lib/a.heic", "2024/06_June/Manali/a.heic", db.StatusDone)
+	dbtest.SeedEntry(t, h.d, placed, "lib/a.heic", "2024/06_June/Manali/a.heic")
+	dbtest.SeedPlaced(t, h.d, placed)
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleLocation}
@@ -440,7 +436,8 @@ func TestReviewConfirmKeepsPairSuffix(t *testing.T) {
 	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.SeedEntry(t, h.d, placed, "lib/IMG_0001.HEIC", "2024/06_June/Manali/IMG_0001.HEIC", db.StatusDone)
+	dbtest.SeedEntry(t, h.d, placed, "lib/IMG_0001.HEIC", "2024/06_June/Manali/IMG_0001.HEIC")
+	dbtest.SeedPlaced(t, h.d, placed)
 
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleLocation}

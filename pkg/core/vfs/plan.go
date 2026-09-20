@@ -607,7 +607,7 @@ func pairLiveVideos(masters []masterFile) {
 		for _, j := range photos[v.FileDir+"|"+captureStem(v.FileName)] {
 			p := &masters[j]
 			gap := v.takenAt.Sub(p.takenAt).Abs()
-			if gap > captureAgreementWindow {
+			if gap > liveVideoWindow || (v.device != "" && p.device != "" && v.device != p.device) {
 				continue
 			}
 			if best == nil || cmp.Or(cmp.Compare(gap, bestGap), strings.Compare(p.orderHash, best.orderHash)) < 0 {
@@ -645,6 +645,11 @@ var variantPrefixes = []struct{ variant, canonical string }{
 // while its screenshot went to Screenshots. Reused filename counters — the
 // thing this check defends against — are hours or days apart, never minutes.
 const captureAgreementWindow = 5 * time.Minute
+
+// liveVideoWindow is how far a Live Photo's video may sit from its photo: both
+// come from one shutter press and share a timestamp. Not widened past a
+// second without a real pair sitting further apart, and never back to minutes.
+const liveVideoWindow = time.Second
 
 // captureStem normalizes a filename to the key used to group same-capture
 // files: strip the extension, then fold a known variant prefix.

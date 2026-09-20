@@ -55,11 +55,12 @@ func SeedHash(t testing.TB, d *db.DB, fileID int64, hash string) {
 	}
 }
 
-// SeedEntry inserts a virtual_fs_entries row for fileID, creating (or reusing)
-// the folder_nodes chain its target folder needs, and returns the row's
-// node_id. Levels are left blank: a test that cares about them goes through
+// SeedEntry inserts a pending virtual_fs_entries row for fileID, creating (or
+// reusing) the folder_nodes chain its target folder needs, and returns the
+// row's node_id. Placing or failing the file is a separate act (SeedPlaced,
+// SeedTransferError). Levels are left blank: a test that cares about them goes through
 // the planner instead.
-func SeedEntry(t testing.TB, d *db.DB, fileID int64, source, target, status string) int64 {
+func SeedEntry(t testing.TB, d *db.DB, fileID int64, source, target string) int64 {
 	t.Helper()
 	ctx := context.Background()
 	var parent any // nil = top level
@@ -80,9 +81,29 @@ func SeedEntry(t testing.TB, d *db.DB, fileID int64, source, target, status stri
 		parent = id
 	}
 	if _, err := d.ExecContext(ctx, `
-		INSERT INTO virtual_fs_entries (file_id, source_path, node_id, target_path, status)
-		VALUES (?, ?, ?, ?, ?)`, fileID, source, parent, target, status); err != nil {
+		INSERT INTO virtual_fs_entries (file_id, source_path, node_id, target_path)
+		VALUES (?, ?, ?, ?)`, fileID, source, parent, target); err != nil {
 		t.Fatal(err)
 	}
 	return parent.(int64)
+}
+
+// SeedPlaced marks fileID as landed in the library.
+func SeedPlaced(t testing.TB, d *db.DB, fileID int64) {
+	t.Helper()
+	if _, err := d.ExecContext(context.Background(),
+		`UPDATE file_registry SET placed = 1 WHERE id = ?`, fileID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// SeedTransferError gives fileID the TRANSFER failure execute would record.
+func SeedTransferError(t testing.TB, d *db.DB, fileID int64, message string) {
+	t.Helper()
+	if _, err := d.ExecContext(context.Background(), `
+		INSERT INTO errors (file_id, stage, op, kind, detail, first_seen_at, last_seen_at)
+		VALUES (?, ?, 'copy', 'other', ?, '2024-01-01T00:00:00.000000000Z', '2024-01-01T00:00:00.000000000Z')`,
+		fileID, db.StageTransfer, `{"message":"`+message+`"}`); err != nil {
+		t.Fatal(err)
+	}
 }

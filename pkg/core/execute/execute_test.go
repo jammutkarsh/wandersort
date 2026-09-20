@@ -9,6 +9,8 @@ package execute
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,7 +34,7 @@ func seedApproved(t *testing.T, d *db.DB, id int64, targetRel, srcContent string
 		t.Fatal(err)
 	}
 	dbtest.SeedFile(t, d, id, filepath.Dir(src), filepath.Base(src), int64(len(srcContent)))
-	dbtest.SeedEntry(t, d, id, src, targetRel, db.StatusApproved)
+	dbtest.SeedEntry(t, d, id, src, targetRel)
 	dbtest.SeedHash(t, d, id, hashOf(srcContent))
 	return src
 }
@@ -43,16 +45,29 @@ func hashOf(content string) string {
 	return metadata.HashString(h)
 }
 
+// Where a planned file stands: there is no status column, so it is placed once
+// file_registry says so, failed while it has a TRANSFER error, pending otherwise.
+const (
+	statePending = "pending"
+	statePlaced  = "placed"
+	stateFailed  = "failed"
+)
+
 func rowStatus(t *testing.T, d *db.DB, id int64) (status string, errText *string) {
 	t.Helper()
-	var row struct {
-		Status string  `db:"status"`
-		Error  *string `db:"error"`
-	}
-	if err := d.SQL.Get(&row, `SELECT status, error FROM virtual_fs_entries WHERE file_id = ?`, id); err != nil {
+	var placed bool
+	if err := d.SQL.Get(&placed, `SELECT placed FROM file_registry WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
-	return row.Status, row.Error
+	var detail string
+	err := d.SQL.Get(&detail, `SELECT detail FROM errors WHERE file_id = ? AND stage = ?`, id, db.StageTransfer)
+	switch {
+	case placed:
+		return statePlaced, nil
+	case err == nil:
+		return stateFailed, &detail
+	}
+	return statePending, nil
 }
 
 func TestRunCopiesApprovedFilesAndMarksDone(t *testing.T) {
@@ -73,8 +88,8 @@ func TestRunCopiesApprovedFilesAndMarksDone(t *testing.T) {
 			t.Errorf("missing %s: %v", want, err)
 		}
 	}
-	if status, _ := rowStatus(t, d, 1); status != db.StatusDone {
-		t.Errorf("status = %q, want %q", status, db.StatusDone)
+	if status, _ := rowStatus(t, d, 1); status != statePlaced {
+		t.Errorf("status = %q, want %q", status, statePlaced)
 	}
 }
 
@@ -95,7 +110,7 @@ func TestRunCopiesForwardSlashSourcePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	dbtest.SeedFile(t, d, 1, srcDir, "A.jpg", 5)
-	dbtest.SeedEntry(t, d, 1, filepath.ToSlash(src), "2024/A.jpg", db.StatusApproved)
+	dbtest.SeedEntry(t, d, 1, filepath.ToSlash(src), "2024/A.jpg")
 	dbtest.SeedHash(t, d, 1, hashOf("hello"))
 
 	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
@@ -161,7 +176,7 @@ func TestRunDryRunTouchesNothing(t *testing.T) {
 	if _, err := os.Stat(src); err != nil {
 		t.Error("dry run touched the source")
 	}
-	if status, _ := rowStatus(t, d, 1); status != db.StatusApproved {
+	if status, _ := rowStatus(t, d, 1); status != statePending {
 		t.Errorf("dry run changed status to %q", status)
 	}
 	if _, err := os.Stat(filepath.Join(out, db.BackupFileName)); !os.IsNotExist(err) {
@@ -182,12 +197,12 @@ func TestRunBacksUpPreRunPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	var status string
-	if err := b.QueryRow(`SELECT status FROM virtual_fs_entries WHERE file_id = 1`).Scan(&status); err != nil {
+	var placed bool
+	if err := b.QueryRow(`SELECT placed FROM file_registry WHERE id = 1`).Scan(&placed); err != nil {
 		t.Fatal(err)
 	}
-	if status != db.StatusApproved {
-		t.Errorf("backup holds status %q, want the pre-run %q", status, db.StatusApproved)
+	if placed {
+		t.Error("backup holds the file as placed, want the pre-run plan")
 	}
 }
 
@@ -196,7 +211,7 @@ func TestRunRecordsErrorAndContinuesPastFailure(t *testing.T) {
 	out := t.TempDir()
 	// row 1's source doesn't exist on disk; row 2 is real and must still run.
 	dbtest.SeedFile(t, d, 1, "/no/such/dir", "missing.jpg", 0)
-	dbtest.SeedEntry(t, d, 1, "/no/such/dir/missing.jpg", "missing.jpg", db.StatusApproved)
+	dbtest.SeedEntry(t, d, 1, "/no/such/dir/missing.jpg", "missing.jpg")
 	seedApproved(t, d, 2, "B.jpg", "world")
 
 	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
@@ -207,36 +222,67 @@ func TestRunRecordsErrorAndContinuesPastFailure(t *testing.T) {
 		t.Fatalf("got %+v", rep)
 	}
 	status, errText := rowStatus(t, d, 1)
-	if status != db.StatusError {
-		t.Errorf("status = %q, want %q", status, db.StatusError)
+	if status != stateFailed {
+		t.Errorf("status = %q, want %q", status, stateFailed)
 	}
 	if errText == nil || *errText == "" {
 		t.Error("failed row has no recorded error reason")
 	}
-	if status, _ := rowStatus(t, d, 2); status != db.StatusDone {
+	if status, _ := rowStatus(t, d, 2); status != statePlaced {
 		t.Errorf("row after the failure was not processed: status = %q", status)
 	}
 }
 
-func TestRunSkipsNonApprovedRows(t *testing.T) {
+// A placed file and a failed one are both decided: a re-run touches neither,
+// and the failed row keeps the folder it was planned into.
+func TestRunSkipsPlacedAndFailedRows(t *testing.T) {
 	d := dbtest.New(t)
 	out := t.TempDir()
-	src := filepath.Join(t.TempDir(), "still-proposed.jpg")
-	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	dbtest.SeedFile(t, d, 1, filepath.Dir(src), filepath.Base(src), 1)
-	dbtest.SeedEntry(t, d, 1, src, "still-proposed.jpg", db.StatusProposed)
+	seedApproved(t, d, 1, "placed.jpg", "x")
+	dbtest.SeedPlaced(t, d, 1)
+	seedApproved(t, d, 2, "2024/failed.jpg", "y")
+	dbtest.SeedTransferError(t, d, 2, "earlier failure")
 
 	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rep.Done != 0 || rep.Failed != 0 {
-		t.Fatalf("a PROPOSED row was touched: %+v", rep)
+		t.Fatalf("a decided row was touched: %+v", rep)
 	}
-	if _, err := os.Stat(filepath.Join(out, "still-proposed.jpg")); !os.IsNotExist(err) {
-		t.Error("a PROPOSED row was written to the output")
+	for _, name := range []string{"placed.jpg", "2024/failed.jpg"} {
+		if _, err := os.Stat(filepath.Join(out, name)); !os.IsNotExist(err) {
+			t.Errorf("%s was written to the output", name)
+		}
+	}
+	if got := targetPath(t, d, 2); got != "2024/failed.jpg" {
+		t.Errorf("failed row's target = %q, want the planned one", got)
+	}
+}
+
+// A failure records op and kind, and a later success in the same store
+// (markResult) removes the row — errors only ever holds live problems.
+func TestMarkResultRecordsAndClearsError(t *testing.T) {
+	d := dbtest.New(t)
+	seedApproved(t, d, 1, "A.jpg", "hello")
+
+	markResult(d, 1, 1, "A.jpg", &stepError{opStat, fmt.Errorf("source missing: %w", fs.ErrNotExist)})
+	d.Writer.Flush()
+	var row struct {
+		Op   string `db:"op"`
+		Kind string `db:"kind"`
+	}
+	if err := d.SQL.Get(&row, `SELECT op, kind FROM errors WHERE file_id = 1 AND stage = 'TRANSFER'`); err != nil {
+		t.Fatal(err)
+	}
+	if row.Op != opStat || row.Kind != db.KindNotFound {
+		t.Errorf("error row = %+v, want op stat, kind not-found", row)
+	}
+
+	markResult(d, 1, 1, "A.jpg", nil)
+	d.Writer.Flush()
+	if status, _ := rowStatus(t, d, 1); status != statePlaced {
+		t.Errorf("state = %s, want placed with no error row left", status)
 	}
 }
 
@@ -421,7 +467,7 @@ func TestRunCleanupLeavesErrorRowsAlone(t *testing.T) {
 	seedApproved(t, d, 1, "A.jpg", "hello")
 	// row 2's source doesn't exist on disk, so it lands at ERROR
 	dbtest.SeedFile(t, d, 2, "/no/such/dir", "missing.jpg", 0)
-	dbtest.SeedEntry(t, d, 2, "/no/such/dir/missing.jpg", "missing.jpg", db.StatusApproved)
+	dbtest.SeedEntry(t, d, 2, "/no/such/dir/missing.jpg", "missing.jpg")
 	if _, err := d.ExecContext(context.Background(),
 		`INSERT INTO file_metadata (file_hash, file_id) VALUES ('missing-hash', 2)`); err != nil {
 		t.Fatal(err)
@@ -432,8 +478,8 @@ func TestRunCleanupLeavesErrorRowsAlone(t *testing.T) {
 	}
 
 	status, _ := rowStatus(t, d, 2)
-	if status != db.StatusError {
-		t.Fatalf("status = %q, want %q", status, db.StatusError)
+	if status != stateFailed {
+		t.Fatalf("status = %q, want %q", status, stateFailed)
 	}
 	var reg struct {
 		Count  int  `db:"count"`
@@ -470,8 +516,8 @@ func TestRunRefusesSourceChangedSinceScan(t *testing.T) {
 		t.Fatalf("got %+v", rep)
 	}
 	status, errText := rowStatus(t, d, 1)
-	if status != db.StatusError {
-		t.Errorf("status = %q, want %q", status, db.StatusError)
+	if status != stateFailed {
+		t.Errorf("status = %q, want %q", status, stateFailed)
 	}
 	if errText == nil || !strings.Contains(*errText, hashOf("hello")) || !strings.Contains(*errText, hashOf("HELLO")) {
 		t.Errorf("error = %v, want both hashes in it", errText)
@@ -483,8 +529,8 @@ func TestRunRefusesSourceChangedSinceScan(t *testing.T) {
 	if got, err := os.ReadFile(src); err != nil || string(got) != "HELLO" {
 		t.Errorf("source = %q, %v; want it untouched", got, err)
 	}
-	if status, _ := rowStatus(t, d, 2); status != db.StatusDone {
-		t.Errorf("row after the mismatch: status = %q, want %q", status, db.StatusDone)
+	if status, _ := rowStatus(t, d, 2); status != statePlaced {
+		t.Errorf("row after the mismatch: status = %q, want %q", status, statePlaced)
 	}
 }
 
@@ -552,8 +598,8 @@ func TestRunMoveRecordsLandedFileWhenSourceKept(t *testing.T) {
 	if rep.Done != 1 {
 		t.Fatalf("got %+v", rep)
 	}
-	if status, _ := rowStatus(t, d, 1); status != db.StatusDone {
-		t.Errorf("status = %q, want %q", status, db.StatusDone)
+	if status, _ := rowStatus(t, d, 1); status != statePlaced {
+		t.Errorf("status = %q, want %q", status, statePlaced)
 	}
 	if _, err := os.Stat(src); err != nil {
 		t.Errorf("source gone: %v", err)
@@ -580,8 +626,8 @@ func TestRunMoveKeepsSourceEditedSinceScanWhenAlreadyPlaced(t *testing.T) {
 	if rep.Failed != 1 {
 		t.Fatalf("got %+v", rep)
 	}
-	if status, _ := rowStatus(t, d, 1); status != db.StatusError {
-		t.Errorf("status = %q, want %q", status, db.StatusError)
+	if status, _ := rowStatus(t, d, 1); status != stateFailed {
+		t.Errorf("status = %q, want %q", status, stateFailed)
 	}
 	if got, err := os.ReadFile(src); err != nil || string(got) != "HELLO" {
 		t.Errorf("source = %q, %v; want the edit kept", got, err)

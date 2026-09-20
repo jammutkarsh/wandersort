@@ -771,12 +771,12 @@ func TestBuildTargetsKeepsLiveVideoSuffixWithItsPhoto(t *testing.T) {
 	mk := func(dir, name, hash, taken, media string) masterFile {
 		return masterFile{FileDir: dir, FileName: name, FileHash: hash, MediaType: media, DBDateTaken: &taken}
 	}
-	// a's video was written after b's photo, so own-time order would cross them
+	// a's video was written after b's video, so own-time order would cross them
 	got := runPlan(t, []masterFile{
 		mk("/a", "IMG_0002.HEIC", "a", "2024:07:04 12:00:00", classifier.MediaTypeImage),
-		mk("/a", "IMG_0002.MOV", "a-mov", "2024:07:04 12:00:02", classifier.MediaTypeVideo),
-		mk("/b", "IMG_0002.HEIC", "b", "2024:07:04 12:00:01", classifier.MediaTypeImage),
-		mk("/b", "IMG_0002.MOV", "b-mov", "2024:07:04 12:00:01", classifier.MediaTypeVideo),
+		mk("/a", "IMG_0002.MOV", "a-mov", "2024:07:04 12:00:01", classifier.MediaTypeVideo),
+		mk("/b", "IMG_0002.HEIC", "b", "2024:07:04 12:00:00", classifier.MediaTypeImage),
+		mk("/b", "IMG_0002.MOV", "b-mov", "2024:07:04 12:00:00", classifier.MediaTypeVideo),
 	}, DefaultConfig())
 	base := func(src string) string {
 		for _, m := range got {
@@ -856,7 +856,7 @@ func TestPairLiveVideosNeedsAgreeingTimes(t *testing.T) {
 		{FileDir: "/a", FileName: "IMG_1051.HEIC", MediaType: classifier.MediaTypeImage, takenAt: time.Date(2024, 7, 14, 12, 0, 0, 0, time.UTC)},
 		{FileDir: "/a", FileName: "IMG_1051.MOV", MediaType: classifier.MediaTypeVideo, takenAt: time.Date(2024, 7, 28, 12, 0, 0, 0, time.UTC)},
 		{FileDir: "/a", FileName: "IMG_2000.HEIC", MediaType: classifier.MediaTypeImage, takenAt: time.Date(2024, 7, 14, 12, 0, 0, 0, time.UTC)},
-		{FileDir: "/a", FileName: "IMG_2000.MOV", MediaType: classifier.MediaTypeVideo, takenAt: time.Date(2024, 7, 14, 12, 0, 2, 0, time.UTC)},
+		{FileDir: "/a", FileName: "IMG_2000.MOV", MediaType: classifier.MediaTypeVideo, takenAt: time.Date(2024, 7, 14, 12, 0, 1, 0, time.UTC)},
 	}
 	for i := range ms {
 		ms[i].absPath = ms[i].FileDir + "/" + ms[i].FileName
@@ -867,6 +867,34 @@ func TestPairLiveVideosNeedsAgreeingTimes(t *testing.T) {
 	}
 	if ms[3].pairKey == "" || ms[3].pairKey != ms[2].pairKey {
 		t.Errorf("Live Photo not paired: photo %q, video %q", ms[2].pairKey, ms[3].pairKey)
+	}
+}
+
+// Two phones emptied into one folder both hold IMG_1234: each video pairs with
+// its own photo, not the other phone's shot 30 seconds away, and a video that
+// names another device than the only photo in reach pairs with nothing.
+func TestPairLiveVideosOwnPhotoOnly(t *testing.T) {
+	at := func(sec int) time.Time { return time.Date(2024, 7, 14, 12, 0, sec, 0, time.UTC) }
+	ms := []masterFile{
+		{FileName: "IMG_1234.HEIC", MediaType: classifier.MediaTypeImage, takenAt: at(0), device: "iPhone 13"},
+		{FileName: "IMG_1234.MOV", MediaType: classifier.MediaTypeVideo, takenAt: at(0), device: "iPhone 13"},
+		{FileName: "IMG_1234.HEIC", MediaType: classifier.MediaTypeImage, takenAt: at(30), device: "iPhone 15"},
+		{FileName: "IMG_1234.MOV", MediaType: classifier.MediaTypeVideo, takenAt: at(30), device: "iPhone 15"},
+		{FileName: "IMG_1234.HEIC", MediaType: classifier.MediaTypeImage, takenAt: at(50), device: "iPhone 12"},
+		{FileName: "IMG_1234.MOV", MediaType: classifier.MediaTypeVideo, takenAt: at(50), device: "Pixel 8"},
+	}
+	for i := range ms {
+		ms[i].FileDir = "/a"
+		ms[i].absPath = "/a/" + ms[i].FileName + string(rune('0'+i))
+		ms[i].orderHash = string(rune('a' + i))
+	}
+	pairLiveVideos(ms)
+	if ms[1].pairKey != ms[0].absPath || ms[3].pairKey != ms[2].absPath {
+		t.Errorf("videos paired %q and %q, want their own photos %q and %q",
+			ms[1].pairKey, ms[3].pairKey, ms[0].absPath, ms[2].absPath)
+	}
+	if ms[5].pairKey != "" {
+		t.Errorf("a Pixel video paired with an iPhone photo: %q", ms[5].pairKey)
 	}
 }
 

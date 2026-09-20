@@ -21,42 +21,21 @@ const (
 	MediaTypeUnknown = "UNKNOWN"
 )
 
-// CommonMetadata holds the attributes shared across supported file types. All
-// fields are strings; ones absent in a given type are "". The x/11 counts below
-// are how many of the supported types carry that group.
+// CommonMetadata holds the tags the pipeline stores and reads, all strings; one
+// absent from a given type is "". Each earns its place: dimensions and
+// orientation for the orientation folder, coordinates for the place, make and
+// model for the device folder, the four capture times for the date, the
+// screenshot flag for Screenshots. Anything else exiftool reports is left
+// undecoded — add a field here only together with the column that stores it.
 type CommonMetadata struct {
-	// --- File system (11/11) ---
-	ExifToolVersion     string `json:"ExifToolVersion"`
-	SourceFile          string `json:"SourceFile"`
-	Directory           string `json:"Directory"`
-	FileName            string `json:"FileName"`
-	FileSize            string `json:"FileSize"`
-	FilePermissions     string `json:"FilePermissions"`
-	FileType            string `json:"FileType"`
-	FileTypeExtension   string `json:"FileTypeExtension"`
-	MIMEType            string `json:"MIMEType"`
-	FileModifyDate      string `json:"FileModifyDate"`
-	FileAccessDate      string `json:"FileAccessDate"`
-	FileInodeChangeDate string `json:"FileInodeChangeDate"`
-
-	// --- Dimensions (10/11, absent in AAE) ---
 	ImageWidth  string `json:"ImageWidth"`
 	ImageHeight string `json:"ImageHeight"`
-	ImageSize   string `json:"ImageSize"`
-	Megapixels  string `json:"Megapixels"`
-
-	// --- Orientation (9/11) ---
 	Orientation string `json:"Orientation"`
 
-	// --- Device / lens (7-8/11) ---
-	Make      string `json:"Make"`
-	Model     string `json:"Model"`
-	LensModel string `json:"LensModel"`
-	Software  string `json:"Software"`
+	Make  string `json:"Make"`
+	Model string `json:"Model"`
 
-	// --- Timestamps (7-8/11) ---
 	CreateDate       string `json:"CreateDate"`
-	ModifyDate       string `json:"ModifyDate"`
 	DateTimeOriginal string `json:"DateTimeOriginal"`
 	// CreationDate is QuickTime's composite tag (iOS videos only) — unlike
 	// CreateDate, it carries its own timezone offset, e.g. "+05:30"
@@ -65,26 +44,8 @@ type CommonMetadata struct {
 	// whose top-level CreateDate is missing/bogus (e.g. epoch, pre-1970)
 	MediaCreateDate string `json:"MediaCreateDate"`
 
-	// --- Exposure (7/11) ---
-	ISO                  string `json:"ISO"`
-	Aperture             string `json:"Aperture"`
-	FNumber              string `json:"FNumber"`
-	FocalLength          string `json:"FocalLength"`
-	ExposureTime         string `json:"ExposureTime"`
-	ShutterSpeed         string `json:"ShutterSpeed"`
-	ExposureMode         string `json:"ExposureMode"`
-	ExposureProgram      string `json:"ExposureProgram"`
-	ExposureCompensation string `json:"ExposureCompensation"`
-	Flash                string `json:"Flash"`
-	MeteringMode         string `json:"MeteringMode"`
-	WhiteBalance         string `json:"WhiteBalance"`
-
-	// --- GPS (7/11; absent in bmp, webp, cr2, aae) ---
-	GPSLatitude    string `json:"GPSLatitude"`
-	GPSLongitude   string `json:"GPSLongitude"`
-	GPSAltitude    string `json:"GPSAltitude"`
-	GPSAltitudeRef string `json:"GPSAltitudeRef"` // "0" = above sea level, "1" = below
-	GPSPosition    string `json:"GPSPosition"`    // combined "lat, lon" string from exiftool
+	GPSLatitude  string `json:"GPSLatitude"`
+	GPSLongitude string `json:"GPSLongitude"`
 
 	// IsScreenshot reports the file was captured from a screen — a
 	// screenshot or a screen recording — rather than a camera. Absent from
@@ -155,55 +116,20 @@ func ParseMetadata(ext string, data []byte) (CommonMetadata, error) {
 	}
 
 	return CommonMetadata{
-		ExifToolVersion:     get("ExifToolVersion"),
-		SourceFile:          get("SourceFile"),
-		Directory:           get("Directory"),
-		FileName:            get("FileName"),
-		FileSize:            get("FileSize"),
-		FilePermissions:     get("FilePermissions"),
-		FileType:            get("FileType"),
-		FileTypeExtension:   get("FileTypeExtension"),
-		MIMEType:            get("MIMEType"),
-		FileModifyDate:      get("FileModifyDate"),
-		FileAccessDate:      get("FileAccessDate"),
-		FileInodeChangeDate: get("FileInodeChangeDate"),
-
 		ImageWidth:  get("ImageWidth"),
 		ImageHeight: get("ImageHeight"),
-		ImageSize:   get("ImageSize"),
-		Megapixels:  get("Megapixels"),
-
 		Orientation: get("Orientation"),
 
-		Make:      get("Make"),
-		Model:     get("Model"),
-		LensModel: get("LensModel"),
-		Software:  get("Software"),
+		Make:  get("Make"),
+		Model: get("Model"),
 
 		CreateDate:       get("CreateDate"),
-		ModifyDate:       get("ModifyDate"),
 		DateTimeOriginal: get("DateTimeOriginal"),
 		CreationDate:     get("CreationDate"),
 		MediaCreateDate:  get("MediaCreateDate"),
 
-		ISO:                  get("ISO"),
-		Aperture:             get("Aperture"),
-		FNumber:              get("FNumber"),
-		FocalLength:          get("FocalLength"),
-		ExposureTime:         get("ExposureTime"),
-		ShutterSpeed:         get("ShutterSpeed"),
-		ExposureMode:         get("ExposureMode"),
-		ExposureProgram:      get("ExposureProgram"),
-		ExposureCompensation: get("ExposureCompensation"),
-		Flash:                get("Flash"),
-		MeteringMode:         get("MeteringMode"),
-		WhiteBalance:         get("WhiteBalance"),
-
-		GPSLatitude:    get("GPSLatitude"),
-		GPSLongitude:   get("GPSLongitude"),
-		GPSAltitude:    get("GPSAltitude"),
-		GPSAltitudeRef: get("GPSAltitudeRef"),
-		GPSPosition:    get("GPSPosition"),
+		GPSLatitude:  get("GPSLatitude"),
+		GPSLongitude: get("GPSLongitude"),
 
 		IsScreenshot: isScreenCapture(raw),
 	}, nil

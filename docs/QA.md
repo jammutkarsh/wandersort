@@ -64,8 +64,9 @@ Execute/move stage isn't written yet, so it isn't here.
 34. `[A]` scan a photo with GPS EXIF → lat/lon/timestamp extracted and persisted onto the row the metadata phase wrote (one `file_metadata` row per file, not two).
 35. `[A]` scan a file with stripped/absent EXIF → hashes fine, empty metadata, no crash.
 36. `[A]` scan an iOS video with both `CreateDate` and `CreationDate` tags → both persisted (`exif_create_date`, `exif_creation_date`).
-37. `[A]` scan a dir containing `.AAE` sidecars → no ExifTool run for them; they stay at `scan_status = 'HASHED'` while media files end at `'ANALYZED'`.
-38. `[H]` kill the scan (ctrl+c) during the Metadata stage, then re-scan the same unchanged dir → the interrupted files resume from `HASHED` (the Hash stage reports ~0 files, Metadata re-reads them).
+37. `[A]` scan a dir containing `.AAE` sidecars → no ExifTool run for them; they still get a `file_metadata` row (hash, empty EXIF) and no `errors` row.
+38. `[H]` kill the scan (ctrl+c) during the Metadata stage, then re-scan the same unchanged dir → only the files with no `file_metadata` row are read; nothing is stuck and none is read twice.
+38b. `[A]` scan a dir containing a file the process cannot read (`chmod 000`) → the run finishes and says `1 file could not be read`; `wandersort issue` ships an `errors.json` row `READ/open/permission-denied` with the home directory as `$HOME`. Re-scan → the file is skipped and the line is **not** repeated (it counts this run's failures, not the standing total); `chmod 644` and touch it (or `--force`) → it is read and its error row is gone.
 
 ## 5. Score phase (depends on hash — elects master)
 

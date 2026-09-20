@@ -5,9 +5,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package vfs is the pipeline's final phase: it proposes a destination folder
-// hierarchy for every master file in the library, persisted as PROPOSED rows
-// in virtual_fs_entries, without touching anything on disk. The review flow
-// approves or corrects it; a future Execute phase performs the copy/move.
+// hierarchy for every master file in the library, persisted as rows in
+// virtual_fs_entries, without touching anything on disk. The review flow
+// corrects it; the Execute phase performs the copy/move.
 package vfs
 
 import (
@@ -148,8 +148,8 @@ func (v *VFS) placedTimes(ctx context.Context) ([]time.Time, error) {
 }
 
 // loadMasters reads every live, not-yet-placed master in the library with its
-// hashed metadata. A placed file is never re-proposed — its DONE row is
-// already the plan, and persist's kept-row logic leaves it alone — so there
+// hashed metadata. A placed file is never re-proposed — its row is already
+// the plan, and persist's kept-row logic leaves it alone — so there
 // is nothing here for it to win or lose. Not session-scoped: the proposal
 // must cover earlier sessions' files too, or the output would depend on scan
 // history. Ordered by (file_dir, file_name), not id, so clustering and
@@ -167,19 +167,19 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 	return masters, nil
 }
 
-// persist replaces the still-proposed part of the library's plan, and leaves
-// everything the reviewer already signed off alone: a rebuild re-proposes what
-// nobody has decided yet, not what they decided. A kept row whose file is no
-// longer a live master goes, or the plan would keep promising to move a file
-// that isn't there.
+// persist replaces the pending part of the library's plan, and leaves every
+// row a transfer already decided alone (its file placed, or a TRANSFER error
+// recorded): a rebuild re-proposes what has not happened yet, not what has. A
+// kept row whose file is no longer a live master goes, or the plan would keep
+// promising to move a file that isn't there.
 //
 // One synchronous transaction: every caller reads the rows straight back (the
 // review rebuilds its tree the moment Propose returns), and the folder rows
 // the entries point at have to exist before the entries do.
 func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 	err := v.db.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
-		// A decided row is one that is approved or already executed; its file
-		// must not be proposed a second time — UNIQUE(file_id) says so too.
+		// A decided row is one whose file is placed or failed to transfer; that
+		// file must not be proposed a second time — UNIQUE(file_id) says so too.
 		// Same "protected" set as the delete below (is_master = 1 OR placed =
 		// 1): a placed file is never in masters (loadMasters filters it out),
 		// so this never actually keeps one in practice, but the two queries
@@ -187,10 +187,10 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 		var keptIDs []int64
 		if err := tx.SelectContext(ctx, &keptIDs, `
 			SELECT file_id FROM virtual_fs_entries
-			WHERE status != ? AND file_id IN (
+			WHERE NOT `+db.PendingTransfer("file_id")+` AND file_id IN (
 				SELECT fr.id FROM file_registry fr
 				JOIN file_metadata fm ON fm.file_id = fr.id
-				WHERE fm.is_master = 1 OR fr.placed = 1)`, db.StatusProposed); err != nil {
+				WHERE fm.is_master = 1 OR fr.placed = 1)`); err != nil {
 			return fmt.Errorf("load decided vfs entries: %w", err)
 		}
 		kept := make(map[int64]bool, len(keptIDs))
@@ -198,7 +198,7 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 			kept[id] = true
 		}
 
-		if _, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries WHERE status = ?`, db.StatusProposed); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries WHERE `+db.PendingTransfer("file_id")); err != nil {
 			return fmt.Errorf("clear previous vfs proposal: %w", err)
 		}
 		// a decided row for a file that is no longer a live master promises a
@@ -208,10 +208,10 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 		// group (see scorer.Run), but this is the backstop if it ever did.
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM virtual_fs_entries
-			WHERE status != ? AND file_id NOT IN (
+			WHERE NOT `+db.PendingTransfer("file_id")+` AND file_id NOT IN (
 				SELECT fr.id FROM file_registry fr
 				JOIN file_metadata fm ON fm.file_id = fr.id
-				WHERE fm.is_master = 1 OR fr.placed = 1)`, db.StatusProposed); err != nil {
+				WHERE fm.is_master = 1 OR fr.placed = 1)`); err != nil {
 			return fmt.Errorf("clear stale vfs entries: %w", err)
 		}
 
@@ -300,9 +300,9 @@ const insertChunk = 50
 func insertStatement(chunk []masterFile, kept map[int64]bool) (stmt string, args []any, n int) {
 	var b strings.Builder
 	b.WriteString(`INSERT INTO virtual_fs_entries
-		(file_id, source_path, node_id, target_path, cluster_id, status, location_node_id)
+		(file_id, source_path, node_id, target_path, cluster_id, location_node_id)
 		VALUES `)
-	args = make([]any, 0, len(chunk)*7)
+	args = make([]any, 0, len(chunk)*6)
 	for i := range chunk {
 		m := &chunk[i]
 		if kept[m.FileID] {
@@ -311,9 +311,9 @@ func insertStatement(chunk []masterFile, kept map[int64]bool) (stmt string, args
 		if n > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString("(?,?,?,?,?,?,?)")
+		b.WriteString("(?,?,?,?,?,?)")
 		args = append(args, m.FileID, wspath.ToSourcePath(m.absPath), m.nodeID, wspath.ToLibrary(m.targetPath),
-			nullable(m.clusterID), db.StatusProposed, nullableID(m.locationNodeID))
+			nullable(m.clusterID), nullableID(m.locationNodeID))
 		n++
 	}
 	return b.String(), args, n

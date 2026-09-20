@@ -5,19 +5,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package execute is the phase vfs.go's package doc has always promised:
-// "a future Execute phase performs the copy/move." It reads every APPROVED
-// row of virtual_fs_entries and places that file at outputDir/target_path,
-// then marks the row DONE or ERROR (+ why). Review only ever writes database
-// rows; this is the one phase that touches the user's media files.
+// "a future Execute phase performs the copy/move." It reads every planned
+// row of virtual_fs_entries whose file is not yet placed and has no TRANSFER
+// error, and places that file at outputDir/target_path: success sets
+// file_registry.placed, failure records an errors row. Review only ever
+// writes database rows; this is the one phase that touches the user's media
+// files.
 //
 // Deliberately sequential — see .tickets/apply-phase-unmeasured.md: nothing
 // has measured this phase's throughput yet, so there is nothing to size a
 // worker pool against. Resumable by construction instead of by an explicit
-// state machine: it only ever selects APPROVED rows, so a run that stops
+// state machine: it only ever selects pending rows, so a run that stops
 // partway (crash, ctrl+c, a bad file) leaves every untouched row exactly
-// where a second run will pick it up. A row that failed is left at ERROR,
-// not retried automatically — the same contract file_registry's scan_status
-// already has.
+// where a second run will pick it up. A file that failed keeps its TRANSFER
+// error row and is not retried automatically — the same contract a file the
+// metadata phase could not read has.
 package execute
 
 import (
@@ -61,7 +63,7 @@ func (m Mode) String() string {
 type Options struct {
 	Mode Mode
 	// DryRun reports what would happen and touches nothing — no file is
-	// written, no row's status changes.
+	// written, no row changes.
 	DryRun bool
 	// OnProgress reports after each row is decided: its target path, source
 	// size, and how many of the total are done. nil if the caller doesn't
@@ -104,20 +106,12 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		TargetPath string `db:"target_path"`
 		FileHash   string `db:"file_hash"`
 	}
-	// A dry run also counts the plan not yet approved — execute approves it
-	// only once it really transfers, so otherwise a first dry run reports
-	// nothing. ponytail: those rows show their paths as proposed, without the
-	// review's draft edits; replay the draft here if a dry run must show them.
-	pending := db.StatusApproved
-	if o.DryRun {
-		pending = db.StatusProposed
-	}
+	// A dry run reads the same list a real run would transfer.
 	if err := database.SQL.SelectContext(ctx, &rows,
 		`SELECT ve.id, ve.file_id, ve.source_path, ve.target_path, COALESCE(fm.file_hash, '') AS file_hash
 		FROM virtual_fs_entries ve LEFT JOIN file_metadata fm ON fm.file_id = ve.file_id
-		WHERE ve.status IN (?, ?) ORDER BY ve.id`,
-		db.StatusApproved, pending); err != nil {
-		return Report{}, fmt.Errorf("load approved entries: %w", err)
+		WHERE `+db.PendingTransfer("ve.file_id")+` ORDER BY ve.id`); err != nil {
+		return Report{}, fmt.Errorf("load pending entries: %w", err)
 	}
 	if len(rows) == 0 {
 		return Report{}, nil
@@ -134,7 +128,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	var rep Report
 	for i, r := range rows {
 		if ctx.Err() != nil {
-			break // everything left stays APPROVED — the next run picks it up
+			break // everything left stays pending — the next run picks it up
 		}
 
 		// source_path is stored via path.ToSourcePath (separator only);
@@ -149,7 +143,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		var xerr error
 		switch {
 		case statErr != nil:
-			xerr = fmt.Errorf("source missing: %w", statErr)
+			xerr = &stepError{opStat, fmt.Errorf("source missing: %w", statErr)}
 		default:
 			dst, xerr = xfer(ctx, o.Mode, src, dst, r.FileHash)
 		}
@@ -204,13 +198,12 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 // later scan saw again. Spec D10: only what is still in the library matters,
 // and a placed file's own row is the one true record from here on. Keyed off
 // file_registry.placed read fresh every run, so a run that stops early is
-// picked up by the next one; nothing here touches an ERROR row or a file
-// unrelated to any placed hash.
+// picked up by the next one; nothing here touches a file unrelated to any
+// placed hash.
 func cleanupPlacedDuplicates(ctx context.Context, database *db.DB) error {
 	// Every file_metadata row sharing a hash with a placed file, except the
 	// placed file's own row. Read up front, before anything is deleted, so
-	// the three statements below share one fixed id list instead of each
-	// re-deriving it against tables the earlier ones already changed.
+	// the delete works from one fixed id list.
 	var ids []int64
 	if err := database.SQL.SelectContext(ctx, &ids, `
 		SELECT fm.file_id FROM file_metadata fm
@@ -238,18 +231,11 @@ func cleanupPlacedDuplicates(ctx context.Context, database *db.DB) error {
 	}
 	defer tx.Rollback()
 
-	// Same FK order as the scanner's sweep (vfs entries, then metadata, then
-	// the registry row) — an explicit id list, not a reliance on file_id
-	// happening to go NULL after the registry row is gone.
-	statements := []string{
-		`DELETE FROM virtual_fs_entries WHERE file_id IN (` + placeholders + `)`,
-		`DELETE FROM file_metadata WHERE file_id IN (` + placeholders + `)`,
-		`DELETE FROM file_registry WHERE id IN (` + placeholders + `)`,
-	}
-	for _, stmt := range statements {
-		if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
-			return fmt.Errorf("clean up placed duplicates: %w", err)
-		}
+	// The registry rows alone, by an explicit id list: their metadata, plan
+	// and error rows go with them by ON DELETE CASCADE, which is what orders it.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM file_registry WHERE id IN (`+placeholders+`)`, args...); err != nil {
+		return fmt.Errorf("clean up placed duplicates: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -275,36 +261,67 @@ func summary(o Options, rep Report, elapsed time.Duration) string {
 	return msg
 }
 
-// markResult flips one row to DONE or ERROR. On success it also repoints
-// file_registry and the row's own source_path at target — library-relative,
-// the same value target_path already holds (spec D9/D10): the file now lives
-// under outputDir, not wherever it was scanned from, and a database that
-// travels with the library must not depend on where the library is mounted.
-// A stale source_path would also break a Move outright (the source is gone)
-// and would leave a Copy's row pointing a reorg attempt at a location that no
-// longer reflects the plan that was executed. Fire-and-forget through the
-// same FIFO writer every phase uses; Run's Flush before returning is what
-// makes the caller's very next read (the CLI's summary, the review tree's
-// status line) see it.
+// Steps of a transfer, as recorded in errors.op.
+const (
+	opStat         = "stat"
+	opMkdir        = "mkdir"
+	opCopy         = "copy"
+	opRename       = "rename"
+	opHash         = "hash"
+	opRemoveSource = "remove-source"
+)
+
+// stepError names the step of a transfer that failed.
+type stepError struct {
+	op  string
+	err error
+}
+
+func (e *stepError) Error() string { return e.err.Error() }
+func (e *stepError) Unwrap() error { return e.err }
+
+// failedOp is the step xerr names, else copy — the step that moves the bytes.
+func failedOp(xerr error) string {
+	var step *stepError
+	if errors.As(xerr, &step) {
+		return step.op
+	}
+	return opCopy
+}
+
+// markResult records one row's outcome. On success it repoints file_registry
+// and the row's own source_path at target — library-relative, the same value
+// target_path already holds (spec D9/D10): the file now lives under
+// outputDir, not wherever it was scanned from, and a database that travels
+// with the library must not depend on where the library is mounted. A stale
+// source_path would also break a Move outright (the source is gone) and would
+// leave a Copy's row pointing a reorg attempt at a location that no longer
+// reflects the plan that was executed. It sets placed and clears the file's
+// error rows in the same transaction. On failure it records a TRANSFER error
+// and leaves the row, and so its folder, where it was planned: a retry lands
+// where the user reviewed it. Fire-and-forget through the same FIFO writer
+// every phase uses; Run's Flush before returning is what makes the caller's
+// very next read see it.
 func markResult(database *db.DB, id, fileID int64, target string, xerr error) {
 	if xerr != nil {
-		msg := xerr.Error()
+		xerr = db.WithStack(xerr) // frames must be taken here, not on the writer's goroutine
 		database.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
-			_, err := tx.ExecContext(ctx,
-				`UPDATE virtual_fs_entries SET status = ?, error = ? WHERE id = ?`, db.StatusError, msg, id)
-			return err
+			return db.RecordError(ctx, tx, fileID, db.StageTransfer, failedOp(xerr), xerr)
 		})
 		return
 	}
 	dir, name := stdpath.Dir(target), stdpath.Base(target)
 	database.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE virtual_fs_entries SET status = ?, error = NULL, source_path = ?, target_path = ? WHERE id = ?`,
-			db.StatusDone, target, target, id); err != nil {
+			`UPDATE virtual_fs_entries SET source_path = ?, target_path = ? WHERE id = ?`,
+			target, target, id); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
-			`UPDATE file_registry SET file_dir = ?, file_name = ?, placed = 1 WHERE id = ?`, dir, name, fileID)
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE file_registry SET file_dir = ?, file_name = ?, placed = 1 WHERE id = ?`, dir, name, fileID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM errors WHERE file_id = ?`, fileID)
 		return err
 	})
 }
@@ -329,7 +346,7 @@ func productionTransfer(ctx context.Context, mode Mode, src, dst, want string) (
 		return dst, err
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return dst, fmt.Errorf("create dest dir: %w", err)
+		return dst, &stepError{opMkdir, fmt.Errorf("create dest dir: %w", err)}
 	}
 	for n := 0; ; n++ {
 		target := withSuffix(dst, n)
@@ -346,10 +363,10 @@ func productionTransfer(ctx context.Context, mode Mode, src, dst, want string) (
 			// for good (spec D22). Rare path, so the extra read is cheap.
 			got, err := metadata.HashFile(src)
 			if err != nil {
-				return target, fmt.Errorf("verify source before removing it: %w", err)
+				return target, &stepError{opHash, fmt.Errorf("verify source before removing it: %w", err)}
 			}
 			if got != want {
-				return target, fmt.Errorf("source changed since it was scanned: source %s, scanned %q", got, want)
+				return target, &stepError{opHash, fmt.Errorf("source changed since it was scanned: source %s, scanned %q: %w", got, want, db.ErrChecksumMismatch)}
 			}
 			return target, removeSource(src)
 		}
@@ -375,7 +392,7 @@ func holds(p, src, want string) bool {
 // removeSource finishes a move whose file is already verified in place.
 func removeSource(src string) error {
 	if err := os.Remove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("%w: %w", errSourceNotRemoved, err)
+		return &stepError{opRemoveSource, fmt.Errorf("%w: %w", errSourceNotRemoved, err)}
 	}
 	return nil
 }
@@ -402,19 +419,22 @@ func withSuffix(p string, n int) string {
 func place(mode Mode, src, dst, want string) error {
 	if mode == ModeMove {
 		err := atomicfile.Rename(src, dst)
-		if err == nil || errors.Is(err, fs.ErrExist) || errors.Is(err, atomicfile.ErrSourceKept) {
+		if err == nil || errors.Is(err, fs.ErrExist) {
 			return err
+		}
+		if errors.Is(err, atomicfile.ErrSourceKept) {
+			return &stepError{opRename, err}
 		}
 	}
 
 	h := metadata.NewHasher()
 	if _, err := atomicfile.Copy(src, dst, h, func() error {
 		if got := metadata.HashString(h); got != want {
-			return fmt.Errorf("source changed since it was scanned: copied %s, scanned %q", got, want)
+			return fmt.Errorf("source changed since it was scanned: copied %s, scanned %q: %w", got, want, db.ErrChecksumMismatch)
 		}
 		return nil
 	}); err != nil {
-		return err
+		return &stepError{opCopy, err}
 	}
 	if mode != ModeMove {
 		return nil

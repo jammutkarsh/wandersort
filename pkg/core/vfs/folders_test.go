@@ -208,7 +208,8 @@ func TestPlacedFolderIsNotReused(t *testing.T) {
 	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
 		t.Fatal(err)
 	}
-	placedFolder := dbtest.SeedEntry(t, h.d, placed, "2024/06_June/B.HEIC", "2024/06_June/B.HEIC", db.StatusDone)
+	placedFolder := dbtest.SeedEntry(t, h.d, placed, "2024/06_June/B.HEIC", "2024/06_June/B.HEIC")
+	dbtest.SeedPlaced(t, h.d, placed)
 
 	cfg := DefaultConfig()
 	cfg.Rules = nil // plain Year/Month: the proposal wants the placed file's folder
@@ -270,11 +271,12 @@ func TestConfirmRenameLeavesCopiedFilesFolder(t *testing.T) {
 	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, copied); err != nil {
 		t.Fatal(err)
 	}
-	folder := dbtest.SeedEntry(t, h.d, copied, "2024/06_June/A.HEIC", "2024/06_June/A.HEIC", db.StatusDone)
-	dbtest.SeedEntry(t, h.d, pending, "/src/dump/B.HEIC", "2024/06_June/B.HEIC", db.StatusApproved)
+	folder := dbtest.SeedEntry(t, h.d, copied, "2024/06_June/A.HEIC", "2024/06_June/A.HEIC")
+	dbtest.SeedPlaced(t, h.d, copied)
+	dbtest.SeedEntry(t, h.d, pending, "/src/dump/B.HEIC", "2024/06_June/B.HEIC")
 	// a July folder under the same year, with nothing copied in it
 	other := h.addFile(t, "dump/C.HEIC", "IMAGE", metaWith("2024:07:03 11:00:00", 0, 0, 3024, 4032))
-	dbtest.SeedEntry(t, h.d, other, "/src/dump/C.HEIC", "2024/07_July/C.HEIC", db.StatusApproved)
+	dbtest.SeedEntry(t, h.d, other, "/src/dump/C.HEIC", "2024/07_July/C.HEIC")
 
 	tree, err := BuildTree(ctx, h.d)
 	if err != nil {
@@ -317,8 +319,9 @@ func TestReplanJoinsLeftoversOfStoppedCopy(t *testing.T) {
 	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, copied); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.SeedEntry(t, h.d, copied, "2024/06_June/A.HEIC", "2024/06_June/A.HEIC", db.StatusDone)
-	dbtest.SeedEntry(t, h.d, pending, "/src/dump/B.HEIC", "2024/06_June/B.HEIC", db.StatusApproved)
+	dbtest.SeedEntry(t, h.d, copied, "2024/06_June/A.HEIC", "2024/06_June/A.HEIC")
+	dbtest.SeedPlaced(t, h.d, copied)
+	dbtest.SeedEntry(t, h.d, pending, "/src/dump/B.HEIC", "2024/06_June/B.HEIC")
 	h.addFile(t, "dump/C.HEIC", "IMAGE", metaWith("2024:06:05 11:00:00", 0, 0, 3024, 4032))
 
 	cfg := DefaultConfig()

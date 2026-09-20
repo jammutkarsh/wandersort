@@ -532,6 +532,20 @@ func MergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 
 // DropNodes removes each node in ids, lifting its children onto its parent,
 // one group-by level shallower. Returns the dropped nodes' names, in order.
+//
+// ponytail: a drop (and a flatten below) does not survive a re-plan that runs
+// while some of its files are still untransferred — an execute stopped
+// partway, then a scan. A rename or a merge does: the folder is still there
+// holding the placed files, so route.go matches the leftovers into it by
+// bounds. A dropped folder is gone, so there is nothing to match, and the
+// re-plan proposes the level again for whatever has not moved yet: the
+// library ends up with `03/A.HEIC` beside `03/Apple-iPhone-15-Pro/B.HEIC`.
+// No file is lost and dropping again fixes it. The fix is to keep the user
+// out of that order rather than to teach the planner to remember a removed
+// folder: the app knows a copy did not finish and offers to finish it first
+// (issue 21). Recording the removal on the surviving folder's bounds would
+// also work and costs far more — don't reach for it unless the offer isn't
+// enough.
 func DropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err error) {
 	type drop struct {
 		parentID int64
@@ -581,6 +595,8 @@ func DropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err er
 // FlattenNodes collapses everything below each node in ids directly into it
 // (`2023/April/Indore/Apple iPhone 13` flattened at April becomes
 // `2023/April` holding all ten files). Returns the flattened nodes' names.
+// Carries DropNodes' ponytail caveat: a re-plan over the leftovers of a
+// stopped execute proposes the collapsed levels again.
 func FlattenNodes(tree []Node, ids []int64) (newTree []Node, absorbed int, names []string, err error) {
 	var targets []int64
 	for _, id := range ids {

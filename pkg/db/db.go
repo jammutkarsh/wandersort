@@ -29,27 +29,12 @@ const (
 	LocationDB
 )
 
-// Pattern: -ING = active phase, -ED = completed/terminal.
-// StatusCompleted/StatusFailed/StatusCancelled are workflow's in-memory
-// result sentinels — nothing persists them, they just classify how a run ended.
+// Workflow result sentinels: nothing persists them, they just classify how a
+// run ended.
 const (
-	// A file is ANALYZING while the metadata phase holds it and ANALYZED once
-	// its hash + EXIF row is written. There is no separate hashed state: one
-	// phase reads the file once and persists both in a single row.
-	StatusAnalyzing  = "ANALYZING"
-	StatusAnalyzed   = "ANALYZED"
-	StatusCompleted  = "COMPLETED"
-	StatusFailed     = "FAILED"
-	StatusCancelled  = "CANCELLED"
-	StatusDiscovered = "DISCOVERED"
-	StatusError      = "ERROR"
-
-	// virtual_fs_entries lifecycle. StatusDone and StatusError (shared with
-	// the scan lifecycle above) are the Execute phase's outcomes — see
-	// pkg/core/execute.
-	StatusProposed = "PROPOSED"
-	StatusApproved = "APPROVED"
-	StatusDone     = "DONE"
+	StatusCompleted = "COMPLETED"
+	StatusFailed    = "FAILED"
+	StatusCancelled = "CANCELLED"
 )
 
 // TimeLayout is RFC3339 with fixed-width nanoseconds. Fixed width keeps

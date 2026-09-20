@@ -14,17 +14,19 @@ package metadata
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	"golang.org/x/sync/semaphore"
@@ -52,7 +54,21 @@ const hashPrefix = "blake3:"
 // process, and a 64-core box genuinely wants 64 of those.
 const maxReadBudget = 16
 
-// fileRecord is what the claim query hands a worker: mediaType is carried so a
+// unreadFiles is the one definition of "still to read": no metadata row, and
+// no READ failure recorded for it. The count, the volume grouping and the
+// producer's pages all ask through it, so they cannot disagree about what is
+// left. Nothing is written to hand a file out — the predicate only shrinks as
+// workers store their rows.
+const unreadFiles = `
+	FROM file_registry f
+	WHERE NOT EXISTS (SELECT 1 FROM file_metadata m WHERE m.file_id = f.id)
+	  AND NOT EXISTS (SELECT 1 FROM errors e WHERE e.file_id = f.id AND e.stage = '` + db.StageRead + `')`
+
+// readBatchSize is how many unread files one page asks for. 256 keeps the
+// worker channel (2*workers) fed without holding a long-running statement open.
+const readBatchSize = 256
+
+// fileRecord is what a page of unread files hands a worker: mediaType is carried so a
 // sidecar can be hashed without paying for an exiftool call it has no tags
 // for, and cost is what reading it charges the shared read budget
 type fileRecord struct {
@@ -130,8 +146,8 @@ func readCost(class volume.Class, budget int64) int64 {
 	return min(max(cost, 1), budget)
 }
 
-// Run claims every DISCOVERED file one at a time and reads it in a bounded
-// worker pool. Returns how many files were persisted
+// Run pages through every unread file and reads it in a bounded worker pool.
+// Returns how many files were persisted
 func (e *Extractor) Run(ctx context.Context) (int, error) {
 	if e.pool != nil {
 		defer e.pool.Close()
@@ -147,10 +163,14 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 
 	e.log.Info("Extracting metadata")
 
+	// Taken before any file is handed out, so the closing count below can tell
+	// this run's failures from ones a previous run already recorded: a file
+	// that failed before is never handed out again, so its row keeps the older
+	// last_seen_at. Timestamps are fixed-width, so they compare as text.
+	runStartedAt := db.FormatTime(time.Now())
+
 	var total int
-	if err := e.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM file_registry WHERE scan_status = ?
-	`, db.StatusDiscovered).Scan(&total); err != nil {
+	if err := e.db.QueryRowContext(ctx, `SELECT COUNT(*) `+unreadFiles).Scan(&total); err != nil {
 		e.log.Warn("Failed to count files to read", "error", err)
 	}
 
@@ -176,6 +196,22 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 
 	persisted := int(extracted.Load())
 	e.log.Info("Metadata extraction complete", "filesRead", persisted)
+	// Files that failed stay out of the unread set for good, so the run ends
+	// instead of counting them as work remaining. Say so once, for this run's
+	// failures only — repeating a count that includes older ones every scan
+	// reads as the same files failing again.
+	e.db.Writer.Flush()
+	var unreadable int
+	if err := e.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM errors WHERE stage = ? AND last_seen_at >= ?`,
+		db.StageRead, runStartedAt).Scan(&unreadable); err == nil && unreadable > 0 {
+		files := "files"
+		if unreadable == 1 {
+			files = "file"
+		}
+		e.log.Warn(fmt.Sprintf("%d %s could not be read — see the log", unreadable, files),
+			logger.UserKey, true)
+	}
 	return persisted, nil
 }
 
@@ -183,9 +219,9 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 // Ordering by device does not change total wall time — the same bytes are read
 // either way — but it front-loads progress, so an interrupted run has the cheap
 // files done and the progress bar moves early instead of crawling behind an
-// HDD. Within a volume the claim order is untouched: id is discovery order is
-// walk order is roughly directory order, which is as seek-friendly as a claim
-// order gets.
+// HDD. Within a volume the order is untouched: id is discovery order is walk
+// order is roughly directory order, which is as seek-friendly as a read order
+// gets.
 func (e *Extractor) producer(ctx context.Context, cancel context.CancelFunc, toRead chan<- fileRecord, producerErr chan<- error) {
 	defer close(toRead)
 
@@ -200,26 +236,40 @@ func (e *Extractor) producer(ctx context.Context, cancel context.CancelFunc, toR
 		return
 	}
 
-	// The final pass is unscoped: it catches anything the grouping missed, so
-	// no row can be stranded by an edge case in the query above.
+	// The final pass is unscoped: it catches any volume the grouping missed,
+	// so no row can be stranded by an edge case in the query above. Volumes
+	// already drained are excluded rather than re-read — their last files may
+	// still be in flight, so the unread predicate can still see them.
+	drained := make([]string, 0, len(volumes))
 	for _, v := range append(volumes, pendingVolume{all: true}) {
+		excluded, err := json.Marshal(drained)
+		if err != nil {
+			fail(fmt.Errorf("list drained volumes: %w", err))
+			return
+		}
+		// Forward-only cursor: the predicate only ever shrinks, so it can
+		// neither repeat a file nor skip one.
+		var cursor int64
 		for {
-			record, ok, err := e.getFile(ctx, v)
+			batch, err := e.nextBatch(ctx, v, cursor, string(excluded))
 			if err != nil {
 				fail(err)
 				return
 			}
-			if !ok {
+			if len(batch) == 0 {
 				break // this volume is drained; move to the next
 			}
-
-			select {
-			case toRead <- record:
-			case <-ctx.Done():
-				producerErr <- ctx.Err()
-				return
+			for _, record := range batch {
+				select {
+				case toRead <- record:
+				case <-ctx.Done():
+					producerErr <- ctx.Err()
+					return
+				}
 			}
+			cursor = batch[len(batch)-1].id
 		}
+		drained = append(drained, v.uuid)
 	}
 	producerErr <- nil
 }
@@ -239,11 +289,8 @@ type pendingVolume struct {
 // appear underneath it
 func (e *Extractor) pendingVolumes(ctx context.Context) ([]pendingVolume, error) {
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT COALESCE(volume_uuid, ''), MIN(file_dir)
-		FROM file_registry
-		WHERE scan_status = ?
-		GROUP BY COALESCE(volume_uuid, '')
-	`, db.StatusDiscovered)
+		SELECT COALESCE(f.volume_uuid, ''), MIN(f.file_dir) `+unreadFiles+`
+		GROUP BY COALESCE(f.volume_uuid, '')`)
 	if err != nil {
 		return nil, fmt.Errorf("group pending files by volume: %w", err)
 	}
@@ -293,106 +340,138 @@ func (e *Extractor) classOf(uuid, sampleDir string) volume.Class {
 	return class
 }
 
-// getFile atomically claims the next discovered file on one volume, or on any
-// volume during the closing sweep. The ANALYZING stamp is what makes an
-// interrupted phase resumable: the scanner's upsert resets those rows to
-// DISCOVERED, since nothing was persisted for them
-func (e *Extractor) getFile(ctx context.Context, v pendingVolume) (fileRecord, bool, error) {
-	var id int64
-	var fileDir, fileName, mediaType, uuid string
-	query := `
-	UPDATE file_registry
-	SET scan_status = ?
-	WHERE id = (
-		SELECT id
-		FROM file_registry
-		WHERE scan_status = ?
-		  AND (? OR COALESCE(volume_uuid, '') = ?)
-		ORDER BY id
-		LIMIT 1
-	)
-	RETURNING id, file_dir, file_name, COALESCE(media_type, ''), COALESCE(volume_uuid, '')`
-
-	err := e.db.
-		QueryRowContext(ctx, query, db.StatusAnalyzing, db.StatusDiscovered, v.all, v.uuid).
-		Scan(&id, &fileDir, &fileName, &mediaType, &uuid)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fileRecord{}, false, nil
-	}
+// nextBatch pages the unread files of one volume — of every volume not in
+// excluded (a JSON array of uuids), during the closing sweep — starting after
+// cursor. Reading claims nothing: a file is handed out by the producer, and
+// leaves the unread set only when its worker stores a row. An interrupted run
+// wrote nothing for the files in flight, so they are simply read again.
+func (e *Extractor) nextBatch(ctx context.Context, v pendingVolume, cursor int64, excluded string) ([]fileRecord, error) {
+	rows, err := e.db.QueryContext(ctx, `
+		SELECT f.id, f.file_dir, f.file_name, COALESCE(f.media_type, ''), COALESCE(f.volume_uuid, '') `+unreadFiles+`
+		  AND (? OR COALESCE(f.volume_uuid, '') = ?)
+		  AND COALESCE(f.volume_uuid, '') NOT IN (SELECT value FROM json_each(?))
+		  AND f.id > ?
+		ORDER BY f.id
+		LIMIT ?`, v.all, v.uuid, excluded, cursor, readBatchSize)
 	if err != nil {
-		return fileRecord{}, false, fmt.Errorf("claim next metadata row: %w", err)
+		return nil, fmt.Errorf("page unread files: %w", err)
 	}
+	defer rows.Close()
 
-	fileDir = wspath.FromSourcePath(fileDir)
-	cost := v.cost
-	if v.all {
-		// the closing sweep has no price of its own: charge the straggler by
-		// whatever volume it turned out to be on
-		cost = readCost(e.classOf(uuid, fileDir), e.budget)
+	var batch []fileRecord
+	for rows.Next() {
+		var id int64
+		var fileDir, fileName, mediaType, uuid string
+		if err := rows.Scan(&id, &fileDir, &fileName, &mediaType, &uuid); err != nil {
+			return nil, fmt.Errorf("scan unread file: %w", err)
+		}
+		fileDir = wspath.FromSourcePath(fileDir)
+		cost := v.cost
+		if v.all {
+			// the closing sweep has no price of its own: charge the straggler by
+			// whatever volume it turned out to be on
+			cost = readCost(e.classOf(uuid, fileDir), e.budget)
+		}
+		batch = append(batch, fileRecord{
+			id:        id,
+			absPath:   filepath.Join(fileDir, fileName),
+			mediaType: mediaType,
+			cost:      cost,
+		})
 	}
-	return fileRecord{
-		id:        id,
-		absPath:   filepath.Join(fileDir, fileName),
-		mediaType: mediaType,
-		cost:      cost,
-	}, true, nil
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("page unread files: %w", err)
+	}
+	return batch, nil
 }
 
-// worker hashes one file, reads its EXIF while the bytes are still cached, and
-// enqueues the single write that persists both
+// worker reads files until the channel closes. A panic on one file is
+// recorded and survived, so one bad file cannot end a six-hour scan.
 func (e *Extractor) worker(ctx context.Context, toRead <-chan fileRecord, extracted *atomic.Int64, total int) {
 	for file := range toRead {
 		if ctx.Err() != nil {
 			return
 		}
-
-		hash, err := e.readFile(ctx, file)
-		if err != nil {
-			// A cancelled pipeline aborts the budget wait rather than the
-			// read; that is shutdown, not a bad file, so don't park it at
-			// ERROR on the way out.
-			if ctx.Err() != nil {
-				return
-			}
-			e.log.Error("Failed to hash file", "fileId", file.id, "path", file.absPath, "error", err)
-			e.db.Writer.Write(storeFailure(file.id))
-			continue
-		}
-
-		// A failed extraction is not a failed file: the pipeline still knows the
-		// file's hash and its folder context, so the VFS can place it. Persist
-		// the empty metadata and move on
-		var meta classifier.CommonMetadata
-		// Sidecars (iPhone .AAE edit files) carry no EXIF of their own, so
-		// spawning exiftool on them is pure waste — hash them and move on
-		if file.mediaType != classifier.MediaTypeSidecar {
-			var err error
-			if e.pool != nil {
-				meta, err = e.pool.Extract(ctx, file.absPath)
-			} else {
-				err = fmt.Errorf("exiftool not available")
-			}
-			if err != nil {
-				// A cancelled pipeline SIGKILLs the exiftool child ("signal:
-				// killed") and fails the next call with "context canceled" —
-				// that is shutdown, not a bad file, so don't report it as an
-				// extraction failure.
-				if ctx.Err() != nil {
-					return
-				}
-				e.log.Warn("Failed to extract exif data", "fileId", file.id, "path", file.absPath, "error", err)
-			}
-		}
-
-		// StreamKey: feeds the TUI progress bar, stripped from the plain console.
-		e.log.Info("Reading", logger.StreamKey, true,
-			"file", filepath.Base(file.absPath), "extracted", extracted.Add(1), "total", total)
-
-		if !e.db.Writer.Write(e.store(file.id, hash, meta)) {
-			e.log.Warn("Bulk writer closed; dropping metadata write", "fileId", file.id)
+		if !e.readOne(ctx, file, extracted, total) {
 			return
 		}
 	}
+}
+
+// Steps of a read, as recorded in errors.op.
+const (
+	opOpen     = "open"
+	opHash     = "hash"
+	opExiftool = "exiftool"
+	opStore    = "store"
+)
+
+// readOne hashes one file, reads its EXIF while the bytes are still cached, and
+// enqueues the single write that persists both. It reports false when the
+// worker should stop (shutdown, or the writer closed).
+func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *atomic.Int64, total int) (keepGoing bool) {
+	op := opHash
+	defer func() {
+		if r := recover(); r != nil {
+			err := db.PanicError(r)
+			e.log.Error("Panic while reading file", "fileId", file.id, "path", file.absPath, "op", op, "error", err)
+			e.db.Writer.Write(storeFailure(file.id, op, err))
+			keepGoing = true
+		}
+	}()
+
+	hash, err := e.readFile(ctx, file)
+	if err != nil {
+		// A cancelled pipeline aborts the budget wait rather than the
+		// read; that is shutdown, not a bad file, so don't record it.
+		if ctx.Err() != nil {
+			return false
+		}
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) && pathErr.Op == opOpen {
+			op = opOpen
+		}
+		e.log.Error("Failed to hash file", "fileId", file.id, "path", file.absPath, "error", err)
+		e.db.Writer.Write(storeFailure(file.id, op, db.WithStack(err)))
+		return true
+	}
+
+	// A failed extraction is not a failed file: the pipeline still knows the
+	// file's hash and its folder context, so the VFS can place it. Persist
+	// the empty metadata and move on — no errors row
+	var meta classifier.CommonMetadata
+	// Sidecars (iPhone .AAE edit files) carry no EXIF of their own, so
+	// spawning exiftool on them is pure waste — hash them and move on
+	if file.mediaType != classifier.MediaTypeSidecar {
+		op = opExiftool
+		var err error
+		if e.pool != nil {
+			meta, err = e.pool.Extract(ctx, file.absPath)
+		} else {
+			err = fmt.Errorf("exiftool not available")
+		}
+		if err != nil {
+			// A cancelled pipeline SIGKILLs the exiftool child ("signal:
+			// killed") and fails the next call with "context canceled" —
+			// that is shutdown, not a bad file, so don't report it as an
+			// extraction failure.
+			if ctx.Err() != nil {
+				return false
+			}
+			e.log.Warn("Failed to extract exif data", "fileId", file.id, "path", file.absPath, "error", err)
+		}
+	}
+	op = opStore
+
+	// StreamKey: feeds the TUI progress bar, stripped from the plain console.
+	e.log.Info("Reading", logger.StreamKey, true,
+		"file", filepath.Base(file.absPath), "extracted", extracted.Add(1), "total", total)
+
+	if !e.db.Writer.Write(e.store(file.id, hash, meta)) {
+		e.log.Warn("Bulk writer closed; dropping metadata write", "fileId", file.id)
+		return false
+	}
+	return true
 }
 
 // readFile gates the byte read on the storage's weighted budget. exiftool is
@@ -463,7 +542,8 @@ func HashFile(filePath string) (string, error) {
 	return HashString(hasher), nil
 }
 
-// store writes the hash and the EXIF columns as one row and marks the file read
+// store writes the hash and the EXIF columns as one row — which is what marks
+// the file read — and clears the READ failure the row's existence supersedes
 func (e *Extractor) store(fileID int64, hash string, meta classifier.CommonMetadata) db.DBOperation {
 	isScreenshot := 0
 	if meta.IsScreenshot {
@@ -471,14 +551,11 @@ func (e *Extractor) store(fileID int64, hash string, meta classifier.CommonMetad
 	}
 
 	return func(ctx context.Context, tx *sqlx.Tx) error {
-		// A re-read file still has its old metadata row; a plain INSERT would
-		// violate UNIQUE(file_hash, file_id) or leave a stale duplicate. No-op
-		// for fresh files.
 		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM file_metadata WHERE file_id = ?`, fileID); err != nil {
+			`DELETE FROM errors WHERE file_id = ? AND stage = ?`, fileID, db.StageRead); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `
+		_, err := tx.ExecContext(ctx, `
 			INSERT INTO file_metadata (
 				file_hash, file_id,
 				exif_image_width, exif_image_height, exif_orientation,
@@ -501,27 +578,16 @@ func (e *Extractor) store(fileID int64, hash string, meta classifier.CommonMetad
 			db.StrOrNil(meta.CreationDate),
 			db.StrOrNil(meta.MediaCreateDate),
 			isScreenshot,
-		); err != nil {
-			return err
-		}
-
-		_, err := tx.ExecContext(ctx,
-			`UPDATE file_registry SET scan_status = ? WHERE id = ?`, db.StatusAnalyzed, fileID)
+		)
 		return err
 	}
 }
 
-// storeFailure drops the file's stale metadata and parks it at ERROR: its
-// content is unknown now, so an old hash and old EXIF would keep feeding the
-// scorer and VFS data that no longer describes the bytes on disk
-func storeFailure(fileID int64) db.DBOperation {
+// storeFailure records why the file could not be read. It has no metadata
+// row (that is what "unread" means), so the errors row alone keeps it out of
+// the next page and the next run until its bytes change.
+func storeFailure(fileID int64, op string, err error) db.DBOperation {
 	return func(ctx context.Context, tx *sqlx.Tx) error {
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM file_metadata WHERE file_id = ?`, fileID); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx,
-			`UPDATE file_registry SET scan_status = ? WHERE id = ?`, db.StatusError, fileID)
-		return err
+		return db.RecordError(ctx, tx, fileID, db.StageRead, op, err)
 	}
 }

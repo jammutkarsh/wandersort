@@ -14,7 +14,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 )
 
@@ -136,19 +135,18 @@ func TestApplyDraft(t *testing.T) {
 	}
 	type row struct {
 		TargetPath string `db:"target_path"`
-		Status     string `db:"status"`
 	}
 	read := func() []row {
 		var rows []row
-		if err := h.d.SQL.Select(&rows, `SELECT target_path, status FROM virtual_fs_entries ORDER BY id`); err != nil {
+		if err := h.d.SQL.Select(&rows, `SELECT target_path FROM virtual_fs_entries ORDER BY id`); err != nil {
 			t.Fatal(err)
 		}
 		return rows
 	}
 	applied := read()
 	for _, r := range applied {
-		if r.Status != db.StatusApproved || !strings.Contains("/"+r.TargetPath, "/Manali/") {
-			t.Errorf("after apply %+v, want APPROVED under Manali", r)
+		if !strings.Contains("/"+r.TargetPath, "/Manali/") {
+			t.Errorf("after apply %+v, want under Manali", r)
 		}
 	}
 

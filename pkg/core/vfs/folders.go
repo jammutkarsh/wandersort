@@ -125,7 +125,8 @@ const placedFoldersCTE = `
 	WITH RECURSIVE placed_folders(id) AS (
 		SELECT vfe.node_id FROM virtual_fs_entries vfe
 		JOIN file_registry fr ON fr.id = vfe.file_id
-		WHERE fr.placed = 1 OR vfe.status = 'ERROR'
+		WHERE fr.placed = 1
+		   OR vfe.file_id IN (SELECT file_id FROM errors WHERE stage = '` + db.StageTransfer + `')
 		UNION
 		SELECT fn.parent_id FROM folder_nodes fn
 		JOIN placed_folders pf ON fn.id = pf.id
@@ -154,8 +155,8 @@ func splitPlacedFolders(ctx context.Context, tx *sqlx.Tx) (map[int64]int64, erro
 			SELECT fn.id FROM folder_nodes fn JOIN under_placed u ON fn.parent_id = u.id
 		)
 		SELECT id, node_id, location_node_id FROM virtual_fs_entries
-		WHERE status IN (?, ?) AND node_id IN (SELECT id FROM under_placed)
-		ORDER BY id`, db.StatusProposed, db.StatusApproved); err != nil {
+		WHERE `+db.PendingTransfer("file_id")+` AND node_id IN (SELECT id FROM under_placed)
+		ORDER BY id`); err != nil {
 		return nil, fmt.Errorf("find reviewable files in placed folders: %w", err)
 	}
 	if len(entries) == 0 {
