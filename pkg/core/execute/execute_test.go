@@ -288,8 +288,9 @@ func TestMarkResultRecordsAndClearsError(t *testing.T) {
 	d := dbtest.New(t)
 	seedApproved(t, d, 1, "A.jpg", "hello")
 
-	markResult(d, 1, 1, "A.jpg", &stepError{opStat, fmt.Errorf("source missing: %w", fs.ErrNotExist)})
-	d.Writer.Flush()
+	if err := markFailed(d, 1, &stepError{opStat, fmt.Errorf("source missing: %w", fs.ErrNotExist)}); err != nil {
+		t.Fatal(err)
+	}
 	var row struct {
 		Op   string `db:"op"`
 		Kind string `db:"kind"`
@@ -301,10 +302,31 @@ func TestMarkResultRecordsAndClearsError(t *testing.T) {
 		t.Errorf("error row = %+v, want op stat, kind not-found", row)
 	}
 
-	markResult(d, 1, 1, "A.jpg", nil)
-	d.Writer.Flush()
+	if err := markPlaced(d, 1, 1, "A.jpg"); err != nil {
+		t.Fatal(err)
+	}
 	if status, _ := rowStatus(t, d, 1); status != statePlaced {
 		t.Errorf("state = %s, want placed with no error row left", status)
+	}
+}
+
+// A write the user pays for in photos must not be reportable as success when
+// it failed: both marks return the transaction's own error rather than
+// dropping it into a log line, and both are already durable when they return
+// (no Flush needed to read them back).
+func TestMarkPlacedReportsItsError(t *testing.T) {
+	d := dbtest.New(t)
+	seedApproved(t, d, 1, "A.jpg", "hello")
+
+	// file_id 99 has no file_registry row, so the UPDATE matches nothing and
+	// the DELETE below it is fine — the failure we can force is a closed
+	// writer, which is what a shutdown mid-run looks like.
+	d.Writer.Close()
+	if err := markPlaced(d, 1, 1, "A.jpg"); err == nil {
+		t.Error("markPlaced returned nil after the writer was closed")
+	}
+	if err := markFailed(d, 1, fmt.Errorf("boom")); err == nil {
+		t.Error("markFailed returned nil after the writer was closed")
 	}
 }
 
@@ -673,5 +695,136 @@ func TestWithSuffix(t *testing.T) {
 		if got := withSuffix(c.in, c.n); got != c.want {
 			t.Errorf("withSuffix(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
 		}
+	}
+}
+
+// The copy path must put the file in place, verified, before it tells the
+// database anything — and a commit that fails must be reported rather than
+// counted as done. For a move the same commit is what stands between the
+// source being unlinked and not; see the cross-device branch of place.
+func TestPlaceCommitsOnlyOnceTheFileIsInPlace(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "A.jpg")
+	if err := os.WriteFile(src, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "lib", "A.jpg")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var sawFile bool
+	err := place(ModeCopy, src, dst, hashOf("hello"), func() error {
+		_, statErr := os.Stat(dst)
+		sawFile = statErr == nil
+		return fmt.Errorf("writer closed")
+	})
+	if err == nil {
+		t.Fatal("place swallowed the commit error")
+	}
+	if !sawFile {
+		t.Error("commit ran before the file was at its landing path")
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("copy touched the source: %v", err)
+	}
+}
+
+// A same-device move is one atomic rename, so a commit that fails afterwards
+// cannot lose the file — but it does leave the library holding something no
+// row accounts for. The next run has to recognise it and record it, or a
+// crash mid-move writes every in-flight file off permanently.
+func TestRunMoveWithFailedCommitIsRecoveredByTheNextRun(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
+
+	// Force the commit to fail exactly where a rolled-back batch would.
+	d.Writer.Close()
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Done != 0 || rep.Failed != 1 {
+		t.Errorf("report = %+v, want nothing counted as done", rep)
+	}
+	if _, err := os.Stat(filepath.Join(out, "2024", "A.jpg")); err != nil {
+		t.Fatalf("the file should be in the library: %v", err)
+	}
+	if _, err := os.Stat(src); err == nil {
+		t.Error("the rename should have consumed the source")
+	}
+
+	// Same library, a working writer, and the failure cleared the way a retry
+	// would: the file is found where it landed and recorded, rather than
+	// written off for a source that is gone.
+	d.Writer = db.NewBulkWriter(d.SQL, logger.NewNoopLogger())
+	if _, err := d.SQL.Exec(`DELETE FROM errors WHERE stage = ?`, db.StageTransfer); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Done != 1 {
+		t.Errorf("report = %+v, want the landed file recovered", rep)
+	}
+	if status, detail := rowStatus(t, d, 1); status != statePlaced {
+		t.Errorf("status = %q (%v), want %q", status, detail, statePlaced)
+	}
+}
+
+// A crash after the file landed but before its row committed leaves a missing
+// source and a file sitting correctly in the library. That must be recorded,
+// not written off as a permanent TRANSFER failure that is never retried —
+// which for a move is every file the last run had in flight.
+func TestRunRecordsLandedFileWhoseSourceIsGone(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
+
+	// The shape the previous run left behind: file in the library, source
+	// unlinked, row still pending.
+	if err := os.MkdirAll(filepath.Join(out, "2024"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out, "2024", "A.jpg"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(src); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Done != 1 || rep.Failed != 0 {
+		t.Errorf("report = %+v, want the landed file counted as done", rep)
+	}
+	if status, detail := rowStatus(t, d, 1); status != statePlaced {
+		t.Errorf("status = %q (%v), want %q", status, detail, statePlaced)
+	}
+}
+
+// A missing source with nothing in the library is still a plain failure: the
+// reconcile above must not swallow a file the user actually deleted.
+func TestRunFailsWhenSourceIsGoneAndNothingLanded(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
+	if err := os.Remove(src); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Done != 0 || rep.Failed != 1 {
+		t.Errorf("report = %+v, want one failure", rep)
+	}
+	if status, _ := rowStatus(t, d, 1); status != stateFailed {
+		t.Errorf("status = %q, want %q", status, stateFailed)
 	}
 }

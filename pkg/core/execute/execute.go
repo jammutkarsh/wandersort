@@ -84,7 +84,18 @@ type Report struct {
 // does not exist, or holds the complete file. The seam a fake implementation
 // sits behind for tests — not an FS interface, because one function is the
 // only behaviour that varies.
-type transfer func(ctx context.Context, mode Mode, src, dst, want string) (string, error)
+//
+// commit is called once the file is at its landing path and verified, and
+// before a move unlinks the source. That order is the whole point: the
+// database records the file as being in the library before its only other
+// copy is destroyed, so a crash between the two leaves a duplicate rather
+// than nothing. An error from commit means the file stays where it is and the
+// source is kept.
+type transfer func(ctx context.Context, mode Mode, src, dst, want string, commit commitFn) (string, error)
+
+// commitFn records one file as placed at landed, durably, before the caller
+// does anything it cannot take back.
+type commitFn func(landed string) error
 
 // Run performs o.Mode over every APPROVED entry in database, placing each at
 // outputDir/target_path, and reports what happened. The caller holds the
@@ -140,32 +151,63 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		info, statErr := os.Stat(src)
 		dst := filepath.Join(outputDir, r.TargetPath)
 
+		// committed is what the report counts. A file on disk that no row
+		// records is the one outcome worth never reporting as success.
+		var committed string
+		commit := func(landed string) error {
+			target := r.TargetPath
+			if rel, err := filepath.Rel(outputDir, landed); err == nil {
+				target = wspath.ToLibrary(rel)
+			}
+			if !o.DryRun {
+				if err := markPlaced(database, r.ID, r.FileID, target); err != nil {
+					return &stepError{opCommit, fmt.Errorf("record the placed file: %w", err)}
+				}
+			}
+			committed = target
+			return nil
+		}
+
 		var xerr error
 		switch {
 		case statErr != nil:
-			xerr = &stepError{opStat, fmt.Errorf("source missing: %w", statErr)}
+			// A missing source is not automatically a failure: a crash after
+			// the file landed but before its row committed leaves exactly
+			// this, and a move has already deleted the original. Ask the
+			// library whether it holds the file before writing the row off —
+			// the alternative is a TRANSFER error that is never retried on a
+			// file that is sitting there, correct, all along.
+			if landed, ok := alreadyLanded(dst, r.FileHash); ok {
+				log.Info("found the file already in the library; recording it", "target", landed)
+				dst = landed
+				xerr = commit(landed)
+			} else {
+				xerr = &stepError{opStat, fmt.Errorf("source missing: %w", statErr)}
+			}
 		default:
-			dst, xerr = xfer(ctx, o.Mode, src, dst, r.FileHash)
+			dst, xerr = xfer(ctx, o.Mode, src, dst, r.FileHash, commit)
 		}
 		if errors.Is(xerr, errSourceNotRemoved) {
-			// The file is in the library, verified: record it there, or the
-			// library holds a file the database doesn't know about. The
+			// The file is in the library and already recorded there; the
 			// source stays behind as a duplicate the next scan cleans up.
 			log.Warn("placed file but could not remove its source", "source", src, "target", dst, "error", xerr)
 			xerr = nil
 		}
-		target := r.TargetPath
-		if rel, err := filepath.Rel(outputDir, dst); err == nil {
-			target = wspath.ToLibrary(rel)
-		}
 
-		if !o.DryRun {
-			markResult(database, r.ID, r.FileID, target, xerr)
-		}
-		if xerr != nil {
+		if xerr != nil && committed == "" {
+			if !o.DryRun {
+				if err := markFailed(database, r.FileID, xerr); err != nil {
+					log.Error("could not record a failed transfer", "source", src, "error", err)
+				}
+			}
 			rep.Failed++
 			log.Warn("could not transfer file", "source", src, "target", dst, "error", xerr)
 			continue
+		}
+		if xerr != nil {
+			// Landed and recorded, then something after it went wrong. The
+			// library holds the file, so the row is right; say so and move on.
+			log.Warn("placed file, but the transfer did not finish cleanly", "target", committed, "error", xerr)
 		}
 		rep.Done++
 		var size int64
@@ -174,7 +216,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		}
 		rep.Bytes += size
 		if o.OnProgress != nil {
-			o.OnProgress(target, size, i+1, len(rows))
+			o.OnProgress(committed, size, i+1, len(rows))
 		}
 	}
 	database.Writer.Flush()
@@ -269,6 +311,7 @@ const (
 	opRename       = "rename"
 	opHash         = "hash"
 	opRemoveSource = "remove-source"
+	opCommit       = "commit"
 )
 
 // stepError names the step of a transfer that failed.
@@ -289,29 +332,25 @@ func failedOp(xerr error) string {
 	return opCopy
 }
 
-// markResult records one row's outcome. On success it repoints file_registry
-// and the row's own source_path at target — library-relative, the same value
-// target_path already holds (spec D9/D10): the file now lives under
-// outputDir, not wherever it was scanned from, and a database that travels
-// with the library must not depend on where the library is mounted. A stale
-// source_path would also break a Move outright (the source is gone) and would
-// leave a Copy's row pointing a reorg attempt at a location that no longer
-// reflects the plan that was executed. It sets placed and clears the file's
-// error rows in the same transaction. On failure it records a TRANSFER error
-// and leaves the row, and so its folder, where it was planned: a retry lands
-// where the user reviewed it. Fire-and-forget through the same FIFO writer
-// every phase uses; Run's Flush before returning is what makes the caller's
-// very next read see it.
-func markResult(database *db.DB, id, fileID int64, target string, xerr error) {
-	if xerr != nil {
-		xerr = db.WithStack(xerr) // frames must be taken here, not on the writer's goroutine
-		database.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
-			return db.RecordError(ctx, tx, fileID, db.StageTransfer, failedOp(xerr), xerr)
-		})
-		return
-	}
+// markPlaced records that the file is in the library at target. It repoints
+// file_registry and the row's own source_path there — library-relative, the
+// same value target_path already holds (spec D9/D10): the file now lives
+// under outputDir, not wherever it was scanned from, and a database that
+// travels with the library must not depend on where the library is mounted. A
+// stale source_path would also break a Move outright (the source is gone) and
+// would leave a Copy's row pointing a reorg attempt at a location that no
+// longer reflects the plan that was executed. It sets placed and clears the
+// file's error rows in the same transaction.
+//
+// Synchronous, unlike every other write in the pipeline: this is the one row
+// whose absence the user pays for in photos. Fire-and-forget batching means
+// the run can report a file placed while the batch carrying that fact was
+// rolled back into a log line — and in move mode the source is gone by then.
+// WriteSync returns the transaction's own error, and with synchronous=FULL a
+// nil return means the row is on the disk, not merely in the page cache.
+func markPlaced(database *db.DB, id, fileID int64, target string) error {
 	dir, name := stdpath.Dir(target), stdpath.Base(target)
-	database.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+	return database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE virtual_fs_entries SET source_path = ?, target_path = ? WHERE id = ?`,
 			target, target, id); err != nil {
@@ -324,6 +363,42 @@ func markResult(database *db.DB, id, fileID int64, target string, xerr error) {
 		_, err := tx.ExecContext(ctx, `DELETE FROM errors WHERE file_id = ?`, fileID)
 		return err
 	})
+}
+
+// markFailed records a TRANSFER error and leaves the row, and so its folder,
+// where it was planned: a retry lands where the user reviewed it.
+func markFailed(database *db.DB, fileID int64, xerr error) error {
+	xerr = db.WithStack(xerr) // frames must be taken here, not on the writer's goroutine
+	return database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+		return db.RecordError(ctx, tx, fileID, db.StageTransfer, failedOp(xerr), xerr)
+	})
+}
+
+// maxLandedProbe bounds the search for an already-landed file. Names are
+// handed out in order, so the file is at dst or within the first few _N
+// beside it; a library with more collisions than this on one name has a
+// bigger problem than a slow probe.
+const maxLandedProbe = 64
+
+// alreadyLanded answers the one question a missing source leaves open: did
+// this file already land, and only the row saying so go missing? It looks at
+// the planned name and the _N names beside it for a file whose bytes hash to
+// what the scan recorded. Nothing else can tell a crashed-mid-run file apart
+// from a source the user deleted, and the two deserve opposite answers.
+func alreadyLanded(dst, want string) (string, bool) {
+	if want == "" {
+		return "", false
+	}
+	for n := 0; n < maxLandedProbe; n++ {
+		p := withSuffix(dst, n)
+		if _, err := os.Stat(p); err != nil {
+			return "", false // names are used in order, so a gap is the end
+		}
+		if got, err := metadata.HashFile(p); err == nil && got == want {
+			return p, true
+		}
+	}
+	return "", false
 }
 
 // errSourceNotRemoved means the file landed, verified, but a move could not remove
@@ -341,7 +416,7 @@ var errSourceNotRemoved = errors.New("placed, but the source could not be remove
 // before the async writer recorded an earlier copy, or `wandersort recover`
 // putting rows back to APPROVED whose files are already placed. Taking the
 // next _N there would place the file twice.
-func productionTransfer(ctx context.Context, mode Mode, src, dst, want string) (string, error) {
+func productionTransfer(ctx context.Context, mode Mode, src, dst, want string, commit commitFn) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return dst, err
 	}
@@ -350,13 +425,13 @@ func productionTransfer(ctx context.Context, mode Mode, src, dst, want string) (
 	}
 	for n := 0; ; n++ {
 		target := withSuffix(dst, n)
-		err := place(mode, src, target, want)
+		err := place(mode, src, target, want, func() error { return commit(target) })
 		if !errors.Is(err, fs.ErrExist) {
 			return target, err
 		}
 		if holds(target, src, want) {
 			if mode != ModeMove {
-				return target, nil
+				return target, commit(target)
 			}
 			// The library copy matching the scan says nothing about the
 			// source: an edit since then, same size, would be deleted here
@@ -367,6 +442,9 @@ func productionTransfer(ctx context.Context, mode Mode, src, dst, want string) (
 			}
 			if got != want {
 				return target, &stepError{opHash, fmt.Errorf("source changed since it was scanned: source %s, scanned %q: %w", got, want, db.ErrChecksumMismatch)}
+			}
+			if err := commit(target); err != nil {
+				return target, err
 			}
 			return target, removeSource(src)
 		}
@@ -414,12 +492,20 @@ func withSuffix(p string, n int) string {
 // too. A copy hashes the bytes as it writes them and lands only if they hash
 // to want (spec D22) — a source changed since the scan is not the file that
 // was planned. Copy never unlinks src; Move only does once the copy is
-// verified, so the source is never lost to a partial or wrong write, and an
+// verified and commit has recorded it, so the source is never lost to a
+// partial write, a wrong write, or a row that never made it to disk, and an
 // occupied dst never loses it at all.
-func place(mode Mode, src, dst, want string) error {
+func place(mode Mode, src, dst, want string, commit func() error) error {
 	if mode == ModeMove {
 		err := atomicfile.Rename(src, dst)
-		if err == nil || errors.Is(err, fs.ErrExist) {
+		if err == nil {
+			// The rename *is* the unlink: there is no window to order around,
+			// the file has one name throughout. If the commit fails the file
+			// is in the library unrecorded, which the next run reconciles
+			// through alreadyLanded rather than copying anything twice.
+			return commit()
+		}
+		if errors.Is(err, fs.ErrExist) {
 			return err
 		}
 		if errors.Is(err, atomicfile.ErrSourceKept) {
@@ -436,14 +522,23 @@ func place(mode Mode, src, dst, want string) error {
 	}); err != nil {
 		return &stepError{opCopy, err}
 	}
+	// The file is in the library and verified. Record it before the source is
+	// unlinked: the other order leaves a crash holding a library file nothing
+	// knows about and no source to re-read it from.
+	if err := commit(); err != nil {
+		return err
+	}
 	if mode != ModeMove {
 		return nil
 	}
 	return removeSource(src)
 }
 
-// dryRunTransfer does nothing — Run already sized and error-checked the
+// dryRunTransfer touches no file — Run already sized and error-checked the
 // source via os.Stat before calling the transfer, so a dry run's Report is
 // real numbers for zero I/O. It reports the planned name: a real run may land
-// on name_N instead if that name is already taken on disk.
-func dryRunTransfer(_ context.Context, _ Mode, _, dst, _ string) (string, error) { return dst, nil }
+// on name_N instead if that name is already taken on disk. commit is still
+// called, and still writes nothing: it is what counts the row as done.
+func dryRunTransfer(_ context.Context, _ Mode, _, dst, _ string, commit commitFn) (string, error) {
+	return dst, commit(dst)
+}

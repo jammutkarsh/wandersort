@@ -1359,8 +1359,18 @@ tree over the whole library.
   automatically. The seam is one function, not an
   `FS` interface (that shape was considered and rejected — a large interface
   learned to vary one behaviour is a shallow adapter): `transfer(ctx, mode,
-  src, dst, want) (string, error)` places one file, atomically, and returns
-  where it landed. Two real implementations —
+  src, dst, want, commit) (string, error)` places one file, atomically, and
+  returns where it landed. **`commit` is the ordering, not a callback for
+  tidiness**: it runs once the file is at its landing path and verified, and
+  *before* a move unlinks the source, so the database records the file as
+  being in the library before its only other copy is destroyed. A crash
+  between the two leaves a duplicate; the other order left the library
+  holding a file nothing knew about and no source to re-read it from. A
+  `commit` error means the file stays and the source is kept, and the row is
+  counted failed. (A *same-device* move is one atomic rename with no window
+  to order around — the file has exactly one name throughout — so there the
+  commit runs after; a failure is recovered by `alreadyLanded`, below.)
+  Two real implementations —
   `productionTransfer` (a same-device `atomicfile.Rename` for `Move`, else
   `atomicfile.Copy`; `Copy` never unlinks `src`, `Move` only does once the
   copy is verified. **Every copy is hash-verified** (spec D22): the bytes
@@ -1381,16 +1391,32 @@ tree over the whole library.
   caught in review. A move whose file landed verified but
   whose source can't be removed (`errSourceNotRemoved`) is recorded placed
   with a warning, not as an error — the library holds the file, so the database
-  must too. `markResult` writes the
+  must too. `markPlaced` writes the
   landed name back to `target_path`, and to `source_path` and
   `file_registry.file_dir`/`file_name` too — **library-relative, the same
   value as `target_path`** (spec D9/D10: the database travels with the
   library, so a placed file's path must not depend on where it's mounted).
-  `markResult` also sets `file_registry.placed = 1` on success, copy and
-  move alike; the failure branch never touches it, so a failed transfer
-  stays `placed = 0`) and `dryRunTransfer` (does
-  nothing — `Run` already `os.Stat`s the source before calling `transfer`,
-  so a dry run's `Report` is real byte/file counts for zero I/O). Reports
+  `markPlaced` also sets `file_registry.placed = 1` on success, copy and
+  move alike; `markFailed` never touches it, so a failed transfer
+  stays `placed = 0`. **Both are `WriteSync`, not the fire-and-forget
+  `Write` every other phase uses, and both return their error** — this is the
+  one row whose absence the user pays for in photos. Batched writes drop a
+  failed batch into a log line (`writer.go`'s `flush` has nowhere to return
+  one), so the run could report `Done: 4812 files` with every `placed = 1`
+  rolled back, and in move mode the sources were already gone. `Report.Done`
+  now counts rows that committed, not transfers that touched the disk) and
+  `dryRunTransfer` (touches no file — `Run` already `os.Stat`s the source
+  before calling `transfer`, so a dry run's `Report` is real byte/file counts
+  for zero I/O; it still calls `commit`, which writes nothing on a dry run
+  and is what counts the row). **A missing source is not automatically a
+  failure** (`alreadyLanded`): a crash after the file landed but before its
+  row committed leaves exactly that, and for a move the original is already
+  gone. Before writing the row off, the planned name and the `_N` names
+  beside it are checked for a file whose bytes hash to what the scan
+  recorded; a hit is recorded placed. Without it, every file the last run had
+  in flight became a permanent `TRANSFER` error that is never retried, on
+  files sitting correctly in the library the whole time. A missing source
+  with nothing in the library is still a plain failure. Reports
   through the same contract every other phase does
   (`logger.PhaseKey`/`EventKey`/`ElapsedKey`, `UserKey` line with the byte
   total from `volume.HumanBytes`), per that same ticket's ask for phase
@@ -1505,7 +1531,28 @@ tree over the whole library.
   (`31 x READ/open/permission-denied at metadata.go:412, .HEIC, removable`)
   for `about.txt`. `issue` opens the database read-only on its own, never
   through `openLibrary`.
-- `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry. `errors.go`:
+- `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry. **Every
+  connection-scoped pragma rides in the DSN** (`appDSN`), not in an `Exec`
+  after opening: `foreign_keys`, `locking_mode`, `busy_timeout`, `cache_size`,
+  `temp_store`, `mmap_size`, `synchronous` are per-*connection* settings in
+  SQLite, and they used to be set through a pool that was only pinned to one
+  connection afterwards — so a connection opened in that window, or opened
+  later to replace a retired one, ran with **foreign keys off**, silently
+  turning every `ON DELETE CASCADE` this codebase relies on (the scanner's
+  sweep, execute's duplicate cleanup, `ResetAll`) into an orphan-row
+  generator. The pool is pinned before the first query now, and
+  `assertPragmas` reads `foreign_keys` and `synchronous` back and refuses the
+  library if they didn't take. The driver applies `_pragma` entries in
+  *lexicographic* order, so nothing in `appDSN` may depend on running before
+  anything else in it; what is left in an `Exec` (`page_size`,
+  `journal_mode`, `auto_vacuum`, `application_id`) is database-scoped and
+  lives in the file's own header. **`synchronous` is `FULL`, not `NORMAL`**:
+  under `NORMAL`, WAL mode does not fsync at commit, so a power loss drops an
+  unbounded tail of *committed* transactions — including the rows saying a
+  photo is in the library and its source may be deleted. Writes are batched
+  (see `writer.go`), so the cost is a handful of fsyncs a second rather than
+  one per row; `fullfsync` is set too, which is the only thing that flushes
+  the drive's own cache on darwin. `errors.go`:
   the `errors` table's writer, `RecordError(ctx, tx, fileID, stage, op, err)`
   — one row per (file, stage), replaced with `attempts` bumped; derives `kind`
   from the error, stores `detail` as JSON (message, unwrapped chain, frames,
@@ -1712,7 +1759,20 @@ tree over the whole library.
   shape from the copy below rather than the same rule twice.
 - `atomicfile/` — `Copy(src, dest, tee, check) (int64, error)`: a temp file
   in dest's directory, then `Rename`, so a failure partway never leaves a
-  partial file at dest. `tee` sees every byte copied and `check` runs before
+  partial file at dest. **The temp file is `Sync`ed before the rename and
+  `Rename` fsyncs the directories it touched** (`syncDirs`/`syncDir`): closing
+  a file only hands its bytes to the page cache, and a rename's *dirent* is
+  not on stable storage until the filesystem's own commit interval — so
+  without either, a power loss could leave a zero-filled file under a name the
+  plan considers finished, or, for a move, take the new name and the old one
+  both and lose the photo outright. `check`'s hash verified the bytes that
+  went through the hasher in memory, not the bytes on the disk, which is why
+  the file sync is what makes that check mean anything. On darwin `Sync` is
+  `F_FULLFSYNC`, so it reaches the drive's own cache. Directory fsync is a
+  no-op on Windows (no directory-handle flush; NTFS orders its own metadata),
+  and a filesystem that refuses it (`EINVAL`/`ENOTSUP`/`EPERM` — most network
+  mounts) is not treated as a failed transfer. `tee` sees every byte copied
+  and `check` runs before
   the link (execute's hash verify; preview passes `nil, nil`); the copy keeps
   src's permission bits minus execute bits (FAT/exFAT cards report 0777) and
   its mtime (`CreateTemp`'s 0600 hid the library from a media server, and a
