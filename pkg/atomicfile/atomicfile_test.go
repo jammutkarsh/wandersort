@@ -253,3 +253,23 @@ func TestHalfDoneMoveNeedsTwoLinks(t *testing.T) {
 		t.Error("two links not reported as a half-done move")
 	}
 }
+
+func TestSyncDirsDedupesAndTolerates(t *testing.T) {
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	write(t, a, "a")
+	write(t, b, "b")
+
+	// Two paths in one directory is one fsync, and it must succeed on an
+	// ordinary local filesystem — a Copy that syncs nothing is the whole bug
+	// this guards.
+	if err := syncDirs(a, b); err != nil {
+		t.Fatalf("syncDirs on a real directory: %v", err)
+	}
+
+	// A directory that isn't there is a real error, not something to swallow:
+	// it means the caller published a name somewhere unexpected.
+	if err := syncDirs(filepath.Join(dir, "gone", "x")); err == nil && runtime.GOOS != "windows" {
+		t.Error("syncDirs should report a missing directory")
+	}
+}

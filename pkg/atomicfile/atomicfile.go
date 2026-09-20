@@ -17,7 +17,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/text/unicode/norm"
@@ -71,6 +73,15 @@ func Copy(src, dest string, tee io.Writer, check func() error) (int64, error) {
 	n, err := io.CopyBuffer(w, struct{ io.Reader }{in}, make([]byte, copyBufferSize))
 	if err != nil {
 		return 0, fmt.Errorf("copy %s: %w", src, err)
+	}
+	// Closing a file does not put its bytes on the platter — it only hands
+	// them to the page cache. Without this, Rename below publishes a name for
+	// a file whose contents a power loss can still take away, and the caller's
+	// hash check verified the bytes that went through the hasher in memory,
+	// not the bytes on the disk. On darwin this is F_FULLFSYNC, so it flushes
+	// the drive's own write cache rather than just the OS's.
+	if err := tmp.Sync(); err != nil {
+		return 0, fmt.Errorf("sync temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return 0, fmt.Errorf("close temp file: %w", err)
@@ -129,7 +140,7 @@ func Rename(oldpath, newpath string) error {
 			os.Remove(newpath)
 			return fmt.Errorf("%w: remove %s after linking it to %s: %w", ErrSourceKept, oldpath, newpath, err)
 		}
-		return nil
+		return syncDirs(newpath, oldpath)
 	}
 	if errors.Is(err, fs.ErrExist) {
 		return fmt.Errorf("%s: %w", newpath, fs.ErrExist)
@@ -146,6 +157,51 @@ func Rename(oldpath, newpath string) error {
 	}
 	if err := os.Rename(oldpath, newpath); err != nil {
 		return fmt.Errorf("rename to %s: %w", newpath, err)
+	}
+	return syncDirs(newpath, oldpath)
+}
+
+// syncDirs makes the directory entries this package just created and removed
+// durable. A rename is atomic with respect to ordering, but the *dirent* is
+// not on stable storage until the filesystem's own commit interval: after a
+// power loss the new name and the old one can both be gone, which for a move
+// means the file is gone. Duplicate and unsyncable directories are skipped —
+// the sync is best effort on filesystems that don't support it, since the
+// alternative is refusing to place a file that is already correctly on disk.
+func syncDirs(paths ...string) error {
+	seen := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		dir := filepath.Dir(p)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		if err := syncDir(dir); err != nil {
+			return fmt.Errorf("sync dir %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+// syncDir fsyncs one directory. Windows has no directory-handle flush, so
+// there it is a no-op; NTFS orders its own metadata through its log.
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		// Some filesystems (and most network mounts) refuse fsync on a
+		// directory. Nothing is wrong with the file itself, so don't fail a
+		// transfer over it.
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EPERM) {
+			return nil
+		}
+		return err
 	}
 	return nil
 }
