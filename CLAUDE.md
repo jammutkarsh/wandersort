@@ -690,6 +690,14 @@ Back in `internal/cli/`:
     WanderSort is" above), there was nothing left for it to read, so it was
     deleted rather than rewritten. `wandersort review` is the natural next
     step after `scan` now.
+- `verify.go` — `verify` cmd: `pkg/core/verify` plus the one thing that
+    package deliberately doesn't do, which is say it out loud. **Every
+    failing file is named on screen, not only in the log** — a count is not
+    something a person can act on, and these are their photos. `--full`
+    re-reads contents; without it the pass is existence and size and the
+    output says so, and points at `--full` for the rest. A damaged database
+    names `wandersort recover`; strays are listed as safe to delete. Exits
+    non-zero only on real problems, never on strays alone.
 - `issue.go` — `issue` cmd: zips the newest `issueLogs` (5) non-empty logs
     other than its own run's, under `logs/`, + `about.txt`, into the **current
     directory**, not the library; db opt-in via `--include-db` (holds paths/GPS).
@@ -1442,6 +1450,41 @@ tree over the whole library.
   output lock**
   (`lock.AcquireOutput`), same contract `scan` has — `execute.Run` assumes
   it, it does not take it.
+  **The cleanup only forgets a duplicate while the file it duplicates is
+  actually there** — it stats the placed file and compares its size first.
+  Forgetting is irreversible and the database's knowledge of the surviving
+  copies is the only record of them, so a placed file that lost its bytes
+  (a crash, a bad sector, anything outside WanderSort) must not take them
+  with it. Existence and size, not a hash: this runs after every transfer,
+  and re-reading the whole library each time is what `verify` is for.
+- `verify/` — the phase nothing else does: **is what the database recorded
+  still true on disk?** Every placed file's hash is stored at scan time and
+  checked once, while the copy is written; after that the bytes are never
+  read again, so bitrot, a bad sector, a sync client rewriting a file or a
+  backup tool truncating one are all invisible. `Run(ctx, db, log, outputDir,
+  Options{Full, OnProgress}) (Report, error)` is the whole surface. Quick
+  (the default) stats every placed file for existence and size — a deletion
+  or a truncation for the cost of one stat, the two failures a user is most
+  likely to have caused themselves; `Full` re-reads the bytes and compares
+  them with `file_metadata.file_hash`, which is the only way to see a changed
+  byte and the whole reason the hash is stored. It also runs
+  `PRAGMA integrity_check` on the **live** database (only the backup is ever
+  checked otherwise, as it is written, so a corrupt page is otherwise found
+  by whichever query happens to touch it — `integrity_check`, not
+  `quick_check`, because the skipped index-against-table comparison is
+  exactly what catches a plan pointing at folders that aren't there), and
+  walks the library for leftover `.copy-*` files: full-size copies of the
+  user's photos that a crashed transfer left in their own folders, which
+  nothing else in WanderSort ever collects. **Reported, never deleted** —
+  removing files is `execute`'s job, and a verify that deletes is one nobody
+  runs twice. Only `placed = 1` rows: an unplaced file still lives at its
+  source, where the user may legitimately have changed it, and the plan is a
+  proposal about it rather than a record of it. Failures go into the
+  `errors` table as `VERIFY` rows and a file that verifies has its row
+  deleted, so the table keeps holding only live problems (D29) and
+  `wandersort issue` ships exactly the failures still true. Sequential, like
+  `execute` and for the same reason: nothing has measured it, so there is
+  nothing to size a pool against.
 
 ## Supporting packages (`pkg/`)
 
@@ -1556,7 +1599,8 @@ tree over the whole library.
   the `errors` table's writer, `RecordError(ctx, tx, fileID, stage, op, err)`
   — one row per (file, stage), replaced with `attempts` bumped; derives `kind`
   from the error, stores `detail` as JSON (message, unwrapped chain, frames,
-  errno). Go errors carry no stack, so frames are taken where the pipeline
+  errno). Three stages can fail one file — `READ`, `TRANSFER` and `VERIFY`
+  (planning is library-wide, so it fails the run, not a file). Go errors carry no stack, so frames are taken where the pipeline
   sees the failure (`db.WithStack`, before the write is queued on the writer's
   goroutine; `db.PanicError` for a recovered panic's real stack) — they name a
   code path, no more. `db.PendingTransfer(col)` is the one SQL definition of

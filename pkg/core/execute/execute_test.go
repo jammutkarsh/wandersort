@@ -828,3 +828,41 @@ func TestRunFailsWhenSourceIsGoneAndNothingLanded(t *testing.T) {
 		t.Errorf("status = %q, want %q", status, stateFailed)
 	}
 }
+
+// Forgetting a duplicate is only safe while the file it duplicates is
+// actually in the library. If the placed file lost its bytes, the database's
+// knowledge of every surviving copy is the only record left of them — and
+// there is nothing else that remembers.
+func TestCleanupKeepsDuplicatesWhenThePlacedFileIsGone(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	seedApproved(t, d, 1, "A.jpg", "hello")
+	seedHashedFile(t, d, 2, "/backup", "dupe.jpg", hashOf("hello"))
+
+	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	// The duplicate is gone, as it should be while the library holds the file.
+	var count int
+	if err := d.SQL.Get(&count, `SELECT COUNT(*) FROM file_registry WHERE id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("duplicate of an intact placed file survived the cleanup")
+	}
+
+	// Now the same situation with the placed file missing from disk.
+	seedHashedFile(t, d, 3, "/backup", "dupe2.jpg", hashOf("hello"))
+	if err := os.Remove(filepath.Join(out, "A.jpg")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupPlacedDuplicates(context.Background(), d, out); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SQL.Get(&count, `SELECT COUNT(*) FROM file_registry WHERE id = 3`); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Error("the cleanup forgot a duplicate of a file that is no longer in the library")
+	}
+}

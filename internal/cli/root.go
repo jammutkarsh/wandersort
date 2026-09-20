@@ -25,6 +25,7 @@ const (
 	flagDB         = "db"
 	flagMove       = "move"
 	flagDryRun     = "dry-run"
+	flagFull       = "full"
 )
 
 func (a *app) newRootCmd() *cobra.Command {
@@ -82,6 +83,7 @@ wandersort review`,
 	rootCmd.AddCommand(a.newScanCmd())
 	rootCmd.AddCommand(a.newReviewCmd())
 	rootCmd.AddCommand(a.newExecuteCmd())
+	rootCmd.AddCommand(a.newVerifyCmd())
 	rootCmd.AddCommand(a.newIssueCmd())
 	rootCmd.AddCommand(a.newResetCmd())
 	rootCmd.AddCommand(a.newRecoverCmd())

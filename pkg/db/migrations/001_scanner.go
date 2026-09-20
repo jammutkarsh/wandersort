@@ -63,9 +63,9 @@ const errorsTable = `
 CREATE TABLE IF NOT EXISTS errors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id INTEGER NOT NULL REFERENCES file_registry(id) ON DELETE CASCADE,
-    stage TEXT NOT NULL CHECK (stage IN ('READ', 'TRANSFER')),
+    stage TEXT NOT NULL CHECK (stage IN ('READ', 'TRANSFER', 'VERIFY')),
     -- the step inside the stage: open, hash, exiftool, stat, mkdir, copy,
-    -- rename, remove-source
+    -- rename, remove-source, commit
     op TEXT NOT NULL,
     -- the bucket, derived from the error (errors.Is against fs.ErrPermission,
     -- fs.ErrNotExist, ENOSPC, ...): permission-denied, not-found, io-error,

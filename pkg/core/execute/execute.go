@@ -223,7 +223,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 
 	if !o.DryRun {
 		// GC failure leaves duplicates a little longer; never fail the run over it
-		if err := cleanupPlacedDuplicates(ctx, database); err != nil {
+		if err := cleanupPlacedDuplicates(ctx, database, outputDir); err != nil {
 			log.Warn("could not clean up placed duplicates", "error", err)
 		}
 	}
@@ -242,20 +242,42 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 // file_registry.placed read fresh every run, so a run that stops early is
 // picked up by the next one; nothing here touches a file unrelated to any
 // placed hash.
-func cleanupPlacedDuplicates(ctx context.Context, database *db.DB) error {
+func cleanupPlacedDuplicates(ctx context.Context, database *db.DB, outputDir string) error {
 	// Every file_metadata row sharing a hash with a placed file, except the
 	// placed file's own row. Read up front, before anything is deleted, so
-	// the delete works from one fixed id list.
-	var ids []int64
-	if err := database.SQL.SelectContext(ctx, &ids, `
-		SELECT fm.file_id FROM file_metadata fm
+	// the delete works from one fixed id list. The placed file's own path
+	// comes along so it can be checked before its duplicates are forgotten.
+	var rows []struct {
+		ID          int64  `db:"id"`
+		PlacedDir   string `db:"placed_dir"`
+		PlacedName  string `db:"placed_name"`
+		PlacedBytes int64  `db:"placed_size"`
+	}
+	if err := database.SQL.SelectContext(ctx, &rows, `
+		SELECT fm.file_id AS id, fr2.file_dir AS placed_dir,
+			fr2.file_name AS placed_name, fr2.file_size AS placed_size
+		FROM file_metadata fm
 		JOIN file_registry fr ON fr.id = fm.file_id
-		WHERE fr.placed = 0
-		AND fm.file_hash IN (
-			SELECT fm2.file_hash FROM file_metadata fm2
-			JOIN file_registry fr2 ON fr2.id = fm2.file_id
-			WHERE fr2.placed = 1)`); err != nil {
+		JOIN file_metadata fm2 ON fm2.file_hash = fm.file_hash
+		JOIN file_registry fr2 ON fr2.id = fm2.file_id AND fr2.placed = 1
+		WHERE fr.placed = 0`); err != nil {
 		return fmt.Errorf("find placed duplicates: %w", err)
+	}
+
+	// Forgetting a duplicate is only safe while the file it duplicates is
+	// actually in the library. A transfer that lost its bytes — a crash, a
+	// bad sector, something outside WanderSort — would otherwise take the
+	// database's knowledge of every surviving copy with it, and there is no
+	// other record of them. Checked by existence and size, not by hash: this
+	// runs after every transfer, and re-reading the library each time is what
+	// `wandersort verify` is for.
+	var ids []int64
+	for _, r := range rows {
+		abs := filepath.Join(outputDir, wspath.FromLibrary(stdpath.Join(r.PlacedDir, r.PlacedName)))
+		if info, err := os.Stat(abs); err != nil || info.Size() != r.PlacedBytes {
+			continue
+		}
+		ids = append(ids, r.ID)
 	}
 	if len(ids) == 0 {
 		return nil

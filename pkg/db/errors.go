@@ -20,11 +20,14 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// Stages of the errors table. Only two can fail a single file: planning is
-// library-wide, so it fails the run, not a file.
+// Stages of the errors table. Planning is library-wide, so it fails the run,
+// not a file — these are the three that can fail one file: reading it,
+// transferring it, and checking afterwards that it is still what was
+// recorded.
 const (
 	StageRead     = "READ"
 	StageTransfer = "TRANSFER"
+	StageVerify   = "VERIFY"
 )
 
 // Kinds an error row is bucketed into, so a report can group them.
