@@ -9,7 +9,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -47,27 +46,10 @@ wandersort review`,
 	}
 }
 
-// settingsChanged reports that the settings moved since the current proposal
-// was built. No stamp file (a proposal from before stamping) is never a
-// change — there is nothing to compare against. Net-zero edits in the wizard
-// are not a change either: the comparison is the fingerprint of the settings
-// themselves, not "did the user open the wizard".
-func (a *app) settingsChanged(outputDir string) bool {
-	stamp, ok, err := vfs.ReadStamp(outputDir)
-	if err != nil {
-		a.Log.Warn("Could not read the settings this proposal used", "error", err)
-		return false
-	}
-	return ok && stamp != vfs.ConfigStamp(vfs.ConfigFor(a.Config))
-}
-
 // rebuildTree re-proposes the whole hierarchy from the settings as they stand
-// right now and returns the new tree — called whenever a proposal turns out
-// to be built under settings that have since moved: opening the review over a
-// stale stamp, or a wizard save that changes
-// something while a review is on screen (see configSaved). `a.Config` is
-// re-resolved on every wizard save (see app.reloadConfig), so "right now"
-// really is what the user last saved.
+// right now and returns the new tree — called when a wizard save changes
+// something, which is the only way the settings can move under a plan now
+// that they live in the library's own database (see shell.configSaved).
 //
 // It reopens every approved-but-not-transferred row first, so a re-plan
 // really does replan everything. Keeping them was a reported bug: change the
@@ -90,13 +72,12 @@ func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
 }
 
 // newReviewScreen builds the review screen over the current proposal, reusing
-// the scan's already-open DB and Deps — no lock/DB re-init needed. A stale
-// stamp re-plans right here, before the screen ever renders, rather than
-// raising a question on screen — see rebuildTree.
+// the scan's already-open DB and Deps — no lock/DB re-init needed. The plan
+// it finds always matches the current settings: a save re-plans on the spot
+// (shell.configSaved), so there is nothing stale to check for here.
 //
-// An empty tree (after that check) means every master is already DONE from an
-// earlier execute — a fully organized library, not a plan to rebuild; there's
-// nothing to re-propose in that case, so this doesn't try.
+// An empty tree means every master is already DONE from an earlier execute —
+// a fully organized library, not a plan to rebuild.
 func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	// Doesn't block: a.Deps was started by the scan and vfs already ran, so
 	// the location download has resolved by now. Autocomplete just degrades
@@ -105,13 +86,9 @@ func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
 	if err != nil {
 		a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
 	}
-	outputDir := filepath.Dir(a.Config.AppDBPath)
-	var tree []vfs.Node
-	if a.settingsChanged(outputDir) {
-		if tree, err = a.rebuildTree(ctx); err != nil {
-			return nil, err
-		}
-	} else if tree, err = vfs.BuildTree(ctx, a.AppDB); err != nil {
+	outputDir := a.Config.OutputDir()
+	tree, err := vfs.BuildTree(ctx, a.AppDB)
+	if err != nil {
 		return nil, err
 	}
 	if len(tree) == 0 {

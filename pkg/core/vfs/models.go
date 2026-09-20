@@ -49,13 +49,12 @@ type Config struct {
 	// Collapses consecutive same-location days into one range folder
 	// (Aug/02+03+04/Goa → Aug/02_04/Goa). See mergeSameLocationDays.
 	MergeSameLocationDays bool
-	// Anchors are saved places resolved to GPS coordinates, built from
-	// config.yaml by the caller (workflow or cli's rebuildTree). Nil when
-	// no saved places are configured or the resolver isn't ready.
+	// Anchors are saved places resolved to GPS coordinates, built by Propose
+	// from the library's settings. Nil when no saved places are configured or
+	// the resolver isn't ready.
 	Anchors []location.Anchor
 	// SavedPlaces is the same places as the names the user typed, before
-	// resolution. Anchors can't stand in for them in ConfigStamp: resolving
-	// needs the location database, and the stamp check must work without it.
+	// resolution — what the settings hold and what a save is compared against.
 	SavedPlaces []string
 	// Workers sizes the pool every per-master pass fans out over — deriveAll,
 	// resolveLocations, applyNameCase and buildTargets (see forEachMaster).
@@ -84,7 +83,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// RuleNone is the config.yaml `rules` sentinel for "no levels below
+// RuleNone is the settings' `rules` sentinel for "no levels below
 // Year/Month". Not a level itself: ConfigFor is the only thing that
 // interprets it.
 const RuleNone = "none"

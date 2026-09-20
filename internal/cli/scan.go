@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -134,11 +133,9 @@ func (a *app) runScanPlain(paths []string, force bool) error {
 		return fmt.Errorf("scan: %w", err)
 	}
 
-	hint := "wandersort review"
-	if a.Config.Configured {
-		hint = fmt.Sprintf("wandersort review -o %s", filepath.Dir(a.Config.AppDBPath))
-	}
-	a.Log.Info(fmt.Sprintf("Scan complete in %s. Run '%s' to review the proposed folders.", time.Since(start).Round(time.Millisecond), hint),
+	// No -o needed: the library just scanned is the one the next launch
+	// opens on (config.New reads the history this run wrote).
+	a.Log.Info(fmt.Sprintf("Scan complete in %s. Run 'wandersort review' to review the proposed folders.", time.Since(start).Round(time.Millisecond)),
 		logger.UserKey, true, "scanPaths", scanPaths)
 	return nil
 }

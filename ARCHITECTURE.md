@@ -142,8 +142,10 @@ enforced by an exclusive OS advisory lock (`pkg/lock`).
 
 ## Supporting packages (`pkg/`)
 
-- **`config/`** — `Defaults()`, `Resolve` (the whole precedence chain), and the
-  `~/.wandersort/config.yaml` machinery. No CLI framework imported.
+- **`config/`** — the library's own settings (`library_settings`: rules,
+  folder toggles, saved places), this machine's paths, and the recently-used
+  library list in `~/.wandersort/libraries`. No config file, no env layering,
+  no CLI framework imported.
 - **`db/`** — SQLite (`modernc.org/sqlite`) open/migrate/retry, a batched bulk
   writer, the factory reset, and numbered Go migrations. All timestamps are
   stored as UTC fixed-width nanoseconds and converted to local time only at

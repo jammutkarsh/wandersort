@@ -36,33 +36,10 @@ type app struct {
 	// outLock is the output-dir lock, taken with the database by openLibrary
 	// and released with it by closeDBs.
 	outLock *lock.Lock
-	// overrides is the flag layer this invocation resolved with, kept so a
-	// re-resolve mid-session layers the same way (see reloadConfig).
-	overrides config.Overrides
 	// logFile is this process's log, shared by the startup logger and the
 	// shell's TUI logger. It stays in memory until openLibrary (or a warning)
 	// persists it, so a run that only explores the app leaves no file.
 	logFile *logger.File
-}
-
-// reloadConfig re-resolves the settings after the wizard rewrote config.yaml
-// under a running session. The output path is the one setting that cannot move
-// mid-session — the database and the lock are already open on the old one — so
-// it is held back and returned as a note for the user instead.
-func (a *app) reloadConfig() (note string, err error) {
-	cfg, warning, err := config.Resolve(a.overrides)
-	if err != nil {
-		return "", fmt.Errorf("reload settings: %w", err)
-	}
-	if warning != "" {
-		a.Log.Warn(warning, logger.UserKey, true)
-	}
-	if a.AppDB != nil && cfg.AppDBPath != a.Config.AppDBPath {
-		cfg.AppDBPath = a.Config.AppDBPath
-		note = "Output folder saved — it takes effect the next time you start wandersort"
-	}
-	a.Config = cfg
-	return note, nil
 }
 
 func Execute() error {
@@ -136,7 +113,8 @@ func (a *app) openLibrary(ctx context.Context) error {
 	}
 	// From here the run touches (or tried to touch) user data: keep its log.
 	a.logFile.Persist()
-	if err := config.CheckLibrary(filepath.Dir(a.Config.AppDBPath)); err != nil {
+	outputDir := a.Config.OutputDir()
+	if err := config.CheckLibrary(outputDir); err != nil {
 		return err
 	}
 	l, err := a.lockOutput()
@@ -148,7 +126,42 @@ func (a *app) openLibrary(ctx context.Context) error {
 		l.Unlock()
 		return fmt.Errorf("app db: %w", err)
 	}
+	// The folders this library gets are the ones it was organized under, not
+	// whatever another library is set to (spec D2). A library that has never
+	// been through the wizard has no row and keeps the defaults. Read before
+	// the handle is published: a session that carried on with a half-open
+	// library would find `a.AppDB` set and skip the retry.
+	settings, err := config.LoadSettings(ctx, appDB)
+	if err != nil {
+		appDB.Close()
+		l.Unlock()
+		return err
+	}
 	a.AppDB, a.outLock = appDB, l
+	a.Config.Settings = settings
+	// Only now is this folder known to really be a library, which is what
+	// makes it worth offering as a recent one next launch (spec D3).
+	if err := a.Config.Remember(outputDir); err != nil {
+		a.Log.Warn("could not record this library as recently used", "error", err)
+	}
+	return nil
+}
+
+// saveSettings writes the settings the wizard collected into the library they
+// belong to, opening it first if this session hasn't yet — a config-first
+// session picks its output folder here, and nothing is written anywhere until
+// it does.
+func (a *app) saveSettings(ctx context.Context, outputDir string, s config.Settings) error {
+	if a.AppDB == nil {
+		a.Config.SetOutput(outputDir)
+		if err := a.openLibrary(ctx); err != nil {
+			return err
+		}
+	}
+	if err := config.SaveSettings(ctx, a.AppDB, s); err != nil {
+		return err
+	}
+	a.Config.Settings = s
 	return nil
 }
 

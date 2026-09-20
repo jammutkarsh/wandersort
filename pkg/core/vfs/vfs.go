@@ -62,22 +62,7 @@ func Propose(ctx context.Context, database *db.DB, resolver *location.Resolver, 
 	cfg := ConfigFor(appCfg)
 	cfg.Anchors = resolver.BuildAnchors(ctx, appCfg.SavedPlaces)
 	log.Info("Proposing destination folders", "rules", cfg.Rules, "anchors", len(cfg.Anchors))
-	count, err := New(database, resolver, log, cfg).Run(ctx)
-	if err != nil {
-		return count, err
-	}
-	// Record what this proposal was built under, so the review can tell that
-	// the settings moved since. Here rather than in each caller: every path to
-	// a fresh proposal goes through Propose, and only Propose knows both the
-	// Config and the output directory.
-	if appCfg.AppDBPath != "" {
-		if err := WriteStamp(filepath.Dir(appCfg.AppDBPath), ConfigStamp(cfg)); err != nil {
-			// A missing stamp only costs a re-plan that never fires —
-			// not worth failing a finished proposal over.
-			log.Warn("Could not record the settings this proposal used", "error", err)
-		}
-	}
-	return count, nil
+	return New(database, resolver, log, cfg).Run(ctx)
 }
 
 // Run builds the virtual filesystem proposal for the whole library's master

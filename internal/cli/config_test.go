@@ -10,7 +10,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -19,6 +18,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
+	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -26,12 +26,21 @@ import (
 // wizard's field order.
 func fieldByTitle(t *testing.T, fields []*tui.Field, title string) *tui.Field {
 	t.Helper()
+	f := findField(fields, title)
+	if f == nil {
+		t.Fatalf("no %q field in the wizard", title)
+	}
+	return f
+}
+
+// findField is fieldByTitle for the cases where the field's absence is the
+// thing being asserted.
+func findField(fields []*tui.Field, title string) *tui.Field {
 	for _, f := range fields {
 		if f.Title == title {
 			return f
 		}
 	}
-	t.Fatalf("no %q field in the wizard", title)
 	return nil
 }
 
@@ -49,13 +58,11 @@ func TestConfig(t *testing.T) {
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
 
-			cfg, _, err := config.Resolve(config.Overrides{})
-			if err != nil {
-				t.Fatal(err)
-			}
+			cfg := testConfig(t)
 			cfg.Rules = []string{"date", "device"}
 			cfg.CollapseLevels = false
-			a := &app{Config: cfg}
+			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+			defer a.closeDBs()
 
 			fields, save := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
 
@@ -123,31 +130,54 @@ func TestConfig(t *testing.T) {
 			if err := brokenSave(); err != nil {
 				t.Fatalf("save (broken geonames): %v", err)
 			}
-			if g, _ := cfg.Load(); len(g.SavedPlaces) < 2 || g.SavedPlaces[0] != "Indore" || g.SavedPlaces[1] != "Indore" {
-				t.Errorf("saved-place = %q/%q, want the typed town kept (work defaults to home)", g.SavedPlaces[0], g.SavedPlaces[1])
+			g, err := config.LoadSettings(context.Background(), a.AppDB)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(g.SavedPlaces) < 2 || g.SavedPlaces[0] != "Indore" || g.SavedPlaces[1] != "Indore" {
+				t.Errorf("saved-place = %v, want the typed town kept (work defaults to home)", g.SavedPlaces)
 			}
 
 			if err := save(); err != nil {
 				t.Fatalf("save: %v", err)
 			}
-			got, err := cfg.Load()
+			got, err := config.LoadSettings(context.Background(), a.AppDB)
 			if err != nil {
-				t.Fatalf("LoadGlobal: %v", err)
+				t.Fatalf("LoadSettings: %v", err)
 			}
-			want := &config.Configuration{
-				OutputPath:          filepath.Dir(cfg.AppDBPath),
-				Rules:               []string{"date", "device"},
-				CollapseLevels:      false,
-				SavedPlacesDateOnly: false, // the example checks above left it off
-
+			want := config.Settings{
+				Rules:                 []string{"date", "device"},
+				CollapseLevels:        false,
+				SavedPlacesDateOnly:   false, // the example checks above left it off
 				MergeSameLocationDays: cfg.MergeSameLocationDays,
+				SavedPlaces:           got.SavedPlaces, // covered above
 			}
-			// YAML-tagged fields must match exactly; computed fields are not persisted.
-			if got.OutputPath != want.OutputPath || !reflect.DeepEqual(got.Rules, want.Rules) ||
-				(got.CollapseLevels == config.True) != want.CollapseLevels ||
-				(got.SavedPlacesDateOnly == config.True) != want.SavedPlacesDateOnly ||
-				(got.MergeSameLocationDays == config.True) != want.MergeSameLocationDays {
-				t.Fatalf("saved config = %+v, want %+v", got, want)
+			if !got.Equal(want) {
+				t.Fatalf("saved settings = %+v, want %+v", got, want)
+			}
+			// The save is what created the library, and it landed in the
+			// folder the form named.
+			if _, err := os.Stat(cfg.AppDBPath); err != nil {
+				t.Errorf("the save must create the library it writes to: %v", err)
+			}
+		}},
+		// Once the library is open its folder is fixed (spec D5): the wizard
+		// stops asking, so a visit to the settings can't retarget a session
+		// whose database and lock are already somewhere else.
+		{"OutputPathAskedOnlyBeforeTheLibraryIsOpen", func(t *testing.T) {
+			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+			fields, _ := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
+			if f := findField(fields, "Output path"); f == nil {
+				t.Error("a session with no library open must be asked for the output folder")
+			}
+
+			if err := a.openLibrary(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			defer a.closeDBs()
+			fields, _ = a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
+			if f := findField(fields, "Output path"); f != nil {
+				t.Error("an open library's folder is fixed — the wizard must not offer to change it")
 			}
 		}},
 		// TestTownFieldsRoundTripARealTown exercises the real geonames path that
@@ -163,15 +193,9 @@ func TestConfig(t *testing.T) {
 			// already cached on this machine.
 			resolver := installtest.Resolver(t)
 
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("USERPROFILE", home)
-
-			cfg, _, err := config.Resolve(config.Overrides{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			a := &app{Config: cfg}
+			cfg := testConfig(t)
+			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+			defer a.closeDBs()
 
 			fields, save := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return resolver, nil })
 			group := fieldByTitle(t, fields, "Saved places")
@@ -217,54 +241,12 @@ func TestConfig(t *testing.T) {
 			if err := save(); err != nil {
 				t.Fatalf("save: %v", err)
 			}
-			if g, _ := cfg.Load(); len(g.SavedPlaces) == 0 || g.SavedPlaces[0] != "Indore, Madhya Pradesh, India" {
-				t.Errorf("saved home town = %q, want the canonical geonames spelling", g.SavedPlaces[0])
-			}
-		}},
-		// TestBadYAMLWarnsAndFallsBackToDefaults covers the escape hatch: a config
-		// file that doesn't parse must not stop the command. Every setting in it is
-		// optional, and failing hard would mean a stray tab locks the user out of
-		// every command — including the one that opens the file to fix it.
-		{"BadYAMLWarnsAndFallsBackToDefaults", func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("USERPROFILE", home) // windows
-			if err := os.MkdirAll(filepath.Join(home, ".wandersort"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			path := filepath.Join(home, ".wandersort", "config.yaml")
-			if err := os.WriteFile(path, []byte("output-path: /tmp/lib\n\tbad: [unclosed\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-
-			_, warning, err := config.Resolve(config.Overrides{})
+			g, err := config.LoadSettings(context.Background(), a.AppDB)
 			if err != nil {
-				t.Fatalf("bad YAML must not be a fatal error, got %v", err)
-			}
-			if warning == "" {
-				t.Error("expected a warning naming the unparseable file")
-			}
-		}},
-		// TestValidYAMLIsStillApplied guards the other direction: the warning path
-		// must not have broken normal config loading.
-		{"ValidYAMLIsStillApplied", func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("USERPROFILE", home)
-			if err := os.MkdirAll(filepath.Join(home, ".wandersort"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(home, ".wandersort", "config.yaml"),
-				[]byte("output-path: /tmp/lib\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-
-			cfg, warning, err := config.Resolve(config.Overrides{})
-			if err != nil || warning != "" {
-				t.Fatalf("valid config: err=%v warning=%q", err, warning)
-			}
-			if !cfg.Configured {
-				t.Error("expected the config file's output-path to mark the config as configured")
+			if len(g.SavedPlaces) == 0 || g.SavedPlaces[0] != "Indore, Madhya Pradesh, India" {
+				t.Errorf("saved home town = %v, want the canonical geonames spelling", g.SavedPlaces)
 			}
 		}},
 		// TestTreeExample covers the wizard's example renderer: sibling paths must

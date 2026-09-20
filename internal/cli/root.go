@@ -7,10 +7,9 @@
 package cli
 
 import (
-	"path/filepath"
-
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/spf13/cobra"
 )
 
@@ -22,10 +21,7 @@ const (
 	flagVertical   = "vertical"
 	flagForce      = "force"
 	flagPrint      = "print"
-	flagCollapse   = "collapse-levels"
 	flagPlain      = "plain"
-	flagSPDateOnly = "saved-places-date-only"
-	flagMergeDays  = "merge-same-location-days"
 	flagDB         = "db"
 	flagMove       = "move"
 	flagDryRun     = "dry-run"
@@ -51,39 +47,30 @@ wandersort scan --paths ~/Pictures,/Volumes/SD
 
 # Review and confirm the proposed folder structure
 wandersort review`,
-		Annotations: map[string]string{
-			"env": `All flags can also be set via environment variables, using the uppercased
-flag name (--output-path becomes OUTPUT_PATH).
-Flags take precedence over environment variables.`,
-		},
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runRoot(cmd)
 		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// Kept on the app: the shell re-resolves after its own settings
-			// wizard rewrites config.yaml mid-session, and the flag layer must
-			// still win over what was just written.
-			a.overrides = config.Overrides{
-				OutputPath:            flagStr(cmd, flagOutputPath),
-				CollapseLevels:        flagBool(cmd, flagCollapse),
-				SavedPlacesDateOnly:   flagBool(cmd, flagSPDateOnly),
-				MergeSameLocationDays: flagBool(cmd, flagMergeDays),
-			}
-			cfg, warning, err := config.Resolve(a.overrides)
+			// The settings that shape folders live in the library's own
+			// database and are read by openLibrary; the only thing decided
+			// here is which library that is — this flag, or the last one
+			// used (config.New).
+			cfg, err := config.New()
 			if err != nil {
 				return err
 			}
+			if out := flagStr(cmd, flagOutputPath); out != "" {
+				cfg.SetOutput(path.New().ExpandPath(out))
+			}
 			a.Config = cfg
-			// Build logger after Resolve so --output-path takes effect
+			// Build the logger after the output folder is settled, so the
+			// startup line can name it.
 			a.logFile = logger.NewFile(a.Config.LogDir)
 			a.Log = logger.New(a.Config.LogLevel, a.Config.LogConsole, a.logFile)
 			// The log no longer sits in the library, so say which one this run is about.
-			a.Log.Info("wandersort started", "command", cmd.CommandPath(), "output", filepath.Dir(a.Config.AppDBPath))
-			if warning != "" {
-				a.Log.Warn(warning, logger.UserKey, true)
-			}
+			a.Log.Info("wandersort started", "command", cmd.CommandPath(), "output", a.Config.OutputDir())
 			return nil
 		},
 	}
@@ -124,16 +111,4 @@ func flagStr(cmd *cobra.Command, name string) string {
 	}
 	s, _ := cmd.Flags().GetString(name)
 	return s
-}
-
-// flagBool returns the bool flag as a TriBool, or Unset when not passed.
-func flagBool(cmd *cobra.Command, name string) config.TriBool {
-	if !cmd.Flags().Changed(name) {
-		return config.Unset
-	}
-	b, err := cmd.Flags().GetBool(name)
-	if err != nil {
-		return config.Unset
-	}
-	return config.BoolToTri(b)
 }

@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -59,16 +58,7 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 		return fmt.Errorf("no database found — run 'wandersort scan' first")
 	}
 
-	outputDir := filepath.Dir(a.Config.AppDBPath)
-	// Settings can move without a re-plan: a save only rebuilds an already-open
-	// review, so a save-then-quit-then-execute never re-plans at all — the
-	// rows this would transfer were approved under the old settings. Refuse
-	// rather than re-plan here: that would flip them back to PROPOSED and this
-	// command would report "copied 0 files" with no explanation. Checked
-	// before the --move prompt below, so answering it doesn't buy a refusal.
-	if a.settingsChanged(outputDir) {
-		return fmt.Errorf("settings changed since this plan was made — open 'wandersort review' to see the new plan first")
-	}
+	outputDir := a.Config.OutputDir()
 
 	// Copy never touches a source, so it never asks. Move is the one thing in
 	// this codebase that can delete the user's files — it asks unless the

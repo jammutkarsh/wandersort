@@ -9,29 +9,23 @@ package cli
 import (
 	"testing"
 
-	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/spf13/cobra"
 )
 
-// TestFlagHelpers pins the ".Changed" gate: an unset flag must read back as the
-// zero/Unset value, not whatever GetString/GetInt/GetBool default to — that
-// distinction is what lets config.Resolve tell "not passed" from "passed as
-// false/0" and fall through to the env/file layers underneath.
+// TestFlagHelpers pins the ".Changed" gate: an unset flag must read back as
+// the zero value, not whatever GetString defaults to — that distinction is
+// what lets --output-path tell "not passed" from "passed as empty" and fall
+// through to the most recently used library underneath.
 func TestFlagHelpers(t *testing.T) {
 	newCmd := func() *cobra.Command {
 		cmd := &cobra.Command{Use: "x"}
 		cmd.Flags().String("output-path", "", "")
-		cmd.Flags().Bool("collapse-levels", false, "")
 		return cmd
 	}
 
 	t.Run("unset flags read as zero values", func(t *testing.T) {
-		cmd := newCmd()
-		if got := flagStr(cmd, "output-path"); got != "" {
+		if got := flagStr(newCmd(), "output-path"); got != "" {
 			t.Errorf("flagStr(unset) = %q, want empty", got)
-		}
-		if got := flagBool(cmd, "collapse-levels"); got != config.Unset {
-			t.Errorf("flagBool(unset) = %v, want config.Unset", got)
 		}
 	})
 
@@ -40,27 +34,14 @@ func TestFlagHelpers(t *testing.T) {
 		if err := cmd.Flags().Set("output-path", "/tmp/out"); err != nil {
 			t.Fatal(err)
 		}
-		if err := cmd.Flags().Set("collapse-levels", "false"); err != nil {
-			t.Fatal(err)
-		}
 		if got := flagStr(cmd, "output-path"); got != "/tmp/out" {
 			t.Errorf("flagStr(changed) = %q, want /tmp/out", got)
-		}
-		// explicit false must resolve to config.False, not config.Unset — an
-		// explicit "--collapse-levels=false" must be able to override a
-		// true default, which config.Unset can never do.
-		if got := flagBool(cmd, "collapse-levels"); got != config.False {
-			t.Errorf("flagBool(changed=false) = %v, want config.False", got)
 		}
 	})
 
 	t.Run("flag not registered on the command", func(t *testing.T) {
-		cmd := &cobra.Command{Use: "x"}
-		if got := flagStr(cmd, "missing"); got != "" {
+		if got := flagStr(&cobra.Command{Use: "x"}, "missing"); got != "" {
 			t.Errorf("flagStr(missing) = %q, want empty", got)
-		}
-		if got := flagBool(cmd, "missing"); got != config.Unset {
-			t.Errorf("flagBool(missing) = %v, want config.Unset", got)
 		}
 	})
 }

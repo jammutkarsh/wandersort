@@ -49,36 +49,43 @@ one scan ever runs against it at a time (see "Conventions" below):
     the TUI draws to stderr so stdout stays clean for piping.
     `openLibrary` is **the one way any command or the shell opens the output
     folder**, lazily and once per session: `config.CheckLibrary` (empty, or
-    already holds `.wandersort.db`), then the output lock, then `db.New`;
-    `closeDBs` releases both. The order is the point: a refused folder gets
-    nothing written into it, and a process that loses the lock race creates no
-    file either (the lock file it opened is the winner's). A session that
+    already holds `.wandersort.db`), then the output lock, then `db.New`,
+    then **`config.LoadSettings` — this library's own settings** (spec D2) —
+    and finally `config.Configuration.Remember`, which puts the folder at the
+    front of the recently-used list (D3). `closeDBs` releases lock and
+    database. The order is the point: a refused folder gets
+    nothing written into it, a process that loses the lock race creates no
+    file either (the lock file it opened is the winner's), and only a folder
+    that really opened as a library is remembered as one. A session that
     never scans or reviews writes nothing outside `~/.wandersort` — no lock
-    file at launch, no cleanup pass at exit. The wizard writes only
-    `config.yaml`, so a second `wandersort` is refused at the point it would
-    really collide rather than at launch.
-    `reloadConfig` re-runs `config.Resolve` after the shell's own wizard
-    rewrote `config.yaml` mid-session — with `app.overrides`, the flag layer
-    `PersistentPreRunE` resolved with, so a flag still beats what was just
-    saved. **The output path is the one setting it holds back**: the database
-    and the lock are already open on the old one, so it keeps the old
-    `AppDBPath` (the log lives in `~/.wandersort/logs`, which never moves) and
-    returns a note saying it takes effect next
-    launch. Everything else (rules, toggles, saved places) is live from that
-    moment — which is what the stamp check compares `a.Config` against on
-    every save (see `configSaved` below). The settings tab is unreachable
-    while a scan runs (`nextTab`), so a running workflow never needs its own
-    settings retargeted.
-  - `root.go` — root cmd and flag-name constants. **`PersistentPreRunE` is the
-    single place** config is resolved: it ensures `~/.wandersort/config.yaml`
-    exists (`config.EnsureGlobalConfigFile`), builds a `config.FlagOverrides`
-    from the invoked command's cobra flags (`flagOverridesFrom`), and calls
-    `config.Resolve` — the one function in `pkg/config` that layers flag > env
-    > file > default and returns the fully-resolved `*Configuration`. The
-    logger is built right after, from the resolved config, so `--output-path`
-    / env vars / `config.yaml` all take effect before any logging or DB work.
+    file at launch, no cleanup pass at exit.
+    **The settings a run plans with are the open library's, not a global
+    file's**: `a.Config.Settings` is whatever `openLibrary` read, so scanning
+    into an existing library organizes it the way it was already organized
+    however another library is set. `saveSettings` is the other direction —
+    the wizard's save — and **it is what opens the library on a config-first
+    session**: it takes the output folder the form collected, runs
+    `openLibrary` on it, writes the row, and updates `a.Config`. Quitting
+    before that save writes nothing anywhere. The settings tab is unreachable
+    while a scan runs (`nextTab`, spec D5), so a running workflow never sees
+    its settings move; the output folder never moves at all once the library
+    is open, which is why the wizard stops asking for it (see `config.go`).
+  - `root.go` — root cmd and flag-name constants. **`PersistentPreRunE`
+    decides one thing only: which library this invocation is about.**
+    `config.New()` builds the runtime paths and starts from the settings
+    defaults in code; the output folder is the most recently used one that
+    still exists (the history in `~/.wandersort/libraries`), and
+    `--output-path` overrides it. **The settings themselves are not resolved
+    here and there is no layering left** — no `config.yaml`, no
+    `OUTPUT_PATH`/`COLLAPSE_LEVELS` env vars, no `--collapse-levels` /
+    `--saved-places-date-only` / `--merge-same-location-days` flags: rules,
+    toggles and saved places live in the library's database and are read by
+    `openLibrary` (spec D2). A setting that can move a file is that library's,
+    so a flag that silently planned one library by another's rules had no
+    honest meaning. The logger is built right after, so the startup line can
+    name the output folder.
     Don't rebuild the logger in `main.go`. There is no global registry here
-    any more (no viper): every other command's own flags — `--yes`,
+    (no viper): every other command's own flags — `--yes`,
     `--plain`, `--vertical`, `--print`, `--paths` — are read
     straight off `cmd.Flags()` inside that command's own `RunE`, since `cmd`
     is already in scope there. `tuiEnabled` takes the invoked `cmd` for the
@@ -86,13 +93,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     flag**: the JSON file log is always at debug level (`fileHandler`), the
     console only ever shows `UserKey` lines and warnings, and a verbose console
     made no sense once the TUI owned the screen. `--plain` is the escape hatch.
-    **A config file that doesn't parse is a warning, not a failure**:
-    `config.Resolve` returns the warning text (not an error), the run
-    continues on defaults, and it's logged with `UserKey` once the logger
-    exists so it reaches the log file too, not just the terminal. Hard-failing
-    would let one stray tab in an all-optional settings file brick every
-    command — including `wandersort config`, the one that opens the file to
-    fix it. The root cmd's own `RunE` is `shell.go`'s `runRoot`: bare
+    The root cmd's own `RunE` is `shell.go`'s `runRoot`: bare
     `wandersort` opens the unified app, and `--plain` / a piped stderr still
     prints help.
   - `shell.go` — the **unified TUI shell**, and **the only full-screen entry
@@ -163,41 +164,52 @@ one scan ever runs against it at a time (see "Conventions" below):
     stayed, so a later save must go home as usual.
     **A wizard save is picked up without a relaunch** (`configSaved`, run when
     an embedded `FormModel` reports `Done()` without an abort or an error):
-    `a.reloadConfig` re-resolves the settings, and **a changed setting
-    re-plans the library at once, no question asked** — but only when a
-    review screen is already stashed (`reviewReady`), and only by dropping it
-    and routing through the ordinary `openReview` a `ctrl+t` uses, never by
-    calling `a.rebuildTree` straight from the save. `rebuildTree` touches
-    `a.AppDB`, and a config-first session that never scanned or reviewed has
-    none yet — calling it directly from `configSaved` was a nil-pointer crash
-    on exactly that path, caught in review before it shipped. `openReview`
-    always opens the
-    library first, so by the time `newReviewScreen` runs (and finds the stale
-    `.wandersort.cfg` stamp itself — see `settingsChanged` below —
-    and calls `rebuildTree` then) the database is guaranteed open. With
-    nothing stashed there is nothing left to do here at all: whoever opens
-    review next hits that same stale-stamp check, with the library open by
-    construction at that point. The settings tab is unreachable while a scan
+    **a changed setting re-plans the library at once, no question asked**
+    (spec D20), by dropping any stashed review screen — its folder IDs are
+    about to stop existing — and running `a.rebuildTree` off the UI goroutine
+    (`replan` / `replanDoneMsg`). **A failed re-plan is logged as a `UserKey`
+    warning, not just drawn**: `execute` used to refuse a plan built under
+    older settings, and without that check a silently failed re-plan would
+    leave it copying files under settings the user has already changed —
+    while the on-screen half is one home-screen line that isn't drawn at all
+    if a scan screen is up. Calling `rebuildTree` straight from the save
+    used to be a nil-pointer crash, because the library could still be
+    unopened; it can't now — **the save itself opens it** (`app.saveSettings`
+    writes the settings into the library, so there is one by the time this
+    runs). The user stays on the scan tab: the next visit to the review tab
+    builds a screen over the new plan.
+    `settingsChanged` and the `.wandersort.cfg` stamp are gone with the
+    global config file — the only way settings can move under a plan now is
+    this save, so the gate is a plain comparison of the settings the wizard
+    opened on (`shellModel.settingsBefore`, recorded by `openConfig`) against
+    the ones it saved (`config.Settings.Equal`): a visit that changes nothing
+    throws no plan away. The settings tab is unreachable while a scan
     runs (`nextTab` skips it), so there is never a running workflow to
     retarget — that mid-scan case, and the prompt asking whether to apply a
     change, both used to exist and both are gone: re-planning stored metadata
-    is cheap, so a save just takes effect. `settingsChanged(outputDir)` (the
-    `.wandersort.cfg` stamp compare, see `vfs.ConfigStamp`) is the only gate:
-    a save that changes nothing does nothing, and drops nothing stashed.
-    Changing the
-    output path mid-session is the one exception — it
-    surfaces as `reloadConfig`'s note on the home screen's error line, which is
-    also where a plain `Settings saved in <path>` goes when there is no note:
-    the wizard closes back into the shell instead of ending a process, so a
-    printed receipt has nowhere to land and the home screen's line is the only
+    is cheap, so a save just takes effect.
+    `Settings saved in <path>` goes to the home screen's error line: the
+    wizard closes back into the shell instead of ending a process, so a
+    printed receipt has nowhere to land and that line is the only
     confirmation the save gets.
   - `config.go` — `config` cmd: **the settings wizard** (there is no `setup`
     command — dependency downloads belong to `scan`). `buildConfigForm` +
     `tui.FormModel`: a top-down stacked form (answered fields collapse to
-    summary rows, StageList-style) written by `config.SaveGlobal` — one
-    whole-file marshal, since the wizard always submits every setting and the
-    file has no comments to preserve. The command itself is four lines —
-    `--print`/non-TTY dumps the file, everything else is
+    summary rows, StageList-style) written by `app.saveSettings` into the
+    library's own `library_settings` row — one whole row, since the wizard
+    always submits every setting. **The form is seeded from the library it is
+    about to overwrite**: `newConfigScreen` opens an existing library before
+    building the fields, so a visit to the settings can never replace one
+    library's rules with another's defaults. **The output-path field is only
+    there while the answer can still change anything** — with a library open
+    its folder is fixed (spec D5), so the field is left out rather than shown
+    and ignored; with none open, the save is what creates the library, and
+    quitting first writes nothing anywhere. Its suggestions lead with the
+    recently-used libraries (`Configuration.History`).
+    The command itself is four lines —
+    `--print`/non-TTY prints the settings (`printSettings`: the library's if
+    there is one, else the defaults a first save would start from — it does
+    not create a library to answer), everything else is
     `runShell(shellStart{tab: tabConfig})`; the wizard is a shell tab
     (`newConfigScreen`), so answering the settings and then scanning with them
     is one session. The **download progress row** works there because
@@ -315,9 +327,9 @@ one scan ever runs against it at a time (see "Conventions" below):
     rules, saved-place anchors) from defaults. Running `wandersort config`
     later re-proposes the hierarchy from the new settings right away, no
     re-scan needed (`configSaved`). `--paths/-p` is repeatable + comma-friendly
-    (`StringSlice`); `config.yaml`'s `rules` key (see below) controls the VFS
-    folder depth for this scan's proposal — no CLI flag, set it via
-    `wandersort config`. The plain path (`--plain`/non-TTY) keeps the simple
+    (`StringSlice`); the library's own `rules` setting (see below) controls
+    the VFS folder depth for this scan's proposal — no CLI flag, no env var,
+    set it via `wandersort config`. The plain path (`--plain`/non-TTY) keeps the simple
     order: blocking `Deps.Start` + `Deps.Exiftool`/`Deps.Location`, then the
     pipeline with the same `workflow.Deps`.
   - **There is no `anchor.go`, and no anchor row in the database.** Anchors are
@@ -346,15 +358,13 @@ one scan ever runs against it at a time (see "Conventions" below):
     lookup before
     `BuildTree` — `virtual_fs_entries` always holds exactly one proposal
     batch (the VFS phase replaces every unapproved row every run), so an
-    empty tree from `BuildTree` alone means "nothing to review yet" — after
-    the stale-stamp check below has had its say, since it means "already
-    organized", not "nothing proposed".
-    **There is no `--rebuild` flag, no manual rebuild at all.** A stale
-    proposal re-plans itself: `settingsChanged(outputDir)` compares the
-    `.wandersort.cfg` stamp against `vfs.ConfigStamp(vfs.ConfigFor(a.Config))`
-    (see `pkg/core/vfs/snapshot.go`), and `newReviewScreen` calls
-    `a.rebuildTree` itself the moment it says yes
-    — before the tree is ever shown, no question asked. `rebuildTree` calls
+    empty tree from `BuildTree` alone means "already organized", not
+    "nothing proposed".
+    **There is no `--rebuild` flag, no manual rebuild, and no stale-settings
+    check either**: settings live in the library's own database and only the
+    wizard can change them, and that save re-plans on the spot
+    (`shell.configSaved`), so a tree `newReviewScreen` finds always matches
+    the settings that built it. `rebuildTree` calls
     `vfs.ReopenPlan(ctx, db)` before `Propose`, flipping every
     **unapproved-or-approved** row back to PROPOSED (never `DONE` — see
     `ReopenPlan` in `pkg/core/vfs/review.go`) so the whole library is
@@ -698,9 +708,11 @@ Back in `internal/cli/`:
     an empty copy, leaving `recover` nothing to bring back. Otherwise it
     **backs the database up first** (`db.Backup`, the same
     `.wandersort.db.bak` execute writes — a failed backup stops the wipe),
-    then clears the rows, the review draft, the `.wandersort.cfg` stamp, which describes a
-    proposal that no longer exists, and the peek copies, which outlive a
-    review session. `config.CheckLibrary` points a folder holding the backup
+    then clears the rows, the review draft — which describes a proposal that
+    no longer exists — and the peek copies, which outlive a review session.
+    **The library's settings row survives a reset** (`db.ResetAll` doesn't
+    touch `library_settings`): a factory wipe of the *data* is not a request
+    to forget which folders the user wants. `config.CheckLibrary` points a folder holding the backup
     but no database at `recover` instead of refusing it as foreign.
 - `recover.go` — `recover`: `db.Restore` puts `.wandersort.db.bak` back
     (confirm unless `--yes`), which is what makes both `reset --db` and an
@@ -759,36 +771,32 @@ Back in `internal/cli/`:
       one was folded into `pkg/tui/theme.go` so full-screen and plain output
       share one palette.
 
-Config precedence: **flag > env > config file > default**, entirely inside
-`config.Resolve` (`pkg/config/config.go`) — the single place all four layers
-meet. `internal/cli/root.go`'s `flagOverridesFrom` builds the flag layer from
-cobra's `cmd.Flags()` (only for the settings `Resolve` knows about:
-`output-path`, `collapse-levels`, `saved-places-date-only`,
-`merge-same-location-days` — checking `.Changed` so an unset flag reads as
-`nil`, not its zero value); `Resolve` reads the env layer itself via
-`os.Getenv` (`OUTPUT_PATH`, …) and the file layer via
-`LoadGlobal`. There is no viper anywhere in this codebase — every other
-command's own flags (`--yes`, `--plain`, …) are read straight off `cmd.Flags()`
-in their own `RunE`, no env-var fallback for those (never documented, so
-dropping it lost nothing). Keep new *config*-affecting flag names hyphen-free
-to match their env var by uppercasing alone. Defaults come from
-`config.Defaults()`, which `Resolve` calls as its base layer.
+**Settings live in the library, not in a file or the environment** (spec D2).
+`library_settings` holds one row per library — `rules`, the three folder
+toggles and the saved-place names — read by `app.openLibrary`
+(`config.LoadSettings`) and written by the wizard (`config.SaveSettings`, via
+`app.saveSettings`). A library that has never been through the wizard has no
+row and keeps `config.DefaultSettings()`. **There is no config precedence
+chain left**: no `~/.wandersort/config.yaml`, no `config.Resolve`/`Load`/
+`Save`, no `Overrides`/`TriBool`, no `OUTPUT_PATH`/`COLLAPSE_LEVELS`/
+`SAVED_PLACES_DATE_ONLY`/`MERGE_SAME_LOCATION_DAYS` env vars, no per-setting
+flags, and no yaml dependency. A setting that can move a file belongs to the
+folder the files land in — a global file meant a second scan into an
+already-organized library could quietly plan it by some other library's
+rules. The only thing left to choose per invocation is *which* library:
+`--output-path`, else the most recently used one.
 
-The config file is `~/.wandersort/config.yaml` (`pkg/config/config.go`),
-created **empty** the first time *any* command runs
-(`config.EnsureGlobalConfigFile`) and filled in by `wandersort config`.
-**No comments, no template** — the wizard is the documentation, so the file is
-just the settings, written whole by `SaveGlobal` (a plain struct marshal; the
-old YAML-node surgery existed only to preserve comments). `output-path` is
-the marker that the file has been through the wizard (`Configuration.Configured`,
-set by `Resolve`) — `rules`, the three toggle bools, and `saved-places` are
-only read from the file once `output-path` is present, since a `bool` field
-can't otherwise tell "key absent" from "explicit false" the way `Resolve`'s
-flag/env layers can (a nil pointer vs. a real value). `saved-places` has no
-flag or env of its own — `Resolve` doesn't touch it at all; `app.syncAnchors`
-reads it straight via `config.Load`. **There is no `segment-months` setting
-any more** (config key, `SEGMENT_MONTHS` env var, `Options.SegmentMonths`) —
-it sized the review's now-removed time-slice picker (issue 19); review is one
+`~/.wandersort/libraries` is that history (spec D3, `pkg/config/history.go`):
+one folder per line, newest first, at most 100, and folders that no longer
+exist are dropped as the list is read — an unplugged drive's library is not
+one to offer. `Remember` is called by `openLibrary`, the one moment a folder
+is known to really be a library; `config.New` reads the list for its default
+output folder, and the wizard's output-path field offers it first.
+
+There is no viper anywhere in this codebase — every other
+command's own flags (`--yes`, `--plain`, …) are read straight off `cmd.Flags()`
+in their own `RunE`. **There is no `segment-months` setting any more** — it
+sized the review's now-removed time-slice picker (issue 19); review is one
 tree over the whole library.
 
 ## Core pipeline (`pkg/core/`)
@@ -827,9 +835,9 @@ tree over the whole library.
   actionable. It fires **at the end of the run**, next to the "run wandersort
   review" hint, not after the scan phase where it used to scroll past
   mid-pipeline. `NewWorkflow` logs the resolved `workers`/`output`/`groupBy`
-  as a `UserKey` line: `output` and `groupBy` come from flag/env/config.yaml,
-  so showing the resolved values up front is the only way to see which source
-  won. **`Workers` is not a setting** — there is no `--workers` flag, no
+  as a `UserKey` line: `output` comes from `--output-path` or the most
+  recently used library and `groupBy` from the library's own settings, so
+  showing them up front is the only way to see what this run will do. **`Workers` is not a setting** — there is no `--workers` flag, no
   `WORKERS` env var, no `workers` key and no wizard step. It sizes the
   goroutine and exiftool pools, both CPU-bound, so `runtime.NumCPU()` is the
   right number; the one disk-bound thing in the pipeline (the metadata phase's
@@ -995,25 +1003,18 @@ tree over the whole library.
   scan's vfs phase and a settings re-plan both throw away edits made against
   the old one. (A scan cancelled before its vfs phase leaves the draft, which
   is right — the proposal it was made against is still there.)
-  **`Propose` also writes the config stamp** on success
-  (`snapshot.go`: `ConfigStamp`/`WriteStamp`/`ReadStamp`, `.wandersort.cfg` in
-  the output directory) — the same argument, one rung up: every path to a fresh
-  proposal goes through `Propose`, and only `Propose` holds both the `Config`
-  and the output directory, so neither caller has to remember. A failed stamp
-  write warns and lets the proposal stand; a *missing* stamp is never a
-  settings change (`ReadStamp` reports `ok=false`), so a pre-stamp library
-  never prompts. **The stamp hashes a subset, not the config file**: `Rules`,
-  the three folder toggles and `SavedPlaces` — the settings that can move a
-  file. `Workers` is not in it because it is not a setting at all any more,
-  and saved places are hashed as **typed names, not resolved anchors**,
-  so the check never needs the location database. `Config.SavedPlaces` exists
-  for that reason alone — `ConfigFor` copies it beside the anchors.
-  One output folder has one rule set, which is why the stamp is a file in it
-  rather than a database row: it outlives re-scans and new source folders.
+  **There is no config stamp** (`snapshot.go`, `.wandersort.cfg`,
+  `ConfigStamp`/`WriteStamp`/`ReadStamp` — all gone with issue 10): the
+  settings a proposal was built under are the library's own, nothing outside
+  the app can edit them, and the one thing that can — the wizard — re-plans
+  as it saves. A file recording them so a later run could notice they had
+  moved was answering a question that can no longer be asked.
+  `Config.SavedPlaces` stays: it is the typed names beside the resolved
+  anchors, and `ConfigFor` copies it.
   `Config.Rules` (below Year/Month)
   is `location`/`orientation`/`device`/`media` in any order, or empty for a
-  flat `Year/Month` — set via `config.yaml`'s `rules` key (`wandersort config`
-  wizard only, no CLI flag). `date` is a Day level, so the full
+  flat `Year/Month` — set via the library's `rules` setting (`wandersort
+  config` wizard only, no CLI flag, no env var). `date` is a Day level, so the full
   `Year/Month/Day/Location/Device/Orientation/Media` shape is
   `rules: [date, location, device, orientation, media]`; when a `date` level is
   present the location ladder **skips its dated `eventSegment` rung** (falling
@@ -1030,9 +1031,9 @@ tree over the whole library.
   depending on where you stand, worse to navigate than one extra folder. It
   self-corrects — `loadMasters` is library-wide and each run replaces the
   proposal, so the first video a later scan finds brings `Photos` back and
-  re-proposes the existing photos inside it. `collapse-levels: false` in
-  `config.yaml` (or `COLLAPSE_LEVELS=false`) forces the full nesting; it has
-  no CLI flag. `vfs.ConfigFor` (which takes the whole `*config.Configuration`,
+  re-proposes the existing photos inside it. Answering the wizard's collapse
+  question with "no" forces the full nesting; there is no flag and no env
+  var for it. `vfs.ConfigFor` (which takes the whole `*config.Configuration`,
   so a new vfs-relevant setting doesn't churn its signature — and is therefore
   the one place `vfs` imports `pkg/config`, meaning `config` can never import
   `vfs`) is the single place the `none` sentinel
@@ -1302,23 +1303,21 @@ tree over the whole library.
   `location_node_id` are part of **003's `CREATE TABLE`**, not their own
   migration — the pre-tag rule (no tag
   yet, so no users) says edit the existing migration rather than stack an
-  `ALTER` on it. The cost is that `migrations.Run` tracks versions
+  `ALTER` on it. `library_settings` was added to 003 the same way. The cost
+  is that `migrations.Run` tracks versions
   individually: a database where 003 is already recorded will never get the
-  new table or columns, and the vfs phase then fails at runtime on the
-  INSERT. **Deleting `.wandersort.db` *and* `.wandersort.cfg` (or the whole
+  new table or columns, and the run then fails at runtime on the first
+  query. **Deleting `.wandersort.db` (or the whole
   library folder) is the fix**, and `wandersort reset` is not — the file
-  itself has to go. The
-  stamp matters because `config.CheckLibrary` refuses a folder holding our
-  leftovers without a database (D1: a library whose database was deleted),
-  until ticket 10 removes the stamp. Same applies to any future edit of an already-run
+  itself has to go. Same applies to any future edit of an already-run
   migration. `file_metadata.hash_kind` was removed from **002's `CREATE TABLE`**
   and `file_hash` gained its `blake3:` prefix the same way: **every hash in an
   older database is in the old format** (bare hex, or a `size:<id>` stand-in),
   and nothing rewrites them. A file read before and after that change would
   look like two different files, so the same card photo never matches its
   placed copy and is proposed and copied again, and `cleanupPlacedDuplicates`
-  never removes it. Delete `.wandersort.db` and `.wandersort.cfg` (or the
-  whole library folder) before scanning again.
+  never removes it. Delete `.wandersort.db` (or the whole library folder)
+  before scanning again.
   **`Confirm` merges, it doesn't reject:** two sibling folders renamed to the
   same name become one folder — the later folds into the first (`readTree`)
   — (e.g. two unresolved date clusters turning out to be the same place);
@@ -1477,17 +1476,19 @@ tree over the whole library.
   `PhaseKey`/`EventKey`/`ElapsedKey` stage routing); plain mode (`--plain`,
   non-TTY stderr — `tuiEnabled()`) keeps the line console, styled
   with the same theme.
-- `config/` — **one file**, `config.go`: `Defaults()` (hardcoded config only,
-  no env reads), `Resolve` (the flag > env > file > default precedence chain
-  — see above), `FlagOverrides` (the neutral, framework-agnostic struct the
-  CLI's cobra flags translate into before calling `Resolve` — this package
-  imports no CLI framework), and the `~/.wandersort/config.yaml` machinery
-  below it — `GlobalConfigPath`, `EnsureGlobalConfigFile` (creates it empty if
-  missing), `LoadGlobal`, and `SaveGlobal` (whole-file marshal of the
-  `Global` struct — every key the wizard collects, nothing else). There are
-  still two shapes here: `Configuration` (resolved, runtime — gains a
-  `Configured` field once `Resolve` has run) and `Global` (on-disk); `Resolve`
-  is now the one place that maps one onto the other.
+- `config/` — three files. `config.go`: `New()` (this machine's paths plus
+  the settings defaults, output folder = the most recently used library),
+  `SetOutput`/`OutputDir`, and `CheckLibrary` (may this folder be a library —
+  empty, absent, or already holding `.wandersort.db`). `settings.go`:
+  `Settings` (rules, the three toggles, saved places), `DefaultSettings`,
+  `Equal` (the "did this save change anything" test), and
+  `LoadSettings`/`SaveSettings` over the library's own `library_settings`
+  row. `history.go`: `History`/`Remember`, the recently-used libraries.
+  `Configuration` embeds `Settings`, so `a.Config.Rules` reads the open
+  library's rules and `vfs.ConfigFor` needs no change. **No YAML, no env
+  reads, no flag layering, no CLI framework** — the precedence chain,
+  `Overrides`/`TriBool` and the whole `config.yaml` machinery went with issue
+  10.
 - `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry. The app DB runs
   `locking_mode=EXCLUSIVE` on its one pooled connection, so while wandersort
   has a library open every other client (sqlite3 CLI, DB browsers) gets

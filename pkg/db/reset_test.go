@@ -65,3 +65,39 @@ func TestResetWipesAllTables(t *testing.T) {
 		t.Errorf("folder_nodes has %d rows after reset, want 0", folders)
 	}
 }
+
+// TestResetKeepsLibrarySettings: a factory wipe of the *data* is not a
+// request to forget which folders the user wants. The settings row is the
+// library's own configuration, not something a scan produced.
+func TestResetKeepsLibrarySettings(t *testing.T) {
+	ctx := context.Background()
+	d := dbtest.New(t)
+
+	if _, err := d.ExecContext(ctx, `INSERT INTO library_settings
+		(id, rules, collapse_levels, saved_places_date_only, merge_same_location_days, saved_places)
+		VALUES (1, '["device"]', 1, 1, 1, '["Indore"]')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ResetAll(ctx); err != nil {
+		t.Fatalf("ResetAll: %v", err)
+	}
+
+	var rules string
+	if err := d.SQL.GetContext(ctx, &rules, `SELECT rules FROM library_settings WHERE id = 1`); err != nil {
+		t.Fatalf("the settings row must survive a reset: %v", err)
+	}
+	if rules != `["device"]` {
+		t.Errorf("rules = %q after reset, want them untouched", rules)
+	}
+
+	// ...and an empty database is still empty with only settings in it, so
+	// `reset --db` on a fresh library still refuses rather than replacing a
+	// backup that holds real data.
+	empty, err := d.IsEmpty(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !empty {
+		t.Error("a library holding only its settings must still count as empty")
+	}
+}

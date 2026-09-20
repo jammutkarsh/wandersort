@@ -13,8 +13,30 @@ var schema003 = Migration{
 		folderNodes,
 		virtualFSEntries,
 		userLabels,
+		librarySettings,
 	},
 }
+
+// library_settings holds the settings that shape this library's folders
+// (spec D2). One row: a library has one rule set, and it travels with the
+// library, so a second scan into the same folder organizes it the way the
+// first one did whatever another library is set to. No row at all means a
+// library that has never been through the wizard — the defaults in code.
+const librarySettings = `
+CREATE TABLE IF NOT EXISTS library_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    -- the folder levels below Year/Month, in nesting order: a JSON array of
+    -- level names ([] is a flat Year/Month). Read in Go only.
+    rules TEXT NOT NULL,
+    collapse_levels INTEGER NOT NULL,
+    saved_places_date_only INTEGER NOT NULL,
+    merge_same_location_days INTEGER NOT NULL,
+    -- the everyday places, as the user typed them: a JSON array, positional
+    -- (0 home, 1 work, the rest more of the same). Resolved to coordinates
+    -- per run, never stored resolved.
+    saved_places TEXT NOT NULL
+);
+`
 
 // folder_nodes is the plan's folder tree (spec D12): a folder keeps its id
 // when it is renamed or moved, so an edit can name it. A folder's path is its
@@ -78,9 +100,9 @@ CREATE INDEX IF NOT EXISTS idx_vfs_node ON virtual_fs_entries(node_id);
 
 // user_labels remembers the folder names the reviewer typed. Written by the
 // review flow, read back as rename completions in later reviews.
-// SAVED_PLACE is a legacy kind: anchors are built from config.yaml in memory
-// now, so nothing writes it any more — the CHECK still allows it so rows
-// written by older versions stay valid.
+// SAVED_PLACE is a legacy kind: anchors are built in memory from
+// library_settings now, so nothing writes it any more — the CHECK still
+// allows it so rows written by older versions stay valid.
 const userLabels = `
 CREATE TABLE IF NOT EXISTS user_labels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

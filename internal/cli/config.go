@@ -31,13 +31,13 @@ func (a *app) newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Configure WanderSort",
-		Long: `Opens a full-screen wizard for every global setting — output folder,
-folder rules, and your saved-place towns. They apply to every
-scan unless overridden by a flag or environment variable, and are saved
-to ~/.wandersort/config.yaml.
+		Long: `Opens a full-screen wizard for the library's settings — folder rules and
+your saved-place towns, plus the output folder itself while you are still
+picking one. They are stored in that library's own database, so every library
+keeps its own.
 
-Prints that file to stdout instead when --print is given or when the terminal
-isn't interactive (piped or redirected).`,
+Prints the settings to stdout instead when --print is given or when the
+terminal isn't interactive (piped or redirected).`,
 		Example: `# Configure
 wandersort config
 
@@ -54,23 +54,13 @@ wandersort config | grep rules`,
 }
 
 func (a *app) runConfig(cmd *cobra.Command) error {
-	configPath, err := a.Config.Exists()
-	if err != nil {
-		return fmt.Errorf("global config: %w", err)
-	}
-
 	// The wizard owns the whole terminal, so it needs one: piping or
 	// redirecting means the caller wants the contents, not an alt-screen
 	// fighting over the same stream.
 	interactive := term.IsTerminal(int(os.Stdout.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
 	print, _ := cmd.Flags().GetBool(flagPrint)
 	if print || !interactive {
-		data, err := os.ReadFile(configPath)
-		if err != nil {
-			return fmt.Errorf("read config: %w", err)
-		}
-		fmt.Print(string(data))
-		return nil
+		return a.printSettings(cmd.Context())
 	}
 
 	// The wizard is a tab of the one app shell, so answering the settings and
@@ -80,15 +70,42 @@ func (a *app) runConfig(cmd *cobra.Command) error {
 	return a.runShell(shellStart{tab: tabConfig})
 }
 
-// buildConfigForm builds the wizard's fields (seeded with the current effective
-// values) and a save closure that writes them to ~/.wandersort/config.yaml.
-func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
-	g, _ := a.Config.Load()
-
-	out := g.OutputPath
-	if out == "" {
-		out = filepath.Dir(a.Config.AppDBPath)
+// printSettings writes the library's settings to stdout for a pipe or
+// --print. A folder with no database yet has no settings of its own, so it
+// prints the defaults a first save would start from rather than opening
+// (and creating) a library nobody asked for.
+func (a *app) printSettings(ctx context.Context) error {
+	settings := config.DefaultSettings()
+	if a.hasProposal() {
+		if err := a.openLibrary(ctx); err != nil {
+			return err
+		}
+		defer a.closeDBs()
+		settings = a.Config.Settings
 	}
+	// Through ConfigFor, so this prints the levels that would really be used:
+	// empty means the default pair, and the `none` sentinel means flat.
+	rules := strings.Join(vfs.ConfigFor(&config.Configuration{Settings: settings}).Rules, ", ")
+	if rules == "" {
+		rules = vfs.RuleNone
+	}
+	fmt.Printf("output-path: %s\n", a.Config.OutputDir())
+	fmt.Printf("rules: %s\n", rules)
+	fmt.Printf("collapse-levels: %t\n", settings.CollapseLevels)
+	fmt.Printf("saved-places-date-only: %t\n", settings.SavedPlacesDateOnly)
+	fmt.Printf("merge-same-location-days: %t\n", settings.MergeSameLocationDays)
+	fmt.Printf("saved-places: %s\n", strings.Join(settings.SavedPlaces, ", "))
+	return nil
+}
+
+// buildConfigForm builds the wizard's fields (seeded with the library's
+// current settings) and a save closure that writes them back to it.
+//
+// The output folder is asked for only while there is still a choice: once the
+// library is open the database and the lock are on it, and a library's folder
+// never moves (spec D5).
+func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
+	out := a.Config.OutputDir()
 	groupBy := append([]string{}, a.Config.Rules...)
 	if len(groupBy) == 0 {
 		groupBy = []string{vfs.RuleDate, vfs.RuleLocation} // sensible default
@@ -97,11 +114,11 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 	mergeDays := a.Config.MergeSameLocationDays
 	spDateOnly := a.Config.SavedPlacesDateOnly
 	home, work := "", ""
-	if len(g.SavedPlaces) > 0 {
-		home = g.SavedPlaces[0]
-	}
-	if len(g.SavedPlaces) > 1 {
-		work = g.SavedPlaces[1]
+	if places := a.Config.SavedPlaces; len(places) > 0 {
+		home = places[0]
+		if len(places) > 1 {
+			work = places[1]
+		}
 	}
 
 	// Rejects a typo (close candidates exist) but waves through an unknown name
@@ -141,9 +158,14 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 	paths := path.New()
 	homeDir := paths.HomeDir
 
-	// Suggest locations under folders that exist on this machine — ~/Pictures
-	// is a macOS/Windows convention; a Linux box without it won't offer it.
+	// The libraries this machine has opened come first: picking one again is
+	// far more common than starting a third (spec D3). Then locations under
+	// folders that exist on this machine — ~/Pictures is a macOS/Windows
+	// convention; a Linux box without it won't offer it.
 	var outSuggestions []string
+	for _, dir := range a.Config.History() {
+		outSuggestions = append(outSuggestions, paths.RelativeToHome(dir))
+	}
 	for _, c := range []string{
 		filepath.Join(homeDir, "Pictures", "WanderSort"),
 		filepath.Join(homeDir, "WandersortLibrary"),
@@ -182,8 +204,11 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 	ex := newConfigExamples(rulesField, &collapse, &mergeDays, &spDateOnly, &home)
 	rulesField.Example = ex.Rules
 
-	fields := []*tui.Field{
-		{
+	fields := []*tui.Field{rulesField}
+	// Asked first, and only while the answer can still change anything: an
+	// open library already has its database and lock on one folder.
+	if a.AppDB == nil {
+		fields = append([]*tui.Field{{
 			Kind:        tui.FieldInput,
 			Title:       "Output path",
 			Description: "Where the organized library goes: an empty folder, or one WanderSort already organized. ~ is fine.",
@@ -193,9 +218,10 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 			Validator: func(s string) error {
 				return config.CheckLibrary(paths.ExpandPath(strings.TrimSpace(s)))
 			},
-		},
-		rulesField,
-		{
+		}}, fields...)
+	}
+	fields = append(fields,
+		&tui.Field{
 			Kind:        tui.FieldGroup,
 			Title:       "Saved places",
 			Description: "The everyday places you shoot from, and how their photos are foldered.",
@@ -238,10 +264,12 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 				},
 			},
 		},
-	}
+	)
 
 	// save runs after the form completes. It reads the bound vars this form
-	// wrote and persists them, replacing the whole config file.
+	// wrote and writes them to the library they belong to — opening (or
+	// creating) it here if the output path above is how this session picked
+	// one, so quitting before the save writes nothing anywhere.
 	save := func() error {
 		if strings.TrimSpace(work) == "" {
 			work = home // blank work = same as home
@@ -253,16 +281,15 @@ func (a *app) buildConfigForm(ctx context.Context, geonames func() (*location.Re
 				selectedRules = append(selectedRules, opt)
 			}
 		}
-		g := &config.Configuration{
-			OutputPath:            paths.ExpandPath(strings.TrimSpace(out)),
+		s := config.Settings{
 			Rules:                 selectedRules,
 			CollapseLevels:        collapse,
 			SavedPlacesDateOnly:   spDateOnly,
 			MergeSameLocationDays: mergeDays,
+			// Canonicalize towns to the exact geonames spelling before saving.
+			SavedPlaces: []string{canonicalTownOrTyped(home), canonicalTownOrTyped(work)},
 		}
-		// Canonicalize towns to the exact geonames spelling before saving.
-		g.SavedPlaces = []string{canonicalTownOrTyped(home), canonicalTownOrTyped(work)}
-		if err := a.Config.Save(g); err != nil {
+		if err := a.saveSettings(ctx, paths.ExpandPath(strings.TrimSpace(out)), s); err != nil {
 			return fmt.Errorf("save settings: %w", err)
 		}
 		return nil

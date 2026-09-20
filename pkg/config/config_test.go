@@ -7,297 +7,195 @@
 package config
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 )
 
-func TestGlobal(t *testing.T) {
-	tests := []struct {
-		name string
-		fn   func(t *testing.T)
-	}{
-		{"EnsureGlobalConfigFileDoesNotClobber", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+// TestSettings covers the round trip through a library's own database: a
+// library that never saw the wizard reads back the defaults, and a saved
+// setting survives — including the false bools, which must be stored, not
+// dropped as "unset".
+func TestSettings(t *testing.T) {
+	ctx := context.Background()
+	database := dbtest.New(t)
 
-			cfg, err := defaults()
-			if err != nil {
-				t.Fatalf("defaults: %v", err)
-			}
-			path, err := cfg.Exists()
-			if err != nil {
-				t.Fatalf("EnsureGlobalConfigFile: %v", err)
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read: %v", err)
-			}
-			if len(data) != 0 {
-				t.Fatalf("a fresh config file must start empty, got:\n%s", data)
-			}
-
-			// a second call must not clobber a file that's since been written
-			if err := os.WriteFile(path, []byte("workers: 8\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := cfg.Exists(); err != nil {
-				t.Fatalf("EnsureGlobalConfigFile (existing): %v", err)
-			}
-			data, err = os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(string(data), "workers: 8") {
-				t.Error("EnsureGlobalConfigFile overwrote an existing file")
-			}
-		}},
-		{"LoadGlobalOnMissingFile", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-
-			cfg, err := defaults()
-			if err != nil {
-				t.Fatalf("defaults: %v", err)
-			}
-			g, err := cfg.Load()
-			if err != nil || g.OutputPath != "" {
-				t.Fatalf("LoadGlobal on missing file = (%+v, %v), want (zero output-path, nil)", g, err)
-			}
-		}},
-		// TestSaveGlobalRoundTrip is the one that matters: every setting the config
-		// wizard collects has to survive the file, including the false bools (which
-		// must be written, not omitted as "unset") and the saved-place names.
-		{"SaveGlobalRoundTrip", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-
-			cfg, err := defaults()
-			if err != nil {
-				t.Fatalf("defaults: %v", err)
-			}
-			want := &Configuration{
-				OutputPath:            "/tmp/lib",
-				Rules:                 []string{"date", "location"},
-				CollapseLevels:        false,
-				SavedPlacesDateOnly:   false,
-				MergeSameLocationDays: true,
-				SavedPlaces:           []string{"Delhi", "Gurugram"},
-			}
-			if err := cfg.Save(want); err != nil {
-				t.Fatalf("SaveGlobal: %v", err)
-			}
-			got, err := cfg.Load()
-			if err != nil {
-				t.Fatalf("LoadGlobal: %v", err)
-			}
-			if !overridesEqual(got, want) {
-				t.Fatalf("round trip = %+v, want %+v", got, want)
-			}
-		}},
+	got, err := LoadSettings(ctx, database)
+	if err != nil {
+		t.Fatalf("LoadSettings on a fresh library: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, tt.fn)
+	if !got.Equal(DefaultSettings()) {
+		t.Fatalf("fresh library = %+v, want the defaults %+v", got, DefaultSettings())
+	}
+
+	want := Settings{
+		Rules:                 []string{"date", "location"},
+		CollapseLevels:        false,
+		SavedPlacesDateOnly:   false,
+		MergeSameLocationDays: true,
+		SavedPlaces:           []string{"Delhi", "Gurugram"},
+	}
+	if err := SaveSettings(ctx, database, want); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	if got, err = LoadSettings(ctx, database); err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if !got.Equal(want) {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+
+	// Saving again replaces the one row rather than adding a second.
+	want.Rules = nil
+	if err := SaveSettings(ctx, database, want); err != nil {
+		t.Fatalf("SaveSettings (second): %v", err)
+	}
+	if got, err = LoadSettings(ctx, database); err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if len(got.Rules) != 0 {
+		t.Errorf("rules = %v, want empty after the second save", got.Rules)
 	}
 }
 
-func overridesEqual(o Overrides, c *Configuration) bool {
-	return o.OutputPath == c.OutputPath &&
-		reflect.DeepEqual(o.Rules, c.Rules) &&
-		triToBool(o.CollapseLevels) == c.CollapseLevels &&
-		triToBool(o.SavedPlacesDateOnly) == c.SavedPlacesDateOnly &&
-		triToBool(o.MergeSameLocationDays) == c.MergeSameLocationDays &&
-		reflect.DeepEqual(o.SavedPlaces, c.SavedPlaces)
+// TestSettingsAreThisLibrarys is the point of the whole ticket: two libraries
+// keep their own rules (spec D2).
+func TestSettingsAreThisLibrarys(t *testing.T) {
+	ctx := context.Background()
+	a, b := dbtest.New(t), dbtest.New(t)
+	if err := SaveSettings(ctx, a, Settings{Rules: []string{"device"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveSettings(ctx, b, Settings{Rules: []string{"location"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSettings(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.Rules, []string{"device"}) {
+		t.Errorf("library A's rules = %v, want its own [device]", got.Rules)
+	}
 }
 
-func triToBool(t TriBool) bool { return t == True }
-
-// TestResolve covers the precedence chain (flag > env > file > default) —
-// the one thing worth a real test now that it's concentrated in one
-// function instead of split across viper binding and applyOverrides.
-func TestResolve(t *testing.T) {
-	tests := []struct {
-		name string
-		fn   func(t *testing.T)
-	}{
-		{"DefaultsOnlyLeavesUnconfigured", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-
-			cfg, warning, err := Resolve(Overrides{})
-			if err != nil || warning != "" {
-				t.Fatalf("Resolve: err=%v warning=%q", err, warning)
-			}
-			if cfg.Configured {
-				t.Error("no flag/env/file set output-path — Configured must be false")
-			}
-			if !cfg.CollapseLevels || !cfg.SavedPlacesDateOnly || !cfg.MergeSameLocationDays {
-				t.Errorf("unconfigured bools must keep their hardcoded defaults, got %+v", cfg)
-			}
-		}},
-		{"FileOverridesDefault", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			c, err := defaults()
-			if err != nil {
-				t.Fatalf("defaults: %v", err)
-			}
-			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file"}); err != nil {
-				t.Fatal(err)
-			}
-
-			cfg, _, err := Resolve(Overrides{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !cfg.Configured {
-				t.Error("file set output-path — Configured must be true")
-			}
-			// Resolve never stores OutputPath itself — it derives the paths
-			// under it, which is what every caller actually reads.
-			if got := filepath.Dir(cfg.AppDBPath); got != "/tmp/from-file" {
-				t.Errorf("output-path = %q, want /tmp/from-file from the file", got)
-			}
-		}},
-		{"EnvOverridesFile", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			c, err := defaults()
-			if err != nil {
-				t.Fatalf("defaults: %v", err)
-			}
-			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file"}); err != nil {
-				t.Fatal(err)
-			}
-			t.Setenv("OUTPUT_PATH", "/tmp/from-env")
-
-			cfg, _, err := Resolve(Overrides{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			// Resolve never stores OutputPath itself — it derives the paths
-			// under it, which is what every caller actually reads.
-			if got := filepath.Dir(cfg.AppDBPath); got != "/tmp/from-env" {
-				t.Errorf("output-path = %q, want /tmp/from-env from the env var", got)
-			}
-		}},
-		{"FlagOverridesEnvAndFile", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			c, err := defaults()
-			if err != nil {
-				t.Fatalf("defaults: %v", err)
-			}
-			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file"}); err != nil {
-				t.Fatal(err)
-			}
-			t.Setenv("OUTPUT_PATH", "/tmp/from-env")
-
-			cfg, _, err := Resolve(Overrides{OutputPath: "/tmp/from-flag"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			// Resolve never stores OutputPath itself — it derives the paths
-			// under it, which is what every caller actually reads.
-			if got := filepath.Dir(cfg.AppDBPath); got != "/tmp/from-flag" {
-				t.Errorf("output-path = %q, want /tmp/from-flag from the flag", got)
-			}
-		}},
-		{"FlagOutputPathAloneIsConfigured", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-
-			cfg, _, err := Resolve(Overrides{OutputPath: "/tmp/from-flag"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !cfg.Configured {
-				t.Error("--output-path alone must count as configured")
-			}
-		}},
-		{"BadYAMLFallsBackWithWarning", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			c, err := defaults()
-			if err != nil {
-				t.Fatalf("defaults: %v", err)
-			}
-			path, err := c.Exists()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, []byte("workers: [unclosed\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-
-			cfg, warning, err := Resolve(Overrides{})
-			if err != nil {
-				t.Fatalf("bad YAML must not be fatal, got %v", err)
-			}
-			if warning == "" {
-				t.Error("expected a warning naming the unparseable file")
-			}
-			if cfg.Configured {
-				t.Error("a file that failed to parse must not count as configured")
-			}
-		}},
-		{"UnconfiguredFileDoesNotForceBoolsFalse", func(t *testing.T) {
-			// A file with only workers set (never through the wizard, so no
-			// output-path) must not stomp CollapseLevels/SavedPlacesDateOnly/
-			// MergeSameLocationDays to their Go zero value (false).
-			t.Setenv("HOME", t.TempDir())
-			c, err := defaults()
-			if err != nil {
-				t.Fatalf("defaults: %v", err)
-			}
-			if err := c.Save(&Configuration{Rules: []string{"device"}}); err != nil {
-				t.Fatal(err)
-			}
-
-			cfg, _, err := Resolve(Overrides{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !cfg.CollapseLevels || !cfg.SavedPlacesDateOnly || !cfg.MergeSameLocationDays {
-				t.Errorf("bools must keep their defaults when output-path was never set, got %+v", cfg)
-			}
-		}},
-		{"FileBoolsApplyOnceConfigured", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			c, err := defaults()
-			if err != nil {
-				t.Fatalf("defaults: %v", err)
-			}
-			if err := c.Save(&Configuration{
-				OutputPath:     "/tmp/from-file",
-				CollapseLevels: false,
-			}); err != nil {
-				t.Fatal(err)
-			}
-
-			cfg, _, err := Resolve(Overrides{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.CollapseLevels {
-				t.Error("explicit collapse-levels: false in a configured file must be honoured")
-			}
-		}},
-		{"FlagBoolOverridesFile", func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			c, err := defaults()
-			if err != nil {
-				t.Fatalf("defaults: %v", err)
-			}
-			if err := c.Save(&Configuration{OutputPath: "/tmp/from-file", CollapseLevels: false}); err != nil {
-				t.Fatal(err)
-			}
-
-			cfg, _, err := Resolve(Overrides{CollapseLevels: True})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !cfg.CollapseLevels {
-				t.Error("flag override must win over the file's false")
-			}
-		}},
+func TestSettingsEqual(t *testing.T) {
+	base := Settings{Rules: []string{"date"}, CollapseLevels: true, SavedPlaces: []string{"Indore"}}
+	same := Settings{Rules: []string{"date"}, CollapseLevels: true, SavedPlaces: []string{"Indore"}}
+	if !base.Equal(same) {
+		t.Error("identical settings must compare equal — a save that changes nothing throws no plan away")
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, tt.fn)
+	for name, other := range map[string]Settings{
+		"rules":       {Rules: []string{"location"}, CollapseLevels: true, SavedPlaces: []string{"Indore"}},
+		"toggle":      {Rules: []string{"date"}, CollapseLevels: false, SavedPlaces: []string{"Indore"}},
+		"savedPlaces": {Rules: []string{"date"}, CollapseLevels: true, SavedPlaces: []string{"Bhopal"}},
+	} {
+		if base.Equal(other) {
+			t.Errorf("a changed %s must not compare equal", name)
+		}
+	}
+}
+
+func TestHistory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if got := cfg.History(); got != nil {
+		t.Fatalf("history with no file = %v, want nil", got)
+	}
+
+	first := filepath.Join(home, "first")
+	second := filepath.Join(home, "second")
+	for _, dir := range []string{first, second} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.Remember(dir); err != nil {
+			t.Fatalf("Remember: %v", err)
+		}
+	}
+	if got := cfg.History(); !slices.Equal(got, []string{second, first}) {
+		t.Errorf("history = %v, want the newest first", got)
+	}
+
+	// Opening the older one again moves it to the front, it doesn't duplicate.
+	if err := cfg.Remember(first); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.History(); !slices.Equal(got, []string{first, second}) {
+		t.Errorf("history after re-opening = %v, want [first second]", got)
+	}
+
+	// A library that isn't there any more (unplugged drive, deleted folder)
+	// is dropped as the list is read.
+	if err := os.Remove(second); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.History(); !slices.Equal(got, []string{first}) {
+		t.Errorf("history = %v, want the missing folder dropped", got)
+	}
+}
+
+func TestHistoryCap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range maxHistory + 10 {
+		dir := filepath.Join(home, fmt.Sprintf("lib%03d", i))
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.Remember(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := cfg.History()
+	if len(got) != maxHistory {
+		t.Fatalf("history holds %d entries, want the cap of %d", len(got), maxHistory)
+	}
+	if got[0] != filepath.Join(home, fmt.Sprintf("lib%03d", maxHistory+9)) {
+		t.Errorf("history[0] = %q, want the most recent", got[0])
+	}
+}
+
+// TestNewOpensTheLastLibrary is why the history exists at all: `wandersort
+// review` with no --output-path opens the library the last scan filled.
+func TestNewOpensTheLastLibrary(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.OutputDir(); got != filepath.Join(home, DefaultLibrary) {
+		t.Errorf("first launch = %q, want the default library folder", got)
+	}
+
+	lib := filepath.Join(home, "Photos")
+	if err := os.Mkdir(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Remember(lib); err != nil {
+		t.Fatal(err)
+	}
+	next, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := next.OutputDir(); got != lib {
+		t.Errorf("next launch = %q, want the most recently used library %q", got, lib)
 	}
 }
 
@@ -311,7 +209,7 @@ func TestCheckLibrary(t *testing.T) {
 		{"empty folder", []string{}, false},
 		{"existing library", []string{defaultDBFileName, "2024"}, false},
 		{"only OS clutter and a leftover lock", []string{".DS_Store", "Thumbs.db", "desktop.ini", ".wandersort.lock"}, false},
-		{"leftover files of an older library", []string{".wandersort.log", ".wandersort.cfg"}, true},
+		{"leftover files of an older library", []string{".wandersort.log"}, true},
 		{"foreign content", []string{".DS_Store", "Goa Trip"}, true},
 		{"backup without its database", []string{".wandersort.db.bak", "2024"}, true},
 	}

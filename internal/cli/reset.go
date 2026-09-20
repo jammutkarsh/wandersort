@@ -102,11 +102,7 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 		a.Log.Warn("database optimization after reset failed", "error", err)
 	}
 
-	// The stamp describes a proposal that no longer exists.
-	if err := os.Remove(filepath.Join(outDir, vfs.StampFileName)); err != nil && !os.IsNotExist(err) {
-		a.Log.Warn("could not remove the settings stamp", "error", err)
-	}
-	// So do the review edits made against it.
+	// The review edits describe a proposal that no longer exists.
 	if err := vfs.RemoveDraft(outDir); err != nil {
 		a.Log.Warn("could not remove the review draft", "error", err)
 	}

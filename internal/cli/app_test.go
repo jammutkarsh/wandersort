@@ -24,10 +24,55 @@ func testConfig(t *testing.T) *config.Configuration {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	cfg, _, err := config.Resolve(config.Overrides{})
+	cfg, err := config.New()
 	if err != nil {
 		t.Fatal(err)
 	}
+	return cfg
+}
+
+// TestOpenLibraryLoadsThatLibrarysSettings is spec D2 end to end: the rules a
+// library was organized under come back with it, and opening it records it as
+// the most recently used one (D3).
+func TestOpenLibraryLoadsThatLibrarysSettings(t *testing.T) {
+	cfg := testConfig(t)
+	ctx := context.Background()
+
+	a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+	if err := a.openLibrary(ctx); err != nil {
+		t.Fatalf("openLibrary: %v", err)
+	}
+	want := config.Settings{Rules: []string{"device"}, CollapseLevels: true}
+	if err := config.SaveSettings(ctx, a.AppDB, want); err != nil {
+		t.Fatal(err)
+	}
+	a.closeDBs()
+
+	// A second session over the same folder: nothing but the library itself
+	// says what its rules are.
+	next := testConfigAt(t, cfg.OutputDir())
+	b := &app{Config: next, Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+	if err := b.openLibrary(ctx); err != nil {
+		t.Fatalf("openLibrary (second session): %v", err)
+	}
+	defer b.closeDBs()
+	if !b.Config.Settings.Equal(want) {
+		t.Errorf("settings = %+v, want the library's own %+v", b.Config.Settings, want)
+	}
+	if hist := b.Config.History(); len(hist) == 0 || hist[0] != cfg.OutputDir() {
+		t.Errorf("history = %v, want the library just opened at the front", hist)
+	}
+}
+
+// testConfigAt is testConfig pointed at an existing library, without moving
+// $HOME (which would lose the history the first session wrote).
+func testConfigAt(t *testing.T, dir string) *config.Configuration {
+	t.Helper()
+	cfg, err := config.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SetOutput(dir)
 	return cfg
 }
 

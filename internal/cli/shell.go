@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/install"
@@ -81,6 +82,10 @@ type shellModel struct {
 	quitReq     bool // ctrl+c is waiting on the active screen to let go
 	exitErr     error
 	w, h        int
+
+	// settingsBefore is the library's settings as the wizard opened on them,
+	// so a save that changes nothing costs nothing (see configSaved).
+	settingsBefore config.Settings
 }
 
 // scanReadyMsg reports the output lock + database opened off the UI goroutine,
@@ -228,6 +233,12 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		screen := m.a.newScanScreen(m.ctx, m.cancel, msg.paths, msg.force)
 		return m, m.place(tabScan, screen)
 
+	case replanDoneMsg:
+		if msg.err != nil {
+			return m, m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})
+		}
+		return m, nil
+
 	case reviewOpenMsg:
 		m.opening = false
 		if msg.err != nil {
@@ -295,7 +306,7 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if err := fm.Error(); err != nil {
 			cmd = tea.Batch(cmd, m.forward(tabScan, tui.HomeErrMsg{Err: err}))
 		} else if !fm.IsAborted() {
-			cmd = tea.Batch(cmd, m.configSaved())
+			cmd = tea.Batch(cmd, m.configSaved(m.settingsBefore))
 		}
 		if m.tab == tabConfig {
 			m.tab = tabScan
@@ -307,40 +318,51 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// configSaved picks up a wizard save without a relaunch: the settings the
-// next scan uses are re-resolved here. A changed setting re-plans the
-// library at once, no question asked — but only by *routing through
-// openReview*, never by calling rebuildTree directly: the library may not be
-// open yet (a config-first session that never scanned or reviewed has no
-// AppDB), and rebuildTree touches it. openReview always opens the library
-// first, so a review already stashed is dropped and rebuilt fresh through
-// it; if none is stashed there is nothing to do here at all — the next
-// newReviewScreen call finds the stale stamp itself (settingsChanged) and
-// re-plans then, with the library open by construction at that point. The
-// config tab is unreachable while a scan runs (see nextTab/handleKey), so
-// there is never a running workflow to retarget.
-func (m *shellModel) configSaved() tea.Cmd {
-	note, err := m.a.reloadConfig()
-	if err != nil {
-		return m.forward(tabScan, tui.HomeErrMsg{Err: err})
-	}
+// configSaved picks up a wizard save without a relaunch. A changed setting
+// re-plans the library at once, no question asked (spec D20): the plan on
+// disk was built under settings nobody holds any more, and re-planning
+// stored metadata is cheap. Any review screen stashed here is dropped with
+// it — its folder IDs are gone — and the next visit to the review tab builds
+// one over the new plan. The config tab is unreachable while a scan runs
+// (see nextTab/handleKey), so there is never a running workflow to retarget.
+func (m *shellModel) configSaved(before config.Settings) tea.Cmd {
 	// Confirming the save is the wizard's only receipt now that it closes back
 	// into the shell instead of ending the process with a printed line.
-	if note == "" {
-		note = "Settings saved"
-		if p, err := m.a.Config.Exists(); err == nil {
-			note = "Settings saved in " + p
-		}
-	}
 	// ponytail: shown on the home screen's error line, so it's lost if a scan
 	// is on screen instead. Give HomeModel a note line if that matters.
+	note := "Settings saved in " + m.a.Config.OutputDir()
 	cmd := m.forward(tabScan, tui.HomeErrMsg{Err: errors.New(note)})
 
-	if m.reviewReady && m.a.settingsChanged(filepath.Dir(m.a.Config.AppDBPath)) {
-		m.screens[tabReview], m.reviewReady = nil, false
-		cmd = tea.Batch(cmd, m.openReview())
+	if m.a.Config.Settings.Equal(before) {
+		return cmd // a visit that changed nothing throws no plan away
 	}
-	return cmd
+	m.screens[tabReview], m.reviewReady = nil, false
+	return tea.Batch(cmd, m.replan())
+}
+
+// replanDoneMsg reports the re-plan a settings save triggered; only a failure
+// has anything to say, on the home screen's error line.
+type replanDoneMsg struct{ err error }
+
+// replan re-proposes the whole library under the settings just saved, off the
+// UI goroutine — it re-reads every stored master and rewrites the plan.
+//
+// A failure is logged as well as shown. `execute` used to refuse a plan built
+// under older settings (the stamp compare); with the re-plan happening at the
+// save instead, a re-plan that fails silently would leave `execute` copying
+// files under settings the user has already changed — and the on-screen half
+// of the report is one line on the home screen, which is not even drawn while
+// a scan screen is up. The log file always gets it.
+func (m *shellModel) replan() tea.Cmd {
+	a, ctx := m.a, m.ctx
+	return func() tea.Msg {
+		if _, err := a.rebuildTree(ctx); err != nil {
+			a.Log.Warn("Could not re-plan the folders for the new settings — 'wandersort execute' would still copy the old plan. Open the settings and save again.",
+				logger.UserKey, true, "error", err)
+			return replanDoneMsg{err: err}
+		}
+		return replanDoneMsg{}
+	}
 }
 
 // handleSwitch intercepts the screen-swap message the scan and review screens
@@ -434,11 +456,18 @@ func (m shellModel) canReview() bool {
 	return m.reviewReady || m.a.hasProposal()
 }
 
-// openConfig places the settings wizard. Built fresh on every entry, so it
-// re-seeds from the file the last visit wrote.
+// openConfig places the settings wizard, seeded from the library's own
+// settings — which means opening a library that is already there, since its
+// settings are the ones the wizard is about to overwrite. Built fresh on
+// every entry, so it re-seeds from whatever the last visit saved.
 func (m *shellModel) openConfig() tea.Cmd {
+	screen, err := m.a.newConfigScreen(m.ctx)
+	if err != nil {
+		return m.forward(tabScan, tui.HomeErrMsg{Err: err})
+	}
+	m.settingsBefore = m.a.Config.Settings
 	m.tab = tabConfig
-	return m.place(tabConfig, m.a.newConfigScreen(m.ctx))
+	return m.place(tabConfig, screen)
 }
 
 // openReview builds the review over whatever is in the database, off the UI
@@ -555,13 +584,24 @@ func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, path
 
 // newConfigScreen is the settings wizard as a shell tab. Same form the config
 // subcommand runs — only the program hosting it differs.
-func (a *app) newConfigScreen(ctx context.Context) tea.Model {
+//
+// A library that is already there is opened first: the form is seeded with
+// its stored settings and the save writes them back, so a visit to the tab
+// can never replace one library's rules with another's defaults. A folder
+// with no library in it yet stays untouched — the form asks for the output
+// path instead, and the save creates it.
+func (a *app) newConfigScreen(ctx context.Context) (tea.Model, error) {
+	if a.AppDB == nil && a.hasProposal() {
+		if err := a.openLibrary(ctx); err != nil {
+			return nil, err
+		}
+	}
 	fields, save := a.buildConfigForm(ctx, func() (*location.Resolver, error) {
 		return a.Deps.LocationNow()
 	})
 	fm := tui.NewFormModel(fields, save)
 	fm.Embedded = true
-	return fm
+	return fm, nil
 }
 
 // runRoot is bare `wandersort`. With --plain or a piped stderr there is no
