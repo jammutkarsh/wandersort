@@ -997,7 +997,20 @@ tree over the whole library.
   parsing (see `deriveAll`'s `takenAt` comment), because every *other*
   timestamp here is naive local wall-clock and applying the real offset would
   shift the video away from siblings that never had one applied.
-- `scorer/` — phase 3. Elects master via folder-naming heuristics over
+- `scorer/` — phase 3. **Kept deliberately, against the deletion test.** The
+  rule itself is 23 lines of `perFileScore` and the rest is group iteration,
+  so folding it into `vfs.loadMasters` looks like a saving — but `is_master`
+  is not an implementation detail of this phase, it is *the persisted result
+  of a Go decision made available to SQL elsewhere*. Three queries in two
+  other packages read it (`vfs.persist`'s protected set, twice, and the
+  output-space estimate), and the election rule — regexes and scores — is not
+  expressible in SQL. Deleting the phase does not move the rule, it forces
+  every reader to recompute it or have it plumbed in, and `pkg/volume` sits
+  *below* `core` in the import graph so it could not reach the rule at all
+  without inverting an edge. (The size estimate no longer asks: identical
+  bytes are identical sizes, so it groups by `file_hash` instead — one file
+  per hash, same answer, and one fewer package depending on a column whose
+  meaning is owned above it.) Elects master via folder-naming heuristics over
   `file_registry`; re-promotes solo survivors of shrunken groups. **A placed
   file (`file_registry.placed = 1`) always keeps the election for its hash,
   full stop, no scoring** — `Run`'s per-group loop checks `placed` first and

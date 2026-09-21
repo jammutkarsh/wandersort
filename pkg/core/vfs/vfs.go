@@ -147,6 +147,21 @@ func (v *VFS) placedTimes(ctx context.Context) ([]time.Time, error) {
 	return times, nil
 }
 
+// protectedFiles is the one definition of "this file is still worth a plan":
+// it is the elected master of its hash, or it has already been placed. A
+// decided entry (placed, or failed to transfer) is kept while its file is in
+// here and deleted when it drops out — a plan that promised to move a file
+// that is no longer the master would promise a move that cannot happen.
+//
+// Written once rather than twice: the two queries in persist describe one
+// invariant, and the comment that used to sit above them said as much while
+// choosing copy-paste anyway, with db.PendingTransfer right there proving the
+// pattern.
+const protectedFiles = `
+	SELECT fr.id FROM file_registry fr
+	JOIN file_metadata fm ON fm.file_id = fr.id
+	WHERE fm.is_master = 1 OR fr.placed = 1`
+
 // loadMasters reads every live, not-yet-placed master in the library with its
 // hashed metadata. A placed file is never re-proposed — its row is already
 // the plan, and persist's kept-row logic leaves it alone — so there
@@ -180,17 +195,14 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 	err := v.db.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
 		// A decided row is one whose file is placed or failed to transfer; that
 		// file must not be proposed a second time — UNIQUE(file_id) says so too.
-		// Same "protected" set as the delete below (is_master = 1 OR placed =
-		// 1): a placed file is never in masters (loadMasters filters it out),
-		// so this never actually keeps one in practice, but the two queries
-		// describing one invariant should read the same rather than drift apart.
+		// It is kept only while its file is still worth a plan (protectedFiles):
+		// a placed file is never in masters (loadMasters filters it out), so the
+		// is_master half never actually keeps one in practice, but the delete
+		// below describes the same invariant and the two must not drift.
 		var keptIDs []int64
 		if err := tx.SelectContext(ctx, &keptIDs, `
 			SELECT file_id FROM virtual_fs_entries
-			WHERE NOT `+db.PendingTransfer("file_id")+` AND file_id IN (
-				SELECT fr.id FROM file_registry fr
-				JOIN file_metadata fm ON fm.file_id = fr.id
-				WHERE fm.is_master = 1 OR fr.placed = 1)`); err != nil {
+			WHERE NOT `+db.PendingTransfer("file_id")+` AND file_id IN (`+protectedFiles+`)`); err != nil {
 			return fmt.Errorf("load decided vfs entries: %w", err)
 		}
 		kept := make(map[int64]bool, len(keptIDs))
@@ -208,10 +220,7 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 		// group (see scorer.Run), but this is the backstop if it ever did.
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM virtual_fs_entries
-			WHERE NOT `+db.PendingTransfer("file_id")+` AND file_id NOT IN (
-				SELECT fr.id FROM file_registry fr
-				JOIN file_metadata fm ON fm.file_id = fr.id
-				WHERE fm.is_master = 1 OR fr.placed = 1)`); err != nil {
+			WHERE NOT `+db.PendingTransfer("file_id")+` AND file_id NOT IN (`+protectedFiles+`)`); err != nil {
 			return fmt.Errorf("clear stale vfs entries: %w", err)
 		}
 

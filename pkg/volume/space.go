@@ -19,14 +19,18 @@ import (
 // failure. Lives next to FreeBytes rather than in the pipeline, so the review
 // TUI can run the same check without importing the orchestrator.
 func CheckOutputSpace(ctx context.Context, database *db.DB, log logger.Logger, outputDir string) {
-	// Only master files ever get a target — duplicates are never copied — so
-	// summing every live file (including duplicates) overstates what a scan
-	// will actually write, sometimes double so.
+	// One file per content hash: duplicates are never copied, so summing every
+	// live file would overstate what a scan writes, sometimes double so. This
+	// counts by hash rather than by the scorer's elected master, because
+	// identical bytes are identical sizes — *which* copy wins the election is
+	// a question this package has no business asking, and asking it would mean
+	// reaching up into pkg/core for a rule that lives there.
 	var librarySize int64
 	if err := database.SQL.GetContext(ctx, &librarySize,
-		`SELECT COALESCE(SUM(fr.file_size), 0) FROM file_registry fr
-		 JOIN file_metadata fm ON fm.file_id = fr.id
-		 WHERE fm.is_master = 1`); err != nil {
+		`SELECT COALESCE(SUM(size), 0) FROM (
+			SELECT MIN(fr.file_size) AS size FROM file_registry fr
+			JOIN file_metadata fm ON fm.file_id = fr.id
+			GROUP BY fm.file_hash)`); err != nil {
 		log.Error("Failed to size the library", "error", err)
 		return
 	}
