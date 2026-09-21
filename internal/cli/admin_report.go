@@ -25,10 +25,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func (a *app) newIssueCmd() *cobra.Command {
+func (a *app) newAdminReportCmd() *cobra.Command {
 	var includeDB, redactPaths bool
 	cmd := &cobra.Command{
-		Use:   "issue",
+		Use:   "report",
 		Short: "Package logs into a zip you can attach to a bug report",
 		Long: `Collects the most recent WanderSort logs into a single zip you can share when
 something goes wrong — send it to the maintainer, or paste a log into any AI
@@ -49,9 +49,9 @@ What went wrong with individual files is included regardless, as errors.json:
 each failure's step, kind and technical detail, with your home directory
 written as $HOME. Folder names below it stay, since they are what makes a
 report debuggable — use --redact-paths to replace every path instead.`,
-		Example: `wandersort issue
-wandersort issue --redact-paths
-wandersort issue --include-db`,
+		Example: `wandersort admin report
+wandersort admin report --redact-paths
+wandersort admin report --include-db`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runIssue(includeDB, redactPaths)
 		},

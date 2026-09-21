@@ -52,10 +52,27 @@ func TestFlagHelpers(t *testing.T) {
 func TestNewRootCmdWiresSubcommands(t *testing.T) {
 	a := &app{}
 	root := a.newRootCmd()
-	want := []string{"config", "scan", "review", "execute", "issue", "reset", "recover"}
-	for _, name := range want {
-		if _, _, err := root.Find([]string{name}); err != nil {
-			t.Errorf("root command missing %q: %v", name, err)
+	// Subcommands too: a missed AddCommand on the admin parent drops a whole
+	// group with no compiler error either.
+	want := [][]string{
+		{"config"},
+		{"add"},
+		{"review"},
+		{"execute"},
+		{"check"},
+		{"admin"},
+		{"admin", "clear"},
+		{"admin", "db"},
+		{"admin", "report"},
+	}
+	for _, path := range want {
+		cmd, _, err := root.Find(path)
+		if err != nil {
+			t.Errorf("command missing %q: %v", path, err)
+			continue
+		}
+		if cmd.Name() != path[len(path)-1] {
+			t.Errorf("Find(%q) landed on %q", path, cmd.CommandPath())
 		}
 	}
 }

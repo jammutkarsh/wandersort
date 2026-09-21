@@ -45,56 +45,55 @@ func waitForDeps(deps *install.Coordinator) error {
 	return nil
 }
 
-func (a *app) newScanCmd() *cobra.Command {
+func (a *app) newAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "scan",
-		Short: "Scan directories, hash files, and find duplicates",
-		Long: `Scans the given paths for photos and videos, hashes them, and scores
-duplicates so you can keep only the best copy.
+		Use:   "add",
+		Short: "Add photos and videos to your library's plan",
+		Long: `Reads the given folders, fingerprints every photo and video in them, works
+out which are duplicates of each other, and plans where each one belongs.
 
-Opens WanderSort on the scan tab — the same app a bare 'wandersort' opens, so
-ctrl+t still reaches the settings and the review. With --paths (-p) the run
-starts straight away; without it you are asked which folders to scan.
+Nothing is copied or moved — 'wandersort organise' does that. This only adds
+files to the plan.
+
+Opens WanderSort on the Add tab, the same app a bare 'wandersort' opens, so
+ctrl+t still reaches the settings and the plan. With --paths (-p) the run
+starts straight away; without it you are asked which folders to add.
 
 --paths is required with --plain (or a non-terminal stderr): there is no
-screen to ask on.
-
-Runs on defaults if you haven't run 'wandersort config' yet. Run it later and
-saving re-proposes the folder structure from your settings without
-re-scanning.`,
+screen to ask on.`,
 		Example: `# Pick the folders on screen
-wandersort scan
+wandersort add
 
-# Scan a single directory
-wandersort scan --paths ~/Pictures
+# Add a single directory
+wandersort add --paths ~/Pictures
 
-# Scan multiple directories (repeat -p or comma-separate)
-wandersort scan -p ~/Pictures -p /Volumes/SD
-wandersort scan -p ~/Pictures,/Volumes/SD
+# Add several (repeat -p or comma-separate)
+wandersort add -p ~/Pictures -p /Volumes/SD
+wandersort add -p ~/Pictures,/Volumes/SD
 
-# Scan into a custom output directory
-wandersort scan -p ~/Pictures -o ~/wandersort-out`,
+# Add into a particular library
+wandersort add -p ~/Pictures -o ~/wandersort-out`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths, _ := cmd.Flags().GetStringSlice(flagPaths)
 			force, _ := cmd.Flags().GetBool(flagForce)
-			return a.runScan(cmd, paths, force)
+			return a.runAdd(cmd, paths, force)
 		},
 	}
 
 	cmd.Flags().StringSliceP(flagPaths, "p", nil,
-		"Directories to scan (repeatable, or comma-separated). Asked for on screen if omitted")
+		"Directories to add (repeatable, or comma-separated). Asked for on screen if omitted")
 	cmd.Flags().Bool(flagForce, false,
 		"Re-read every already-scanned file from disk instead of skipping unchanged ones")
-	// Deliberately not MarkFlagRequired: the scan tab's own folder input is the
+	// Deliberately not MarkFlagRequired: the Add tab's own folder input is the
 	// answer when it's missing, and refusing to open the app over a question it
-	// is about to ask makes `scan` the one command that can't just be run.
+	// is about to ask makes `add` the one command that can't just be run.
 	return cmd
 }
 
-// runScan opens the app on the scan tab — the same session a bare `wandersort`
-// gives, so ctrl+t still reaches the settings and the review. Paths given on
+// runAdd opens the app on the Add tab — the same session a bare `wandersort`
+// gives, so ctrl+t still reaches the settings and the plan. Paths given on
 // the command line skip the folder question; without them the tab opens on it.
-func (a *app) runScan(cmd *cobra.Command, paths []string, force bool) error {
+func (a *app) runAdd(cmd *cobra.Command, paths []string, force bool) error {
 	if a.isTuiEnabled(cmd) {
 		return a.runShell(shellStart{tab: tabScan, paths: paths, force: force})
 	}
@@ -102,15 +101,15 @@ func (a *app) runScan(cmd *cobra.Command, paths []string, force bool) error {
 		// No screen to ask on, so this is the one place the flag is required.
 		return fmt.Errorf("--paths (-p) is required without a terminal to ask on")
 	}
-	return a.runScanPlain(paths, force)
+	return a.runAddPlain(paths, force)
 }
 
-// runScanPlain is the non-TUI path: synchronous pipeline, progress via the
+// runAddPlain is the non-TUI path: synchronous pipeline, progress via the
 // console logger's line output. Used with --plain or a non-terminal
 // stderr. Behaviour is unchanged from before the TUI existed. force is
-// --force's explicit consent to re-read every already-scanned file — no
+// --force's explicit consent to re-read every file already added — no
 // confirmation prompt needed.
-func (a *app) runScanPlain(paths []string, force bool) error {
+func (a *app) runAddPlain(paths []string, force bool) error {
 	start := time.Now()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -133,9 +132,9 @@ func (a *app) runScanPlain(paths []string, force bool) error {
 		return fmt.Errorf("scan: %w", err)
 	}
 
-	// No -o needed: the library just scanned is the one the next launch
+	// No -o needed: the library just added to is the one the next launch
 	// opens on (config.New reads the history this run wrote).
-	a.Log.Info(fmt.Sprintf("Scan complete in %s. Run 'wandersort review' to review the proposed folders.", time.Since(start).Round(time.Millisecond)),
-		logger.UserKey, true, "scanPaths", scanPaths)
+	a.Log.Info(fmt.Sprintf("Added in %s. Run 'wandersort organise' to review the plan and move the files.", time.Since(start).Round(time.Millisecond)),
+		logger.UserKey, true, "addedPaths", scanPaths)
 	return nil
 }

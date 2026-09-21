@@ -41,8 +41,15 @@ func setCustomHelp(cmd *cobra.Command) {
 			var rows strings.Builder
 			for _, sub := range c.Commands() {
 				if sub.IsAvailableCommand() || sub.Name() == "help" {
+					// A group reads exactly like a leaf otherwise: same
+					// column, same one-line summary, nothing saying there is
+					// more behind it.
+					name := sub.Name()
+					if sub.HasAvailableSubCommands() {
+						name += " …"
+					}
 					fmt.Fprintf(&rows, "  %s %s\n",
-						tui.OK.Render(fmt.Sprintf("%-12s", sub.Name())),
+						tui.OK.Render(fmt.Sprintf("%-12s", name)),
 						tui.DimText.Render(sub.Short))
 				}
 			}

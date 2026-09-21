@@ -205,3 +205,42 @@ func TestOpenLibraryRefusedWritesNothing(t *testing.T) {
 		t.Errorf("refused folder holds %d entries, want only the user's file", len(entries))
 	}
 }
+
+// TestConfirmPlainPrompt exercises the --plain y/N stdin path directly,
+// both answers, without going through a command.
+func TestConfirmPlainPrompt(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"y\n", true},
+		{"yes\n", true},
+		{"n\n", false},
+		{"\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.WriteString(tt.input); err != nil {
+				t.Fatal(err)
+			}
+			w.Close()
+			realStdin := os.Stdin
+			os.Stdin = r
+			defer func() { os.Stdin = realStdin }()
+
+			a := &app{}
+			cmd := &cobra.Command{Use: "x"}
+			cmd.Flags().Bool(flagPlain, true, "")
+			if err := cmd.Flags().Set(flagPlain, "true"); err != nil {
+				t.Fatal(err)
+			}
+			if got := a.confirm(cmd, "title", "detail"); got != tt.want {
+				t.Errorf("confirm(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}

@@ -17,9 +17,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
-func (a *app) newVerifyCmd() *cobra.Command {
+func (a *app) newCheckCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "verify",
+		Use:   "check",
 		Short: "Check that every file in the library is still what was recorded",
 		Long: `Re-checks the library against its own records: every file that was copied
 or moved in is still there, still the right size and — with --full — still
@@ -30,12 +30,12 @@ temp files a crashed transfer left behind.
 Nothing is changed or deleted. A file that no longer matches is reported
 here and kept in the library's error list, so 'wandersort issue' carries it.`,
 		Example: `# Quick pass: is everything still there, at the right size?
-wandersort verify
+wandersort check
 
 # Full pass: re-read every file and compare it with its scan
-wandersort verify --full`,
+wandersort check --full`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.runVerify(cmd)
+			return a.runCheck(cmd)
 		},
 	}
 
@@ -43,11 +43,11 @@ wandersort verify --full`,
 	return cmd
 }
 
-func (a *app) runVerify(cmd *cobra.Command) error {
+func (a *app) runCheck(cmd *cobra.Command) error {
 	full, _ := cmd.Flags().GetBool(flagFull)
 
 	if !a.libraryExists() {
-		return fmt.Errorf("no library found at %s — run 'wandersort scan' first", a.Config.OutputDir())
+		return fmt.Errorf("no library found at %s — run 'wandersort add' first", a.Config.OutputDir())
 	}
 
 	ctx := context.Background()
@@ -68,7 +68,7 @@ func (a *app) runVerify(cmd *cobra.Command) error {
 // act on, and these are their photos.
 func reportVerify(rep verify.Report, full bool) error {
 	if rep.Checked == 0 {
-		fmt.Fprintln(os.Stderr, "Nothing in the library yet — run 'wandersort execute' to put files in it.")
+		fmt.Fprintln(os.Stderr, "Nothing in the library yet — run 'wandersort organise' to put files in it.")
 		return nil
 	}
 	if rep.Sound() {
@@ -86,7 +86,7 @@ func reportVerify(rep verify.Report, full bool) error {
 	if rep.Database != "ok" {
 		fmt.Fprintf(os.Stderr, "%s the database holding your folder structure is damaged: %s\n",
 			tui.Attn.Render("✗"), rep.Database)
-		fmt.Fprintln(os.Stderr, "    'wandersort recover' restores it from the backup taken before the last transfer.")
+		fmt.Fprintln(os.Stderr, "    'wandersort admin db --restore' restores it from the backup taken before the last transfer.")
 	}
 	if len(rep.Strays) > 0 {
 		fmt.Fprintf(os.Stderr, "\n%d leftover temp file(s) from an interrupted transfer, safe to delete:\n", len(rep.Strays))
@@ -98,7 +98,7 @@ func reportVerify(rep verify.Report, full bool) error {
 		return nil // strays alone are untidy, not a failure
 	}
 	if !full {
-		fmt.Fprintln(os.Stderr, "\nRun 'wandersort verify --full' to check the contents of the rest.")
+		fmt.Fprintln(os.Stderr, "\nRun 'wandersort check --full' to check the contents of the rest.")
 	}
 	return fmt.Errorf("%d of %d files do not match the library's records", len(rep.Problems), rep.Checked)
 }

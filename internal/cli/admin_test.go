@@ -20,13 +20,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newResetTestCmd builds a reset (or recover) command with the given bool
-// flags set to true. flagPlain is always registered, and set, so a confirm
-// reads stdin instead of drawing a TUI.
-func newResetTestCmd(t *testing.T, set ...string) *cobra.Command {
+// newAdminTestCmd builds an `admin db` command with the given bool flags set
+// to true. flagPlain is always registered, and set, so a confirm reads stdin
+// instead of drawing a TUI.
+func newAdminTestCmd(t *testing.T, set ...string) *cobra.Command {
 	t.Helper()
-	cmd := &cobra.Command{Use: "reset"}
-	for _, f := range []string{flagYes, flagPlain, flagDB} {
+	cmd := &cobra.Command{Use: "db"}
+	for _, f := range []string{flagYes, flagPlain, flagRestore, flagReset} {
 		cmd.Flags().Bool(f, false, "")
 	}
 	for _, f := range append(set, flagPlain) {
@@ -64,8 +64,8 @@ func TestRunResetWithoutDBFlagKeepsDatabase(t *testing.T) {
 
 	// No stdin answer and no --yes: a prompt here would read EOF and cancel.
 	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{AppDBPath: dbPath}}
-	if err := a.runReset(newResetTestCmd(t)); err != nil {
-		t.Fatalf("runReset: %v", err)
+	if err := a.runAdminClear(); err != nil {
+		t.Fatalf("admin db: %v", err)
 	}
 	after, err := os.ReadFile(dbPath)
 	if err != nil {
@@ -84,8 +84,8 @@ func TestRunResetNoDatabase(t *testing.T) {
 	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
 		AppDBPath: filepath.Join(dir, ".wandersort.db"),
 	}}
-	if err := a.runReset(newResetTestCmd(t, flagDB, flagYes)); err == nil {
-		t.Fatal("runReset --db with no database on disk must fail")
+	if err := a.runAdminDB(newAdminTestCmd(t, flagReset, flagYes)); err == nil {
+		t.Fatal("admin db --reset with no database on disk must fail")
 	}
 }
 
@@ -99,7 +99,7 @@ func TestRunResetCancelledWithoutYes(t *testing.T) {
 	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
 		AppDBPath: dbPath,
 	}}
-	if err := a.runReset(newResetTestCmd(t, flagDB)); err == nil {
+	if err := a.runAdminDB(newAdminTestCmd(t, flagReset)); err == nil {
 		t.Fatal("declining the confirm prompt must cancel the reset")
 	}
 }
@@ -112,8 +112,8 @@ func TestRunResetYesWipesDatabase(t *testing.T) {
 	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
 		AppDBPath: dbPath,
 	}}
-	if err := a.runReset(newResetTestCmd(t, flagDB, flagYes)); err != nil {
-		t.Fatalf("runReset: %v", err)
+	if err := a.runAdminDB(newAdminTestCmd(t, flagReset, flagYes)); err != nil {
+		t.Fatalf("admin db: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, db.BackupFileName)); err != nil {
 		t.Errorf("reset --db left no backup to recover from: %v", err)
@@ -131,13 +131,13 @@ func TestRecoverUndoesReset(t *testing.T) {
 
 			a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{AppDBPath: dbPath}}
 			for range resets {
-				if err := a.runReset(newResetTestCmd(t, flagDB, flagYes)); err != nil {
-					t.Fatalf("runReset: %v", err)
+				if err := a.runAdminDB(newAdminTestCmd(t, flagReset, flagYes)); err != nil {
+					t.Fatalf("admin db: %v", err)
 				}
 				a.AppDB = nil // closeDBs closes but doesn't clear it
 			}
-			if err := a.runRecover(newResetTestCmd(t, flagYes)); err != nil {
-				t.Fatalf("runRecover: %v", err)
+			if err := a.runAdminDB(newAdminTestCmd(t, flagRestore, flagYes)); err != nil {
+				t.Fatalf("admin db --restore: %v", err)
 			}
 
 			d, err := db.New(ctx, dbPath, db.AppDB, logger.NewNoopLogger())
@@ -159,7 +159,7 @@ func TestRecoverUndoesReset(t *testing.T) {
 func TestRecoverWithoutBackupFails(t *testing.T) {
 	dir := t.TempDir()
 	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}}
-	if err := a.runRecover(newResetTestCmd(t, flagYes)); err == nil {
+	if err := a.runAdminDB(newAdminTestCmd(t, flagRestore, flagYes)); err == nil {
 		t.Fatal("recover with no backup must fail")
 	}
 }
@@ -172,50 +172,11 @@ func TestRecoverCancelledWithoutYes(t *testing.T) {
 	}
 	answerStdin(t, "n\n")
 	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{AppDBPath: dbPath}}
-	if err := a.runRecover(newResetTestCmd(t)); err == nil {
+	if err := a.runAdminDB(newAdminTestCmd(t, flagRestore)); err == nil {
 		t.Fatal("declining the prompt must cancel the recover")
 	}
 	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
 		t.Error("a cancelled recover wrote the database")
-	}
-}
-
-// TestConfirmPlainPrompt exercises the --plain y/N stdin path directly,
-// both answers, without going through a command.
-func TestConfirmPlainPrompt(t *testing.T) {
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"y\n", true},
-		{"yes\n", true},
-		{"n\n", false},
-		{"\n", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			r, w, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := w.WriteString(tt.input); err != nil {
-				t.Fatal(err)
-			}
-			w.Close()
-			realStdin := os.Stdin
-			os.Stdin = r
-			defer func() { os.Stdin = realStdin }()
-
-			a := &app{}
-			cmd := &cobra.Command{Use: "x"}
-			cmd.Flags().Bool(flagPlain, true, "")
-			if err := cmd.Flags().Set(flagPlain, "true"); err != nil {
-				t.Fatal(err)
-			}
-			if got := a.confirm(cmd, "title", "detail"); got != tt.want {
-				t.Errorf("confirm(%q) = %v, want %v", tt.input, got, tt.want)
-			}
-		})
 	}
 }
 

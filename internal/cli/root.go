@@ -22,7 +22,8 @@ const (
 	flagForce      = "force"
 	flagPrint      = "print"
 	flagPlain      = "plain"
-	flagDB         = "db"
+	flagRestore    = "restore"
+	flagReset      = "reset"
 	flagMove       = "move"
 	flagDryRun     = "dry-run"
 	flagFull       = "full"
@@ -80,13 +81,11 @@ wandersort review`,
 	rootCmd.PersistentFlags().Bool(flagPlain, false, "Disable the full-screen TUI; use plain line logging")
 
 	rootCmd.AddCommand(a.newConfigCmd())
-	rootCmd.AddCommand(a.newScanCmd())
+	rootCmd.AddCommand(a.newAddCmd())
 	rootCmd.AddCommand(a.newReviewCmd())
 	rootCmd.AddCommand(a.newExecuteCmd())
-	rootCmd.AddCommand(a.newVerifyCmd())
-	rootCmd.AddCommand(a.newIssueCmd())
-	rootCmd.AddCommand(a.newResetCmd())
-	rootCmd.AddCommand(a.newRecoverCmd())
+	rootCmd.AddCommand(a.newCheckCmd())
+	rootCmd.AddCommand(a.newAdminCmd())
 
 	rootCmd.InitDefaultCompletionCmd()
 	for _, cmd := range rootCmd.Commands() {
