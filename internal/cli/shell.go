@@ -68,7 +68,7 @@ type shellModel struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	screens [numTabs]tea.Model
+	screens [numTabs]tui.Tab
 	tab     int
 	start   shellStart
 
@@ -77,7 +77,6 @@ type shellModel struct {
 	// question as whether review can be entered at all; see canReview.
 	reviewReady bool
 	opening     bool // a review is being built off the UI goroutine
-	quitReq     bool // ctrl+c is waiting on the active screen to let go
 	w, h        int
 
 	// lib is what the library looks like right now, read at the points where
@@ -101,7 +100,7 @@ type scanReadyMsg struct {
 // reviewOpenMsg carries the review screen built for [ctrl+r] on the home
 // screen (an existing proposal, no scan this session).
 type reviewOpenMsg struct {
-	model tea.Model
+	model tui.Tab
 	err   error
 }
 
@@ -211,6 +210,9 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tui.SwitchMsg:
 		return m.handleSwitch(msg)
 
+	case tui.Leave:
+		return m.handleLeave(msg)
+
 	case tui.StartScanMsg:
 		paths, force := msg.Paths, msg.Force
 		a, ctx := m.a, m.ctx
@@ -284,44 +286,58 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// ctrl+c is a quit request wherever it's pressed. While a scan is running
-	// it belongs to the scan screen — it warns once, cancels, and only quits
-	// if the user insists. Otherwise it means quit the app, but the key is
-	// still forwarded first so the screen gets its say (the wizard's own
-	// guard): quitReq is what turns the screen's answer (Done, or a
-	// SwitchMsg) into a quit instead of a walk back to the home screen.
-	if k.String() == "ctrl+c" {
-		if m.scanRunning() {
-			m.tab = tabScan
-		} else {
-			m.quitReq = true
-		}
-	} else {
-		m.quitReq = false // any other key: the screen stayed, so did the session
+	// ctrl+c belongs to a busy tab first: a scan mid-run warns once, cancels,
+	// and only gives up if the user insists. Everywhere else the screen still
+	// gets the key — it says what leaving means by handing back a tui.Leave,
+	// which handleLeave below acts on. The container no longer has to
+	// remember that a quit was asked for, because the screen says so.
+	if k.String() == "ctrl+c" && m.scanRunning() {
+		m.tab = tabScan
 	}
+	return m, m.forward(m.tab, k)
+}
 
-	cmd := m.forward(m.tab, k)
-
-	// An embedded form doesn't quit the program — it reports done, and the
-	// container puts the user back where the answer is now relevant.
-	if fm, ok := m.screens[tabConfig].(tui.FormModel); ok && fm.Done() {
+// handleLeave is the one place a screen handing back is acted on. Every
+// screen ends the same way now — none of them calls tea.Quit, because the
+// container owns the program and a screen that ends it takes the other tabs
+// with it, a running scan included. What the hand-back costs is decided here.
+func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	note := ""
+	switch m.tab {
+	case tabConfig:
+		// The wizard is the only hand-back carrying an answer.
 		m.screens[tabConfig] = nil
-		if m.quitReq {
-			return m, tea.Quit
+		switch {
+		case l.Err != nil:
+			cmd = m.forward(tabScan, tui.HomeErrMsg{Err: l.Err})
+		case !l.Aborted:
+			cmd = m.configSaved(m.settingsBefore)
 		}
-		if err := fm.Error(); err != nil {
-			cmd = tea.Batch(cmd, m.forward(tabScan, tui.HomeErrMsg{Err: err}))
-		} else if !fm.IsAborted() {
-			cmd = tea.Batch(cmd, m.configSaved(m.settingsBefore))
+	case tabReview:
+		// The review wrote its edits to the draft as they were made; the home
+		// screen says where they go next, since the session outlives the
+		// review. Only when there are some — a look around that changed
+		// nothing has nothing kept to mention.
+		m.refresh()
+		if m.lib.HasEdits() {
+			note = "Review edits kept — run 'wandersort execute' to apply them and copy the files."
+			m.a.Log.Info(note, logger.UserKey, true)
 		}
-		if m.tab == tabConfig {
-			m.tab = tabScan
-			if m.reviewReady {
-				m.tab = tabReview
-			}
-		}
+		m.screens[tabReview], m.reviewReady = nil, false
 	}
-	return m, cmd
+
+	if l.Quit {
+		return m, tea.Batch(cmd, tea.Quit)
+	}
+	// Not a quit: the session goes on. A settled plan or a saved setting
+	// means "what next?", which is the scan tab's question.
+	if m.tab == tabConfig && m.reviewReady {
+		m.tab = tabReview
+		return m, cmd
+	}
+	m.tab = tabScan
+	return m, tea.Batch(cmd, m.homeAgain(note))
 }
 
 // configSaved picks up a wizard save without a relaunch. A changed setting
@@ -371,42 +387,23 @@ func (m *shellModel) replan() tea.Cmd {
 	}
 }
 
-// handleSwitch intercepts the screen-swap message the scan and review screens
-// send. A nil Next does not quit: the review handing back means one plan is
-// settled, not that the session is over.
+// handleSwitch takes the screen the scan hands over once its plan is ready.
+// That is a hand*over*, not a hand-back: a screen that is finished with the
+// user says so with tui.Leave, which handleLeave answers.
 func (m shellModel) handleSwitch(msg tui.SwitchMsg) (tea.Model, tea.Cmd) {
-	if msg.Next != nil {
-		// The scan's prefetched review screen. Jumping to it is right when the
-		// user is watching the scan and wrong when they're half-way through a
-		// form — the tab bar says it's ready instead.
-		m.reviewReady = true
-		m.refresh() // the scan that produced it is done
-		cmd := m.place(tabReview, msg.Next)
-		if m.tab == tabScan {
-			m.tab = tabReview
-		}
-		return m, cmd
+	if msg.Next == nil {
+		return m, nil // a screen leaving says so with tui.Leave, not with this
 	}
-
-	// The review wrote its edits to the draft as they were made; the home
-	// screen says where they go next, since the session outlives the review.
-	// Only when there are some — a look around that changed nothing has
-	// nothing kept to mention.
-	hadScreen := m.screens[tabReview] != nil
-	m.refresh()
-	note := ""
-	if hadScreen && m.lib.HasEdits() {
-		note = "Review edits kept — run 'wandersort execute' to apply them and copy the files."
-		m.a.Log.Info(note, logger.UserKey, true)
+	// The scan's prefetched review screen. Jumping straight in is right when
+	// the user is watching the scan and wrong when they're half-way through a
+	// form — the tab bar says it's ready instead.
+	m.reviewReady = true
+	m.refresh() // the scan that produced it is done
+	cmd := m.place(tabReview, msg.Next)
+	if m.tab == tabScan {
+		m.tab = tabReview
 	}
-	m.screens[tabReview], m.reviewReady = nil, false
-	// ctrl+c out of the review means quit, not "back to the folder input" —
-	// the standalone `review` command ends the process on that key too.
-	if m.quitReq {
-		return m, tea.Quit
-	}
-	m.tab = tabScan
-	return m, m.homeAgain(note)
+	return m, cmd
 }
 
 // scanTabHome turns a finished scan's screen back into a folder input when the
@@ -507,16 +504,19 @@ func (m *shellModel) openReview() tea.Cmd {
 	}
 }
 
+// scanRunning asks the scan tab whether it is busy. The container needs no
+// assertion for this — Busy is on the Tab interface precisely because it is
+// the one fact about a screen it cannot work out for itself.
 func (m shellModel) scanRunning() bool {
-	s, ok := m.screens[tabScan].(tui.ScanModel)
-	return ok && s.Running()
+	s := m.screens[tabScan]
+	return s != nil && s.Busy()
 }
 
 // place installs a freshly built screen: hands it the current size so it lays
 // out on the first frame instead of after the next resize, then inits it.
-func (m *shellModel) place(tab int, s tea.Model) tea.Cmd {
+func (m *shellModel) place(tab int, s tui.Tab) tea.Cmd {
 	sized, cmd := s.Update(tea.WindowSizeMsg{Width: m.w, Height: m.h - 1})
-	m.screens[tab] = sized
+	m.screens[tab] = sized.(tui.Tab)
 	return tea.Batch(sized.Init(), cmd)
 }
 
@@ -526,7 +526,7 @@ func (m *shellModel) forward(tab int, msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	next, cmd := s.Update(msg)
-	m.screens[tab] = next
+	m.screens[tab] = next.(tui.Tab)
 	return cmd
 }
 
@@ -595,7 +595,7 @@ func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, path
 			return err
 		},
 		Cancel:     cancel,
-		ReviewNext: func() (tea.Model, error) { return a.newReviewScreen(ctx) },
+		ReviewNext: func() (tui.Tab, error) { return a.newReviewScreen(ctx) },
 	})
 }
 
@@ -607,7 +607,7 @@ func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, path
 // can never replace one library's rules with another's defaults. A folder
 // with no library in it yet stays untouched — the form asks for the output
 // path instead, and the save creates it.
-func (a *app) newConfigScreen(ctx context.Context) (tea.Model, error) {
+func (a *app) newConfigScreen(ctx context.Context) (tui.Tab, error) {
 	if a.AppDB == nil && a.libraryExists() {
 		if err := a.openLibrary(ctx); err != nil {
 			return nil, err
@@ -616,9 +616,7 @@ func (a *app) newConfigScreen(ctx context.Context) (tea.Model, error) {
 	fields, save := a.buildConfigForm(ctx, func() (*location.Resolver, error) {
 		return a.Deps.LocationNow()
 	})
-	fm := tui.NewFormModel(fields, save)
-	fm.Embedded = true
-	return fm, nil
+	return tui.NewFormModel(fields, save), nil
 }
 
 // runRoot is bare `wandersort`. With --plain or a piped stderr there is no

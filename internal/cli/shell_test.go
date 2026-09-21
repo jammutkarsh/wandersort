@@ -43,6 +43,9 @@ func (p *probe) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (p *probe) View() string { return p.name }
 
+// Busy is false: a probe stands in for a screen with nothing in flight.
+func (p *probe) Busy() bool { return false }
+
 // got reports whether the screen was handed msg. DeepEqual, not ==: both a
 // log event (map of attrs) and a key (rune slice) are uncomparable.
 func (p *probe) got(msg tea.Msg) bool {
@@ -199,7 +202,7 @@ func TestShellModel(t *testing.T) {
 			m.screens[tabReview], m.reviewReady = &probe{name: "review"}, true
 			m.tab = tabReview
 
-			next, cmd := m.Update(tui.SwitchMsg{Next: nil})
+			next, cmd := m.Update(tui.Leave{})
 			m = next.(shellModel)
 			for _, msg := range flattenTeaCmd(cmd) {
 				if _, quit := msg.(tea.QuitMsg); quit {
@@ -338,7 +341,6 @@ func TestShellModel(t *testing.T) {
 			m := testShell(t)
 			yes := true
 			form := tui.NewFormModel([]*tui.Field{{Kind: tui.FieldConfirm, Title: "Only step", BoolValue: &yes}}, nil)
-			form.Embedded = true
 			m.screens[tabConfig] = form
 			m.tab = tabConfig
 			// What openConfig records when it places the wizard: this stand-in
@@ -346,6 +348,9 @@ func TestShellModel(t *testing.T) {
 			m.settingsBefore = m.a.Config.Settings
 
 			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+			m = next.(shellModel)
+			// The key makes the form hand back; the container acts on that.
+			next, cmd = m.Update(leaveFrom(t, cmd))
 			m = next.(shellModel)
 			for _, msg := range flattenTeaCmd(cmd) {
 				if _, quit := msg.(tea.QuitMsg); quit {
@@ -363,11 +368,16 @@ func TestShellModel(t *testing.T) {
 		// dropped back on the folder input instead is not quitting. The
 		// standalone `config`/`review` commands both end the process on it.
 		{"CtrlCQuitsFromEveryTab", func(t *testing.T) {
+			// The screen says whether leaving means the session or just the
+			// screen; the container acts on that one message rather than
+			// remembering that a quit was asked for.
 			t.Run("config", func(t *testing.T) {
 				m := testShell(t)
 				m.a.Deps = m.a.newDeps(nil)
 				next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-				_, cmd := next.(shellModel).Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+				m = next.(shellModel)
+				_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+				_, cmd = m.Update(leaveFrom(t, cmd))
 				assertQuits(t, cmd, "ctrl+c in the wizard")
 			})
 			t.Run("review", func(t *testing.T) {
@@ -375,30 +385,20 @@ func TestShellModel(t *testing.T) {
 				m.screens[tabReview], m.reviewReady = &probe{name: "review"}, true
 				m.tab = tabReview
 
-				// The review answers a quit by handing back (SwitchMsg{nil});
-				// without the quit request that is a walk home, with it a quit.
-				next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-				_, cmd := next.(shellModel).Update(tui.SwitchMsg{Next: nil})
+				_, cmd := m.Update(tui.Leave{Quit: true})
 				assertQuits(t, cmd, "ctrl+c out of the review")
 			})
-			t.Run("a keystroke after ctrl+c clears the quit request", func(t *testing.T) {
+			t.Run("leaving without asking to quit goes home", func(t *testing.T) {
 				m := testShell(t)
 				m.screens[tabReview], m.reviewReady = &probe{name: "review"}, true
 				m.tab = tabReview
 
-				// A screen that stays on ctrl+c (the probe does) keeps the
-				// session; any other key means the user stayed, so a later
-				// hand-back must go home, not quit.
-				next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-				next, _ = next.(shellModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
-				m = next.(shellModel)
-				if m.quitReq {
-					t.Fatal("a keystroke after the warning should clear the quit request")
-				}
-				next, cmd := m.Update(tui.SwitchMsg{Next: nil})
+				// esc out of the review is "done here", not "done with the
+				// app": the session goes on, back at the folder input.
+				next, cmd := m.Update(tui.Leave{})
 				for _, msg := range flattenTeaCmd(cmd) {
 					if _, quit := msg.(tea.QuitMsg); quit {
-						t.Fatal("a review left later must return home, not quit")
+						t.Fatal("a review left without a quit must return home")
 					}
 				}
 				if next.(shellModel).tab != tabScan {
@@ -419,7 +419,7 @@ func TestShellModel(t *testing.T) {
 				}
 				m.screens[tabReview], m.reviewReady = &probe{name: "review"}, true
 				m.tab = tabReview
-				next, _ := m.Update(tui.SwitchMsg{Next: nil})
+				next, _ := m.Update(tui.Leave{})
 				return ansi.Strip(next.(shellModel).View())
 			}
 			if v := leave(t, false); strings.Contains(v, "Review edits kept") {
@@ -435,7 +435,7 @@ func TestShellModel(t *testing.T) {
 			m := testShell(t)
 			sm := tui.NewScanModel(tui.ScanConfig{Cancel: func() {}})
 			cancelled, _ := sm.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-			m.screens[tabScan] = cancelled
+			m.screens[tabScan] = cancelled.(tui.Tab)
 
 			if err := m.exitStatus(); err == nil || !strings.Contains(err.Error(), "cancelled") {
 				t.Errorf("exitStatus() = %v, want a cancellation", err)
@@ -504,6 +504,19 @@ func TestShellModel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
 	}
+}
+
+// leaveFrom pulls the hand-back a screen's key produced, so a test can feed
+// it to the container the way the program would.
+func leaveFrom(t *testing.T, cmd tea.Cmd) tui.Leave {
+	t.Helper()
+	for _, msg := range flattenTeaCmd(cmd) {
+		if l, ok := msg.(tui.Leave); ok {
+			return l
+		}
+	}
+	t.Fatalf("no tui.Leave in %v", flattenTeaCmd(cmd))
+	return tui.Leave{}
 }
 
 func assertQuits(t *testing.T, cmd tea.Cmd, what string) {

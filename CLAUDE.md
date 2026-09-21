@@ -1514,10 +1514,26 @@ tree over the whole library.
   (`theme.go`), the Docker-buildkit-style `StageList` step stack shared by
   scan and its dependency install (`stagelist.go` — stage rows with right-aligned
   elapsed times, a progress bar and a live per-file tail nested under the
-  running stage), the `SwitchMsg`/`Switch` pair a screen hands control on with
-  (`shell.go` — the one-screen `Shell` host that used to live beside them is
-  gone: `internal/cli`'s tab container is the only host now, and a kit type
-  with zero implementations is flexibility nobody asked for), the `config` wizard
+  running stage), **the seam the container hosts screens through**
+  (`tab.go` — `Tab` is `tea.Model` plus `Busy()`, the one fact about a screen
+  the container cannot work out for itself: work in flight that must not be
+  interrupted, replaced, or have its settings retargeted under it. There was
+  no interface at all before: the container knew each screen by its concrete
+  type and reached past `tea.Model` in **28 places** for five different method
+  sets, so adding a screen meant adding an assertion to every one of them; it
+  is 3 now, all of them one implementation's own post-mortem facts
+  (`Failed`/`Cancelled`/`DepsFailure`/`Summary`), which is where they belong.
+  **`Leave` is the one way out**, and screens no longer call `tea.Quit`: the
+  container owns the program, and a screen that ends it takes the other tabs
+  with it — a scan still running underneath included. It replaced nine
+  hand-back paths: two screens quitting directly (six sites), one reporting
+  through a `Done()` the container polled after every keystroke, one handing
+  back a nil `SwitchMsg`, and a `quitReq` flag on the container to reinterpret
+  the last two as a quit. A screen says `Leave{Quit}` — "done with the app"
+  versus "done here" — and what that costs is the container's decision),
+  the `SwitchMsg`/`Switch` pair, now strictly a hand*over* of a screen built
+  for another tab (the scan passing over its prefetched review; a nil `Next`
+  means nothing and is ignored), the `config` wizard
   (`form.go` — `Field.Example` blocks above the footer, `Field.Describe` for a
     description that depends on the answer under the cursor — prose belongs
     there, not in the example, which renders in a narrow column and truncates;
@@ -1527,10 +1543,13 @@ tree over the whole library.
   **numbered** option lists: `1)`/`2)` next to every choice, since an
   arrow-only list gives the eye nothing to aim at. A `FieldGroup` holds fields
   of *any* kind, which is what makes the Saved places step one screen with two
-  inputs and two yes/no questions; `FormModel.Embedded` mirrors the review
-  model's own embedded mode — the three quit points go through `finish()`,
-  which sets `done` instead of `tea.Quit` when the shell owns the program, and
-  the container polls `Done()`), the shell's landing screen
+  inputs and two yes/no questions; every quit point goes through `finish()`,
+  which hands back a `tui.Leave` carrying why it ended — aborted, an error, or
+  a finished save — so the container reads one message instead of polling
+  `Done()` and then three more getters. There is no `Embedded` flag any more:
+  every form is hosted, since the `config` subcommand is a shell tab too, and
+  a flag with one setter and one reader was describing a path that no longer
+  exists), the shell's landing screen
   (`home.go` — `HomeModel`: the scan-folder list, **one path per enter**, which
   is what keeps folders with spaces working with no quoting or comma-escaping.
   Folders are held expanded (the scan needs real paths) and rendered back

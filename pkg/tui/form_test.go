@@ -14,6 +14,18 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// leaveOf reports the Leave a screen handed back, if it did. Every hosted
+// screen ends this way now — none of them quits the program the container
+// owns.
+func leaveOf(cmd tea.Cmd) (Leave, bool) {
+	for _, msg := range flattenCmd(cmd) {
+		if l, ok := msg.(Leave); ok {
+			return l, true
+		}
+	}
+	return Leave{}, false
+}
+
 // flattenCmd executes cmd (and recursively any tea.Batch it produces),
 // returning every resulting message in order.
 func flattenCmd(cmd tea.Cmd) []tea.Msg {
@@ -326,7 +338,7 @@ func TestForm(t *testing.T) {
 		// Embedded in the app shell, the form never quits the program — the
 		// container owns it, and quitting would take the running scan down
 		// with the wizard.
-		{"FormEmbeddedReportsDoneInsteadOfQuitting", func(t *testing.T) {
+		{"FormHandsBackInsteadOfQuitting", func(t *testing.T) {
 			for _, tc := range []struct {
 				name string
 				keys []tea.KeyMsg
@@ -341,19 +353,22 @@ func TestForm(t *testing.T) {
 				yes := true
 				m := NewFormModel([]*Field{{Kind: FieldConfirm, Title: "Only step", BoolValue: &yes}},
 					func() error { saved = true; return nil })
-				m.Embedded = true
 
-				var fm FormModel
+				var left bool
 				for _, key := range tc.keys {
 					next, cmd := m.Update(key)
-					fm = next.(FormModel)
-					if cmd != nil {
-						t.Errorf("%s: embedded form returned a cmd (%v), want none", tc.name, flattenCmd(cmd))
+					m = next.(FormModel)
+					for _, msg := range flattenCmd(cmd) {
+						if msg == tea.Quit() {
+							t.Fatalf("%s: the form quit the program the container owns", tc.name)
+						}
 					}
-					m = fm
+					if _, ok := leaveOf(cmd); ok {
+						left = true
+					}
 				}
-				if !fm.Done() {
-					t.Errorf("%s: embedded form should report Done()", tc.name)
+				if !left {
+					t.Errorf("%s: the form should hand back with tui.Leave", tc.name)
 				}
 				if tc.name != "abort" && !saved {
 					t.Errorf("%s: should still have submitted", tc.name)
@@ -376,15 +391,14 @@ func TestFormExitAskDiscardVsSave(t *testing.T) {
 		yes := true
 		m := NewFormModel([]*Field{{Kind: FieldConfirm, Title: "Only step", BoolValue: &yes}},
 			func() error { saved = true; return nil })
-		m.Embedded = true
 		return m, &saved
 	}
 
 	t.Run("esc alone only asks, does not save", func(t *testing.T) {
 		m, saved := newForm()
-		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 		fm := next.(FormModel)
-		if fm.Done() || *saved {
+		if _, left := leaveOf(cmd); left || *saved {
 			t.Error("esc must raise the question, not save or exit on its own")
 		}
 		if !fm.askExit {
@@ -395,30 +409,37 @@ func TestFormExitAskDiscardVsSave(t *testing.T) {
 	t.Run("n discards without saving", func(t *testing.T) {
 		m, saved := newForm()
 		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-		next, _ = next.(FormModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-		fm := next.(FormModel)
-		if !fm.Done() || !fm.IsAborted() || *saved {
-			t.Errorf("n must abort without saving: done=%v aborted=%v saved=%v", fm.Done(), fm.IsAborted(), *saved)
+		_, cmd := next.(FormModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+		l, left := leaveOf(cmd)
+		if !left || !l.Aborted || *saved {
+			t.Errorf("n must abort without saving: left=%v leave=%+v saved=%v", left, l, *saved)
+		}
+		if l.Quit {
+			t.Error("n means done here, not done with the app")
 		}
 	})
 
 	t.Run("y saves", func(t *testing.T) {
 		m, saved := newForm()
 		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-		next, _ = next.(FormModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-		fm := next.(FormModel)
-		if !fm.Done() || fm.IsAborted() || !*saved {
-			t.Errorf("y must save and exit: done=%v aborted=%v saved=%v", fm.Done(), fm.IsAborted(), *saved)
+		_, cmd := next.(FormModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+		l, left := leaveOf(cmd)
+		if !left || l.Aborted || !*saved {
+			t.Errorf("y must save and exit: left=%v leave=%+v saved=%v", left, l, *saved)
 		}
 	})
 
 	t.Run("ctrl+c bypasses the question and discards immediately", func(t *testing.T) {
 		m, saved := newForm()
 		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-		next, _ = next.(FormModel).Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-		fm := next.(FormModel)
-		if !fm.Done() || !fm.IsAborted() || *saved {
+		_, cmd := next.(FormModel).Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		l, left := leaveOf(cmd)
+		if !left || !l.Aborted || *saved {
 			t.Error("ctrl+c must discard immediately, even with the question up")
+		}
+		// ctrl+c is the one key that means the session, not the screen.
+		if !l.Quit {
+			t.Error("ctrl+c should ask for the session to end")
 		}
 	})
 }

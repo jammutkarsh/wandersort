@@ -51,7 +51,7 @@ type scanDoneMsg struct{ err error }
 // reviewReadyMsg reports ReviewNext (BuildTree + DB work) finished off the UI
 // goroutine — see the "y" case in handleKey for why this can't run inline.
 type reviewReadyMsg struct {
-	model tea.Model
+	model Tab
 	err   error
 }
 
@@ -66,7 +66,7 @@ type ScanConfig struct {
 	// A scan is run in order to review it, and the shell keeps the session
 	// alive afterwards, so there's no "continue?" prompt in the way — nil (or
 	// an error) means no in-program review, and the screen just sits finished.
-	ReviewNext func() (tea.Model, error)
+	ReviewNext func() (Tab, error)
 }
 
 // ScanModel is the full-screen live scan view: a Docker-buildkit-style stack
@@ -101,7 +101,7 @@ type ScanModel struct {
 	// reviewModel/reviewFetching prefetch the review screen (vfs.BuildTree) as
 	// soon as the vfs phase flushes, so it's usually ready by the time the
 	// pipeline itself finishes and the scan switches straight into it.
-	reviewModel    tea.Model
+	reviewModel    Tab
 	reviewFetching bool
 }
 
@@ -123,6 +123,10 @@ func (m ScanModel) Cancelled() bool { return m.cancelling }
 // quit request here while it is, so the cancel guard gets a say no matter
 // which tab the user pressed it on.
 func (m ScanModel) Running() bool { return !m.done }
+
+// Busy is the container's word for Running: a pipeline in flight must not be
+// interrupted, replaced, or have its settings retargeted under it.
+func (m ScanModel) Busy() bool { return m.Running() }
 
 // Failed reports that the pipeline returned an error. The screen is the only
 // place that error is written, so a caller replacing this screen has to know
@@ -177,7 +181,7 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reviewErr = msg.err
 			m.loading = false
 			if m.cancelling {
-				return m, tea.Quit
+				return m, Left(Leave{Quit: true})
 			}
 			return m, nil
 		}
@@ -192,12 +196,12 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			if de, ok := errors.AsType[*DepsErr](msg.err); ok {
 				m.depsErr = de.Err
-				return m, tea.Quit
+				return m, Left(Leave{Quit: true, Err: de.Err})
 			}
 			m.failErr = msg.err
 			m.sl.FinishRemaining(true, "")
 			if m.cancelling {
-				return m, tea.Quit
+				return m, Left(Leave{Quit: true})
 			}
 			return m, nil
 		}
@@ -224,13 +228,13 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cfg.Cancel()
 		}
 		if m.done {
-			return m, tea.Quit
+			return m, Left(Leave{Quit: true})
 		}
 		// Second press is the escape hatch: cancelling waits for the pipeline
 		// to unwind, and a phase that never does would otherwise leave the
 		// screen unquittable.
 		if m.cancelling {
-			return m, tea.Quit
+			return m, Left(Leave{Quit: true})
 		}
 		m.cancelling = true
 		return m, nil

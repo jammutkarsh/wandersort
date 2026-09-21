@@ -8,11 +8,13 @@ package tui
 
 import tea "github.com/charmbracelet/bubbletea"
 
-// SwitchMsg asks the shell to replace the active screen with Next (e.g. scan →
-// review). A screen returns it from Update via a tea.Cmd. Next==nil quits.
-type SwitchMsg struct{ Next tea.Model }
+// SwitchMsg hands the container a screen for another tab — the scan passing
+// over the review it prefetched. It is a hand*over*, not a hand-back: a
+// screen that is finished with the user says so with Leave, which is the one
+// way out.
+type SwitchMsg struct{ Next Tab }
 
-// Switch is the tea.Cmd a screen returns to hand control to the next screen.
-func Switch(next tea.Model) tea.Cmd {
+// Switch is the tea.Cmd a screen returns to hand over the screen it built.
+func Switch(next Tab) tea.Cmd {
 	return func() tea.Msg { return SwitchMsg{Next: next} }
 }

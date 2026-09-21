@@ -14,8 +14,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// stubScreen is a minimal tea.Model that records what it was sent, standing
-// in for a real screen the scan hands control to.
+// stubScreen is a minimal Tab that records what it was sent, standing in for
+// a real screen the scan hands control to.
 type stubScreen struct {
 	view    string
 	initCmd tea.Cmd
@@ -31,6 +31,8 @@ func (s *stubScreen) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (s *stubScreen) View() string { return s.view }
 
+func (s *stubScreen) Busy() bool { return false }
+
 // switchTarget returns the model a cmd switches to, or nil.
 func switchTarget(cmd tea.Cmd) tea.Model {
 	for _, msg := range flattenCmd(cmd) {
@@ -42,7 +44,7 @@ func switchTarget(cmd tea.Cmd) tea.Model {
 }
 
 func TestScanModel(t *testing.T) {
-	reviewNext := func() (tea.Model, error) { return &stubScreen{view: "review"}, nil }
+	reviewNext := func() (Tab, error) { return &stubScreen{view: "review"}, nil }
 
 	tests := []struct {
 		name string
@@ -99,9 +101,12 @@ func TestScanModel(t *testing.T) {
 				t.Errorf("want the warning above the footer:\n%s", v)
 			}
 
+			// The screen asks to end the session; it must not end the
+			// program itself, which would take the other tabs with it.
 			_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-			if cmd == nil || flattenCmd(cmd)[0] != tea.Msg(tea.QuitMsg{}) {
-				t.Errorf("the second ctrl+c should quit, got %v", flattenCmd(cmd))
+			l, left := leaveOf(cmd)
+			if !left || !l.Quit {
+				t.Errorf("the second ctrl+c should ask to quit, got %v", flattenCmd(cmd))
 			}
 		}},
 	}

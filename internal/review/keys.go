@@ -43,10 +43,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // leave hands back to the shell. Nothing to save or discard: every edit is
 // already in the draft file, and stays there for the next review or for
-// `wandersort execute` to apply.
-func (m Model) leave() (tea.Model, tea.Cmd) {
-	m.done = true
-	return m, tui.Switch(nil)
+// `wandersort execute` to apply. quit says whether the key meant "done with
+// the app" or just "done here" — the shell decides what that costs.
+func (m Model) leave(quit bool) (tea.Model, tea.Cmd) {
+	return m, tui.Left(tui.Leave{Quit: quit})
 }
 
 func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -105,8 +105,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch key.String() {
 	case "ctrl+c":
-		// the shell turns this hand-back into a quit
-		return m.leave()
+		return m.leave(true)
 	case "esc":
 		// A live selection is the nearer thing to back out of — esc clears it
 		// first, same as it does everywhere else.
@@ -114,7 +113,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.visualMode = false
 			break
 		}
-		return m.leave()
+		return m.leave(false)
 	case "up":
 		if m.cursor > 0 {
 			m.cursor--

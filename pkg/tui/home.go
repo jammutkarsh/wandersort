@@ -88,6 +88,9 @@ func NewHomeModel(cfg HomeConfig) HomeModel {
 // the program exits.
 func (m HomeModel) Paths() []string { return m.added }
 
+// Busy is never true for the folder input: it is where a session waits.
+func (m HomeModel) Busy() bool { return false }
+
 func (m HomeModel) Init() tea.Cmd { return textinput.Blink }
 
 func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -104,7 +107,7 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// consequential (re-reading every file) gets exactly two keys.
 			switch msg.String() {
 			case "ctrl+c":
-				return m, tea.Quit
+				return m, Left(Leave{Quit: true})
 			case "enter":
 				m.confirmForce = false
 				paths := slices.Clone(m.added)
@@ -118,7 +121,7 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// so the screen's own commands are all ctrl-chorded.
 		switch msg.String() {
 		case "ctrl+c":
-			return m, tea.Quit
+			return m, Left(Leave{Quit: true})
 		case "ctrl+g":
 			if len(m.added) > 0 {
 				m.confirmForce = true

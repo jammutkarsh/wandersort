@@ -110,11 +110,10 @@ type FormModel struct {
 	dlMsg  DownloadMsg
 	dlSeen bool // a DownloadMsg arrived; nothing renders before the first one
 
-	// Embedded runs the form inside the app shell, which owns the program: it
-	// reports Done instead of quitting, and the shell returns to the previous
-	// tab. Same shape as the review model's own embedded mode.
-	Embedded bool
-	done     bool
+	// quitReq marks the key that ended the form as "I am done with the app",
+	// not "I am done here" — ctrl+c, as opposed to esc or a finished save.
+	// It rides out on Leave; what it costs is the container's decision.
+	quitReq bool
 
 	// askExit is [esc]'s question — save what's been entered, or throw it
 	// away — raised instead of assuming "save" the moment someone wants out.
@@ -122,18 +121,14 @@ type FormModel struct {
 	exitChoice bool // true = Save, false = Discard; which button is under the cursor
 }
 
-// Done reports that an embedded form has finished — saved, submitted, or
-// aborted. The shell polls it after every key it forwards.
-func (m FormModel) Done() bool { return m.done }
+// Busy is never true for a form: it holds the keyboard, not a pipeline.
+func (m FormModel) Busy() bool { return false }
 
-// finish ends the form: quits its own program, or just says so when the shell
-// owns the program.
+// finish hands control back to the container, carrying why it ended. It does
+// not quit: the container owns the program, and a screen that ends it takes
+// every other tab with it — a scan still running underneath included.
 func (m FormModel) finish() (tea.Model, tea.Cmd) {
-	if m.Embedded {
-		m.done = true
-		return m, nil
-	}
-	return m, tea.Quit
+	return m, Left(Leave{Quit: m.quitReq, Aborted: m.aborted, Err: m.err})
 }
 
 func NewFormModel(fields []*Field, onSubmit func() error) FormModel {
@@ -214,7 +209,7 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "ctrl+c":
-			m.aborted = true
+			m.aborted, m.quitReq = true, true
 			return m.finish()
 		case "esc":
 			// Unlike "c", esc is never a character someone would type into a
@@ -857,7 +852,7 @@ func (m FormModel) exitAskView() string {
 func (m FormModel) answerExitAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "ctrl+c":
-		m.aborted = true
+		m.aborted, m.quitReq = true, true
 		return m.finish()
 	case "left":
 		m.exitChoice = true
@@ -927,14 +922,6 @@ func (m FormModel) movePrev() (tea.Model, tea.Cmd) {
 		m.seedInput()
 	}
 	return m, textinput.Blink
-}
-
-func (m FormModel) IsAborted() bool {
-	return m.aborted
-}
-
-func (m FormModel) Error() error {
-	return m.err
 }
 
 type ConfirmModel struct {

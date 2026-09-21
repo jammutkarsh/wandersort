@@ -1551,20 +1551,32 @@ func TestDraft(t *testing.T) {
 	})
 
 	t.Run("leaving asks nothing and keeps the file", func(t *testing.T) {
-		for _, k := range []tea.KeyMsg{{Type: tea.KeyEsc}, {Type: tea.KeyCtrlC}} {
+		// esc means "done here", ctrl+c means "done with the app". The screen
+		// says which; what it costs is the container's decision, and neither
+		// ends the program the container owns.
+		for _, tc := range []struct {
+			key      tea.KeyMsg
+			wantQuit bool
+		}{
+			{tea.KeyMsg{Type: tea.KeyEsc}, false},
+			{tea.KeyMsg{Type: tea.KeyCtrlC}, true},
+		} {
 			dir := t.TempDir()
 			m, _ := newDBModel(t, dir)
 			m.focusNode(dayRow(m).node.ID)
 			m.applyRename("Kept")
-			next, cmd := m.Update(k)
-			if !next.(Model).done || cmd == nil {
-				t.Fatalf("%s: want the review to hand back at once", k)
+			_, cmd := m.Update(tc.key)
+			if cmd == nil {
+				t.Fatalf("%s: want the review to hand back at once", tc.key)
 			}
-			if _, ok := cmd().(tui.SwitchMsg); !ok {
-				t.Errorf("%s: want a tui.SwitchMsg back to the shell", k)
+			l, ok := cmd().(tui.Leave)
+			if !ok {
+				t.Errorf("%s: want a tui.Leave back to the shell, got %T", tc.key, cmd())
+			} else if l.Quit != tc.wantQuit {
+				t.Errorf("%s: Leave.Quit = %v, want %v", tc.key, l.Quit, tc.wantQuit)
 			}
 			if edits, _ := vfs.ReadDraft(dir); len(edits) != 1 {
-				t.Errorf("%s: draft = %+v, want the edit kept", k, edits)
+				t.Errorf("%s: draft = %+v, want the edit kept", tc.key, edits)
 			}
 		}
 	})

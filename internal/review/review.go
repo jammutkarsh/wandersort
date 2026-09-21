@@ -39,9 +39,13 @@ type Options struct {
 // different tab, so a review is always hosted, never its own program. It
 // writes nothing but the draft file: leaving hands back to the shell with
 // tui.Switch(nil), and `wandersort execute` applies the edits.
-func Screen(ctx context.Context, o Options) tea.Model {
+func Screen(ctx context.Context, o Options) tui.Tab {
 	return newModel(o.Tree, o.Edits, ctx, o.DB, o.Resolver, o.Log, o.OutputDir)
 }
+
+// Busy is never true for the review: it reads a plan and writes a journal,
+// with nothing in flight the container has to wait for.
+func (m Model) Busy() bool { return false }
 
 /* --- bubbletea model --- */
 
@@ -114,7 +118,6 @@ type Model struct {
 	visualMode   bool
 	visualAnchor int
 	showHelp     bool // [?] — full-screen key reference; any key closes it
-	done         bool // left the review; the shell has been handed back
 	// base is the plan as the database holds it, never edited; edits is the
 	// draft journal on top of it. The tree on screen is always base with
 	// edits replayed, which is what lets [u] drop a line and [R] drop them all.

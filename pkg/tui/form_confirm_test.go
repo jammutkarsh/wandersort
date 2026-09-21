@@ -120,11 +120,12 @@ func TestFormSaveAndExitCommitsActiveInputAndSubmits(t *testing.T) {
 	if !submitted {
 		t.Errorf("saveAndExit must call onSubmit even with fields unanswered")
 	}
-	if cmd == nil {
-		t.Fatalf("saveAndExit should quit")
+	l, left := leaveOf(cmd)
+	if !left {
+		t.Fatalf("saveAndExit should hand back to the container")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Errorf("saveAndExit's cmd should be tea.Quit")
+	if l.Aborted || l.Err != nil {
+		t.Errorf("a completed save is neither aborted nor an error: %+v", l)
 	}
 }
 

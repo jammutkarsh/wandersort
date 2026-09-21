@@ -10,12 +10,12 @@ import (
 	"context"
 	"fmt"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
 func (a *app) newReviewCmd() *cobra.Command {
@@ -72,7 +72,7 @@ func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
 //
 // An empty tree means every master is already placed by an earlier execute —
 // a fully organized library, not a plan to rebuild.
-func (a *app) newReviewScreen(ctx context.Context) (tea.Model, error) {
+func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
 	// Doesn't block: a.Deps was started by the scan and vfs already ran, so
 	// the location download has resolved by now. Autocomplete just degrades
 	// gracefully without a resolver if it somehow hasn't.
