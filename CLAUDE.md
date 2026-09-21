@@ -1011,7 +1011,30 @@ tree over the whole library.
   deleted by `vfs.persist`'s "no longer a live master" cleanup, and propose
   the duplicate for copying again — a reported bug (issue 06/07, spec D11,
   the SD-card re-import case).
-- `vfs/` — phase 4. **`docs/vfs-pipeline.md` is the long-form walkthrough of
+- `vfs/` — phase 4. **`Plan` is two halves**: `deriveAll`/`resolveLocations`,
+  which are the only passes needing anything from outside (the metadata the
+  scan stored, and geonames), and `shape`, which turns those derived facts
+  into paths and is a pure function of them. The split exists so the pass
+  order is written down once: `PreviewPaths` — the config wizard's examples —
+  used to hand-run two of the six shape passes and *fake* a third's output
+  (`Sample.DayOverride`, a literal `"02_04"` handed to the renderer), which
+  made the wizard a second, shorter pipeline that disagreed with the real one
+  about what a setting produces. It runs `shape` now, so an example is the
+  real proposal by construction rather than by somebody keeping two lists in
+  step. The drift was not hypothetical: the preview skipped `applyNameCase`,
+  so it promised a `Canon-EOS-700D` folder the pipeline would never create
+  (it title-cases to `Canon-Eos-700d` — that it mangles the name at all is a
+  separate bug, see the ceiling note below). `Sample` is now exactly a master
+  as it stands after the first half, and carries nothing `shape` works out
+  for itself. The `skip` set (`uninformativeLevels`) is computed once in
+  `shape` and passed down, rather than recomputed over every master by each
+  of the three passes that need it; only device/orientation/media ever
+  collapse and nothing in `shape` changes those, so the answer was the same
+  all three times. **Known ceiling:** `caseName`/`titleWord` lower-case every
+  character after the first of any word not in `caseWhitelist`, so an
+  all-caps model name becomes `Eos`, `700d`. The whitelist is the only
+  defence and it is per-word.
+- `vfs/` — **`docs/vfs-pipeline.md` is the long-form walkthrough of
   this package** — every SQL query, all eight `Plan` passes in call order, the
   concurrency patterns, and an edge-case catalogue naming the bug behind each
   rule. Read it before changing anything here; the notes below are the map,
@@ -1224,8 +1247,8 @@ tree over the whole library.
   from, or it surfaces in the review tree as one lone folder out of another
   year (reported — a sidecar has no EXIF time and falls back to a file mtime
   months away). Read it
-  through `masterFile.folderTime()` (folderDate, falling back to takenAt for
-  the unclustered `PreviewPaths` samples) — `monthParts` (the Year/Month pair
+  through `masterFile.folderTime()` (folderDate, falling back to takenAt
+  before clustering has run) — `monthParts` (the Year/Month pair
   `dirFor` and `locationParent` share) goes through it, so nothing can disagree
   about which month a file is in. **`mergeSameLocationDays` numbers days by
   calendar date** (`calendarDay`), so a same-place run crossing a month or
