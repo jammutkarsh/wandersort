@@ -302,6 +302,14 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 // container owns the program and a screen that ends it takes the other tabs
 // with it, a running scan included. What the hand-back costs is decided here.
 func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
+	// Quit first, and on its own: a scan can hand back asynchronously from a
+	// tab the user isn't on (a dependency download that failed, a cancelled
+	// run unwinding), and reading that as "the tab I happen to be looking at
+	// just finished" would answer for a screen that said nothing.
+	if l.Quit {
+		return m, tea.Quit
+	}
+
 	var cmd tea.Cmd
 	note := ""
 	switch m.tab {
