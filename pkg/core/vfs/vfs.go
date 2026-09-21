@@ -147,37 +147,35 @@ func (v *VFS) placedTimes(ctx context.Context) ([]time.Time, error) {
 	return times, nil
 }
 
-// protectedFiles is the one definition of "this file is still worth a plan":
-// it is the elected master of its hash, or it has already been placed. A
-// decided entry (placed, or failed to transfer) is kept while its file is in
-// here and deleted when it drops out — a plan that promised to move a file
-// that is no longer the master would promise a move that cannot happen.
+// loadMasters reads every live, not-yet-placed file in the library with its
+// hashed metadata and elects one copy of each duplicate (see elect.go).
 //
-// Written once rather than twice: the two queries in persist describe one
-// invariant, and the comment that used to sit above them said as much while
-// choosing copy-paste anyway, with db.PendingTransfer right there proving the
-// pattern.
-const protectedFiles = `
-	SELECT fr.id FROM file_registry fr
-	JOIN file_metadata fm ON fm.file_id = fr.id
-	WHERE fm.is_master = 1 OR fr.placed = 1`
-
-// loadMasters reads every live, not-yet-placed master in the library with its
-// hashed metadata. A placed file is never re-proposed — its row is already
-// the plan, and persist's kept-row logic leaves it alone — so there
-// is nothing here for it to win or lose. Not session-scoped: the proposal
-// must cover earlier sessions' files too, or the output would depend on scan
-// history. Ordered by (file_dir, file_name), not id, so clustering and
-// collision suffixes don't vary with worker order.
+// A whole hash group is dropped in SQL when any member of it is already
+// placed: that file *is* the master of its hash — it is on disk at its target
+// and its row is the plan from here on (spec D10/D11) — so nothing in the
+// group has anything left to win, and none of it should be proposed again.
+// This is what keeps a re-imported card from being copied a second time.
+//
+// Not session-scoped: the proposal must cover earlier sessions' files too, or
+// the output would depend on scan history. Ordered by (file_dir, file_name),
+// not id, so the election's tie-break, the clustering and the collision
+// suffixes don't vary with insertion or worker order.
 func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
-	var masters []masterFile
-	if err := v.db.SQL.SelectContext(ctx, &masters, masterColumns+`
-		WHERE fm.is_master = 1 AND fr.placed = 0
+	var rows []masterFile
+	if err := v.db.SQL.SelectContext(ctx, &rows, masterColumns+`
+		WHERE fr.placed = 0 AND fm.file_hash NOT IN (
+			SELECT fm2.file_hash FROM file_metadata fm2
+			JOIN file_registry fr2 ON fr2.id = fm2.file_id
+			WHERE fr2.placed = 1)
 		ORDER BY fr.file_dir, fr.file_name`); err != nil {
 		return nil, fmt.Errorf("query master files: %w", err)
 	}
-	for i := range masters {
-		masters[i].absPath = filepath.Join(masters[i].FileDir, masters[i].FileName)
+	for i := range rows {
+		rows[i].absPath = filepath.Join(rows[i].FileDir, rows[i].FileName)
+	}
+	masters, groups := electMasters(rows)
+	if groups > 0 {
+		v.log.Info(fmt.Sprintf("Kept the best copy of %d duplicate group(s)", groups), logger.UserKey, true)
 	}
 	return masters, nil
 }
@@ -195,33 +193,56 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 	err := v.db.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
 		// A decided row is one whose file is placed or failed to transfer; that
 		// file must not be proposed a second time — UNIQUE(file_id) says so too.
-		// It is kept only while its file is still worth a plan (protectedFiles):
-		// a placed file is never in masters (loadMasters filters it out), so the
-		// is_master half never actually keeps one in practice, but the delete
-		// below describes the same invariant and the two must not drift.
+		// A placed file's row is kept unconditionally: it landed, so its row is
+		// the one true record of that (spec D10). The only decided rows whose
+		// fate is in question are the *failed* ones, and the question is
+		// whether their file is still the elected master of its hash — a plan
+		// for a file that lost its election promises a move that can't happen.
+		// There are a handful of these, never a library's worth, which is why
+		// the elected set can be carried in memory rather than in a column.
+		var failedIDs []int64
+		if err := tx.SelectContext(ctx, &failedIDs, `
+			SELECT file_id FROM virtual_fs_entries
+			WHERE NOT `+db.PendingTransfer("file_id")+`
+			AND file_id NOT IN (SELECT id FROM file_registry WHERE placed = 1)`); err != nil {
+			return fmt.Errorf("load failed vfs entries: %w", err)
+		}
+		elected := make(map[int64]bool, len(masters))
+		for i := range masters {
+			elected[masters[i].FileID] = true
+		}
+		var stale []int64
+		for _, id := range failedIDs {
+			if !elected[id] {
+				stale = append(stale, id)
+			}
+		}
+
 		var keptIDs []int64
 		if err := tx.SelectContext(ctx, &keptIDs, `
 			SELECT file_id FROM virtual_fs_entries
-			WHERE NOT `+db.PendingTransfer("file_id")+` AND file_id IN (`+protectedFiles+`)`); err != nil {
+			WHERE NOT `+db.PendingTransfer("file_id")); err != nil {
 			return fmt.Errorf("load decided vfs entries: %w", err)
 		}
 		kept := make(map[int64]bool, len(keptIDs))
 		for _, id := range keptIDs {
 			kept[id] = true
 		}
+		for _, id := range stale {
+			delete(kept, id)
+		}
 
 		if _, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries WHERE `+db.PendingTransfer("file_id")); err != nil {
 			return fmt.Errorf("clear previous vfs proposal: %w", err)
 		}
-		// a decided row for a file that is no longer a live master promises a
-		// move that can't happen. A placed file is exempt regardless of
-		// is_master: it already landed, so its row is the one true record of
-		// that (spec D10) — the scorer never demotes a placed file's own hash
-		// group (see scorer.Run), but this is the backstop if it ever did.
-		if _, err := tx.ExecContext(ctx, `
-			DELETE FROM virtual_fs_entries
-			WHERE NOT `+db.PendingTransfer("file_id")+` AND file_id NOT IN (`+protectedFiles+`)`); err != nil {
-			return fmt.Errorf("clear stale vfs entries: %w", err)
+		if len(stale) > 0 {
+			q, args, err := sqlx.In(`DELETE FROM virtual_fs_entries WHERE file_id IN (?)`, stale)
+			if err != nil {
+				return fmt.Errorf("clear stale vfs entries: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, tx.Rebind(q), args...); err != nil {
+				return fmt.Errorf("clear stale vfs entries: %w", err)
+			}
 		}
 
 		// files a stopped copy left beside copied ones move to their own chain

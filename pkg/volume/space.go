@@ -21,7 +21,7 @@ import (
 func CheckOutputSpace(ctx context.Context, database *db.DB, log logger.Logger, outputDir string) {
 	// One file per content hash: duplicates are never copied, so summing every
 	// live file would overstate what a scan writes, sometimes double so. This
-	// counts by hash rather than by the scorer's elected master, because
+	// counts by hash rather than by the elected master of each group, because
 	// identical bytes are identical sizes — *which* copy wins the election is
 	// a question this package has no business asking, and asking it would mean
 	// reaching up into pkg/core for a rule that lives there.

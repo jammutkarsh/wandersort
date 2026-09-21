@@ -659,9 +659,10 @@ func TestRebuildRemovesStaleEntries(t *testing.T) {
 	gone := h.addFile(t, "d/IMG_0002.HEIC", "IMAGE", metaWith("2024:06:03 15:00:00", 15.5439, 73.7553, 3024, 4032))
 	h.build(t, DefaultConfig(), geo)
 
-	// second file loses master status between builds (e.g. re-scored)
+	// The second file turns out to be a copy of the first: once they share a
+	// hash only one can be the master, and the loser's entry is stale.
 	if _, err := h.d.ExecContext(context.Background(),
-		`UPDATE file_metadata SET is_master = 0 WHERE file_id = ?`, gone); err != nil {
+		`UPDATE file_metadata SET file_hash = 'shared' WHERE file_id IN (?, ?)`, keep, gone); err != nil {
 		t.Fatal(err)
 	}
 	rows := h.build(t, DefaultConfig(), geo)
@@ -767,12 +768,9 @@ func TestPlacedFileIsNeverReproposed(t *testing.T) {
 		`UPDATE file_metadata SET file_hash = 'shared' WHERE file_id IN (?, ?)`, placed, dup); err != nil {
 		t.Fatal(err)
 	}
-	// The scorer's decision, made ahead of this vfs run: the placed copy kept
-	// the election, the re-scanned duplicate lost it (TestRunNeverDemotesAPlacedFile
-	// in pkg/core/scorer covers that election itself)
-	if _, err := h.d.ExecContext(ctx, `UPDATE file_metadata SET is_master = 0 WHERE file_id = ?`, dup); err != nil {
-		t.Fatal(err)
-	}
+	// Nothing has to demote the duplicate: a hash group holding a placed file
+	// is dropped whole, because that file is the master of its hash by virtue
+	// of being on disk at its target.
 	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
 		t.Fatal(err)
 	}

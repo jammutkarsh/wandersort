@@ -17,7 +17,6 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
-	"github.com/jammutkarsh/wandersort/pkg/core/scorer"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
@@ -49,7 +48,6 @@ type Workflow struct {
 	outputDir string
 
 	scanner *scanner.Scanner
-	scorer  *scorer.Scorer
 }
 
 type workflowPhase struct {
@@ -69,15 +67,15 @@ const (
 	// hashing and EXIF are one phase: reading each file twice cost a second
 	// trip to disk once the page cache had evicted it (see pkg/core/metadata)
 	workflowPhaseMetadata workflowPhaseKind = "metadata"
-	workflowPhaseScore    workflowPhaseKind = "score"
-	workflowPhaseVFS      workflowPhaseKind = "vfs"
+	// electing one copy of each duplicate is not a phase of its own: it is a
+	// pure function of the rows the vfs phase already loads (see vfs/elect.go)
+	workflowPhaseVFS workflowPhaseKind = "vfs"
 )
 
 // phaseMessageByKind is the one user-facing line logged when a phase starts.
 var phaseMessageByKind = map[workflowPhaseKind]string{
 	workflowPhaseScan:     "Scanning your files…",
 	workflowPhaseMetadata: "Reading your files…",
-	workflowPhaseScore:    "Selecting the best copy of each duplicate…",
 	workflowPhaseVFS:      "Proposing an organized folder structure…",
 }
 
@@ -99,7 +97,6 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 		deps:      deps,
 		appCfg:    cfg,
 		scanner:   scanner.New(db, log, cfg.Workers),
-		scorer:    scorer.New(db, log),
 		workers:   cfg.Workers,
 		log:       log,
 		path:      path.New(),
@@ -193,13 +190,6 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 				return metadata.New(wf.db, wf.log, exiftoolPath, wf.workers).Run(wf.ctx)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Read %d files", count) },
-		},
-		{
-			kind: workflowPhaseScore,
-			run: func() (int, error) {
-				return wf.scorer.Run(wf.ctx)
-			},
-			summary: func(count int) string { return fmt.Sprintf("Reviewed %d duplicate groups", count) },
 		},
 		{
 			kind: workflowPhaseVFS,

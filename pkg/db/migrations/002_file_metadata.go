@@ -46,16 +46,12 @@ CREATE TABLE IF NOT EXISTS file_metadata (
     -- never carries either, so this doubles as the screenshot detector
     is_screenshot INTEGER NOT NULL DEFAULT 0,
 
-    -- every file is a master by default; the scorer demotes the losers of
-    -- each duplicate group, solo files are never touched
-    is_master INTEGER NOT NULL DEFAULT 1,
-
     created_at TEXT DEFAULT ` + sqlNowDefault + `
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_metadata_hash_file ON file_metadata(file_hash, file_id);
 -- file_id is the second column above, so a plain "WHERE file_id = ?" (every
--- vfs.BuildTree/vfs.Propose/scorer join) can't seek on it — SQLite falls
+-- vfs.BuildTree/vfs.Propose join) can't seek on it — SQLite falls
 -- back to a full table scan per outer row. That's the actual gap between
 -- "the proposal is already finalized" and "review takes forever to open".
 CREATE INDEX IF NOT EXISTS idx_file_metadata_file_id ON file_metadata(file_id);

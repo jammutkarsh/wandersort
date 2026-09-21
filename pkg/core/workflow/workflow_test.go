@@ -118,7 +118,7 @@ func TestWorkflowPhasesOrderAndMessages(t *testing.T) {
 	phases := wf.workflowPhases([]string{"/root"}, false)
 
 	wantKinds := []workflowPhaseKind{
-		workflowPhaseScan, workflowPhaseMetadata, workflowPhaseScore, workflowPhaseVFS,
+		workflowPhaseScan, workflowPhaseMetadata, workflowPhaseVFS,
 	}
 	if len(phases) != len(wantKinds) {
 		t.Fatalf("phase count: got %d, want %d", len(phases), len(wantKinds))
@@ -146,7 +146,6 @@ func TestPhaseSummaryFormatting(t *testing.T) {
 	want := map[workflowPhaseKind]string{
 		workflowPhaseScan:     "Scanned 3 files",
 		workflowPhaseMetadata: "Read 3 files",
-		workflowPhaseScore:    "Reviewed 3 duplicate groups",
 		workflowPhaseVFS:      "Proposed destinations for 3 files",
 	}
 	for _, p := range phases {

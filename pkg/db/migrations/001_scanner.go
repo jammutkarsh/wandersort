@@ -44,8 +44,9 @@ CREATE TABLE IF NOT EXISTS file_registry (
     -- Set once execute lands this file at its target, copy or move alike.
     -- A fact about the file, not the plan: virtual_fs_entries rows are
     -- replaced on every scan and settings change, this flag never is. The
-    -- scorer treats a placed file as the permanent master of its hash, and
-    -- the vfs phase never re-proposes or deletes its plan row (spec D10/D11)
+    -- vfs phase treats a placed file as the permanent master of its hash:
+    -- its whole hash group is dropped from the proposal, and its own plan
+    -- row is never re-proposed or deleted (spec D10/D11)
     placed INTEGER NOT NULL DEFAULT 0,
 
     CHECK (media_type IN ('IMAGE', 'VIDEO', 'SIDECAR', 'RAW', 'UNKNOWN'))

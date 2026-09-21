@@ -236,7 +236,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 
 // cleanupPlacedDuplicates hard-deletes every file_registry row (and its
 // file_metadata row) whose content hash matches a placed file — the
-// duplicates the scorer didn't elect, and a copy of an already-placed file a
+// duplicates that lost their election, and a copy of an already-placed file a
 // later scan saw again. Spec D10: only what is still in the library matters,
 // and a placed file's own row is the one true record from here on. Keyed off
 // file_registry.placed read fresh every run, so a run that stops early is
