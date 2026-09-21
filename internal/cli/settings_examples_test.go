@@ -14,13 +14,13 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
-func newTestExamples(t *testing.T, selected []string, collapse, mergeDays, dateOnly bool, home string) *configExamples {
+func newTestExamples(t *testing.T, selected []string, collapse, mergeDays, dateOnly bool, home string) *settingsExamples {
 	t.Helper()
 	rulesField := &tui.Field{
 		Options:  []string{vfs.RuleDate, vfs.RuleLocation, vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia},
 		Selected: toMap(selected),
 	}
-	return newConfigExamples(rulesField, &collapse, &mergeDays, &dateOnly, &home)
+	return newSettingsExamples(rulesField, &collapse, &mergeDays, &dateOnly, &home)
 }
 
 func TestSelectedRules(t *testing.T) {

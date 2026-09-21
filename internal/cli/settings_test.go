@@ -64,7 +64,7 @@ func TestConfig(t *testing.T) {
 			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
 			defer a.closeDBs()
 
-			fields, save := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
+			fields, save := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
 
 			// The two folder questions belong to the saved-place step, after the towns:
 			// their examples read off the town typed one field earlier.
@@ -121,7 +121,7 @@ func TestConfig(t *testing.T) {
 			// A geonames database that never opened (failed download, database busy) must not
 			// trap the user on the field — nor drop the town they already had.
 			broken := errors.New("location db: database is locked")
-			brokenFields, brokenSave := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, broken })
+			brokenFields, brokenSave := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, broken })
 			brokenGroup := fieldByTitle(t, brokenFields, "Saved places")
 			*brokenGroup.Subs[0].Value = "Indore"
 			if err := brokenGroup.Subs[0].Validator("Indore"); err != nil {
@@ -166,7 +166,7 @@ func TestConfig(t *testing.T) {
 		// whose database and lock are already somewhere else.
 		{"OutputPathAskedOnlyBeforeTheLibraryIsOpen", func(t *testing.T) {
 			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
-			fields, _ := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
+			fields, _ := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
 			if f := findField(fields, "Output path"); f == nil {
 				t.Error("a session with no library open must be asked for the output folder")
 			}
@@ -175,7 +175,7 @@ func TestConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer a.closeDBs()
-			fields, _ = a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
+			fields, _ = a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
 			if f := findField(fields, "Output path"); f != nil {
 				t.Error("an open library's folder is fixed — the wizard must not offer to change it")
 			}
@@ -197,7 +197,7 @@ func TestConfig(t *testing.T) {
 			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
 			defer a.closeDBs()
 
-			fields, save := a.buildConfigForm(context.Background(), func() (*location.Resolver, error) { return resolver, nil })
+			fields, save := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return resolver, nil })
 			group := fieldByTitle(t, fields, "Saved places")
 			homeField := group.Subs[0]
 

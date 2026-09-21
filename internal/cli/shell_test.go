@@ -120,8 +120,8 @@ func TestShellModel(t *testing.T) {
 		{"BroadcastsNonKeyMessagesToEveryLiveTab", func(t *testing.T) {
 			m := testShell(t)
 			scan, cfg := &probe{name: "scan"}, &probe{name: "config"}
-			m.screens[tabScan], m.screens[tabConfig] = scan, cfg
-			m.tab = tabConfig
+			m.screens[tabScan], m.screens[tabSettings] = scan, cfg
+			m.tab = tabSettings
 
 			event := tui.LogEventMsg{Event: logger.Event{Message: "hashing"}}
 			m.Update(event)
@@ -135,8 +135,8 @@ func TestShellModel(t *testing.T) {
 		{"RoutesKeysToTheActiveTabOnly", func(t *testing.T) {
 			m := testShell(t)
 			scan, cfg := &probe{name: "scan"}, &probe{name: "config"}
-			m.screens[tabScan], m.screens[tabConfig] = scan, cfg
-			m.tab = tabConfig
+			m.screens[tabScan], m.screens[tabSettings] = scan, cfg
+			m.tab = tabSettings
 
 			key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")}
 			m.Update(key)
@@ -148,11 +148,11 @@ func TestShellModel(t *testing.T) {
 		// is a dead end the tab bar already explains.
 		{"CtrlTSkipsReviewUntilItIsReady", func(t *testing.T) {
 			m := testShell(t)
-			m.screens[tabConfig] = &probe{name: "config"}
+			m.screens[tabSettings] = &probe{name: "config"}
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 			m = next.(shellModel)
-			if m.tab != tabConfig {
+			if m.tab != tabSettings {
 				t.Fatalf("first ctrl+t = tab %d, want config", m.tab)
 			}
 			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
@@ -163,7 +163,7 @@ func TestShellModel(t *testing.T) {
 
 			m.reviewReady = true
 			m.screens[tabReview] = &probe{name: "review"}
-			m.tab = tabConfig
+			m.tab = tabSettings
 			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 			if got := next.(shellModel).tab; got != tabReview {
 				t.Errorf("ctrl+t with a ready review = tab %d, want review", got)
@@ -173,12 +173,12 @@ func TestShellModel(t *testing.T) {
 		// half-answered form; the tab bar says it's ready instead.
 		{"ReadyReviewWaitsWhileTheUserIsInTheWizard", func(t *testing.T) {
 			m := testShell(t)
-			m.screens[tabConfig] = &probe{name: "config"}
-			m.tab = tabConfig
+			m.screens[tabSettings] = &probe{name: "config"}
+			m.tab = tabSettings
 
 			next, _ := m.Update(tui.SwitchMsg{Next: &probe{name: "review"}})
 			m = next.(shellModel)
-			if m.tab != tabConfig {
+			if m.tab != tabSettings {
 				t.Errorf("switched away from the wizard to tab %d", m.tab)
 			}
 			if !m.reviewReady {
@@ -222,9 +222,9 @@ func TestShellModel(t *testing.T) {
 		// tab means "scan something else".
 		{"ReturningToTheScanTabOffersAnotherScan", func(t *testing.T) {
 			m := testShell(t)
-			m.screens[tabConfig] = &probe{name: "config"}
+			m.screens[tabSettings] = &probe{name: "config"}
 			m.screens[tabScan] = finishedScan(t, nil)
-			m.tab = tabConfig
+			m.tab = tabSettings
 
 			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 			m = next.(shellModel)
@@ -245,9 +245,9 @@ func TestShellModel(t *testing.T) {
 		// written, and replacing it with an input throws that away unread.
 		{"AFailedScanKeepsItsScreen", func(t *testing.T) {
 			m := testShell(t)
-			m.screens[tabConfig] = &probe{name: "config"}
+			m.screens[tabSettings] = &probe{name: "config"}
 			m.screens[tabScan] = finishedScan(t, errors.New("disk went away"))
-			m.tab = tabConfig
+			m.tab = tabSettings
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 			m = next.(shellModel)
@@ -326,8 +326,8 @@ func TestShellModel(t *testing.T) {
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 			m = next.(shellModel)
-			if m.tab != tabConfig || m.screens[tabConfig] == nil {
-				t.Fatalf("ctrl+t should build and open the wizard, got tab=%d screen=%v", m.tab, m.screens[tabConfig])
+			if m.tab != tabSettings || m.screens[tabSettings] == nil {
+				t.Fatalf("ctrl+t should build and open the wizard, got tab=%d screen=%v", m.tab, m.screens[tabSettings])
 			}
 			if v := ansi.Strip(m.View()); !strings.Contains(v, "Output path") {
 				t.Errorf("the wizard should be on screen:\n%s", v)
@@ -341,9 +341,9 @@ func TestShellModel(t *testing.T) {
 			m := testShell(t)
 			yes := true
 			form := tui.NewFormModel([]*tui.Field{{Kind: tui.FieldConfirm, Title: "Only step", BoolValue: &yes}}, nil)
-			m.screens[tabConfig] = form
-			m.tab = tabConfig
-			// What openConfig records when it places the wizard: this stand-in
+			m.screens[tabSettings] = form
+			m.tab = tabSettings
+			// What openSettings records when it places the wizard: this stand-in
 			// changes nothing, so the save must not kick off a re-plan.
 			m.settingsBefore = m.a.Config.Settings
 
@@ -360,7 +360,7 @@ func TestShellModel(t *testing.T) {
 			if m.tab != tabScan {
 				t.Errorf("leaving the wizard = tab %d, want scan", m.tab)
 			}
-			if m.screens[tabConfig] != nil {
+			if m.screens[tabSettings] != nil {
 				t.Error("the finished form should be dropped, so the next visit re-seeds from disk")
 			}
 		}},
@@ -456,7 +456,7 @@ func TestShellModel(t *testing.T) {
 					shellStart{tab: tabScan, paths: []string{"/pics"}},
 					tui.StartScanMsg{Paths: []string{"/pics"}},
 				},
-				{"config", shellStart{tab: tabConfig}, openConfigMsg{}},
+				{"config", shellStart{tab: tabSettings}, openSettingsMsg{}},
 				{"review", shellStart{tab: tabReview}, tui.OpenReviewMsg{}},
 			} {
 				m := testShell(t)
@@ -478,12 +478,12 @@ func TestShellModel(t *testing.T) {
 				msg  tea.Msg
 				want int
 			}{
-				{"config", openConfigMsg{}, tabConfig},
+				{"config", openSettingsMsg{}, tabSettings},
 				{"review", reviewOpenMsg{model: &probe{name: "review"}}, tabReview},
 				{"scan", scanReadyMsg{paths: []string{"/pics"}}, tabScan},
 			} {
 				m := testShell(t)
-				m.tab = tabConfig // somewhere else, so landing is observable
+				m.tab = tabSettings // somewhere else, so landing is observable
 				next, _ := m.Update(tc.msg)
 				if got := next.(shellModel).tab; got != tc.want {
 					t.Errorf("%s: landed on tab %d, want %d", tc.name, got, tc.want)
@@ -495,7 +495,7 @@ func TestShellModel(t *testing.T) {
 			m := testShell(t)
 			for _, msg := range flattenTeaCmd(m.Init()) {
 				switch msg.(type) {
-				case tui.StartScanMsg, openConfigMsg, tui.OpenReviewMsg:
+				case tui.StartScanMsg, openSettingsMsg, tui.OpenReviewMsg:
 					t.Errorf("a bare start should open no tab, got %#v", msg)
 				}
 			}
@@ -570,12 +570,12 @@ func TestConfigSavedReplansOnlyOnAChange(t *testing.T) {
 			// library, which this shell has no Deps or database for. Dropping
 			// the stale review screen is the observable half, and the half a
 			// ctrl+t can race.
-			m.configSaved(before)
+			m.settingsSaved(before)
 			if v := ansi.Strip(m.screens[tabScan].View()); !strings.Contains(v, "Settings saved") {
 				t.Errorf("the save is only confirmed on the home screen, and it didn't say so:\n%s", v)
 			}
 			if tc.wantReplan {
-				// The drop happens in configSaved itself, not inside the Cmd:
+				// The drop happens in settingsSaved itself, not inside the Cmd:
 				// a ctrl+t before the re-plan finishes must not find a screen
 				// built over folder IDs that no longer exist.
 				if m.screens[tabReview] != nil || m.reviewReady {
@@ -585,5 +585,26 @@ func TestConfigSavedReplansOnlyOnAChange(t *testing.T) {
 				t.Error("a save that changed nothing must not drop the open review")
 			}
 		})
+	}
+}
+
+// With no `wandersort config` any more, the opening tab is the only thing
+// that puts a new user in front of the settings — and it has to, because the
+// output folder is one of them and nothing can be planned before it is
+// answered. A later launch opens where the work is instead.
+func TestOpeningTabIsSettingsOnlyOnAFirstRun(t *testing.T) {
+	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
+	if got := a.openingTab(); got != tabSettings {
+		t.Errorf("first run opened tab %d, want Settings (%d)", got, tabSettings)
+	}
+
+	// Remembering a library is what makes a run not the first one — the same
+	// call openLibrary makes once a folder is known to really be a library.
+	lib := t.TempDir()
+	if err := a.Config.Remember(lib); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.openingTab(); got != tabScan {
+		t.Errorf("second run opened tab %d, want Add (%d)", got, tabScan)
 	}
 }

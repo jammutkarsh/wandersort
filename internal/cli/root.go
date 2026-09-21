@@ -34,21 +34,24 @@ func (a *app) newRootCmd() *cobra.Command {
 		Use:   "wandersort",
 		Short: "Organize your media library and find duplicates",
 		Long: `WanderSort is a local-first media organizer. Point it at your photo and
-video directories and it scans them, fingerprints every file to find
-duplicates, and scores copies to pick the best one to keep.
+video folders and it fingerprints every file, works out which are duplicates,
+and plans a folder tree you can read.
 
-'wandersort scan' works on defaults right away. Run 'wandersort config' — the
-settings wizard — any time to set your output folder, folder rules, and
-saved places; saving re-proposes the folder structure from the new settings
-right away, no re-scan needed.`,
-		Example: `# Change the global settings
-wandersort config
+Two verbs do the work: 'add' puts files into the plan, 'organise' lets you
+correct the plan and then moves the files. 'check' re-reads the library later
+to prove nothing has rotted. Run bare 'wandersort' to do all of it on screen —
+the first run asks for your settings, and ctrl+t switches between them after.`,
+		Example: `# Do everything on screen
+wandersort
 
-# Scan one or more directories for media and duplicates
-wandersort scan --paths ~/Pictures,/Volumes/SD
+# Add folders to the library's plan
+wandersort add --paths ~/Pictures,/Volumes/SD
 
-# Review and confirm the proposed folder structure
-wandersort review`,
+# Correct the plan, then copy the files in
+wandersort organise
+
+# Check the library is still what was recorded
+wandersort check`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -80,7 +83,6 @@ wandersort review`,
 	rootCmd.PersistentFlags().StringP(flagOutputPath, "o", "", "Library folder: empty, or one WanderSort already organized")
 	rootCmd.PersistentFlags().Bool(flagPlain, false, "Disable the full-screen TUI; use plain line logging")
 
-	rootCmd.AddCommand(a.newConfigCmd())
 	rootCmd.AddCommand(a.newAddCmd())
 	rootCmd.AddCommand(a.newReviewCmd())
 	rootCmd.AddCommand(a.newExecuteCmd())

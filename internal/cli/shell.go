@@ -24,37 +24,36 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
-// The shell's tabs. The scan slot holds the home screen (folder input) until a
-// scan starts and again once a review is finished — it is where a session
-// begins and returns to, not a separate mode.
+// The shell's tabs, one per verb. The Add slot holds the folder input until a
+// run starts and again once one finishes — it is where a session begins and
+// returns to, not a separate mode.
 const (
 	tabScan = iota
-	tabConfig
+	tabSettings
 	tabReview
 	numTabs
 )
 
-var tabNames = [numTabs]string{"Scan", "Config", "Review"}
+var tabNames = [numTabs]string{"Add", "Settings", "Review"}
 
 // shellStart is which tab a session opens on, and with what. Every full-screen
-// entry point goes through the shell — bare `wandersort` (an empty start, the
-// folder input), and the `scan`/`config`/`review` subcommands, which are the
-// same session opened on their own tab. They used to be three separate
-// bubbletea programs hosting one screen each, which meant `wandersort scan`
-// could not reach the settings and `wandersort config` could not start a scan:
-// the tab bar the shell draws was the only place ctrl+t existed, and naming a
-// subcommand was enough to lose it. A subcommand is a starting point now, not
-// a smaller app.
+// entry point goes through the shell — bare `wandersort` (an empty start), and
+// the subcommands, which are the same session opened on their own tab. They
+// used to be separate bubbletea programs hosting one screen each, which meant
+// `wandersort scan` could not reach the settings and `wandersort config` could
+// not start a scan: the tab bar the shell draws was the only place ctrl+t
+// existed, and naming a subcommand was enough to lose it. A subcommand is a
+// starting point now, not a smaller app.
 type shellStart struct {
 	tab   int
 	paths []string // tabScan: scan these immediately instead of asking
 	force bool     // tabScan: re-read every file from disk (--force)
 }
 
-// openConfigMsg opens the settings tab. A message rather than a direct call so
+// openSettingsMsg opens the settings tab. A message rather than a direct call so
 // Init can ask for it: Init runs on a copy of the model, so anything that has
 // to mutate the container (the tab, the placed screen) must go through Update.
-type openConfigMsg struct{}
+type openSettingsMsg struct{}
 
 // msgCmd delivers an already-built message on the next Update tick.
 func msgCmd(msg tea.Msg) tea.Cmd { return func() tea.Msg { return msg } }
@@ -85,7 +84,7 @@ type shellModel struct {
 	lib libraryState
 
 	// settingsBefore is the library's settings as the wizard opened on them,
-	// so a save that changes nothing costs nothing (see configSaved).
+	// so a save that changes nothing costs nothing (see settingsSaved).
 	settingsBefore config.Settings
 }
 
@@ -189,8 +188,8 @@ func (m shellModel) Init() tea.Cmd {
 		// `wandersort scan -p …`: the paths are already answered, so skip the
 		// folder input and go straight into the run.
 		return tea.Batch(cmd, msgCmd(tui.StartScanMsg{Paths: m.start.paths, Force: m.start.force}))
-	case m.start.tab == tabConfig:
-		return tea.Batch(cmd, msgCmd(openConfigMsg{}))
+	case m.start.tab == tabSettings:
+		return tea.Batch(cmd, msgCmd(openSettingsMsg{}))
 	case m.start.tab == tabReview:
 		return tea.Batch(cmd, msgCmd(tui.OpenReviewMsg{}))
 	}
@@ -221,8 +220,8 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tui.OpenReviewMsg:
 		return m, m.openReview()
 
-	case openConfigMsg:
-		return m, m.openConfig()
+	case openSettingsMsg:
+		return m, m.openSettings()
 
 	case scanReadyMsg:
 		if msg.err != nil {
@@ -276,8 +275,8 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.tab = next
 		switch {
-		case m.tab == tabConfig && m.screens[tabConfig] == nil:
-			return m, m.openConfig()
+		case m.tab == tabSettings && m.screens[tabSettings] == nil:
+			return m, m.openSettings()
 		case m.tab == tabScan:
 			if cmd := m.scanTabHome(); cmd != nil {
 				return m, cmd
@@ -313,14 +312,14 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	note := ""
 	switch m.tab {
-	case tabConfig:
+	case tabSettings:
 		// The wizard is the only hand-back carrying an answer.
-		m.screens[tabConfig] = nil
+		m.screens[tabSettings] = nil
 		switch {
 		case l.Err != nil:
 			cmd = m.forward(tabScan, tui.HomeErrMsg{Err: l.Err})
 		case !l.Aborted:
-			cmd = m.configSaved(m.settingsBefore)
+			cmd = m.settingsSaved(m.settingsBefore)
 		}
 	case tabReview:
 		// The review wrote its edits to the draft as they were made; the home
@@ -340,7 +339,7 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 	}
 	// Not a quit: the session goes on. A settled plan or a saved setting
 	// means "what next?", which is the scan tab's question.
-	if m.tab == tabConfig && m.reviewReady {
+	if m.tab == tabSettings && m.reviewReady {
 		m.tab = tabReview
 		return m, cmd
 	}
@@ -348,14 +347,14 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmd, m.homeAgain(note))
 }
 
-// configSaved picks up a wizard save without a relaunch. A changed setting
+// settingsSaved picks up a wizard save without a relaunch. A changed setting
 // re-plans the library at once, no question asked (spec D20): the plan on
 // disk was built under settings nobody holds any more, and re-planning
 // stored metadata is cheap. Any review screen stashed here is dropped with
 // it — its folder IDs are gone — and the next visit to the review tab builds
 // one over the new plan. The config tab is unreachable while a scan runs
 // (see nextTab/handleKey), so there is never a running workflow to retarget.
-func (m *shellModel) configSaved(before config.Settings) tea.Cmd {
+func (m *shellModel) settingsSaved(before config.Settings) tea.Cmd {
 	// Confirming the save is the wizard's only receipt now that it closes back
 	// into the shell instead of ending the process with a printed line.
 	// ponytail: shown on the home screen's error line, so it's lost if a scan
@@ -443,14 +442,14 @@ func (m *shellModel) homeAgain(note string) tea.Cmd {
 
 // nextTab cycles scan → config → review → scan, skipping review while there is
 // nothing to review and config while a scan is running — settings are
-// re-read once, by configSaved, and a scan changes what they'd apply to.
+// re-read once, by settingsSaved, and a scan changes what they'd apply to.
 func (m shellModel) nextTab() int {
 	for i := 1; i <= numTabs; i++ {
 		t := (m.tab + i) % numTabs
 		if t == tabReview && !m.canReview() {
 			continue
 		}
-		if t == tabConfig && m.scanRunning() {
+		if t == tabSettings && m.scanRunning() {
 			continue
 		}
 		return t
@@ -478,25 +477,25 @@ func (m *shellModel) refresh() {
 	m.lib = m.a.readState(m.ctx)
 }
 
-// openConfig places the settings wizard, seeded from the library's own
+// openSettings places the settings wizard, seeded from the library's own
 // settings — which means opening a library that is already there, since its
 // settings are the ones the wizard is about to overwrite. Built fresh on
 // every entry, so it re-seeds from whatever the last visit saved.
-func (m *shellModel) openConfig() tea.Cmd {
-	screen, err := m.a.newConfigScreen(m.ctx)
+func (m *shellModel) openSettings() tea.Cmd {
+	screen, err := m.a.newSettingsScreen(m.ctx)
 	if err != nil {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: err})
 	}
 	m.settingsBefore = m.a.Config.Settings
-	m.tab = tabConfig
-	return m.place(tabConfig, screen)
+	m.tab = tabSettings
+	return m.place(tabSettings, screen)
 }
 
 // openReview builds the review over whatever is in the database, off the UI
 // goroutine — the lock, the DB open and BuildTree are all too slow to run in
 // Update. Shared by [ctrl+r] on the home screen, [ctrl+t] into an
 // unprefetched review tab, `wandersort review`, and a settings-triggered
-// re-plan (configSaved) swapping in the fresh proposal.
+// re-plan (settingsSaved) swapping in the fresh proposal.
 func (m *shellModel) openReview() tea.Cmd {
 	if m.opening {
 		return nil // a second ctrl+t while the first is still building
@@ -607,7 +606,7 @@ func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, path
 	})
 }
 
-// newConfigScreen is the settings wizard as a shell tab. Same form the config
+// newSettingsScreen is the settings wizard as a shell tab. Same form the config
 // subcommand runs — only the program hosting it differs.
 //
 // A library that is already there is opened first: the form is seeded with
@@ -615,13 +614,13 @@ func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, path
 // can never replace one library's rules with another's defaults. A folder
 // with no library in it yet stays untouched — the form asks for the output
 // path instead, and the save creates it.
-func (a *app) newConfigScreen(ctx context.Context) (tui.Tab, error) {
+func (a *app) newSettingsScreen(ctx context.Context) (tui.Tab, error) {
 	if a.AppDB == nil && a.libraryExists() {
 		if err := a.openLibrary(ctx); err != nil {
 			return nil, err
 		}
 	}
-	fields, save := a.buildConfigForm(ctx, func() (*location.Resolver, error) {
+	fields, save := a.buildSettingsForm(ctx, func() (*location.Resolver, error) {
 		return a.Deps.LocationNow()
 	})
 	return tui.NewFormModel(fields, save), nil
@@ -633,5 +632,24 @@ func (a *app) runRoot(cmd *cobra.Command) error {
 	if !a.isTuiEnabled(cmd) {
 		return cmd.Help()
 	}
-	return a.runShell(shellStart{tab: tabScan})
+	return a.runShell(shellStart{tab: a.openingTab()})
+}
+
+// openingTab is Settings on a first run and Add on every one after it.
+//
+// There is no `wandersort config` any more, so this is the only thing that
+// puts a new user in front of the settings — and it has to, because the
+// output folder is one of them and nothing can be planned before it is
+// answered. A later launch has a library to work in and opens where the work
+// is; being asked again for settings that are already saved is the kind of
+// front door people stop opening.
+//
+// "First run" is the library history being empty rather than the current
+// folder being unlibraried: someone pointing --output-path at a new folder
+// has used WanderSort before and knows where the settings are.
+func (a *app) openingTab() int {
+	if len(a.Config.History()) == 0 {
+		return tabSettings
+	}
+	return tabScan
 }

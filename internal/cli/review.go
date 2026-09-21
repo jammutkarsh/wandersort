@@ -49,7 +49,7 @@ wandersort review`,
 // rebuildTree re-proposes the whole hierarchy from the settings as they stand
 // right now and returns the new tree — called when a wizard save changes
 // something, which is the only way the settings can move under a plan now
-// that they live in the library's own database (see shell.configSaved).
+// that they live in the library's own database (see shell.settingsSaved).
 //
 // Every row not yet transferred is re-proposed, so a re-plan really does
 // replan everything; a file already placed or failed keeps its row.
@@ -68,7 +68,7 @@ func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
 // newReviewScreen builds the review screen over the current proposal, reusing
 // the scan's already-open DB and Deps — no lock/DB re-init needed. The plan
 // it finds always matches the current settings: a save re-plans on the spot
-// (shell.configSaved), so there is nothing stale to check for here.
+// (shell.settingsSaved), so there is nothing stale to check for here.
 //
 // An empty tree means every master is already placed by an earlier execute —
 // a fully organized library, not a plan to rebuild.

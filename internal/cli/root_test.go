@@ -55,7 +55,6 @@ func TestNewRootCmdWiresSubcommands(t *testing.T) {
 	// Subcommands too: a missed AddCommand on the admin parent drops a whole
 	// group with no compiler error either.
 	want := [][]string{
-		{"config"},
 		{"add"},
 		{"review"},
 		{"execute"},
