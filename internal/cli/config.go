@@ -435,22 +435,23 @@ func (e *configExamples) MergeDays() string {
 	cfg := vfs.DefaultConfig()
 	cfg.Rules = e.previewRules(vfs.RuleDate, vfs.RuleLocation)
 	cfg.CollapseLevels = *e.collapse
-	trip := func(d int, dayOverride, file string) vfs.Sample {
+	cfg.MergeSameLocationDays = *e.mergeDays
+	trip := func(d int, file string) vfs.Sample {
 		return vfs.Sample{
-			TakenAt: exampleDay(d), Location: "Greece", DayOverride: dayOverride,
+			TakenAt: exampleDay(d), Location: "Greece",
 			Device: "iPhone 13", Width: 1170, Height: 2532,
 			MediaType: classifier.MediaTypeImage, FileName: file,
 		}
 	}
-	if *e.mergeDays {
-		return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{trip(2, "02_04", "IMG_1234.jpg")})...)
-	}
-	// three sibling day branches under one month — exactly the
-	// shape a "no" produces in review
+	// The same three days either way — the setting itself decides whether
+	// they fold into one range or stay as three sibling branches under one
+	// month. The "yes" answer used to be a hand-written "02_04" handed
+	// straight to the renderer, which is not what the merge produces so much
+	// as a claim about it.
 	return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{
-		trip(2, "", "IMG_1234.jpg"),
-		trip(3, "", "IMG_1250.jpg"),
-		trip(4, "", "IMG_1251.jpg"),
+		trip(2, "IMG_1234.jpg"),
+		trip(3, "IMG_1250.jpg"),
+		trip(4, "IMG_1251.jpg"),
 	})...)
 }
 

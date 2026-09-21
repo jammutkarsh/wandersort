@@ -28,24 +28,50 @@ import (
 
 // Plan turns loaded master rows into their proposed destinations. It touches
 // no database and no files: everything it needs is in masters and cfg.
+//
+// Two halves. The first derives the facts a folder is chosen by, and is the
+// only part that needs anything from outside: the metadata the scan stored,
+// and geonames. The second — shape, below — turns those facts into paths and
+// is a pure function of them.
 func Plan(ctx context.Context, masters []masterFile, cfg Config, geo *location.Resolver, log logger.Logger) error {
 	deriveAll(ctx, masters, cfg.Workers)
 	resolveLocations(ctx, masters, cfg, geo, log)
-	clusterAndSpill(masters, cfg.placedTimes, cfg.ClusterGap)
-	applyNameCase(ctx, masters, cfg.Workers)
-	unsuppressMixedSavedPlaces(masters, cfg)
-	markUnknownLocations(masters, cfg)
-	mergeSameLocationDays(masters, cfg)
-	buildTargets(ctx, masters, cfg)
+	shape(ctx, masters, cfg)
 	if ctx.Err() != nil { // don't leave a half-built proposal for persist to write
 		return ctx.Err()
 	}
 	return nil
 }
 
-// Sample is one synthetic file for PreviewPaths — the pre-derived form of a
-// master, so a caller with no database and no geonames (the config wizard)
-// can ask what folders a Config would produce.
+// shape turns derived facts into folder paths: six passes whose order is the
+// whole rule, and which nothing outside this function may run piecemeal.
+//
+// It exists so there is exactly one copy of that order. PreviewPaths used to
+// hand-run two of these passes and fake a third's output, which made the
+// config wizard's examples a second, shorter pipeline that could — and did —
+// disagree with the real one about what a setting produces. Both callers run
+// this now, so an example is the real answer by construction rather than by
+// somebody keeping two lists in step.
+//
+// The skip set is computed once here rather than by each pass that needs it:
+// only device, orientation and media ever collapse, and nothing below changes
+// those, so recomputing it three times over every master was three times the
+// work for one answer.
+func shape(ctx context.Context, masters []masterFile, cfg Config) {
+	clusterAndSpill(masters, cfg.placedTimes, cfg.ClusterGap)
+	applyNameCase(ctx, masters, cfg.Workers)
+	skip := uninformativeLevels(masters, cfg)
+	unsuppressMixedSavedPlaces(masters, cfg, skip)
+	markUnknownLocations(masters, cfg, skip)
+	mergeSameLocationDays(masters, cfg)
+	buildTargets(ctx, masters, cfg, skip)
+}
+
+// Sample is one synthetic file for PreviewPaths: a master as it stands after
+// Plan's first half, so a caller with no database and no geonames (the config
+// wizard) can ask what folders a Config would produce. It carries the derived
+// facts — when the shot was taken, where, on what — and nothing that shape
+// works out for itself.
 type Sample struct {
 	TakenAt      time.Time
 	Location     string // resolved city; "" = unknown
@@ -55,12 +81,16 @@ type Sample struct {
 	Height       int64
 	MediaType    string // classifier.MediaTypeVideo, else treated as a photo
 	FileName     string
-	DayOverride  string // pre-merged day range, e.g. "02_04"
 }
 
-// PreviewPaths uses the same dirFor the real pipeline does, so an example
-// can never drift from the proposal it describes. Collapse is measured
-// across the whole sample set, matching the library-wide rule below.
+// PreviewPaths runs the real second half of the pipeline over made-up files,
+// so a wizard example is the proposal those settings would produce rather
+// than a shorter approximation of it. Collapse is measured across the whole
+// sample set, matching the library-wide rule below; the day merge, the
+// saved-place lift and the Unknown-location rule all really run.
+//
+// Paths come back in capture-time order, not the order the samples were
+// given: clustering sorts them, and every caller feeds them to a tree.
 func PreviewPaths(cfg Config, samples []Sample) []string {
 	masters := make([]masterFile, len(samples))
 	for i, s := range samples {
@@ -73,15 +103,12 @@ func PreviewPaths(cfg Config, samples []Sample) []string {
 			device:       s.Device,
 			width:        s.Width,
 			height:       s.Height,
-			dayOverride:  s.DayOverride,
 		}
 	}
-	unsuppressMixedSavedPlaces(masters, cfg)
-	markUnknownLocations(masters, cfg)
-	skip := uninformativeLevels(masters, cfg)
+	shape(context.Background(), masters, cfg)
 	paths := make([]string, len(masters))
 	for i := range masters {
-		paths[i] = dirFor(&masters[i], skip, cfg) + "/" + masters[i].FileName
+		paths[i] = masters[i].targetPath
 	}
 	return paths
 }
@@ -222,11 +249,10 @@ const UnknownLocation = "Unknown"
 //
 // A folder whose files are *all* unlocated gets no Unknown: the level would
 // hold exactly one child saying nothing the parent didn't already.
-func markUnknownLocations(masters []masterFile, cfg Config) {
+func markUnknownLocations(masters []masterFile, cfg Config, skip map[string]bool) {
 	if !slices.Contains(cfg.Rules, RuleLocation) {
 		return
 	}
-	skip := uninformativeLevels(masters, cfg)
 	located := map[string]bool{}
 	for i := range masters {
 		if m := &masters[i]; hasLocationLevel(m) && segmentFor(m, RuleLocation, cfg) != "" {
@@ -259,11 +285,10 @@ func markUnknownLocations(masters []masterFile, cfg Config) {
 // Runs before markUnknownLocations on purpose: the lifted city is what makes
 // the GPS-less files' Unknown folder appear beside it, rather than both piles
 // sitting loose together.
-func unsuppressMixedSavedPlaces(masters []masterFile, cfg Config) {
+func unsuppressMixedSavedPlaces(masters []masterFile, cfg Config, skip map[string]bool) {
 	if !cfg.SavedPlacesDateOnly || !slices.Contains(cfg.Rules, RuleLocation) {
 		return
 	}
-	skip := uninformativeLevels(masters, cfg)
 	// parent folder → does anything in it come from somewhere that isn't a
 	// saved place (a resolved city, or nothing resolved at all)
 	mixed := map[string]bool{}
@@ -456,8 +481,7 @@ func mergeSameLocationDays(masters []masterFile, cfg Config) {
 // buildTargets derives every master's destination independently, except for
 // a best-effort capture group (see captureDirs) that forces a sidecar/RAW+JPG
 // bundle into one shared directory.
-func buildTargets(ctx context.Context, masters []masterFile, cfg Config) {
-	skip := uninformativeLevels(masters, cfg)
+func buildTargets(ctx context.Context, masters []masterFile, cfg Config, skip map[string]bool) {
 	for i := range masters {
 		masters[i].orderTime, masters[i].orderHash = masters[i].takenAt, masters[i].FileHash
 	}

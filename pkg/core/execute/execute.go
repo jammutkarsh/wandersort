@@ -521,10 +521,14 @@ func place(mode Mode, src, dst, want string, commit func() error) error {
 	if mode == ModeMove {
 		err := atomicfile.Rename(src, dst)
 		if err == nil {
-			// The rename *is* the unlink: there is no window to order around,
-			// the file has one name throughout. If the commit fails the file
-			// is in the library unrecorded, which the next run reconciles
-			// through alreadyLanded rather than copying anything twice.
+			// Committing after the rename, not before it. There *is* an
+			// interval to order around — atomicfile.Rename is a link then an
+			// unlink — but nothing is at risk inside it: at every instant at
+			// least one name points at the file, and no bytes were in flight,
+			// so a crash anywhere loses nothing. Using it would mean handing
+			// a database commit down into pkg/atomicfile, which imports
+			// nothing else in this project, to close a bookkeeping gap that
+			// alreadyLanded already recovers on the next run.
 			return commit()
 		}
 		if errors.Is(err, fs.ErrExist) {

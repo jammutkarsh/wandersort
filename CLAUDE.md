@@ -1397,9 +1397,13 @@ tree over the whole library.
   between the two leaves a duplicate; the other order left the library
   holding a file nothing knew about and no source to re-read it from. A
   `commit` error means the file stays and the source is kept, and the row is
-  counted failed. (A *same-device* move is one atomic rename with no window
-  to order around — the file has exactly one name throughout — so there the
-  commit runs after; a failure is recovered by `alreadyLanded`, below.)
+  counted failed. (A *same-device* move commits **after** its rename instead.
+  There is an interval inside `atomicfile.Rename` — the link, then the unlink
+  — but nothing is at risk in it: at every instant at least one name points at
+  the file and no bytes were in flight, so a crash there loses nothing. Using
+  it would mean handing a database commit down into `pkg/atomicfile`, which
+  imports nothing else in the project, to close a bookkeeping gap
+  `alreadyLanded` already recovers.)
   Two real implementations —
   `productionTransfer` (a same-device `atomicfile.Rename` for `Move`, else
   `atomicfile.Copy`; `Copy` never unlinks `src`, `Move` only does once the

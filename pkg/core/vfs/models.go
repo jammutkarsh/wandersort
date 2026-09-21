@@ -151,8 +151,7 @@ type masterFile struct {
 	// folderDate is the capture time the Year/Month folders come from: the
 	// *cluster's* start, so a trip running Dec 30 → Jan 2 lands in one month
 	// folder instead of being torn across two Year trees. Zero until
-	// clusterAndSpill runs (PreviewPaths never clusters) — read it through
-	// folderTime, never directly.
+	// clusterAndSpill runs — read it through folderTime, never directly.
 	folderDate time.Time
 	// orderTime/orderHash are what buildTargets ranks a file by when names
 	// collide: its own capture time and hash, or its capture group's leader's
