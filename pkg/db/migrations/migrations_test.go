@@ -9,6 +9,7 @@ package migrations
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
@@ -109,5 +110,22 @@ func TestMigrations(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
+	}
+}
+
+// TestRunRecordsRunAtInTheStoredTimeForm keeps schema_migrations.run_at in
+// the fixed-width UTC form every other stored timestamp uses.
+func TestRunRecordsRunAtInTheStoredTimeForm(t *testing.T) {
+	db := openTestDB(t)
+	swapSchemas(t, []Migration{testMigration(1)})
+	if _, err := Run(db); err != nil {
+		t.Fatal(err)
+	}
+	var runAt string
+	if err := db.Get(&runAt, `SELECT run_at FROM schema_migrations WHERE version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := time.Parse("2006-01-02T15:04:05.000000000Z07:00", runAt); err != nil {
+		t.Errorf("run_at = %q, not the fixed-width stored form: %v", runAt, err)
 	}
 }

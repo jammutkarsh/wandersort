@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -112,9 +111,10 @@ func Run(db *sqlx.DB) (int, error) {
 			}
 		}
 
+		// run_at takes the column default: the same fixed-width UTC form as
+		// every other stored timestamp
 		if _, err := tx.Exec(
-			`INSERT INTO schema_migrations (version, run_at) VALUES (?, ?)`,
-			schema.Version, time.Now().UTC().Format(time.RFC3339),
+			`INSERT INTO schema_migrations (version) VALUES (?)`, schema.Version,
 		); err != nil {
 			tx.Rollback()
 			return 0, fmt.Errorf("migration v%d: error recording version: %w", schema.Version, err)
