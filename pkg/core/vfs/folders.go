@@ -121,12 +121,10 @@ func loadFolders(ctx context.Context, tx *sqlx.Tx) (*folderIndex, error) {
 // placed_folders. A failed transfer's folder counts too: its row keeps the
 // target_path it failed at, so a review rename of a folder it shared would
 // leave that path pointing somewhere the folder no longer is.
-const placedFoldersCTE = `
+var placedFoldersCTE = `
 	WITH RECURSIVE placed_folders(id) AS (
 		SELECT vfe.node_id FROM virtual_fs_entries vfe
-		JOIN file_registry fr ON fr.id = vfe.file_id
-		WHERE fr.placed = 1
-		   OR vfe.file_id IN (SELECT file_id FROM errors WHERE stage = '` + db.StageTransfer + `')
+		WHERE NOT ` + db.PendingTransfer("vfe.file_id") + `
 		UNION
 		SELECT fn.parent_id FROM folder_nodes fn
 		JOIN placed_folders pf ON fn.id = pf.id

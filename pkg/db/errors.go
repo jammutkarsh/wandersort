@@ -46,15 +46,6 @@ const (
 // stored; RecordError files it under KindChecksumMismatch.
 var ErrChecksumMismatch = errors.New("checksum mismatch")
 
-// PendingTransfer is the SQL predicate for "this file has not been
-// transferred and did not fail to be": unplaced, no TRANSFER row in errors.
-// fileID is the file id expression of the caller's query (vfe.file_id, ...).
-// Its negation is the decided set, which a re-plan leaves alone.
-func PendingTransfer(fileID string) string {
-	return fmt.Sprintf(`(%[1]s IN (SELECT id FROM file_registry WHERE placed = 0)
-		AND %[1]s NOT IN (SELECT file_id FROM errors WHERE stage = '%[2]s'))`, fileID, StageTransfer)
-}
-
 // maxFrames bounds the frames kept per error: enough to name the code path.
 const maxFrames = 16
 

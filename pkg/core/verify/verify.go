@@ -270,14 +270,7 @@ func forget(ctx context.Context, database *db.DB, outputDir string, ids []int64)
 		return fmt.Errorf("back up the database before forgetting missing files: %w", err)
 	}
 	return database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
-		q, args, err := sqlx.In(`DELETE FROM file_registry WHERE placed = 1 AND id IN (?)`, ids)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, tx.Rebind(q), args...); err != nil {
-			return fmt.Errorf("forget missing files: %w", err)
-		}
-		return nil
+		return db.Forget(ctx, tx, ids)
 	})
 }
 

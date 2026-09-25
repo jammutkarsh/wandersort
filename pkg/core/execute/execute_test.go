@@ -1015,8 +1015,8 @@ func TestProductionTransferSkipsTakenNameBeforeCopying(t *testing.T) {
 	}
 	t.Cleanup(func() { placeFile = orig })
 
-	landed, err := productionTransfer(context.Background(), ModeCopy, src, dst, hashOf("hello"),
-		func(string) error { return nil })
+	landed, _, err := productionTransfer(context.Background(), ModeCopy, src, dst,
+		scanned{hash: hashOf("hello"), size: 5}, func(string) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

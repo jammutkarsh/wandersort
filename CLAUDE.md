@@ -1504,8 +1504,13 @@ tree over the whole library.
   automatically. The seam is one function, not an
   `FS` interface (that shape was considered and rejected — a large interface
   learned to vary one behaviour is a shallow adapter): `transfer(ctx, mode,
-  src, dst, want, commit) (string, error)` places one file, atomically, and
-  returns where it landed. **`commit` is the ordering, not a callback for
+  src, dst, scanned, commit) (landed, bytes, error)` (`land.go`) lands one
+  file, atomically, and returns where it landed. **Every per-file decision is
+  behind it** — a gone source that already landed (`recoverLanded`), a source
+  changed since the scan (`moveCopying`), a taken name holding this file
+  (`isCopy`, the one "already a copy" rule), the verified copy and the undo;
+  `run` only keeps the books, so landing is tested with temp folders and no
+  database (`land_test.go`). **`commit` is the ordering, not a callback for
   tidiness**: it runs once the file is at its landing path and verified, and
   *before* a move unlinks the source, so the database records the file as
   being in the library before its only other copy is destroyed. A crash
@@ -1813,8 +1818,13 @@ tree over the whole library.
   (planning is library-wide, so it fails the run, not a file). Go errors carry no stack, so frames are taken where the pipeline
   sees the failure (`db.WithStack`, before the write is queued on the writer's
   goroutine; `db.PanicError` for a recovered panic's real stack) — they name a
-  code path, no more. `db.PendingTransfer(col)` is the one SQL definition of
-  "not placed and no `TRANSFER` error". There are no `db.Status*` file states.
+  code path, no more. **`state.go` is where a file stands**:
+  `db.PendingTransfer(col)` is the one SQL definition of "not placed and no
+  `TRANSFER` error" (its negation, placed-or-failed, is what `vfs`'s
+  `placedFoldersCTE` uses), and the transitions are `MarkPlaced`,
+  `MarkFailed` and `Forget` (execute's transfer and duplicate cleanup,
+  verify's forget) — no phase writes `placed` or deletes a registry row
+  itself. There are no `db.Status*` file states.
   **The `errors` table is part of 001's `CREATE TABLE`**, beside the registry
   it points at, not its own migration — the same pre-tag rule the vfs notes
   above spell out, and the same cost, except harsher: 001 also lost
