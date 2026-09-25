@@ -458,12 +458,20 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 			err = fmt.Errorf("exiftool not available")
 		}
 		if err != nil {
-			// A cancelled pipeline SIGKILLs the exiftool child ("signal:
-			// killed") and fails the next call with "context canceled" —
-			// that is shutdown, not a bad file, so don't report it as an
+			// A cancelled pipeline kills the exiftool child mid-call — that
+			// is shutdown, not a bad file, so don't report it as an
 			// extraction failure.
 			if ctx.Err() != nil {
 				return false
+			}
+			// exiftool itself died or hung: the file's tags are unknown, not
+			// empty. Persisting an empty row would mark the file read and plan
+			// it by file date alone, for good — so record a READ failure
+			// instead, which the end-of-run count reports and --force retries.
+			if errors.Is(err, exiftool.ErrProcess) {
+				e.log.Error("exiftool failed on file", "fileId", file.id, "path", file.absPath, "error", err)
+				e.db.Writer.Write(storeFailure(file.id, opExiftool, db.WithStack(err)))
+				return true
 			}
 			e.log.Warn("Failed to extract exif data", "fileId", file.id, "path", file.absPath, "error", err)
 		}

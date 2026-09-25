@@ -439,6 +439,37 @@ func TestExtractor(t *testing.T) {
 				}
 			}
 		}},
+		// exiftool dying is not "this file has no tags": the file gets a READ
+		// failure (so --force retries it) and no metadata row that would plan
+		// it by file date forever
+		{"RunRecordsExiftoolProcessFailure", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "photo.jpg"), []byte("jpg"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dbtest.SeedFile(t, d, 1, root, "photo.jpg", 3)
+			dying := filepath.Join(t.TempDir(), "exiftool")
+			if err := os.WriteFile(dying, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := New(d, logger.NewNoopLogger(), dying, 1).Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			d.Writer.Flush()
+			if got := state(t, d, 1); got != stateFailed {
+				t.Fatalf("state = %s, want failed", got)
+			}
+			var op string
+			if err := d.SQL.Get(&op, `SELECT op FROM errors WHERE file_id = 1 AND stage = 'READ'`); err != nil {
+				t.Fatal(err)
+			}
+			if op != opExiftool {
+				t.Errorf("op = %q, want %q", op, opExiftool)
+			}
+		}},
 		// More files than one page holds: every one is read exactly once, and
 		// the closing unscoped pass does not hand the last ones out again
 		{"RunPagesPastOneBatch", func(t *testing.T) {

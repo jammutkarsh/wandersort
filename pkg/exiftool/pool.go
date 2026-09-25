@@ -17,6 +17,7 @@ import (
 // Pool holds N long-lived -stay_open exiftool processes, checked out one
 // at a time to match your goroutine concurrency.
 type Pool struct {
+	path    string
 	workers chan *Extractor
 }
 
@@ -53,14 +54,25 @@ func NewPool(exiftoolPath string, size int) (*Pool, error) {
 		}
 		return nil, firstErr
 	}
-	return &Pool{workers: workers}, nil
+	return &Pool{path: exiftoolPath, workers: workers}, nil
 }
 
 // Extract borrows an idle worker, runs the extraction, and returns the
-// worker to the pool. Blocks if all workers are busy.
+// worker to the pool. Blocks if all workers are busy. A worker that died on
+// an earlier file is replaced first: handing it out again would fail every
+// later file with ErrProcess, one after another, for the rest of the scan.
 func (p *Pool) Extract(ctx context.Context, path string) (classifier.CommonMetadata, error) {
 	select {
 	case e := <-p.workers:
+		if e.Dead() {
+			fresh, err := New(p.path)
+			if err != nil {
+				p.workers <- e // keep the pool its size; the next caller retries
+				return classifier.CommonMetadata{}, fmt.Errorf("%w: restarting worker: %w", ErrProcess, err)
+			}
+			e.Close() // already killed, so this only reaps it
+			e = fresh
+		}
 		defer func() { p.workers <- e }()
 		return e.Extract(ctx, path)
 	case <-ctx.Done():
