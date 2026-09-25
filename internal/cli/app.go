@@ -128,7 +128,7 @@ func (a *app) openLibrary(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	appDB, err := db.New(ctx, a.Config.AppDBPath, db.AppDB, a.Log)
+	appDB, err := db.New(ctx, a.Config.AppDBPath, a.Log)
 	if err != nil {
 		l.Unlock()
 		return fmt.Errorf("app db: %w", err)

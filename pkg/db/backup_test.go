@@ -24,7 +24,7 @@ func TestBackupIsCompressedAndVerified(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	live := filepath.Join(dir, ".wandersort.db")
-	d, err := New(ctx, live, AppDB, logger.NewNoopLogger())
+	d, err := New(ctx, live, logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestRestoreBringsBackBackedUpState(t *testing.T) {
 	dir := t.TempDir()
 	live := filepath.Join(dir, ".wandersort.db")
 	dest := filepath.Join(dir, BackupFileName)
-	d, err := New(ctx, live, AppDB, logger.NewNoopLogger())
+	d, err := New(ctx, live, logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestRestoreBringsBackBackedUpState(t *testing.T) {
 		t.Errorf("kept copy has %d labels, want the replaced state's 0", kept)
 	}
 
-	d, err = New(ctx, live, AppDB, logger.NewNoopLogger())
+	d, err = New(ctx, live, logger.NewNoopLogger())
 	if err != nil {
 		t.Fatalf("restored database does not open: %v", err)
 	}
@@ -164,7 +164,7 @@ func newBackedUp(t *testing.T) (live, dest string) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	live, dest = filepath.Join(dir, ".wandersort.db"), filepath.Join(dir, BackupFileName)
-	d, err := New(ctx, live, AppDB, logger.NewNoopLogger())
+	d, err := New(ctx, live, logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestBackupKeepsPreviousOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := New(ctx, live, AppDB, logger.NewNoopLogger())
+	d, err := New(ctx, live, logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestRestoreRecreatesDeletedDatabase(t *testing.T) {
 	if err := Restore(ctx, dest, live); err != nil {
 		t.Fatal(err)
 	}
-	d, err := New(ctx, live, AppDB, logger.NewNoopLogger())
+	d, err := New(ctx, live, logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestOpenBacksUpBeforeMigratingAndRefusesNewerSchema(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	live := filepath.Join(dir, ".wandersort.db")
-	open := func() (*DB, error) { return New(ctx, live, AppDB, logger.NewNoopLogger()) }
+	open := func() (*DB, error) { return New(ctx, live, logger.NewNoopLogger()) }
 
 	d, err := open()
 	if err != nil {
@@ -357,7 +357,7 @@ func TestOpenBacksUpBeforeMigratingAndRefusesNewerSchema(t *testing.T) {
 // The library is read with read(), never mapped: a drive dropping under a
 // mapped page kills the process with SIGBUS instead of returning an error.
 func TestLibraryIsNotMemoryMapped(t *testing.T) {
-	d, err := New(context.Background(), filepath.Join(t.TempDir(), ".wandersort.db"), AppDB, logger.NewNoopLogger())
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), ".wandersort.db"), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

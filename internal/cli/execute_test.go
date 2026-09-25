@@ -41,7 +41,7 @@ func TestRunExecuteAppliesDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d, err := db.New(context.Background(), cfg.AppDBPath, db.AppDB, logger.NewNoopLogger())
+	d, err := db.New(context.Background(), cfg.AppDBPath, logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

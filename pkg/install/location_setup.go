@@ -201,7 +201,7 @@ func OpenLocationResolver(ctx context.Context, log logger.Logger, dbPath string,
 		return nil, nil, fmt.Errorf("location db: %w", err)
 	}
 
-	locationDB, err := db.New(ctx, dbPath, db.LocationDB, log)
+	locationDB, err := db.OpenLocation(dbPath, log)
 	if err != nil {
 		return nil, nil, fmt.Errorf("location db: %w", err)
 	}

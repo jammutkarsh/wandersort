@@ -90,7 +90,7 @@ func seedProposal(t *testing.T, a *app) {
 	if err := os.MkdirAll(filepath.Dir(a.Config.AppDBPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	d, err := db.New(context.Background(), a.Config.AppDBPath, db.AppDB, logger.NewNoopLogger())
+	d, err := db.New(context.Background(), a.Config.AppDBPath, logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

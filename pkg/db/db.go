@@ -23,13 +23,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-type DBType int
-
-const (
-	AppDB DBType = iota
-	LocationDB
-)
-
 // TimeLayout is RFC3339 with fixed-width nanoseconds. Fixed width keeps
 // lexicographic string comparison in SQL consistent with time order; values
 // are always stored in UTC via FormatTime and shown in the user's local zone
@@ -52,21 +45,16 @@ const (
 )
 
 // DB wraps *sql.DB with a BulkWriter for database operations
-// BulkWriter is nil for LocationDB connections
+// BulkWriter is nil for a location database (OpenLocation)
 type DB struct {
 	SQL    *sqlx.DB
 	Writer *BulkWriter
 }
 
-func New(ctx context.Context, dbPath string, dbType DBType, log logger.Logger) (*DB, error) {
-	switch dbType {
-	case AppDB:
-		return openAppDB(dbPath, log)
-	case LocationDB:
-		return openLocationDB(dbPath, log)
-	default:
-		return nil, fmt.Errorf("unknown DBType %d", dbType)
-	}
+// New opens (creating if needed) the library database at dbPath, migrates it,
+// and starts its writer. ctx bounds the backup taken before a migration.
+func New(ctx context.Context, dbPath string, log logger.Logger) (*DB, error) {
+	return openAppDB(ctx, dbPath, log)
 }
 
 // Close doesn't Checkpoint: it runs on every quit, including a bare cancel
@@ -96,7 +84,7 @@ func (d *DB) Checkpoint() error {
 
 // openAppDB opens the application SQLite database, applies pragma tuning,
 // runs migrations, and initialises the BulkWriter for batched writes
-func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
+func openAppDB(ctx context.Context, dbPath string, log logger.Logger) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("creating database directory: %w", err)
 	}
@@ -156,7 +144,7 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 	}
 	if pending > 0 && applied > 0 {
 		dest := filepath.Join(filepath.Dir(dbPath), PreMigrationBackupFileName)
-		if err := (&DB{SQL: sqlxDB}).Backup(context.Background(), dest); err != nil {
+		if err := (&DB{SQL: sqlxDB}).Backup(ctx, dest); err != nil {
 			sqlxDB.Close()
 			return nil, fmt.Errorf("appDB: back up before upgrading the database (nothing was changed): %w", err)
 		}
@@ -176,8 +164,9 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 	return d, nil
 }
 
-// openLocationDB opens the read-only location database.
-func openLocationDB(dbPath string, log logger.Logger) (*DB, error) {
+// OpenLocation opens the read-only location database. It has no writer and
+// no migrations: the file is downloaded whole and never written.
+func OpenLocation(dbPath string, log logger.Logger) (*DB, error) {
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil, fmt.Errorf("location database not found at %s: %w", dbPath, err)
 	}

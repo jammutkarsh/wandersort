@@ -25,7 +25,7 @@ import (
 // The drain loop in start() exists because select order is random — without
 // it, a flush request can be served before buffered ops are received.
 func TestFlushDrainsEnqueuedOps(t *testing.T) {
-	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), AppDB, logger.NewNoopLogger())
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestFlushDrainsEnqueuedOps(t *testing.T) {
 }
 
 func TestWriteSyncReturnsOperationOutcome(t *testing.T) {
-	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), AppDB, logger.NewNoopLogger())
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestWriteSyncReturnsOperationOutcome(t *testing.T) {
 // a batch another op then failed reported nil from a rolled-back transaction —
 // the review save and the placed-file record both trusted that nil.
 func TestWriteSyncTruthfulBesideFailingBatch(t *testing.T) {
-	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), AppDB, logger.NewNoopLogger())
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestWriteSyncTruthfulBesideFailingBatch(t *testing.T) {
 }
 
 func TestWriteReturnsFalseAfterClose(t *testing.T) {
-	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), AppDB, logger.NewNoopLogger())
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestWriteReturnsFalseAfterClose(t *testing.T) {
 }
 
 func TestFlushReturnsImmediatelyWhenClosed(t *testing.T) {
-	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), AppDB, logger.NewNoopLogger())
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestFlushReturnsImmediatelyWhenClosed(t *testing.T) {
 // commit individually via executeIndividually, and the reported error names
 // exactly how many of the batch failed.
 func TestExecuteBatchFallsBackOnOperationFailure(t *testing.T) {
-	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), AppDB, logger.NewNoopLogger())
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestExecuteBatchFallsBackOnOperationFailure(t *testing.T) {
 }
 
 func TestExecuteIndividuallyAllSucceed(t *testing.T) {
-	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), AppDB, logger.NewNoopLogger())
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -99,7 +99,7 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 		return fmt.Errorf("restore failed: %w", err)
 	}
 	// Open once to prove the restored file is a usable library database.
-	d, err := db.New(ctx, a.Config.AppDBPath, db.AppDB, a.Log)
+	d, err := db.New(ctx, a.Config.AppDBPath, a.Log)
 	if err != nil {
 		return fmt.Errorf("restored database does not open: %w", err)
 	}

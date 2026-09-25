@@ -37,7 +37,7 @@ func TestDB(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if _, err := New(context.Background(), dbPath, AppDB, logger.NewNoopLogger()); err == nil {
+			if _, err := New(context.Background(), dbPath, logger.NewNoopLogger()); err == nil {
 				t.Fatal("New should refuse a non-wandersort database")
 			} else if !strings.Contains(err.Error(), "not a wandersort database") {
 				t.Fatalf("unexpected error: %v", err)
@@ -60,7 +60,7 @@ func TestDB(t *testing.T) {
 		{"NewFreshAndReopen", func(t *testing.T) {
 			dbPath := filepath.Join(t.TempDir(), "test.db")
 
-			d, err := New(context.Background(), dbPath, AppDB, logger.NewNoopLogger())
+			d, err := New(context.Background(), dbPath, logger.NewNoopLogger())
 			if err != nil {
 				t.Fatalf("fresh open: %v", err)
 			}
@@ -69,7 +69,7 @@ func TestDB(t *testing.T) {
 			}
 
 			// A database we stamped and migrated must reopen cleanly
-			d, err = New(context.Background(), dbPath, AppDB, logger.NewNoopLogger())
+			d, err = New(context.Background(), dbPath, logger.NewNoopLogger())
 			if err != nil {
 				t.Fatalf("reopen: %v", err)
 			}
@@ -87,7 +87,7 @@ func TestDB(t *testing.T) {
 			// The DSN is the only thing carrying these; a driver that stopped
 			// honouring _pragma would cost foreign keys and durable commits
 			// with no other symptom.
-			d, err := New(context.Background(), filepath.Join(t.TempDir(), "pragmas.db"), AppDB, logger.NewNoopLogger())
+			d, err := New(context.Background(), filepath.Join(t.TempDir(), "pragmas.db"), logger.NewNoopLogger())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -224,7 +224,7 @@ func TestStrOrNil(t *testing.T) {
 }
 
 func TestCheckpoint(t *testing.T) {
-	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), AppDB, logger.NewNoopLogger())
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestCheckpoint(t *testing.T) {
 }
 
 func TestOptimize(t *testing.T) {
-	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), AppDB, logger.NewNoopLogger())
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestOptimize(t *testing.T) {
 }
 
 func TestQueryContextAndQueryRowContext(t *testing.T) {
-	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), AppDB, logger.NewNoopLogger())
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestQueryContextAndQueryRowContext(t *testing.T) {
 
 func TestOpenLocationDB(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
-		_, err := New(context.Background(), filepath.Join(t.TempDir(), "missing.db"), LocationDB, logger.NewNoopLogger())
+		_, err := OpenLocation(filepath.Join(t.TempDir(), "missing.db"), logger.NewNoopLogger())
 		if err == nil || !strings.Contains(err.Error(), "location database not found") {
 			t.Fatalf("got %v, want a not-found error", err)
 		}
@@ -306,14 +306,14 @@ func TestOpenLocationDB(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		d, err := New(context.Background(), dbPath, LocationDB, logger.NewNoopLogger())
+		d, err := OpenLocation(dbPath, logger.NewNoopLogger())
 		if err != nil {
-			t.Fatalf("New(LocationDB): %v", err)
+			t.Fatalf("OpenLocation: %v", err)
 		}
 		defer d.SQL.Close()
 
 		if d.Writer != nil {
-			t.Error("LocationDB connection must have a nil Writer")
+			t.Error("a location database must have a nil Writer")
 		}
 		var name string
 		if err := d.SQL.QueryRow(`SELECT name FROM sqlite_master WHERE name='geonames_cities'`).Scan(&name); err != nil {

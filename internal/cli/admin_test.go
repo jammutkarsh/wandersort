@@ -140,7 +140,7 @@ func TestRecoverUndoesReset(t *testing.T) {
 				t.Fatalf("admin db --restore: %v", err)
 			}
 
-			d, err := db.New(ctx, dbPath, db.AppDB, logger.NewNoopLogger())
+			d, err := db.New(ctx, dbPath, logger.NewNoopLogger())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -184,7 +184,7 @@ func TestRecoverCancelledWithoutYes(t *testing.T) {
 // --db finds something to wipe.
 func seedDB(t *testing.T, dbPath string) {
 	t.Helper()
-	d, err := db.New(context.Background(), dbPath, db.AppDB, logger.NewNoopLogger())
+	d, err := db.New(context.Background(), dbPath, logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

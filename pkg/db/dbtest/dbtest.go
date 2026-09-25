@@ -23,7 +23,7 @@ import (
 // New opens a fresh migrated app database under t.TempDir()
 func New(t testing.TB) *db.DB {
 	t.Helper()
-	d, err := db.New(context.Background(), filepath.Join(t.TempDir(), "test.db"), db.AppDB, logger.NewNoopLogger())
+	d, err := db.New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
