@@ -14,9 +14,12 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 
 	"github.com/klauspost/compress/zstd"
 	sqlite "modernc.org/sqlite"
+
+	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 )
 
 // BackupFileName is the one backup kept beside the library database (spec
@@ -56,7 +59,14 @@ func (d *DB) Backup(ctx context.Context, dest string) error {
 	if err := compressFile(plain, tmp); err != nil {
 		return err
 	}
+	// compressFile synced the new file's bytes; this makes the rename itself
+	// durable. Without both, a power cut could leave an empty or partial file
+	// under the backup's name — replacing the good one exactly when it is
+	// needed.
 	if err := os.Rename(tmp, dest); err != nil {
+		return fmt.Errorf("replace backup: %w", err)
+	}
+	if err := atomicfile.SyncDir(filepath.Dir(dest)); err != nil {
 		return fmt.Errorf("replace backup: %w", err)
 	}
 	return nil
@@ -100,6 +110,9 @@ func compressFile(src, dst string) (err error) {
 		return fmt.Errorf("compress backup: %w", err)
 	}
 	if err := zw.Close(); err != nil {
+		return fmt.Errorf("compress backup: %w", err)
+	}
+	if err := out.Sync(); err != nil {
 		return fmt.Errorf("compress backup: %w", err)
 	}
 	return nil

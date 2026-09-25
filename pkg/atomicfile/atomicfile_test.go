@@ -273,3 +273,14 @@ func TestSyncDirsDedupesAndTolerates(t *testing.T) {
 		t.Error("syncDirs should report a missing directory")
 	}
 }
+
+func TestSyncDir(t *testing.T) {
+	if err := SyncDir(t.TempDir()); err != nil {
+		t.Errorf("SyncDir(existing) = %v, want nil", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := SyncDir(filepath.Join(t.TempDir(), "missing")); err == nil {
+			t.Error("SyncDir(missing) = nil, want an error")
+		}
+	}
+}

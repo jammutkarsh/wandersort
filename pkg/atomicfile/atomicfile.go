@@ -184,6 +184,11 @@ func syncDirs(paths ...string) error {
 	return nil
 }
 
+// SyncDir makes dir's entries durable: a file created or renamed into dir is
+// not on stable storage until its directory is synced too. Best effort where
+// the platform or filesystem has no directory flush.
+func SyncDir(dir string) error { return syncDir(dir) }
+
 // syncDir fsyncs one directory. Windows has no directory-handle flush, so
 // there it is a no-op; NTFS orders its own metadata through its log.
 func syncDir(dir string) error {
