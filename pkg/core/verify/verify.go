@@ -134,13 +134,15 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 			log.Warn("placed file does not match the library's record",
 				"path", rel, "kind", problem.Kind, "detail", problem.Detail)
 		}
-		if err := record(ctx, database, r.FileID, problem); err != nil {
+		if err := record(database, r.FileID, problem); err != nil {
 			log.Warn("could not record the verify result", "path", rel, "error", err)
 		}
 		if o.OnProgress != nil {
 			o.OnProgress(rel, i+1, len(rows))
 		}
 	}
+
+	database.Writer.Flush() // every result recorded before the report says so
 
 	var err error
 	if rep.Database, err = checkDatabase(ctx, database); err != nil {
@@ -195,24 +197,34 @@ func checkFile(abs, rel string, want int64, hash string, full bool) (*Problem, i
 }
 
 // record keeps the errors table holding only what is still true: a failure
-// replaces the file's VERIFY row, a pass removes it.
-func record(ctx context.Context, database *db.DB, fileID int64, p *Problem) error {
+// replaces the file's VERIFY row, a pass removes it. Batched through the
+// writer, not WriteSync: a synced transaction per file flushed the drive's
+// cache once per placed file — most of a 100k-file check's run time on a
+// hard disk — and a lost result only costs one re-check. Run flushes before
+// it reports.
+func record(database *db.DB, fileID int64, p *Problem) error {
+	var op db.DBOperation
 	if p == nil {
-		return database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+		op = func(ctx context.Context, tx *sqlx.Tx) error {
 			_, err := tx.ExecContext(ctx,
 				`DELETE FROM errors WHERE file_id = ? AND stage = ?`, fileID, db.StageVerify)
 			return err
-		})
+		}
+	} else {
+		kind := opStat
+		if p.Kind == db.KindChecksumMismatch {
+			kind = opHash
+		}
+		// The frames have to be taken here rather than on the writer's goroutine.
+		err := db.WithStack(problemError(*p))
+		op = func(ctx context.Context, tx *sqlx.Tx) error {
+			return db.RecordError(ctx, tx, fileID, db.StageVerify, kind, err)
+		}
 	}
-	op := opStat
-	if p.Kind == db.KindChecksumMismatch {
-		op = opHash
+	if !database.Writer.Write(op) {
+		return errors.New("database writer closed")
 	}
-	// The frames have to be taken here rather than on the writer's goroutine.
-	err := db.WithStack(problemError(*p))
-	return database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
-		return db.RecordError(ctx, tx, fileID, db.StageVerify, op, err)
-	})
+	return nil
 }
 
 // problemError turns a Problem back into an error carrying the sentinel its
