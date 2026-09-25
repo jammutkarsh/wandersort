@@ -246,7 +246,12 @@ func appDSN(dbPath string) string {
 		// gets "database is locked" instead of reading a half-written run or
 		// writing under the pipeline. Safe because the pool is one connection.
 		"locking_mode(exclusive)",
-		"mmap_size(1073741824)", // 1GB memory-mapped I/O to reduce syscalls
+		// No memory-mapped reads. A library usually lives on an external or
+		// network drive; when it drops mid-read, read() returns an error
+		// SQLite handles, but a mapped page faults with SIGBUS and the
+		// process dies on the spot — mid-execute included. The syscalls
+		// mmap saves are not worth an uncontrolled crash.
+		"mmap_size(0)",
 		// FULL, not NORMAL: under NORMAL, WAL mode does not fsync at commit, so
 		// a power loss drops an unbounded tail of *committed* transactions —
 		// including the rows saying a photo was copied into the library and its

@@ -353,3 +353,20 @@ func TestOpenBacksUpBeforeMigratingAndRefusesNewerSchema(t *testing.T) {
 		t.Fatalf("open = %v, want ErrNewerSchema", err)
 	}
 }
+
+// The library is read with read(), never mapped: a drive dropping under a
+// mapped page kills the process with SIGBUS instead of returning an error.
+func TestLibraryIsNotMemoryMapped(t *testing.T) {
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), ".wandersort.db"), AppDB, logger.NewNoopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	var size int64
+	if err := d.SQL.QueryRow(`PRAGMA mmap_size`).Scan(&size); err != nil {
+		t.Fatal(err)
+	}
+	if size != 0 {
+		t.Errorf("mmap_size = %d, want 0", size)
+	}
+}
