@@ -62,16 +62,16 @@ func uuidForPath(path string) (string, error) {
 	return s[lo+1 : hi], nil
 }
 
-// FreeBytes returns the bytes available to the current user on the volume
-// containing path
-func FreeBytes(path string) (uint64, error) {
+// Space returns the bytes available to the current user on the volume
+// containing path, and the volume's total size.
+func Space(path string) (free, total uint64, err error) {
 	pathW, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return 0, fmt.Errorf("encode path %q: %w", path, err)
+		return 0, 0, fmt.Errorf("encode path %q: %w", path, err)
 	}
-	var freeToCaller, total, totalFree uint64
+	var freeToCaller, totalFree uint64
 	if err := windows.GetDiskFreeSpaceEx(pathW, &freeToCaller, &total, &totalFree); err != nil {
-		return 0, fmt.Errorf("free space for %q: %w", path, err)
+		return 0, 0, fmt.Errorf("free space for %q: %w", path, err)
 	}
-	return freeToCaller, nil
+	return freeToCaller, total, nil
 }

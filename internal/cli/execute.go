@@ -116,22 +116,34 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 }
 
 // checkPlanFits refuses a transfer the output volume can't hold: every file
-// not yet transferred, proposed or approved — a review edit never changes a
-// file's size, so the total is the same before and after the draft applies.
-// An unreadable free-space figure lets the transfer run; each file still
-// lands whole or not at all.
+// not yet transferred (a review edit never changes a file's size, so the
+// total is the same before and after the draft applies), room for the backup
+// execute writes first, and a reserve so the disk is never filled to its last
+// byte (volume.TransferNeeds). An unreadable free-space figure lets the
+// transfer run; each file still lands whole or not at all.
 //
-// ponytail: a same-volume move only renames and needs no free space, but this
-// refuses one on a nearly-full disk too. Split the check by mode (or volume)
-// if that's ever the transfer someone is blocked on.
+// ponytail: a same-volume move only renames and needs no room for the files,
+// but this counts them anyway. Split the check by mode (or volume) if that's
+// ever the transfer someone is blocked on.
 func (a *app) checkPlanFits(ctx context.Context, outputDir string) error {
-	needed, err := vfs.PendingBytes(ctx, a.AppDB)
+	pending, err := vfs.PendingBytes(ctx, a.AppDB)
 	if err != nil {
 		return err
 	}
-	if free, err := volume.FreeBytes(outputDir); err == nil && uint64(needed) > free {
-		return fmt.Errorf("not enough free space: the plan needs %s, only %s free at the output — nothing was changed",
-			volume.HumanBytes(uint64(needed)), volume.HumanBytes(free))
+	var dbBytes int64
+	for _, p := range []string{a.Config.AppDBPath, a.Config.AppDBPath + "-wal"} {
+		if info, err := os.Stat(p); err == nil {
+			dbBytes += info.Size()
+		}
+	}
+	free, total, err := volume.Space(outputDir)
+	if err != nil {
+		return nil
+	}
+	if needed := volume.TransferNeeds(uint64(pending), uint64(dbBytes), total); needed > free {
+		return fmt.Errorf("not enough free space: the plan needs %s (%s of files, plus room for the database backup and %s kept free), only %s free at the output — nothing was changed",
+			volume.HumanBytes(needed), volume.HumanBytes(uint64(pending)),
+			volume.HumanBytes(needed-uint64(pending)-2*uint64(dbBytes)), volume.HumanBytes(free))
 	}
 	return nil
 }

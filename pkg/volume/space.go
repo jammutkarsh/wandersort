@@ -48,6 +48,31 @@ func CheckOutputSpace(ctx context.Context, database *db.DB, log logger.Logger, o
 	}
 }
 
+// FreeBytes returns the bytes available to the current user on the volume
+// containing path.
+func FreeBytes(path string) (uint64, error) {
+	free, _, err := Space(path)
+	return free, err
+}
+
+// minReserve and reserveShare size the room a transfer leaves free: 1 GiB,
+// or 1% of the volume when that is more. A disk filled to its last byte
+// breaks the database's own next write, and the OS and every other program
+// on that volume with it.
+const (
+	minReserve   = 1 << 30
+	reserveShare = 100 // 1/100 of the volume
+)
+
+// TransferNeeds is the free space a transfer of fileBytes needs on a volume
+// of total bytes, for a database of dbBytes. The backup is written first:
+// its uncompressed copy and the compressed file sit on disk together for a
+// moment, and neither is bigger than the database, so 2 × dbBytes covers it.
+// Each file's temp copy becomes the file itself, so files count once.
+func TransferNeeds(fileBytes, dbBytes, total uint64) uint64 {
+	return fileBytes + 2*dbBytes + max(minReserve, total/reserveShare)
+}
+
 // HumanBytes renders n as a short base-1024 size, e.g. "1.5 GiB"
 func HumanBytes(n uint64) string {
 	const unit = 1024
