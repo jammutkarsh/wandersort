@@ -1750,6 +1750,11 @@ tree over the whole library.
   path, log)` opens the library database (migrations, writer; `ctx` bounds
   the pre-upgrade backup); `db.OpenLocation(path, log)` opens the read-only
   geonames file — two functions, not one switching on a type. **Every
+  table is `STRICT`**: a value of the wrong type fails at the write that
+  sent it, not later as a wrong sum or a timestamp sorting out of place.
+  The schema, not the code's ordering, holds the row-count invariants:
+  one `file_metadata` row per file (`file_id UNIQUE`), one plan row per file,
+  and `user_labels` as a set (`UNIQUE (label, kind)`). **Every
   connection-scoped pragma rides in the DSN** (`appDSN`), not in an `Exec`
   after opening: `foreign_keys`, `locking_mode`, `busy_timeout`, `cache_size`,
   `temp_store`, `mmap_size`, `synchronous` are per-*connection* settings in

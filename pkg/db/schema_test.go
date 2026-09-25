@@ -36,3 +36,16 @@ func TestSchemaLabelsAreASet(t *testing.T) {
 		t.Error("the same label was stored twice")
 	}
 }
+
+// Tables are STRICT: a value of the wrong type is refused when it is written,
+// instead of being stored and surfacing later as a wrong total or a
+// timestamp that sorts out of place.
+func TestSchemaRefusesWrongTypes(t *testing.T) {
+	d := dbtest.New(t)
+	if _, err := d.ExecContext(context.Background(), `
+		INSERT INTO file_registry (file_dir, file_name, file_size, file_modified_at,
+			file_extension, discovered_at, last_seen_at)
+		VALUES ('/src', 'a.jpg', '12 KB', 't', '.jpg', 't', 't')`); err == nil {
+		t.Error("a text file_size was stored")
+	}
+}

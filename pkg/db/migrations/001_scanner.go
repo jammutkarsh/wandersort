@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS file_registry (
     placed INTEGER NOT NULL DEFAULT 0,
 
     CHECK (media_type IN ('IMAGE', 'VIDEO', 'SIDECAR', 'RAW', 'UNKNOWN'))
-);
+) STRICT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_registry_dir_name ON file_registry(file_dir, file_name);
 `
@@ -89,5 +89,5 @@ CREATE TABLE IF NOT EXISTS errors (
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     UNIQUE (file_id, stage)
-);
+) STRICT;
 `

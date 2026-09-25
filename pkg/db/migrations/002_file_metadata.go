@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS file_metadata (
     is_screenshot INTEGER NOT NULL DEFAULT 0,
 
     created_at TEXT DEFAULT ` + sqlNowDefault + `
-);
+) STRICT;
 
 -- file_id's UNIQUE is its own index; this one serves duplicate grouping and
 -- every hash join (elect, execute's duplicate cleanup)

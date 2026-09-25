@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS library_settings (
     -- (0 home, 1 work, the rest more of the same). Resolved to coordinates
     -- per run, never stored resolved.
     saved_places TEXT NOT NULL
-);
+) STRICT;
 `
 
 // folder_nodes is the plan's folder tree (spec D12): a folder keeps its id
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS folder_nodes (
     -- is its bounds AND its ancestors'. Read in Go only (vfs.Bounds); nothing
     -- queries inside it.
     bounds TEXT NOT NULL DEFAULT '[{}]'
-);
+) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_folder_nodes_parent ON folder_nodes(parent_id);
 `
@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS virtual_fs_entries (
     -- emptied place folder is then deleted.
     location_node_id INTEGER REFERENCES folder_nodes(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
-);
+) STRICT;
 
 -- one proposal row per file, ever — the VFS phase always wholesale-replaces
 -- the whole table, so there is never more than one live batch to disambiguate
@@ -110,5 +110,5 @@ CREATE TABLE IF NOT EXISTS user_labels (
     -- a set of names, not a log: every review save offers each renamed
     -- folder again, and a name already here is not a new one
     UNIQUE (label, kind)
-);
+) STRICT;
 `

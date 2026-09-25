@@ -50,7 +50,7 @@ func plan(db *sqlx.DB) ([]Migration, int, error) {
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version INTEGER PRIMARY KEY,
 			run_at  TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
-		)
+		) STRICT
 	`); err != nil {
 		return nil, 0, fmt.Errorf("error creating schema_migrations table: %w", err)
 	}
