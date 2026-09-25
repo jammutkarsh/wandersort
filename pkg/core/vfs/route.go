@@ -172,9 +172,13 @@ func constrained(c Constraint) levelBit {
 		bit levelBit
 		set bool
 	}{
-		{bitYear, c.Year != nil}, {bitMonth, c.Month != nil}, {bitDate, c.Date != nil},
-		{bitLocation, c.Location != nil}, {bitDevice, c.Device != nil},
-		{bitOrientation, c.Orientation != nil}, {bitMedia, c.Media != nil},
+		{bitYear, c.Year != nil},
+		{bitMonth, c.Month != nil},
+		{bitDate, c.Date != nil},
+		{bitLocation, c.Location != nil},
+		{bitDevice, c.Device != nil},
+		{bitOrientation, c.Orientation != nil},
+		{bitMedia, c.Media != nil},
 	} {
 		if l.set {
 			b |= l.bit
