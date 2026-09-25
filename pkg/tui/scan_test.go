@@ -7,6 +7,7 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -112,5 +113,18 @@ func TestScanModel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
+	}
+}
+
+// The scan screen shows one row per workflow phase and no others: a row with
+// no phase behind it never gets an event and sits pending forever (the old
+// Score row, after duplicate election moved into vfs).
+func TestScanModelStagesMatchWorkflowPhases(t *testing.T) {
+	var keys []string
+	for _, s := range NewScanModel(ScanConfig{}).sl.stages {
+		keys = append(keys, s.Key)
+	}
+	if want := []string{"scan", "metadata", "vfs"}; !slices.Equal(keys, want) {
+		t.Errorf("stages = %v, want %v", keys, want)
 	}
 }

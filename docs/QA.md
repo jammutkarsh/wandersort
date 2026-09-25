@@ -7,7 +7,7 @@
 Ordered easiest/most-independent → hardest/most-dependent. `[H]` = human tester,
 `[A]` = AI agent. One line each: **command → expected**.
 
-Only what's built today is listed (scan → metadata → score → vfs → review). The
+Only what's built today is listed (scan → metadata → vfs → review). The
 Execute/move stage isn't written yet, so it isn't here.
 
 ## 0. Smoke & help (no side effects)
@@ -50,7 +50,7 @@ Execute/move stage isn't written yet, so it isn't here.
 26. `[A]` `wandersort scan` *(no `-p`)* → usage error asking for paths, non-zero exit.
 27. `[A]` scan nested roots `-p /photos -p /photos/2024` → nested root pruned, files counted once.
 28. `[H]` `wandersort scan -p <dir> -w 1` vs `-w 8` → same final counts, both exit 0.
-29. `[A]` `wandersort scan -p <dir>` → console shows a "phase took" line for each of scan/metadata/score/vfs, not just their result-count lines.
+29. `[A]` `wandersort scan -p <dir>` → console shows a "phase took" line for each of scan/metadata/vfs, not just their result-count lines.
 
 ## 4. Hash phase (depends on scan)
 
@@ -68,13 +68,13 @@ Execute/move stage isn't written yet, so it isn't here.
 38. `[H]` kill the scan (ctrl+c) during the Metadata stage, then re-scan the same unchanged dir → only the files with no `file_metadata` row are read; nothing is stuck and none is read twice.
 38b. `[A]` scan a dir containing a file the process cannot read (`chmod 000`) → the run finishes and says `1 file could not be read`; `wandersort issue` ships an `errors.json` row `READ/open/permission-denied` with the home directory as `$HOME`. Re-scan → the file is skipped and the line is **not** repeated (it counts this run's failures, not the standing total); `chmod 644` and touch it (or `--force`) → it is read and its error row is gone.
 
-## 5. Score phase (depends on hash — elects master)
+## 5. Duplicate election (inside the VFS phase — elects master)
 
 39. `[A]` same bytes in `New Folder/` and `Goa Trip 2024/` → the well-named folder's copy elected master.
 40. `[A]` a unique (non-duplicated) file → elected master by default.
 41. `[A]` re-scan after deleting all-but-one copy of a group → lone survivor promoted to master.
 
-## 6. VFS phase (depends on score — proposes tree)
+## 6. VFS phase (proposes tree)
 
 42. `[A]` scan photos with capture dates → proposal groups them by date (e.g. `2024/…`).
 43. `[A]` scan photos with GPS → proposal reflects resolved location in the path.

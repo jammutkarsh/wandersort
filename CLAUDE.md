@@ -21,11 +21,12 @@ one scan ever runs against it at a time (see "Conventions" below):
 2. **Metadata** — one read pass per file: content-hash for duplicate detection
    and EXIF extraction, back to back so exiftool's read hits the page cache the
    hash just warmed.
-3. **Score** — within a duplicate group, elect one master copy (same bytes,
-   different storage context — e.g. folder named `Goa Trip 2024`).
-4. **VFS** — propose a destination hierarchy for every live master in the
-   library (not just this run's), using the user's prior folder-naming as
-   context when EXIF is absent. Nothing on disk is touched.
+3. **VFS** — within each duplicate group, elect one master copy (same
+   bytes, different storage context — e.g. folder named `Goa Trip 2024`;
+   `vfs/elect.go`, in memory, every run — there is no separate score phase
+   or TUI stage any more), then propose a destination hierarchy for every
+   live master in the library (not just this run's), using the user's prior
+   folder-naming as context when EXIF is absent. Nothing on disk is touched.
 
 ## Entry point & CLI
 

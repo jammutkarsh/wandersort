@@ -137,14 +137,14 @@ func (m ScanModel) Failed() bool { return m.failErr != nil }
 // history block once the session moves on from this scan.
 func (m ScanModel) Summary() []string { return m.sl.Summary() }
 
-// NewScanModel builds the scan screen. The four stages mirror the workflow
-// phases (keys match logger.PhaseKey: scan/metadata/score/vfs).
+// NewScanModel builds the scan screen. The three stages mirror the workflow
+// phases (keys match logger.PhaseKey: scan/metadata/vfs). Duplicates are
+// chosen inside vfs now, so there is no score stage to show.
 func NewScanModel(cfg ScanConfig) ScanModel {
 	sl := NewStageList(
 		nil,
 		&Stage{Key: "scan", Name: "Scan"},
 		&Stage{Key: "metadata", Name: "Metadata", HasBar: true},
-		&Stage{Key: "score", Name: "Score"},
 		&Stage{Key: "vfs", Name: "Organize"},
 	)
 	return ScanModel{cfg: cfg, sl: sl}
