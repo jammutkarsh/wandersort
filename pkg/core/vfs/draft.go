@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
@@ -104,6 +105,7 @@ func appendDraft(outputDir string, e Edit) error {
 	if err != nil {
 		return fmt.Errorf("encode review edit: %w", err)
 	}
+	_, statErr := os.Stat(draftPath(outputDir))
 	f, err := os.OpenFile(draftPath(outputDir), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("open review draft: %w", err)
@@ -113,6 +115,13 @@ func appendDraft(outputDir string, e Edit) error {
 	w.WriteByte('\n')
 	if err := errors.Join(w.Flush(), f.Sync(), f.Close()); err != nil {
 		return fmt.Errorf("write review draft: %w", err)
+	}
+	// The first edit creates the file, and a synced file whose folder entry
+	// never reached the disk is lost with it after a power cut.
+	if os.IsNotExist(statErr) {
+		if err := atomicfile.SyncDir(outputDir); err != nil {
+			return fmt.Errorf("write review draft: %w", err)
+		}
 	}
 	return nil
 }
@@ -144,6 +153,9 @@ func writeDraft(outputDir string, edits []Edit) error {
 		return fmt.Errorf("write review draft: %w", err)
 	}
 	if err := os.Rename(tmp, draftPath(outputDir)); err != nil {
+		return fmt.Errorf("write review draft: %w", err)
+	}
+	if err := atomicfile.SyncDir(outputDir); err != nil {
 		return fmt.Errorf("write review draft: %w", err)
 	}
 	return nil
