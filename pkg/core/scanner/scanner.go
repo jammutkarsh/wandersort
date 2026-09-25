@@ -216,6 +216,16 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 			return nil
 		}
 
+		// A link to a file is not the file: its recorded size would be the
+		// link's, a check would call every such photo damaged, and a move
+		// could carry the link into the library and leave the photo behind.
+		// Directory links are never followed either (WalkDir doesn't); the
+		// folder a link points at is scanned as a root of its own.
+		if d.Type()&fs.ModeSymlink != 0 {
+			s.log.Warn("Skipping a link; add the folder it points to instead", "walkingPath", s.path.RelativeToHome(p))
+			return nil
+		}
+
 		// Classify file and apply ignore rules in one pass
 		mediaType, shouldProcess, shouldIgnore := s.classifier.ClassifyName(d.Name())
 		switch {

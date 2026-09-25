@@ -119,6 +119,32 @@ func TestScanner(t *testing.T) {
 				t.Fatalf("expected 5 discoveries, got %d: %v", len(discoveries), names)
 			}
 		}},
+		{"WalkRoot_SkipsLinkedFiles", func(t *testing.T) {
+			root := t.TempDir()
+			elsewhere := t.TempDir()
+			if err := os.WriteFile(filepath.Join(elsewhere, "real.jpg"), []byte("photo"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "own.jpg"), []byte("photo"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(elsewhere, "real.jpg"), filepath.Join(root, "link.jpg")); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			sc := newTestScanner(t)
+			filesChan := make(chan FileDiscovery, 10)
+			if _, err := sc.walkRoot(context.Background(), root, "", filesChan); err != nil {
+				t.Fatalf("walkRoot: %v", err)
+			}
+			close(filesChan)
+			var names []string
+			for d := range filesChan {
+				names = append(names, d.Name)
+			}
+			if len(names) != 1 || names[0] != "own.jpg" {
+				t.Errorf("discovered %v, want only own.jpg (the link skipped)", names)
+			}
+		}},
 		{"WalkRoot_ContextCancellation", func(t *testing.T) {
 			root := createTestTree(t)
 			sc := newTestScanner(t)
