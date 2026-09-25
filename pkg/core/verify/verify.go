@@ -72,8 +72,14 @@ type Report struct {
 	// Checked is the number of placed files looked at; Bytes their total size.
 	Checked int
 	Bytes   int64
-	// Problems is every file that failed, in the order they were checked.
+	// Problems is every file that is still there but not what was recorded,
+	// in the order they were checked.
 	Problems []Problem
+	// Forgotten is every placed file that is gone from the library, by its
+	// library-relative path. Its records are deleted: the library no longer
+	// holds it, so nothing should claim it does, and a copy still at a source
+	// is planned again by the next add instead of being skipped as placed.
+	Forgotten []string
 	// Database is SQLite's own verdict on the file holding the plan: "ok", or
 	// the first thing it found wrong.
 	Database string
@@ -84,7 +90,8 @@ type Report struct {
 	Strays []string
 }
 
-// Sound reports whether the library is entirely as recorded.
+// Sound reports whether the library is entirely as recorded — forgotten files
+// included, since their records now say they are gone.
 func (r Report) Sound() bool {
 	return len(r.Problems) == 0 && len(r.Strays) == 0 && r.Database == "ok"
 }
@@ -96,6 +103,16 @@ func (r Report) Sound() bool {
 // A file that verifies has its VERIFY error row cleared, and one that fails
 // gets a fresh one: the errors table holds only live problems (spec D29), so
 // `wandersort admin report` ships exactly the failures that are still true.
+//
+// A file that is gone is not a problem to keep reporting but a fact to record:
+// its rows are deleted once the walk is done (Report.Forgotten), after a
+// backup of the database, so the next check does not list it again and a
+// copy at a source can be planned in again. A file that is there but wrong —
+// a different size, different bytes, unreadable — keeps its rows: that is
+// damage to look at, not a deletion to accept.
+//
+// Nothing is logged per file: the caller reports the files, grouped, and a
+// per-file warning line beside that list only said everything twice.
 func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, o Options) (Report, error) {
 	var rows []struct {
 		FileID int64  `db:"file_id"`
@@ -117,6 +134,7 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 
 	start := time.Now()
 	rep := Report{Database: "not checked"}
+	var gone []int64
 	for i, r := range rows {
 		if ctx.Err() != nil {
 			return rep, ctx.Err()
@@ -129,9 +147,18 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		rep.Checked++
 		problem, size := checkFile(abs, rel, r.Size, r.Hash, o.Full)
 		rep.Bytes += size
+		if problem != nil && problem.Kind == db.KindNotFound {
+			gone = append(gone, r.FileID)
+			rep.Forgotten = append(rep.Forgotten, rel)
+			log.Info("placed file is gone from the library; forgetting it", "path", rel)
+			if o.OnProgress != nil {
+				o.OnProgress(rel, i+1, len(rows))
+			}
+			continue
+		}
 		if problem != nil {
 			rep.Problems = append(rep.Problems, *problem)
-			log.Warn("placed file does not match the library's record",
+			log.Info("placed file does not match the library's record",
 				"path", rel, "kind", problem.Kind, "detail", problem.Detail)
 		}
 		if err := record(database, r.FileID, problem); err != nil {
@@ -143,6 +170,10 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	}
 
 	database.Writer.Flush() // every result recorded before the report says so
+
+	if err := forget(ctx, database, outputDir, gone); err != nil {
+		return rep, err
+	}
 
 	var err error
 	if rep.Database, err = checkDatabase(ctx, database); err != nil {
@@ -227,6 +258,29 @@ func record(database *db.DB, fileID int64, p *Problem) error {
 	return nil
 }
 
+// forget deletes the records of placed files that are gone from the library:
+// the registry row, and with it (ON DELETE CASCADE) the file's hash, plan and
+// error rows. The database is backed up first, as a reset is — forgetting is
+// the one thing a check writes that it cannot take back.
+func forget(ctx context.Context, database *db.DB, outputDir string, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if err := database.Backup(ctx, filepath.Join(outputDir, db.BackupFileName)); err != nil {
+		return fmt.Errorf("back up the database before forgetting missing files: %w", err)
+	}
+	return database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+		q, args, err := sqlx.In(`DELETE FROM file_registry WHERE placed = 1 AND id IN (?)`, ids)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, tx.Rebind(q), args...); err != nil {
+			return fmt.Errorf("forget missing files: %w", err)
+		}
+		return nil
+	})
+}
+
 // problemError turns a Problem back into an error carrying the sentinel its
 // kind was derived from, so RecordError buckets it the same way every other
 // stage's failures are bucketed rather than inventing a second table of kinds.
@@ -285,6 +339,9 @@ func summary(rep Report, o Options, elapsed time.Duration) string {
 	}
 	msg := fmt.Sprintf("Checked the %s of %d files (%s) in %s",
 		depth, rep.Checked, volume.HumanBytes(uint64(rep.Bytes)), elapsed)
+	if len(rep.Forgotten) > 0 {
+		msg += fmt.Sprintf(" — %d gone, forgotten", len(rep.Forgotten))
+	}
 	if len(rep.Problems) > 0 {
 		msg += fmt.Sprintf(" — %d do not match", len(rep.Problems))
 	}

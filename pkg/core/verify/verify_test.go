@@ -69,23 +69,42 @@ func TestVerifyPassesOnAnIntactLibrary(t *testing.T) {
 }
 
 // A file the user (or anything else) deleted out from under the library is
-// the failure a quick pass exists to catch — no reading required.
-func TestVerifyFindsAMissingFileWithoutReadingAnything(t *testing.T) {
+// the failure a quick pass exists to catch — no reading required. It is not
+// kept as a problem: its rows are deleted, after a backup, so the next check
+// does not list it again and a copy at a source can be planned in again.
+func TestVerifyForgetsAMissingFileWithoutReadingAnything(t *testing.T) {
 	d, out := dbtest.New(t), t.TempDir()
 	abs := seedPlaced(t, d, out, 1, "2024/A.jpg", "hello")
+	seedPlaced(t, d, out, 2, "2024/B.jpg", "world")
+	dbtest.SeedEntry(t, d, 1, "2024/A.jpg", "2024/A.jpg")
 	if err := os.Remove(abs); err != nil {
 		t.Fatal(err)
 	}
 
 	rep := run(t, d, out, false)
-	if len(rep.Problems) != 1 || rep.Problems[0].Kind != db.KindNotFound {
-		t.Fatalf("problems = %+v, want one not-found", rep.Problems)
+	if len(rep.Problems) != 0 {
+		t.Errorf("problems = %+v, want none — a gone file is forgotten, not kept", rep.Problems)
 	}
-	if rep.Problems[0].Path != filepath.Join("2024", "A.jpg") {
-		t.Errorf("path = %q, want the library-relative path", rep.Problems[0].Path)
+	if len(rep.Forgotten) != 1 || rep.Forgotten[0] != filepath.Join("2024", "A.jpg") {
+		t.Fatalf("forgotten = %v, want the library-relative 2024/A.jpg", rep.Forgotten)
 	}
-	if rep.Sound() {
-		t.Error("Sound() is true with a missing file")
+	if !rep.Sound() {
+		t.Error("Sound() is false once the gone file is forgotten")
+	}
+	for table, want := range map[string]int{"file_registry": 1, "file_metadata": 1, "virtual_fs_entries": 0, "errors": 0} {
+		var n int
+		if err := d.SQL.Get(&n, `SELECT COUNT(*) FROM `+table); err != nil {
+			t.Fatal(err)
+		}
+		if n != want {
+			t.Errorf("%s holds %d rows, want %d", table, n, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(out, db.BackupFileName)); err != nil {
+		t.Errorf("no backup before forgetting: %v", err)
+	}
+	if rep := run(t, d, out, false); len(rep.Forgotten) != 0 || rep.Checked != 1 {
+		t.Errorf("second check: %+v, want 1 file checked and nothing forgotten again", rep)
 	}
 }
 
@@ -107,6 +126,8 @@ func TestVerifyFullFindsChangedContents(t *testing.T) {
 	}
 }
 
+// A file that is there but wrong is damage, not a deletion: it is reported
+// and its records are kept.
 func TestVerifyFindsATruncatedFile(t *testing.T) {
 	d, out := dbtest.New(t), t.TempDir()
 	abs := seedPlaced(t, d, out, 1, "2024/A.jpg", "hello")
@@ -115,8 +136,12 @@ func TestVerifyFindsATruncatedFile(t *testing.T) {
 	}
 
 	rep := run(t, d, out, false)
-	if len(rep.Problems) != 1 {
-		t.Fatalf("problems = %+v, want one", rep.Problems)
+	if len(rep.Problems) != 1 || len(rep.Forgotten) != 0 {
+		t.Fatalf("problems = %+v, forgotten = %v; want one problem, nothing forgotten", rep.Problems, rep.Forgotten)
+	}
+	var n int
+	if err := d.SQL.Get(&n, `SELECT COUNT(*) FROM file_registry`); err != nil || n != 1 {
+		t.Errorf("registry rows = %d, %v; want the damaged file kept", n, err)
 	}
 }
 
