@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS file_registry (
     -- Discovery metadata
     discovered_at TEXT NOT NULL,
     last_seen_at  TEXT NOT NULL,
+    -- The scan that last saw this file: a counter, one past the highest
+    -- stored, taken when a scan starts. The sweep deletes rows under a root
+    -- whose number is older than the running scan's. Not a timestamp: a
+    -- wall clock can step backwards mid-scan (NTP, waking from sleep), and a
+    -- file seen in that window would compare as unseen and lose its row
+    last_seen_scan INTEGER NOT NULL DEFAULT 0,
 
     -- File classification
     media_type     TEXT,

@@ -54,15 +54,22 @@ func New(db *db.DB, log logger.Logger, workers int) *Scanner {
 func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, error) {
 	s.log.Info("Scanner Phase: Processing all paths", "pathCount", len(paths))
 
-	// storeScan stamps last_seen_at after this; sweep uses the gap to tell
-	// "not re-seen this run" without needing any session identity.
-	scanStartedAt := time.Now()
+	// Every row this run sees is stamped with scan; the sweep deletes the
+	// rows under a root still carrying an older number. One past the highest
+	// stored is newer than every row, and the output lock means no other scan
+	// can take the same number.
+	var scan int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(last_seen_scan), 0) + 1 FROM file_registry`).Scan(&scan); err != nil {
+		return 0, fmt.Errorf("number this scan: %w", err)
+	}
 
 	type scanResult struct {
-		root  string // canonical absolute root, "" when canonicalization failed
-		count int
-		gaps  walkGaps
-		err   error
+		root   string // canonical absolute root, "" when canonicalization failed
+		volume string // the root's volume UUID, "" when unresolved
+		count  int
+		gaps   walkGaps
+		err    error
 	}
 
 	// Buffer exactly one result per path; no path produces more than one result
@@ -92,7 +99,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 				}
 
 				volumeUUID := s.volumes.ForPath(absRoot)
-				count, gaps, err := s.scan(ctx, absRoot, volumeUUID, force)
+				count, gaps, err := s.scan(ctx, absRoot, volumeUUID, scan, force)
 				if err != nil {
 					s.log.Error("Failed to scan path", "path", absRoot, "error", err)
 					results <- scanResult{root: absRoot, count: count, err: fmt.Errorf("scan failed for %s: %w", path, err)}
@@ -100,7 +107,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 				}
 
 				s.log.Info("Scanned path", "path", absRoot, "filesDiscovered", count)
-				results <- scanResult{root: absRoot, count: count, gaps: gaps}
+				results <- scanResult{root: absRoot, volume: volumeUUID, count: count, gaps: gaps}
 			}
 		})
 	}
@@ -111,7 +118,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 
 	// Flush before sweeping: the upserts are queued, not written, so only a
 	// writer flush guarantees the sweep's own statement sees every
-	// last_seen_at update
+	// last_seen_scan update
 	s.db.Writer.Flush()
 
 	totalFiles := 0
@@ -124,7 +131,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 			}
 			continue
 		}
-		if err := s.sweep(ctx, scanStartedAt, result.root, result.gaps); err != nil {
+		if err := s.sweep(ctx, scan, sweptRoot{root: result.root, volume: result.volume, seen: result.count}, result.gaps); err != nil {
 			s.log.Error("Failed to sweep path", "path", result.root, "error", err)
 			if firstScanErr == nil {
 				firstScanErr = err
@@ -137,7 +144,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 
 // scan walks absRoot and queues one upsert per file it finds, returning how
 // many it queued and the parts of the tree the walk could not see.
-func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, force bool) (int, walkGaps, error) {
+func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, scan int64, force bool) (int, walkGaps, error) {
 	s.log.Info("Scanning path", "path", absRoot)
 	// A separate walker goroutine decouples traversal from queueing, so a
 	// full writer queue never stalls the directory walk mid-read.
@@ -154,7 +161,7 @@ func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, force bo
 
 	count := 0
 	for file := range discoveries {
-		if !s.db.Writer.Write(s.storeScan(file, force)) {
+		if !s.db.Writer.Write(s.storeScan(file, scan, force)) {
 			s.log.Warn("Bulk writer closed; dropping discovery write", "path", file.Name)
 			continue
 		}
@@ -261,18 +268,28 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 // sweep to mean anything, and it is skipped until a cleaner walk.
 const maxSweepGaps = 1000
 
-// sweep hard-deletes rows under root not re-seen this scan (last_seen_at
-// still older than scanStartedAt), plan and metadata rows included. Only
-// called for roots whose walk finished cleanly, so a transient failure
-// elsewhere heals on the next clean scan instead of losing rows. No grace
-// window: a placed file's row was already repointed at a library-relative
-// path by execute, which is never under a scan root, so it is never a sweep
-// candidate — nothing else needs the retention a soft delete used to buy.
+// sweptRoot is one cleanly walked root as the sweep needs it: its canonical
+// path, the volume it was on, and how many files the walk saw under it.
+type sweptRoot struct {
+	root, volume string
+	seen         int
+}
+
+// sweep hard-deletes rows under root not re-seen by this scan (last_seen_scan
+// still older than scan), plan and metadata rows included. Only called for
+// roots whose walk finished cleanly, so a transient failure elsewhere heals
+// on the next clean scan instead of losing rows. No grace window: a placed
+// file's row was already repointed at a library-relative path by execute,
+// which is never under a scan root, so it is never a sweep candidate.
 //
-// Rows under gaps are kept: the walk could not see there, which says nothing
-// about whether the files are still on disk. A transient EIO on one folder
-// used to sweep that folder's rows away, hashes and plan with them.
-func (s *Scanner) sweep(ctx context.Context, scanStartedAt time.Time, root string, gaps walkGaps) error {
+// Rows are kept whenever the walk may simply not have been looking at them:
+//   - under gaps — a folder it could not list, a file it could not stat;
+//   - on another volume than the one now at root — a different card mounted
+//     at the same path (macOS mounts every unnamed card at /Volumes/NO NAME);
+//   - under a root that walked clean but empty while rows say it held files
+//     — an unmounted drive's mount point is an empty, readable folder.
+func (s *Scanner) sweep(ctx context.Context, scan int64, r sweptRoot, gaps walkGaps) error {
+	root := r.root
 	if len(gaps.dirs)+len(gaps.files) > maxSweepGaps {
 		s.log.Warn("Skipping cleanup of vanished files: too much of this folder could not be read",
 			logger.UserKey, true, "path", root, "unreadable", len(gaps.dirs)+len(gaps.files))
@@ -287,7 +304,19 @@ func (s *Scanner) sweep(ctx context.Context, scanStartedAt time.Time, root strin
 	trimmed := strings.TrimSuffix(path.ToSourcePath(root), "/")
 	prefix := trimmed + "/"
 	prefixEnd := trimmed + string(rune('/'+1))
-	cutoff := db.FormatTime(scanStartedAt)
+
+	if r.seen == 0 {
+		var known int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM file_registry WHERE `+underDir,
+			trimmed, prefix, prefixEnd).Scan(&known); err != nil {
+			return fmt.Errorf("sweep %q: %w", root, err)
+		}
+		if known > 0 {
+			s.log.Warn("Found no files in a folder the library knows files in; kept them — if the drive was not mounted, nothing was forgotten",
+				logger.UserKey, true, "path", root, "known", known)
+			return nil
+		}
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -295,8 +324,9 @@ func (s *Scanner) sweep(ctx context.Context, scanStartedAt time.Time, root strin
 	}
 	defer tx.Rollback()
 
-	query := `DELETE FROM file_registry WHERE last_seen_at < ? AND ` + underDir
-	args := []any{cutoff, trimmed, prefix, prefixEnd}
+	query := `DELETE FROM file_registry WHERE last_seen_scan < ? AND ` + underDir +
+		` AND (volume_uuid IS NULL OR ? = '' OR volume_uuid = ?)`
+	args := []any{scan, trimmed, prefix, prefixEnd, r.volume, r.volume}
 	if !gaps.empty() {
 		for _, d := range gaps.dirs {
 			d = strings.TrimSuffix(d, "/")
@@ -336,7 +366,7 @@ const underDir = `(file_dir = ? OR (file_dir >= ? AND file_dir < ?))`
 // nothing outside tx: a batch that fails replays every op in it, including
 // ones that already ran, so any other effect would happen twice — it once
 // carried a WaitGroup.Done() and panicked the scan with a negative counter.
-func (s *Scanner) storeScan(file FileDiscovery, force bool) db.DBOperation {
+func (s *Scanner) storeScan(file FileDiscovery, scan int64, force bool) db.DBOperation {
 	// A file whose size or mtime moved (or any file under force) is not the
 	// file that was read: its hash, tags and planned folder describe something
 	// else. Delete the row — metadata, plan and error rows cascade — and let
@@ -350,10 +380,11 @@ func (s *Scanner) storeScan(file FileDiscovery, force bool) db.DBOperation {
 			file_dir, file_name, file_size, file_modified_at,
 			volume_uuid, media_type, file_extension,
 			file_origin,
-			discovered_at, last_seen_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			discovered_at, last_seen_at, last_seen_scan
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (file_dir, file_name) DO UPDATE SET
 			last_seen_at = excluded.last_seen_at,
+			last_seen_scan = excluded.last_seen_scan,
 			file_origin = excluded.file_origin,
 			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid)`
 
@@ -373,7 +404,7 @@ func (s *Scanner) storeScan(file FileDiscovery, force bool) db.DBOperation {
 		if _, err := tx.ExecContext(ctx, query,
 			file.Dir, file.Name, file.Size, modifiedAt,
 			db.StrOrNil(file.VolumeUUID), file.MediaType, file.Extension,
-			FileOriginSource, now, now,
+			FileOriginSource, now, now, scan,
 		); err != nil {
 			s.log.Warn("Failed to upsert file", "path", file.Name, "error", err)
 		}

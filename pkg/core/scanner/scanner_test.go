@@ -335,11 +335,11 @@ func TestScanner(t *testing.T) {
 			ctx := context.Background()
 			sc, d := newDBScanner(t)
 
-			// SeedFile stamps a fixed 2024-01-01 last_seen_at, well before "now"
+			// SeedFile leaves last_seen_scan at 0, older than scan 1
 			dbtest.SeedFile(t, d, 1, "/photos/trips", "gone.jpg", 10)
 			dbtest.SeedFile(t, d, 2, "/", "root.jpg", 10)
 
-			if err := sc.sweep(ctx, time.Now(), "/", walkGaps{}); err != nil {
+			if err := sc.sweep(ctx, 1, sweptRoot{root: "/", seen: 1}, walkGaps{}); err != nil {
 				t.Fatalf("sweep: %v", err)
 			}
 
@@ -449,7 +449,7 @@ func TestScanner(t *testing.T) {
 				dirs:  []string{"/lib/locked"},
 				files: [][2]string{{"/lib", "unstattable.jpg"}},
 			}
-			if err := sc.sweep(ctx, time.Now(), "/lib", gaps); err != nil {
+			if err := sc.sweep(ctx, 1, sweptRoot{root: "/lib", seen: 1}, gaps); err != nil {
 				t.Fatalf("sweep: %v", err)
 			}
 			var left []int64
@@ -458,6 +458,102 @@ func TestScanner(t *testing.T) {
 			}
 			if fmt.Sprint(left) != "[1 2 3]" {
 				t.Errorf("rows left = %v, want [1 2 3] (unseen kept, vanished swept)", left)
+			}
+		}},
+		// The sweep goes by scan number, never by clock: a row seen by this
+		// scan survives however its time reads, and one it did not see goes
+		{"SweepIgnoresTheClock", func(t *testing.T) {
+			ctx := context.Background()
+			sc, d := newDBScanner(t)
+			dbtest.SeedFile(t, d, 1, "/lib", "seen.jpg", 10)
+			dbtest.SeedFile(t, d, 2, "/lib", "unseen.jpg", 10)
+			// seen by scan 7, but stamped as if the clock had stepped back a
+			// year; unseen stamped far in the future
+			if _, err := d.ExecContext(ctx, `UPDATE file_registry SET last_seen_scan = 7, last_seen_at = '2000-01-01T00:00:00.000000000Z' WHERE id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.ExecContext(ctx, `UPDATE file_registry SET last_seen_scan = 6, last_seen_at = '2999-01-01T00:00:00.000000000Z' WHERE id = 2`); err != nil {
+				t.Fatal(err)
+			}
+			if err := sc.sweep(ctx, 7, sweptRoot{root: "/lib", seen: 1}, walkGaps{}); err != nil {
+				t.Fatal(err)
+			}
+			rows := registryByName(t, d)
+			if _, ok := rows["seen.jpg"]; !ok {
+				t.Error("a row this scan saw was swept")
+			}
+			if _, ok := rows["unseen.jpg"]; ok {
+				t.Error("a row this scan did not see survived")
+			}
+		}},
+		// Each scan takes a number past every stored one and stamps what it sees
+		{"RunNumbersEachScan", func(t *testing.T) {
+			ctx := context.Background()
+			sc, d := newDBScanner(t)
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "photo.jpg"), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var stamps []int64
+			for range 2 {
+				if _, err := sc.Run(ctx, []string{root}, false); err != nil {
+					t.Fatal(err)
+				}
+				d.Writer.Flush()
+				var n int64
+				if err := d.SQL.Get(&n, `SELECT last_seen_scan FROM file_registry`); err != nil {
+					t.Fatal(err)
+				}
+				stamps = append(stamps, n)
+			}
+			if stamps[0] < 1 || stamps[1] <= stamps[0] {
+				t.Errorf("scan numbers = %v, want increasing from 1", stamps)
+			}
+		}},
+		// An unmounted drive's mount point walks clean and empty: the rows the
+		// library holds under it are kept, not swept
+		{"SweepKeepsRowsUnderAnEmptyRoot", func(t *testing.T) {
+			ctx := context.Background()
+			sc, d := newDBScanner(t)
+			dbtest.SeedFile(t, d, 1, "/mnt/card/DCIM", "a.jpg", 10)
+			if err := sc.sweep(ctx, 1, sweptRoot{root: "/mnt/card", seen: 0}, walkGaps{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := registryByName(t, d)["a.jpg"]; !ok {
+				t.Error("an empty walk swept the rows under its root")
+			}
+		}},
+		// Another card mounted at the same path does not sweep the first
+		// card's rows; unknown volumes (either side) sweep as before
+		{"SweepKeepsRowsOfAnotherVolume", func(t *testing.T) {
+			tests := []struct {
+				name       string
+				rowVolume  string
+				rootVolume string
+				kept       bool
+			}{
+				{"different card at the same path", "card-A", "card-B", true},
+				{"same card", "card-A", "card-A", false},
+				{"root volume unknown", "card-A", "", false},
+				{"row volume unknown", "", "card-B", false},
+			}
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					ctx := context.Background()
+					sc, d := newDBScanner(t)
+					dbtest.SeedFile(t, d, 1, "/Volumes/NO NAME/DCIM", "a.jpg", 10)
+					if tt.rowVolume != "" {
+						if _, err := d.ExecContext(ctx, `UPDATE file_registry SET volume_uuid = ?`, tt.rowVolume); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := sc.sweep(ctx, 1, sweptRoot{root: "/Volumes/NO NAME", volume: tt.rootVolume, seen: 3}, walkGaps{}); err != nil {
+						t.Fatal(err)
+					}
+					if _, ok := registryByName(t, d)["a.jpg"]; ok != tt.kept {
+						t.Errorf("kept = %v, want %v", ok, tt.kept)
+					}
+				})
 			}
 		}},
 		// TestSweepDeletesDependentRows: a vanished file's metadata, vfs-plan and
@@ -474,7 +570,7 @@ func TestScanner(t *testing.T) {
 			dbtest.SeedEntry(t, d, 1, "/gone/vanished.jpg", "stale/vanished.jpg")
 			dbtest.SeedTransferError(t, d, 1, "boom")
 
-			if err := sc.sweep(ctx, time.Now(), "/gone", walkGaps{}); err != nil {
+			if err := sc.sweep(ctx, 1, sweptRoot{root: "/gone", seen: 1}, walkGaps{}); err != nil {
 				t.Fatalf("sweep: %v", err)
 			}
 
