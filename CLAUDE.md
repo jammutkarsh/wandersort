@@ -720,11 +720,15 @@ Back in `internal/cli/`:
 - `check.go` — `check` cmd (was `verify`): `pkg/core/verify` plus the one thing that
     package deliberately doesn't do, which is say it out loud. **Every
     failing file is named on screen, not only in the log** — a count is not
-    something a person can act on, and these are their photos. `--full`
+    something a person can act on, and these are their photos. **Grouped, one
+    line per file**: one heading per kind (gone, changed, unreadable, not as
+    recorded — `groupProblems`) with the paths under it, and no per-file log
+    warning beside the list (it only said everything twice). `--full`
     re-reads contents; without it the pass is existence and size and the
     output says so, and points at `--full` for the rest. A damaged database
     names `wandersort admin db --restore`; strays are listed as safe to delete. Exits
-    non-zero only on real problems, never on strays alone.
+    non-zero only on real problems, never on strays or forgotten files alone —
+    forgetting leaves the records true.
 - `admin_report.go` — `admin report` (was `issue`): zips the newest `issueLogs` (5) non-empty logs
     other than its own run's, under `logs/`, + `about.txt`, into the **current
     directory**, not the library; db opt-in via `--include-db` (holds paths/GPS).
@@ -1625,7 +1629,14 @@ tree over the whole library.
   removing files is `execute`'s job, and a verify that deletes is one nobody
   runs twice. Only `placed = 1` rows: an unplaced file still lives at its
   source, where the user may legitimately have changed it, and the plan is a
-  proposal about it rather than a record of it. Failures go into the
+  proposal about it rather than a record of it. **A placed file that is gone
+  is forgotten, not kept as a problem** (`Report.Forgotten`, `forget`): after
+  a backup, its registry row is deleted and its hash, plan and error rows go
+  by cascade. Otherwise its hash stayed "placed", so a copy still at a source
+  was never planned again, and every check listed it again (reported: files
+  deleted from the library, then `add` proposed 0 and `execute` said
+  nothing to transfer). A file that is there but wrong keeps its rows —
+  damage to look at, not a deletion to accept. Failures go into the
   `errors` table as `VERIFY` rows and a file that verifies has its row
   deleted, so the table keeps holding only live problems (D29) and
   `wandersort admin report` ships exactly the failures still true. Sequential,
