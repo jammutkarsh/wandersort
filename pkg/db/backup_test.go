@@ -101,6 +101,19 @@ func TestRestoreBringsBackBackedUpState(t *testing.T) {
 	if _, err := os.Stat(dest); err != nil {
 		t.Errorf("restore consumed the backup: %v", err)
 	}
+	// the database it replaced is kept, so the restore itself can be undone
+	before, err := sql.Open("sqlite", filepath.Join(dir, BeforeRestoreFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept int
+	if err := before.QueryRow(`SELECT count(*) FROM user_labels`).Scan(&kept); err != nil {
+		t.Fatalf("replaced database not kept readable: %v", err)
+	}
+	before.Close()
+	if kept != 0 {
+		t.Errorf("kept copy has %d labels, want the replaced state's 0", kept)
+	}
 
 	d, err = New(ctx, live, AppDB, logger.NewNoopLogger())
 	if err != nil {

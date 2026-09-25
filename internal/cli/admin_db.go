@@ -78,7 +78,7 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 
 	yes, _ := cmd.Flags().GetBool(flagYes)
 	if !yes && !a.confirm(cmd, "Restore the database from the backup of "+taken+"?",
-		"The plan and your edits go back to that point; anything since is lost. Files already in the library stay where they are.") {
+		"The plan and your edits go back to that point. Files already in the library stay where they are, and the current database is kept as "+db.BeforeRestoreFileName+" in case you want it back.") {
 		return fmt.Errorf("restore cancelled")
 	}
 
@@ -108,6 +108,7 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 	}
 
 	fmt.Fprintln(os.Stderr, tui.OK.Render("Database restored from the backup of "+taken+"."))
+	fmt.Fprintln(os.Stderr, tui.FaintTxt.Render("The database it replaced is kept as "+db.BeforeRestoreFileName+" in the library folder."))
 	return nil
 }
 

@@ -27,6 +27,11 @@ import (
 // zstd-compressed, named for what is inside and what compressed it.
 const BackupFileName = ".wandersort.db.zst"
 
+// BeforeRestoreFileName is the database a restore replaced, kept beside it
+// so a restore run by mistake can itself be undone: rename it back over
+// .wandersort.db. One is kept; the next restore overwrites it.
+const BeforeRestoreFileName = ".wandersort.db.before-restore"
+
 // ErrInUse means another connection — another program, or a sqlite browser —
 // has the database open, so it cannot be replaced safely.
 var ErrInUse = errors.New("the database is open in another program")
@@ -224,6 +229,12 @@ func Restore(ctx context.Context, backup, live string) error {
 		return ErrInUse
 	}
 
+	// Only now, with every other connection shut out and the WAL folded into
+	// the main file, is the file on disk the whole database: keep it.
+	if err := keepBeforeRestore(ctx, c, live); err != nil {
+		return fmt.Errorf("keep a copy of the database being replaced (nothing was changed): %w", err)
+	}
+
 	err = c.Raw(func(dc any) error {
 		r, err := dc.(interface {
 			NewRestore(string) (*sqlite.Backup, error)
@@ -241,4 +252,36 @@ func Restore(ctx context.Context, backup, live string) error {
 		return fmt.Errorf("restore: %w", err)
 	}
 	return nil
+}
+
+// keepBeforeRestore copies the live database aside before a restore
+// overwrites it. A byte copy first: it works even when the database is too
+// damaged for SQLite to read, which is when restores happen. The caller holds
+// the exclusive lock in rollback-journal mode, so the main file is the whole,
+// consistent database. Windows forbids reading SQLite's locked byte range
+// (databases past 1 GiB), so VACUUM INTO on the locked connection is the
+// fallback.
+func keepBeforeRestore(ctx context.Context, c *sql.Conn, live string) error {
+	dest := filepath.Join(filepath.Dir(live), BeforeRestoreFileName)
+	if err := os.Remove(dest); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	_, copyErr := atomicfile.Copy(live, dest, nil, nil)
+	if copyErr == nil {
+		return nil
+	}
+	os.Remove(dest)
+	if _, err := c.ExecContext(ctx, `VACUUM INTO ?`, dest); err != nil {
+		os.Remove(dest)
+		return errors.Join(copyErr, err)
+	}
+	f, err := os.Open(dest)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return atomicfile.SyncDir(filepath.Dir(dest))
 }
