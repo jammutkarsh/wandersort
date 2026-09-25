@@ -32,10 +32,11 @@ func TestFlushDrainsEnqueuedOps(t *testing.T) {
 	t.Cleanup(func() { d.Close() })
 
 	const n = 500
-	for range n {
+	for i := range n {
+		label := fmt.Sprintf("x%d", i) // labels are a set: each op a new one
 		if !d.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
 			_, err := tx.ExecContext(ctx, `
-				INSERT INTO user_labels (label, kind) VALUES ('x', 'EVENT')`)
+				INSERT INTO user_labels (label, kind) VALUES (?, 'EVENT')`, label)
 			return err
 		}) {
 			t.Fatal("writer closed early")

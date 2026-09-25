@@ -24,3 +24,15 @@ func TestSchemaOneMetadataRowPerFile(t *testing.T) {
 		t.Error("a second metadata row for one file was accepted")
 	}
 }
+
+// user_labels is a set of names: the same name twice is one row.
+func TestSchemaLabelsAreASet(t *testing.T) {
+	d := dbtest.New(t)
+	ctx := context.Background()
+	if _, err := d.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Goa', 'EVENT')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Goa', 'EVENT')`); err == nil {
+		t.Error("the same label was stored twice")
+	}
+}

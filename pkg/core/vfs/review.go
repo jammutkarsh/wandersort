@@ -326,7 +326,7 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 		}
 		for _, name := range edits.learned {
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO user_labels (label, kind) VALUES (?, 'EVENT')`, name); err != nil {
+				`INSERT INTO user_labels (label, kind) VALUES (?, 'EVENT') ON CONFLICT DO NOTHING`, name); err != nil {
 				return err
 			}
 		}

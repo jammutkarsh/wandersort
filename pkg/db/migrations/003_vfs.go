@@ -106,6 +106,9 @@ CREATE TABLE IF NOT EXISTS user_labels (
     time_end TEXT,
     gps_lat REAL,
     gps_lon REAL,
-    created_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
+    created_at TEXT NOT NULL DEFAULT ` + sqlNowDefault + `,
+    -- a set of names, not a log: every review save offers each renamed
+    -- folder again, and a name already here is not a new one
+    UNIQUE (label, kind)
 );
 `

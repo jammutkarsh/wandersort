@@ -72,6 +72,11 @@ func TestReview(t *testing.T) {
 			if !ok {
 				t.Fatal("no folder to rename")
 			}
+			// typed in an earlier review too: remembering it again is not an
+			// error, and it stays one name
+			if _, err := h.d.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Manali', 'EVENT')`); err != nil {
+				t.Fatal(err)
+			}
 
 			if err := Confirm(ctx, h.d, tree); err != nil {
 				t.Fatal(err)
