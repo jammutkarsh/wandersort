@@ -9,8 +9,10 @@ package install
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -71,11 +73,19 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 		logger.PhaseKey, "location", logger.EventKey, "start",
 		"dir", path.New().RelativeToHome(dbPath))
 
+	// The metadata first, and required: it holds the checksum the database
+	// is verified against, and a database without it fails verification on
+	// every later start — while its presence alone stops it from ever being
+	// downloaded again.
+	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
+	if err := downloadFile(ctx, log, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
+		return fmt.Errorf("download %s: %w", LocationMetaFileName, err)
+	}
+
 	archiveName := LocationDBFileName + locationDBArchiveSuffix
 	archivePath := dbPath + locationDBArchiveSuffix
 	// no digest here: the expected hash is of the decompressed db and ships
-	// in the metadata file downloaded next, which verifyLocationDB checks
-	// against once both are on disk
+	// in the metadata file above, which verifyLocationDB checks against
 	if err := downloadFile(ctx, log, archivePath, LocationDownloadBaseURL+"/"+archiveName, "", onProgress); err != nil {
 		return fmt.Errorf("download %s: %w", archiveName, err)
 	}
@@ -91,11 +101,6 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 	}
 	if err := os.Remove(archivePath); err != nil {
 		log.Warn("failed to remove downloaded archive", "path", archivePath, "error", err)
-	}
-
-	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
-	if err := downloadFile(ctx, log, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
-		log.Warn("location db: could not download metadata (non-fatal)", "file", LocationMetaFileName, "error", err)
 	}
 
 	log.Info("location database downloaded", logger.UserKey, true,
@@ -178,6 +183,13 @@ func verifyLocationDB(dbPath string, locationDB *db.DB, log logger.Logger) error
 	return nil
 }
 
+func removeIfExists(p string) error {
+	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // OpenLocationResolver downloads (if missing), verifies, and opens the
 // location database, returning a ready Resolver plus the *db.DB (caller
 // owns closing it). The single download-open-verify path — installtest
@@ -194,7 +206,15 @@ func OpenLocationResolver(ctx context.Context, log logger.Logger, dbPath string,
 
 	if err := verifyLocationDB(dbPath, locationDB, log); err != nil {
 		locationDB.Close()
-		return nil, nil, fmt.Errorf("location resolver: %w", err)
+		// A database that fails verification would otherwise stay: the
+		// download is skipped whenever the file exists, so every later start
+		// would fail the same way. Removing it makes the next start fetch a
+		// fresh copy.
+		metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
+		if rerr := errors.Join(removeIfExists(dbPath), removeIfExists(metaPath)); rerr != nil {
+			log.Warn("could not remove the location database that failed verification", "error", rerr)
+		}
+		return nil, nil, fmt.Errorf("location resolver: %w (removed; it will be downloaded again next time)", err)
 	}
 	return location.NewResolver(locationDB, log), locationDB, nil
 }

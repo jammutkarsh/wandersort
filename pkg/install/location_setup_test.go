@@ -160,4 +160,10 @@ func TestOpenLocationResolverVerifyFailureClosesDB(t *testing.T) {
 	if resolver != nil || locationDB != nil {
 		t.Errorf("OpenLocationResolver() on failure = %v, %v, want nil, nil", resolver, locationDB)
 	}
+	// left in place, it would skip the download and fail the same way forever
+	for _, p := range []string{dbPath, filepath.Join(dir, LocationMetaFileName)} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s survived a failed verification", filepath.Base(p))
+		}
+	}
 }
