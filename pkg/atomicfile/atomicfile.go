@@ -74,6 +74,21 @@ func Copy(src, dest string, tee io.Writer, check func() error) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("copy %s: %w", src, err)
 	}
+	// CreateTemp makes the file 0600, which a media server or another user
+	// can't read, and a fresh mtime loses the date a file without EXIF is
+	// planned by. Execute bits are dropped: FAT/exFAT cards report every
+	// file as 0777, and a photo is never a program. Set before the sync
+	// below, so the mode and date are as durable as the bytes.
+	info, err := in.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("stat %s: %w", src, err)
+	}
+	if err := tmp.Chmod(info.Mode().Perm() &^ 0o111); err != nil {
+		return 0, fmt.Errorf("set mode on temp file: %w", err)
+	}
+	if err := os.Chtimes(tmpName, time.Time{}, info.ModTime()); err != nil {
+		return 0, fmt.Errorf("set mtime on temp file: %w", err)
+	}
 	// Closing a file does not put its bytes on the platter — it only hands
 	// them to the page cache. Without this, Rename below publishes a name for
 	// a file whose contents a power loss can still take away, and the caller's
@@ -90,20 +105,6 @@ func Copy(src, dest string, tee io.Writer, check func() error) (int64, error) {
 		if err := check(); err != nil {
 			return 0, err
 		}
-	}
-	// CreateTemp makes the file 0600, which a media server or another user
-	// can't read, and a fresh mtime loses the date a file without EXIF is
-	// planned by. Execute bits are dropped: FAT/exFAT cards report every
-	// file as 0777, and a photo is never a program.
-	info, err := in.Stat()
-	if err != nil {
-		return 0, fmt.Errorf("stat %s: %w", src, err)
-	}
-	if err := os.Chmod(tmpName, info.Mode().Perm()&^0o111); err != nil {
-		return 0, fmt.Errorf("set mode on temp file: %w", err)
-	}
-	if err := os.Chtimes(tmpName, time.Time{}, info.ModTime()); err != nil {
-		return 0, fmt.Errorf("set mtime on temp file: %w", err)
 	}
 	if err := Rename(tmpName, dest); err != nil {
 		return 0, err
