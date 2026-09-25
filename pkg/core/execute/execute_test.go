@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -922,7 +923,9 @@ func TestPlaceMoveCommitsWhileBothNamesExist(t *testing.T) {
 	}
 }
 
-// A name already taken is skipped without copying into it first.
+// A name already taken is skipped without copying into it first: a copy only
+// learns the name is taken at its final link, so trying it costs the whole
+// file.
 func TestProductionTransferSkipsTakenNameBeforeCopying(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "A.jpg")
@@ -930,9 +933,21 @@ func TestProductionTransferSkipsTakenNameBeforeCopying(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := filepath.Join(dir, "lib", "A.jpg")
-	if err := os.MkdirAll(dst, 0o755); err != nil { // a folder holds the name: a copy could never land there
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(dst, []byte("another photo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var tried []string
+	orig := placeFile
+	placeFile = func(mode Mode, src, dst, want string, commit func() error) error {
+		tried = append(tried, dst)
+		return orig(mode, src, dst, want, commit)
+	}
+	t.Cleanup(func() { placeFile = orig })
+
 	landed, err := productionTransfer(context.Background(), ModeCopy, src, dst, hashOf("hello"),
 		func(string) error { return nil })
 	if err != nil {
@@ -940,5 +955,8 @@ func TestProductionTransferSkipsTakenNameBeforeCopying(t *testing.T) {
 	}
 	if want := withSuffix(dst, 1); landed != want {
 		t.Errorf("landed at %s, want %s", landed, want)
+	}
+	if slices.Contains(tried, dst) {
+		t.Errorf("copied into the taken name %s before moving on (tried %v)", dst, tried)
 	}
 }

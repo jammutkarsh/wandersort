@@ -462,7 +462,7 @@ func productionTransfer(ctx context.Context, mode Mode, src, dst, want string, c
 		if _, statErr := os.Lstat(target); statErr == nil {
 			err = fs.ErrExist
 		} else {
-			err = place(mode, src, target, want, func() error { return commit(target) })
+			err = placeFile(mode, src, target, want, func() error { return commit(target) })
 		}
 		if !errors.Is(err, fs.ErrExist) {
 			return target, err
@@ -533,6 +533,10 @@ func withSuffix(p string, n int) string {
 // verified and commit has recorded it, so the source is never lost to a
 // partial write, a wrong write, or a row that never made it to disk, and an
 // occupied dst never loses it at all.
+// placeFile is place, called through a variable so a test can see which
+// names productionTransfer tries to write to.
+var placeFile = place
+
 func place(mode Mode, src, dst, want string, commit func() error) error {
 	if mode == ModeMove {
 		// The commit sits inside the rename, between the new name landing
