@@ -229,3 +229,22 @@ func TestExecuteIndividuallyAllSucceed(t *testing.T) {
 		t.Fatalf("count = %d, want 2", count)
 	}
 }
+
+// TestFlushReturnsOnceTheLoopHasExited guards Flush against a Close racing
+// it: flushReqs is buffered, so the request lands even after the drain loop
+// is gone, and nothing would ever answer it. Stated directly — a loop that
+// has exited (done closed) while closed has not been read yet.
+func TestFlushReturnsOnceTheLoopHasExited(t *testing.T) {
+	bw := &BulkWriter{flushReqs: make(chan flushReq, 1), done: make(chan struct{})}
+	close(bw.done)
+	returned := make(chan struct{})
+	go func() {
+		bw.Flush()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Flush blocked forever on a writer whose loop had exited")
+	}
+}

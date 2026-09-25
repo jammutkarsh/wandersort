@@ -116,7 +116,12 @@ func (bw *BulkWriter) Flush() {
 	req := flushReq{done: make(chan struct{})}
 	select {
 	case bw.flushReqs <- req:
-		<-req.done
+		// flushReqs is buffered, so the send lands even when the loop has
+		// already exited on a concurrent Close; done is what says so then.
+		select {
+		case <-req.done:
+		case <-bw.done:
+		}
 	case <-bw.done:
 		// Writer is closed or shutting down, abandon flush request
 		return
