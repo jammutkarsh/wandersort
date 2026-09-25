@@ -566,7 +566,7 @@ func buildTargets(ctx context.Context, masters []masterFile, cfg Config, skip ma
 			done[j] = true
 		}
 		assignSuffix(taken, paths, func(k int) (string, string) {
-			return dirs[members[k]], masters[members[k]].FileName
+			return dirs[members[k]], path.SanitizeFileName(masters[members[k]].FileName)
 		})
 		for k, j := range members {
 			masters[j].targetPath = paths[k]

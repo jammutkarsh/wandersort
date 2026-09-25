@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -74,11 +75,42 @@ func TestSanitizeSegment(t *testing.T) {
 		{"  .leading-and-trailing._  ", "leading-and-trailing"},
 		{"", "-"},
 		{",,,", "-"},
+		{`Why? "Best" <day> | *ever*`, "Why-Best-day-ever"},
+		{"tab\there\x01", "tab-here"},
+		{"CON", "CON_"},
+		{"nul", "nul_"},
+		{"Console", "Console"},
+		{strings.Repeat("a", 300), strings.Repeat("a", 255)},
+		{strings.Repeat("é", 200), strings.Repeat("é", 127)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
 			if got := SanitizeSegment(tt.in); got != tt.want {
 				t.Errorf("SanitizeSegment(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeFileName(t *testing.T) {
+	long := strings.Repeat("a", 300) + ".JPG"
+	tests := []struct {
+		name, in, want string
+	}{
+		{"camera name unchanged", "IMG_0001.HEIC", "IMG_0001.HEIC"},
+		{"spaces and dots kept", "Goa trip v1.2.jpg", "Goa trip v1.2.jpg"},
+		{"refused characters", `a:b?c*"d"<e>|f.jpg`, "a-b-c--d--e--f.jpg"},
+		{"control characters", "a\x01b.jpg", "a-b.jpg"},
+		{"trailing dots and spaces in the stem", "photo. .jpg", "photo.jpg"},
+		{"reserved stem", "con.jpg", "con_.jpg"},
+		{"reserved with a longer stem is fine", "cone.jpg", "cone.jpg"},
+		{"long stem leaves room for _N", long, strings.Repeat("a", 255-4-8) + ".JPG"},
+		{"empty stem", ".jpg", "-.jpg"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SanitizeFileName(tt.in); got != tt.want {
+				t.Errorf("SanitizeFileName(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}

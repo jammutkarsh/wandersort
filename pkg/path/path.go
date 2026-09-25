@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 type Resolver struct {
@@ -85,12 +86,17 @@ func (r *Resolver) RelativeToHome(path string) string {
 // derived name is allowed to contain, so vfs (device/orientation/media/date
 // segments, renames) and location (the rename dropdown's folder value) apply
 // the same rule instead of two packages agreeing on it by convention.
+//
+// Safe means safe on every filesystem a library can sit on, not just this
+// machine's: photo drives are usually exFAT or NTFS, which refuse the
+// characters in unportable and the names in reserved, so a folder APFS would
+// accept still fails the copy there.
 func SanitizeSegment(seg string) string {
 	// commas are fine in a name a person is *choosing* (geocode results, a
 	// rename dropdown) — just not once picked, so strip them here.
 	seg = strings.Map(func(r rune) rune {
-		switch r {
-		case '/', '\\', ':', 0, ' ', ',', '\t', '\n':
+		switch {
+		case r == ' ', r == ',', unportable(r):
 			return '-'
 		}
 		return r
@@ -98,11 +104,89 @@ func SanitizeSegment(seg string) string {
 	for strings.Contains(seg, "--") {
 		seg = strings.ReplaceAll(seg, "--", "-")
 	}
-	seg = strings.Trim(seg, " ._-")
+	seg = strings.Trim(truncate(strings.Trim(seg, " ._-"), maxNameBytes), " ._-")
 	if seg == "" {
 		return "-"
 	}
-	return seg
+	return unreserve(seg)
+}
+
+// SanitizeFileName makes a file's own name safe to create on any filesystem
+// a library can sit on — the same characters and reserved names as
+// SanitizeSegment, but a file name otherwise stays as the camera wrote it:
+// spaces, dots and case are kept, and only what a filesystem would refuse
+// changes. The stem is cut to leave room for the extension and a collision
+// suffix (_N), so the name still fits once one is added.
+func SanitizeFileName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if unportable(r) {
+			return '-'
+		}
+		return r
+	}, name)
+	ext := filepath.Ext(name)
+	if len(ext) > maxExtBytes {
+		ext = ""
+	}
+	stem := strings.TrimRight(strings.TrimSuffix(name, ext), " .")
+	stem = strings.TrimRight(truncate(stem, maxNameBytes-len(ext)-suffixRoom), " .")
+	if stem == "" {
+		stem = "-"
+	}
+	return unreserve(stem) + ext
+}
+
+const (
+	// maxNameBytes is the longest name every supported filesystem takes:
+	// 255 bytes on ext4/APFS, 255 UTF-16 units on exFAT/NTFS, which any
+	// 255-byte UTF-8 name is within.
+	maxNameBytes = 255
+	// suffixRoom is what a collision suffix may add to a file name: "_" and
+	// up to seven digits.
+	suffixRoom = 8
+	// maxExtBytes bounds what counts as an extension rather than a stem
+	// that happens to hold a dot.
+	maxExtBytes = 16
+)
+
+// unportable reports whether r is refused in a name by some filesystem a
+// library may live on: the separators, what exFAT and NTFS forbid, and
+// control characters.
+func unportable(r rune) bool {
+	switch r {
+	case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+		return true
+	}
+	return r < 0x20 || r == 0x7f
+}
+
+// truncate cuts s to at most n bytes without splitting a character.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	s = s[:n]
+	for !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+// unreserve suffixes a name Windows reserves for a device (CON, NUL, COM1…),
+// which it refuses as a file or folder name with or without an extension.
+func unreserve(name string) string {
+	stem := strings.ToUpper(name)
+	if i := strings.IndexByte(stem, '.'); i >= 0 {
+		stem = stem[:i]
+	}
+	switch stem {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		i := len(stem)
+		return name[:i] + "_" + name[i:]
+	}
+	return name
 }
 
 // Overlaps reports whether a and b name the same directory or one is nested

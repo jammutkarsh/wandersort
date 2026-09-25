@@ -474,6 +474,24 @@ func TestPlanScreenshotIgnoresRules(t *testing.T) {
 	}
 }
 
+// A source name exFAT or NTFS would refuse (a Linux camera dump can carry a
+// colon) is planned under a name every library drive accepts, and two files
+// that end up with the same name still get distinct ones.
+func TestPlanFileNamesArePortable(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Rules = nil
+	masters := runPlan(t, []masterFile{
+		{FileDir: "/src", FileName: "12:00:01.jpg", DBDateTaken: new("2024:08:02 10:00:00")},
+		{FileDir: "/src", FileName: "12-00-01.jpg", DBDateTaken: new("2024:08:02 11:00:00")},
+	}, cfg)
+	got := []string{masters[0].targetPath, masters[1].targetPath}
+	slices.Sort(got)
+	want := []string{"2024/08_August/12-00-01.jpg", "2024/08_August/12-00-01_2.jpg"}
+	if !slices.Equal(got, want) {
+		t.Errorf("targets = %v, want %v", got, want)
+	}
+}
+
 // TestSortByCaptureTimePermutation pins both halves of the sort: the order, and
 // that the permutation is a bijection. An earlier in-place version used the
 // swap form, which implements result[p[i]]=src[i] rather than the
