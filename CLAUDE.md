@@ -737,7 +737,10 @@ Back in `internal/cli/`:
     `admin clear` clears only the peek copies
     (`review.CleanPreviews()`), asks nothing, and names `--db` for the rest:
     nothing about throwing away a cache is worth a question. `admin db --reset` is
-    the factory wipe (confirm prompt unless `--yes`). **An already-empty
+    the factory wipe (confirm prompt unless `--yes`). **A library already
+    holding files gets a pointed question** (`db.PlacedCount`): "Forget the N
+    files already in the library?" — they stay on disk but nothing records
+    them, so a re-imported card copies them in twice. **An already-empty
     database is not wiped at all** (`db.IsEmpty`, "nothing to reset"): its
     backup would replace the one holding what the earlier reset deleted with
     an empty copy, leaving `--restore` nothing to bring back. Otherwise it
@@ -972,6 +975,10 @@ tree over the whole library.
   when size or mtime differs (or under `--force`) and inserts a fresh one, so
   the file is read and planned from scratch — nothing in the pipeline moves a
   row backwards any more, and there is no reset path in the upsert.
+  **Symlinked files are skipped** with a warning, like directory links
+  (which `WalkDir` never follows): a link's recorded size is the link's, so
+  `check` called every one damaged, and a Linux move carried the link, not
+  the photo, into the library.
   A placed file is never a sweep candidate: `execute` repoints its
   `file_dir`/`file_name` at a library-relative path once it lands (see
   `execute/` below), and a relative path is never under an absolute scan
@@ -998,7 +1005,7 @@ tree over the whole library.
   two consumers adjacent, is the entire point of this package; **don't split
   them again for tidiness**. **There is no scan status at all** (issue 20;
   `file_registry.scan_status` is gone): a file is *unread* when it has no
-  `file_metadata` row and no `READ` row in `errors` (`unreadFiles`, one
+  `file_metadata` row (`unreadFiles`, one
   predicate shared by the progress total, `pendingVolumes` and the producer's
   pages). Hash and EXIF land in one row, so nothing is half-persisted, and
   **handing a file out writes nothing**: the producer pages through the unread
@@ -1006,9 +1013,13 @@ tree over the whole library.
   cursor — the predicate only ever shrinks, so it can neither repeat a file
   nor skip one). An interrupted run left no claim to reset; the files in flight
   are simply read again. A file that cannot be read gets a `READ` `errors` row
-  (op `open`/`hash`) and is skipped until its bytes change or `--force`; when
-  only failures remain the run says so (`N files could not be read`) and
-  finishes. A panic in a worker is recovered per file (`readOne`), recorded as
+  (op `open`/`hash`, `attempts` bumped) and **is tried again on every
+  `add`** — most failures are a card reader or a cable, and a file skipped
+  for good was a photo left out of the library with nobody told. The cursor
+  still hands it out once per run; the run ends with `N files could not be
+  read`, and `execute` names every never-read source (`execute.LeftBehind`)
+  in its `--move` question and at the end of every run, so a source is not
+  treated as done while it still holds unread files. A panic in a worker is recovered per file (`readOne`), recorded as
   `kind = 'panic'` with the real stack, and the run goes on.
   **Known gap:** full-byte hash means pixel-identical files with differing
   metadata land in separate groups.
@@ -1060,7 +1071,7 @@ tree over the whole library.
   the process died, hung past `extractTimeout`, or its pipes broke): that is a
   `READ` row with op `exiftool`, because the tags are unknown rather than
   empty, and an empty row would mark the file read and plan it by its file
-  date for good. `--force` retries it. (A pool that never started — no
+  date for good. The next `add` retries it. (A pool that never started — no
   binary — still persists empty rows; the workflow installs exiftool before
   this phase, so that path is tests only.) Workers write straight through `db.Writer` — it already serializes
   every operation, so a separate store goroutine would only add a channel.
@@ -1514,7 +1525,10 @@ tree over the whole library.
   is linked into place only if `metadata.HashString` matches the stored
   `file_hash` (`want`) — a mismatch (source changed since the scan) is a
   `TRANSFER` error (`checksum-mismatch`) naming both hashes, nothing at the destination, source kept.
-  A same-device rename copies no bytes and is not checked. **Never
+  A same-device rename copies no bytes, so `Run` only allows it for a
+  source whose size and date still match the scan; one that changed goes
+  through the hash-checked copy instead (`moveCopying`) and a mismatch is
+  refused with the source kept. **Never
   overwrites** (spec D21):
   both fail with `fs.ErrExist` on an occupied destination, and that error
   moves on to `name_1.ext`, `name_2.ext`… — **unless the taken name already
@@ -1732,7 +1746,10 @@ tree over the whole library.
   (`31 x READ/open/permission-denied at metadata.go:412, .HEIC, removable`)
   for `about.txt`. `issue` opens the database read-only on its own, never
   through `openLibrary`.
-- `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry. **Every
+- `db/` — sqlite (`modernc.org/sqlite`) open/migrate/retry. `db.New(ctx,
+  path, log)` opens the library database (migrations, writer; `ctx` bounds
+  the pre-upgrade backup); `db.OpenLocation(path, log)` opens the read-only
+  geonames file — two functions, not one switching on a type. **Every
   connection-scoped pragma rides in the DSN** (`appDSN`), not in an `Exec`
   after opening: `foreign_keys`, `locking_mode`, `busy_timeout`, `cache_size`,
   `temp_store`, `mmap_size`, `synchronous` are per-*connection* settings in
@@ -1957,9 +1974,14 @@ tree over the whole library.
   dead worker before handing it out.
 - `path/` — path canonicalization / home-relative helpers, plus
   `SanitizeSegment` (moved from `pkg/core/vfs`): what a derived *segment*
-  (not a full path) is allowed to contain — strips `/\:,` and whitespace to
-  `-`, collapses runs, trims. `vfs` calls it for every folder segment
-  (device/orientation/media/date, renames — `plan.go`, `review.go`).
+  (not a full path) is allowed to contain — `,`, whitespace and everything
+  some library filesystem refuses (`/\:*?"<>|`, control characters; exFAT
+  and NTFS are what photo drives usually are) become `-`, runs collapse,
+  ends trim, names cap at 255 bytes, and Windows device names (`CON`, `NUL`…)
+  get a `_`. `vfs` calls it for every folder segment (device/orientation/
+  media/date, renames — `plan.go`, `review.go`). `SanitizeFileName` is the
+  same rule for a file's own name, keeping spaces, dots and case and leaving
+  room for a `_N` suffix; `buildTargets` runs every planned name through it.
   `pkg/location` imports it too, for `FolderName`. **This package imports
   nothing else in the project**, which is what makes it safe to depend on from
   anywhere — the rule lives once, not once per caller. `RelativeToHome`/
@@ -2101,6 +2123,13 @@ make test      # go test -v ./...
 make lint      # gofumpt -l -w .
 go build ./... # quick compile check
 ```
+
+## Accepted risks
+
+`docs/accepted-risks.md` lists audit findings that were looked at and
+accepted on purpose (one backup generation, same-host download checksums,
+no untracked-file check, duplicates re-hashed each `add`). Don't raise them
+again as new findings; change that file if the reason no longer holds.
 
 ## Open cleanup notes (not yet done)
 
