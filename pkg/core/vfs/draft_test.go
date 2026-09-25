@@ -185,3 +185,35 @@ func TestReplaySkipsMissingNodes(t *testing.T) {
 		t.Errorf("replay over applied tree changed it:\n got %+v\nwant %+v", again, merged)
 	}
 }
+
+// A draft written before the move to json/v2 is read the same, and a merge,
+// which names no single node, still doesn't write a "node" key.
+func TestDraftReadsLinesWrittenByEncodingJSONv1(t *testing.T) {
+	dir := t.TempDir()
+	v1 := `{"seq":1,"op":"rename","node":17,"from":"Panji","to":"Goa Trip"}` + "\n" +
+		`{"seq":2,"op":"merge","nodes":[4,5]}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, DraftFileName), []byte(v1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edits, err := ReadDraft(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Edit{
+		{Seq: 1, Op: OpRename, Node: 17, From: "Panji", To: "Goa Trip"},
+		{Seq: 2, Op: OpMerge, Nodes: []int64{4, 5}},
+	}
+	if !reflect.DeepEqual(edits, want) {
+		t.Fatalf("edits = %+v, want %+v", edits, want)
+	}
+	if err := WriteDraft(dir, edits); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, DraftFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != v1 {
+		t.Errorf("rewritten draft =\n%s\nwant it byte-identical to\n%s", got, v1)
+	}
+}

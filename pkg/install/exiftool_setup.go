@@ -9,7 +9,7 @@ package install
 import (
 	"archive/tar"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -71,7 +71,8 @@ func fetchReleaseMeta(ctx context.Context) (releaseMeta, error) {
 	}
 
 	var meta releaseMeta
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+	// published elsewhere, so matched the forgiving way
+	if err := json.UnmarshalRead(resp.Body, &meta, json.MatchCaseInsensitiveNames(true)); err != nil {
 		return releaseMeta{}, fmt.Errorf("decode %s: %w", releaseMetaFileName, err)
 	}
 	return meta, nil

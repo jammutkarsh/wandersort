@@ -7,7 +7,8 @@
 package classifier
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"slices"
 	"strconv"
@@ -104,7 +105,9 @@ func numStr(v any) string {
 // expected, or vice-versa) no longer drops all metadata for the file.
 func ParseMetadata(ext string, data []byte) (CommonMetadata, error) {
 	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
+	// a tag's bytes are the camera's: tolerate what v1 tolerated
+	if err := json.Unmarshal(data, &raw,
+		jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true)); err != nil {
 		return CommonMetadata{}, fmt.Errorf("parse %s: %w", ext, err)
 	}
 

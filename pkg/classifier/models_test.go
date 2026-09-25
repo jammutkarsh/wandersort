@@ -33,3 +33,17 @@ func TestParseMetadataIsScreenshot(t *testing.T) {
 		})
 	}
 }
+
+// exiftool passes through whatever bytes a camera wrote. A tag that isn't
+// valid UTF-8, or a name exiftool repeats, must not cost the file its
+// metadata.
+func TestParseMetadataToleratesBadTagBytes(t *testing.T) {
+	raw := []byte("{\"Make\":\"Canon\",\"Model\":\"EOS \xff700D\",\"Make\":\"Canon\"}")
+	m, err := ParseMetadata(".jpg", raw)
+	if err != nil {
+		t.Fatalf("ParseMetadata: %v", err)
+	}
+	if m.Make != "Canon" || m.Model == "" {
+		t.Errorf("got Make=%q Model=%q, want both read", m.Make, m.Model)
+	}
+}

@@ -11,7 +11,8 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -146,9 +147,11 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 	}
 	if errorRows != nil {
 		if w, err := zw.Create("errors.json"); err == nil {
-			enc := json.NewEncoder(w)
-			enc.SetIndent("", "  ")
-			if err := enc.Encode(errorRows); err != nil {
+			err := json.MarshalWrite(w, errorRows, jsontext.WithIndent("  "), json.Deterministic(true))
+			if err == nil {
+				_, err = io.WriteString(w, "\n")
+			}
+			if err != nil {
 				a.Log.Warn("could not write the error report", "error", err)
 			}
 		}

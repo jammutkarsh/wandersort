@@ -8,7 +8,8 @@ package db
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -203,7 +204,9 @@ func describe(err error) (detail ErrorDetail, panicked bool) {
 // synchronous transaction, not a queued write).
 func RecordError(ctx context.Context, tx *sqlx.Tx, fileID int64, stage, op string, err error) error {
 	detail, panicked := describe(err)
-	raw, marshalErr := json.Marshal(detail)
+	// An error names a file, and a Linux file name need not be UTF-8: store
+	// it with the bad bytes replaced rather than lose the failure record.
+	raw, marshalErr := json.Marshal(detail, jsontext.AllowInvalidUTF8(true))
 	if marshalErr != nil {
 		return fmt.Errorf("record error: %w", marshalErr)
 	}

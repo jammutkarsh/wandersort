@@ -13,7 +13,8 @@ package report
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"path"
 	"path/filepath"
@@ -64,14 +65,14 @@ type File struct {
 // Row is one exported error: the columns as named fields, the detail nested
 // under its own key, every path replaced.
 type Row struct {
-	Stage       string          `json:"stage"`
-	Op          string          `json:"op"`
-	Kind        string          `json:"kind"`
-	Attempts    int             `json:"attempts"`
-	FirstSeenAt string          `json:"first_seen_at"`
-	LastSeenAt  string          `json:"last_seen_at"`
-	File        File            `json:"file"`
-	Detail      json.RawMessage `json:"detail"`
+	Stage       string         `json:"stage"`
+	Op          string         `json:"op"`
+	Kind        string         `json:"kind"`
+	Attempts    int            `json:"attempts"`
+	FirstSeenAt string         `json:"first_seen_at"`
+	LastSeenAt  string         `json:"last_seen_at"`
+	File        File           `json:"file"`
+	Detail      jsontext.Value `json:"detail"`
 }
 
 // Querier is the read side of a database handle.
@@ -179,12 +180,12 @@ type knownPaths struct {
 
 // scrubDetail replaces the paths in every string of the stored detail object
 // and returns it as JSON again.
-func scrubDetail(detail string, k knownPaths) (json.RawMessage, error) {
+func scrubDetail(detail string, k knownPaths) (jsontext.Value, error) {
 	var v any
 	if err := json.Unmarshal([]byte(detail), &v); err != nil {
 		return nil, fmt.Errorf("read error detail: %w", err)
 	}
-	out, err := json.Marshal(walkStrings(v, k.scrub))
+	out, err := json.Marshal(walkStrings(v, k.scrub), json.Deterministic(true))
 	if err != nil {
 		return nil, fmt.Errorf("write error detail: %w", err)
 	}

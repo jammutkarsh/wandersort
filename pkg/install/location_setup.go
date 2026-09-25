@@ -8,7 +8,7 @@ package install
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -152,7 +152,9 @@ func verifyLocationDB(dbPath string, locationDB *db.DB, log logger.Logger) error
 	}
 
 	var meta locationMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
+	// published by the location database's own repo, not this one: match its
+	// keys the forgiving way
+	if err := json.Unmarshal(data, &meta, json.MatchCaseInsensitiveNames(true)); err != nil {
 		return fmt.Errorf("unable to parse location meta: %w", err)
 	}
 

@@ -10,7 +10,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"os/exec"
@@ -101,8 +102,11 @@ func (e *Extractor) Extract(ctx context.Context, path string) (classifier.Common
 		out.WriteString(line)
 	}
 
-	var arr []json.RawMessage
-	if err := json.Unmarshal(out.Bytes(), &arr); err != nil {
+	// Tags are whatever the camera wrote: bytes that aren't UTF-8, or a
+	// repeated name, cost that tag at most — never the whole file.
+	var arr []jsontext.Value
+	if err := json.Unmarshal(out.Bytes(), &arr,
+		jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true)); err != nil {
 		return classifier.CommonMetadata{}, fmt.Errorf("exiftool output is not a JSON array: %w", err)
 	}
 	if len(arr) == 0 {

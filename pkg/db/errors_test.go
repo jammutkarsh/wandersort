@@ -8,7 +8,7 @@ package db_test
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -141,5 +141,25 @@ func TestPanicErrorKeepsTheRealStack(t *testing.T) {
 	}
 	if !strings.Contains(raw, "TestPanicErrorKeepsTheRealStack") || !strings.Contains(raw, "assignment to entry in nil map") {
 		t.Errorf("detail = %s, want the panic message and the function that panicked", raw)
+	}
+}
+
+// A Linux file name need not be UTF-8, and the error that names it must still
+// be recorded — a failure that can't be stored is a file retried forever.
+func TestRecordErrorKeepsANonUTF8FileName(t *testing.T) {
+	d := dbtest.New(t)
+	dbtest.SeedFile(t, d, 1, "/src", "a.jpg", 1)
+	recordError(t, d, db.StageRead, &fs.PathError{Op: "open", Path: "/src/caf\xe9.jpg", Err: syscall.EACCES})
+
+	var raw string
+	if e := d.SQL.Get(&raw, `SELECT detail FROM errors WHERE file_id = 1`); e != nil {
+		t.Fatalf("no error row: %v", e)
+	}
+	var detail db.ErrorDetail
+	if e := json.Unmarshal([]byte(raw), &detail); e != nil {
+		t.Fatalf("stored detail is not valid JSON: %v", e)
+	}
+	if !strings.Contains(detail.Message, "/src/caf") {
+		t.Errorf("message = %q, want the path kept", detail.Message)
 	}
 }

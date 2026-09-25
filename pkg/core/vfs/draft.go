@@ -10,7 +10,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"os"
@@ -41,7 +41,7 @@ const (
 type Edit struct {
 	Seq   int     `json:"seq"`
 	Op    string  `json:"op"`
-	Node  int64   `json:"node,omitempty"`
+	Node  int64   `json:"node,omitzero"`
 	Nodes []int64 `json:"nodes,omitempty"`
 	From  string  `json:"from,omitempty"`
 	To    string  `json:"to,omitempty"`

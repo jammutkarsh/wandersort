@@ -8,7 +8,8 @@ package logger
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"log/slog"
 	"os"
@@ -161,7 +162,7 @@ func (h *PrettyHandler) Handle(_ context.Context, r slog.Record) error {
 		case string:
 			valStr = val
 		case map[string]any:
-			b, _ := json.Marshal(val)
+			b, _ := json.Marshal(val, json.Deterministic(true), jsontext.AllowInvalidUTF8(true))
 			valStr = string(b)
 		default:
 			valStr = fmt.Sprintf("%v", val)
