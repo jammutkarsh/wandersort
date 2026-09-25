@@ -296,8 +296,8 @@ func TestShellModel(t *testing.T) {
 				t.Errorf("tab bar should announce the proposal on disk: %q", v)
 			}
 
-			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-			next, cmd = next.(shellModel).Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, cmd := next.(shellModel).Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 			m = next.(shellModel)
 			if !m.opening || cmd == nil {
 				t.Fatalf("ctrl+t into an unprefetched review should build one, opening=%v", m.opening)

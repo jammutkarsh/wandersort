@@ -128,6 +128,7 @@ func TestPanicErrorKeepsTheRealStack(t *testing.T) {
 	func() {
 		defer func() { err = db.PanicError(recover()) }()
 		var m map[string]int
+		//lint:ignore SA5000 the panic is the point
 		m["x"] = 1 // write to a nil map
 	}()
 	d := dbtest.New(t)

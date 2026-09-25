@@ -168,12 +168,16 @@ func fill[T any](dst *[]T, src []T) {
 // constrained is the levels c sets.
 func constrained(c Constraint) levelBit {
 	var b levelBit
-	for i, set := range []bool{
-		c.Year != nil, c.Month != nil, c.Date != nil, c.Location != nil,
-		c.Device != nil, c.Orientation != nil, c.Media != nil,
+	for _, l := range [...]struct {
+		bit levelBit
+		set bool
+	}{
+		{bitYear, c.Year != nil}, {bitMonth, c.Month != nil}, {bitDate, c.Date != nil},
+		{bitLocation, c.Location != nil}, {bitDevice, c.Device != nil},
+		{bitOrientation, c.Orientation != nil}, {bitMedia, c.Media != nil},
 	} {
-		if set {
-			b |= 1 << i // the bitYear..bitMedia order
+		if l.set {
+			b |= l.bit
 		}
 	}
 	return b

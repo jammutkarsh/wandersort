@@ -34,8 +34,7 @@ func TestConfirmModelYesNoKeys(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			v := !tt.want // start on the opposite value so we can tell the key acted
 			m := NewConfirmModel("Proceed?", "", &v)
-			next, _ := m.Update(tt.key)
-			m = next.(ConfirmModel)
+			m.Update(tt.key)
 			if v != tt.want {
 				t.Errorf("key %q: value = %v, want %v", tt.name, v, tt.want)
 			}
@@ -112,8 +111,7 @@ func TestFormSaveAndExitCommitsActiveInputAndSubmits(t *testing.T) {
 	m := NewFormModel(fields, func() error { submitted = true; return nil })
 	m = sendKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/tmp/x")})
 
-	next, cmd := m.saveAndExit()
-	m = next.(FormModel)
+	_, cmd := m.saveAndExit()
 	if out != "/tmp/x" {
 		t.Errorf("saveAndExit must commit the active input, got %q", out)
 	}

@@ -661,7 +661,7 @@ func TestReview(t *testing.T) {
 				next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyBackspace})
 				rm = next.(Model)
 			}
-			for _, r := range []rune("Man") {
+			for _, r := range "Man" {
 				next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 				rm = next.(Model)
 			}
