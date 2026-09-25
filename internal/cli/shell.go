@@ -592,13 +592,13 @@ func (a *app) newHomeScreen(lastScan []string) tui.HomeModel {
 // newScanScreen wires a scan of paths into the shell, gated behind the same
 // upfront dependency download the scan subcommand uses.
 func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, paths []string, force bool) tui.ScanModel {
-	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, a.workflowDeps())
+	wf := workflow.NewWorkflow(a.AppDB, a.Log, a.Config, a.workflowDeps())
 	return tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {
 			if err := waitForDeps(a.Deps); err != nil {
 				return &tui.DepsErr{Err: err}
 			}
-			_, err := wf.RunScan(paths, force)
+			_, err := wf.RunScan(ctx, paths, force)
 			return err
 		},
 		Cancel:     cancel,

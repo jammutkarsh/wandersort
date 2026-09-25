@@ -122,9 +122,9 @@ func (a *app) runAddPlain(paths []string, force bool) error {
 		return err
 	}
 
-	wf := workflow.NewWorkflow(ctx, a.AppDB, a.Log, a.Config, a.workflowDeps())
+	wf := workflow.NewWorkflow(a.AppDB, a.Log, a.Config, a.workflowDeps())
 
-	scanPaths, err := wf.RunScan(paths, force)
+	scanPaths, err := wf.RunScan(ctx, paths, force)
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}

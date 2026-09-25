@@ -33,10 +33,13 @@ type Deps struct {
 	Location func() (*location.Resolver, error) // open geonames resolver
 }
 
-// Workflow orchestrates the phases of one scan session. Scanning and metadata
-// extraction run in bounded batches to keep memory stable on very large roots.
+// ErrOverlapsLibrary means a folder to scan is the library, or holds it, or
+// sits inside it. Scanning the library as a source would re-read files it
+// already holds and plan any file no row records into the library again.
+var ErrOverlapsLibrary = errors.New("overlaps the library")
+
+// Workflow orchestrates the phases of one scan.
 type Workflow struct {
-	ctx     context.Context
 	db      *db.DB
 	log     logger.Logger
 	deps    Deps
@@ -52,7 +55,7 @@ type Workflow struct {
 
 type workflowPhase struct {
 	kind workflowPhaseKind
-	run  func() (int, error)
+	run  func(ctx context.Context) (int, error)
 	// summary is the one user-facing line this phase reports on success. The
 	// phase's elapsed time is appended to it rather than logged separately —
 	// two console lines per phase ("Scanned 15481 files", "scan phase took
@@ -79,10 +82,11 @@ var phaseMessageByKind = map[workflowPhaseKind]string{
 	workflowPhaseVFS:      "Proposing an organized folder structure…",
 }
 
-func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.Configuration, deps Deps) *Workflow {
+func NewWorkflow(db *db.DB, log logger.Logger, cfg *config.Configuration, deps Deps) *Workflow {
 	vfsCfg := vfs.ConfigFor(cfg)
-	// all three come from flag/env/config.yaml, so showing the resolved values
-	// is the only way to see which source won
+	// the output folder comes from --output-path or the library history and
+	// the rules from the library's own settings, so showing them up front is
+	// the only way to see what this run will do
 	rules := "none (flat Year/Month)"
 	if len(vfsCfg.Rules) > 0 {
 		rules = strings.Join(vfsCfg.Rules, ", ")
@@ -91,8 +95,7 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 		"workers", cfg.Workers,
 		"output", filepath.Dir(cfg.AppDBPath),
 		"rules", "Year/Month/"+rules)
-	wf := &Workflow{
-		ctx:       ctx,
+	return &Workflow{
 		db:        db,
 		deps:      deps,
 		appCfg:    cfg,
@@ -102,26 +105,27 @@ func NewWorkflow(ctx context.Context, db *db.DB, log logger.Logger, cfg *config.
 		path:      path.New(),
 		outputDir: filepath.Dir(cfg.AppDBPath),
 	}
-	return wf
 }
 
 // RunScan canonicalizes and prunes nested scan roots, then runs the pipeline
 // synchronously on the calling goroutine, so a CLI invocation streams progress
 // and blocks until the scan finishes. Returns the roots actually walked, and
-// an error if the run did not complete. force re-reads every file from disk
-// (re-hash + re-exiftool) even when its size/mtime haven't changed — for
-// picking up a change to WanderSort's own extraction logic without deleting
-// the database.
-func (wf *Workflow) RunScan(paths []string, force bool) ([]string, error) {
-	select {
-	case <-wf.ctx.Done():
-		return nil, context.Canceled
-	default:
+// an error if the run did not complete — wrapping context.Canceled when it was
+// stopped, so callers can tell the two apart with errors.Is. force re-reads
+// every file from disk (re-hash + re-exiftool) even when its size/mtime
+// haven't changed — for picking up a change to WanderSort's own extraction
+// logic without deleting the database.
+func (wf *Workflow) RunScan(ctx context.Context, paths []string, force bool) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	roots, err := path.ReduceRoots(wf.path, paths)
 	if err != nil {
 		wf.log.Warn("Invalid scan roots", "error", err)
+		return nil, err
+	}
+	if err := wf.checkOverlap(roots); err != nil {
 		return nil, err
 	}
 
@@ -131,84 +135,83 @@ func (wf *Workflow) RunScan(paths []string, force bool) ([]string, error) {
 	}
 	wf.log.Info("Starting scan", logger.UserKey, true, "paths", storedPaths)
 
-	status, errStr := wf.runSession(roots, force)
-	if status != db.StatusCompleted {
-		if errStr != nil {
-			return roots, errors.New(*errStr)
-		}
-		return roots, fmt.Errorf("scan ended with status %s", status)
+	if err := wf.runPhases(ctx, roots, force); err != nil {
+		wf.log.Error("Pipeline finished", "error", err)
+		return roots, err
 	}
-
+	wf.log.Info("Pipeline finished")
 	return roots, nil
 }
 
-// runSession runs the phases in order and finalizes the run. Returns the
-// terminal status and error so RunScan can surface failure.
-func (wf *Workflow) runSession(paths []string, force bool) (finalStatus string, finalErr *string) {
-	defer func() {
-		wf.finalizeSession(finalStatus, finalErr)
-	}()
-
-	wf.log.Info("Workflow started", "phases", "scanning → extracting → scoring → organizing")
-
-	phases := wf.workflowPhases(paths, force)
-
-	for _, phase := range phases {
-		_, status, errStr, ok := wf.run(phase)
-		finalStatus, finalErr = status, errStr
-		if !ok {
-			return
+// checkOverlap refuses any root that is the library, holds it, or sits in it.
+// The library folder always exists by now (the database was opened in it).
+func (wf *Workflow) checkOverlap(roots []string) error {
+	library, err := wf.path.RealPath(wf.outputDir)
+	if err != nil {
+		return fmt.Errorf("resolve library folder: %w", err)
+	}
+	for _, root := range roots {
+		if path.Overlaps(root, library) {
+			return fmt.Errorf("cannot scan %s: it %w at %s — pick folders outside it",
+				wf.path.RelativeToHome(root), ErrOverlapsLibrary, wf.path.RelativeToHome(library))
 		}
 	}
+	return nil
+}
 
-	// last thing before the run is marked done, so it sits next to the
-	// "run wandersort review" hint rather than scrolling past mid-pipeline
-	volume.CheckOutputSpace(wf.ctx, wf.db, wf.log, wf.outputDir)
-
-	finalStatus = db.StatusCompleted
-	return
+// runPhases runs the phases in order and stops at the first that fails.
+func (wf *Workflow) runPhases(ctx context.Context, paths []string, force bool) error {
+	wf.log.Info("Workflow started", "phases", "scanning → reading → organizing")
+	for _, phase := range wf.workflowPhases(paths, force) {
+		if _, err := wf.run(ctx, phase); err != nil {
+			return err
+		}
+	}
+	// last thing before the run is done, so it sits next to the "review"
+	// hint rather than scrolling past mid-pipeline
+	volume.CheckOutputSpace(ctx, wf.db, wf.log, wf.outputDir)
+	return nil
 }
 
 func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 	return []workflowPhase{
 		{
 			kind: workflowPhaseScan,
-			run: func() (int, error) {
-				return wf.scanner.Run(wf.ctx, paths, force)
+			run: func(ctx context.Context) (int, error) {
+				return wf.scanner.Run(ctx, paths, force)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Scanned %d files", count) },
 		},
 		{
 			kind: workflowPhaseMetadata,
-			run: func() (int, error) {
+			run: func(ctx context.Context) (int, error) {
 				// blocks here (not at construction) if exiftool is still
 				// downloading — the walk has already run meanwhile
 				exiftoolPath, err := wf.deps.Exiftool()
 				if err != nil {
 					return 0, fmt.Errorf("exiftool: %w", err)
 				}
-				return metadata.New(wf.db, wf.log, exiftoolPath, wf.workers).Run(wf.ctx)
+				return metadata.New(wf.db, wf.log, exiftoolPath, wf.workers).Run(ctx)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Read %d files", count) },
 		},
 		{
 			kind: workflowPhaseVFS,
-			run: func() (int, error) {
+			run: func(ctx context.Context) (int, error) {
 				resolver, err := wf.deps.Location()
 				if err != nil {
 					return 0, fmt.Errorf("location resolver: %w", err)
 				}
-				return vfs.Propose(wf.ctx, wf.db, resolver, wf.appCfg, wf.log)
+				return vfs.Propose(ctx, wf.db, resolver, wf.appCfg, wf.log)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Proposed destinations for %d files", count) },
 		},
 	}
 }
 
-// run executes one phase and logs its start/end. Returns the result count,
-// final status, error message, and whether it succeeded.
-func (wf *Workflow) run(phase workflowPhase) (int, string, *string, bool) {
-	success := true
+// run executes one phase and logs its start and end. The error names the
+// phase and wraps the cause, so context.Canceled stays visible to errors.Is.
+func (wf *Workflow) run(ctx context.Context, phase workflowPhase) (int, error) {
 	message := phaseMessageByKind[phase.kind]
 	if message == "" {
 		message = "Working…"
@@ -217,19 +220,13 @@ func (wf *Workflow) run(phase workflowPhase) (int, string, *string, bool) {
 	wf.log.Info(message, logger.UserKey, true,
 		logger.PhaseKey, string(phase.kind), logger.EventKey, "start")
 	start := time.Now()
-	count, err := phase.run()
+	count, err := phase.run(ctx)
 	elapsed := time.Since(start)
+	if errors.Is(err, context.Canceled) {
+		return count, fmt.Errorf("pipeline cancelled during %s phase: %w", phase.kind, err)
+	}
 	if err != nil {
-		var finalStatus string
-		var finalErr string
-		if errors.Is(err, context.Canceled) {
-			finalStatus = db.StatusCancelled
-			finalErr = fmt.Sprintf("pipeline cancelled during %s phase", phase.kind)
-		} else {
-			finalStatus = db.StatusFailed
-			finalErr = fmt.Sprintf("%s phase failed: %v", phase.kind, err)
-		}
-		return count, finalStatus, &finalErr, !success
+		return count, fmt.Errorf("%s phase failed: %w", phase.kind, err)
 	}
 
 	wf.db.Writer.Flush() // make this phase's writes visible to the next one
@@ -250,14 +247,5 @@ func (wf *Workflow) run(phase workflowPhase) (int, string, *string, bool) {
 		logger.PhaseKey, string(phase.kind), logger.EventKey, "done",
 		logger.ElapsedKey, elapsed.Round(time.Millisecond).String())
 
-	return count, "", nil, success
-}
-
-// finalizeSession logs the pipeline's terminal outcome
-func (wf *Workflow) finalizeSession(finalStatus string, finalErr *string) {
-	if finalErr != nil {
-		wf.log.Error("Pipeline finished", "status", finalStatus, "error", *finalErr)
-		return
-	}
-	wf.log.Info("Pipeline finished", "status", finalStatus)
+	return count, nil
 }

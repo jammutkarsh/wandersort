@@ -9,6 +9,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -19,87 +20,68 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-func newTestWorkflow(t *testing.T, ctx context.Context) (*Workflow, *db.DB) {
+func newTestWorkflow(t *testing.T) (*Workflow, *db.DB) {
 	t.Helper()
 	d := dbtest.New(t)
 	cfg := &config.Configuration{
 		Workers:   2,
 		AppDBPath: filepath.Join(t.TempDir(), ".wandersort.db"),
 	}
-	wf := NewWorkflow(ctx, d, logger.NewNoopLogger(), cfg, Deps{})
+	wf := NewWorkflow(d, logger.NewNoopLogger(), cfg, Deps{})
 	return wf, d
 }
 
-func TestWorkflowRunPhaseSuccess(t *testing.T) {
-	wf, _ := newTestWorkflow(t, context.Background())
-
-	phase := workflowPhase{
-		kind:    workflowPhaseScan,
-		run:     func() (int, error) { return 5, nil },
-		summary: func(count int) string { return "did " + string(rune('0'+count)) },
+func TestWorkflowRunPhase(t *testing.T) {
+	tests := []struct {
+		name      string
+		run       func(context.Context) (int, error)
+		wantCount int
+		wantErr   string
+		wantIs    error
+	}{
+		{"success", func(context.Context) (int, error) { return 5, nil }, 5, "", nil},
+		{
+			"failure names the phase and keeps the cause",
+			func(context.Context) (int, error) { return 0, errDiskFull },
+			0, "metadata phase failed: disk full", errDiskFull,
+		},
+		{
+			"cancellation stays visible to errors.Is",
+			func(context.Context) (int, error) { return 0, context.Canceled },
+			0, "pipeline cancelled during metadata phase: context canceled", context.Canceled,
+		},
 	}
-
-	count, status, errStr, ok := wf.run(phase)
-	if !ok {
-		t.Fatalf("expected ok=true, got false (status=%s err=%v)", status, errStr)
-	}
-	if count != 5 {
-		t.Errorf("count: got %d, want 5", count)
-	}
-	if status != "" || errStr != nil {
-		t.Errorf("success run should report no status/error, got status=%q err=%v", status, errStr)
-	}
-}
-
-func TestWorkflowRunPhaseError(t *testing.T) {
-	wf, _ := newTestWorkflow(t, context.Background())
-
-	phase := workflowPhase{
-		kind: workflowPhaseMetadata,
-		run:  func() (int, error) { return 0, errors.New("disk full") },
-	}
-
-	_, status, errStr, ok := wf.run(phase)
-	if ok {
-		t.Fatal("expected ok=false on phase error")
-	}
-	if status != db.StatusFailed {
-		t.Errorf("status: got %q, want %q", status, db.StatusFailed)
-	}
-	if errStr == nil {
-		t.Fatal("expected non-nil error string")
-	}
-	if want := "metadata phase failed: disk full"; *errStr != want {
-		t.Errorf("errStr: got %q, want %q", *errStr, want)
-	}
-}
-
-func TestWorkflowRunPhaseCanceled(t *testing.T) {
-	wf, _ := newTestWorkflow(t, context.Background())
-
-	phase := workflowPhase{
-		kind: workflowPhaseMetadata,
-		run:  func() (int, error) { return 0, context.Canceled },
-	}
-
-	_, status, errStr, ok := wf.run(phase)
-	if ok {
-		t.Fatal("expected ok=false on cancellation")
-	}
-	if status != db.StatusCancelled {
-		t.Errorf("status: got %q, want %q", status, db.StatusCancelled)
-	}
-	if errStr == nil || *errStr != "pipeline cancelled during metadata phase" {
-		t.Errorf("errStr: got %v, want %q", errStr, "pipeline cancelled during metadata phase")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wf, _ := newTestWorkflow(t)
+			count, err := wf.run(context.Background(), workflowPhase{kind: workflowPhaseMetadata, run: tt.run})
+			if count != tt.wantCount {
+				t.Errorf("count = %d, want %d", count, tt.wantCount)
+			}
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tt.wantErr {
+				t.Errorf("err = %v, want %q", err, tt.wantErr)
+			}
+			if !errors.Is(err, tt.wantIs) {
+				t.Errorf("errors.Is(err, %v) = false", tt.wantIs)
+			}
+		})
 	}
 }
+
+var errDiskFull = errors.New("disk full")
 
 func TestRunScanReturnsContextCanceledWithoutRunning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	wf, _ := newTestWorkflow(t, ctx)
+	wf, _ := newTestWorkflow(t)
 
-	roots, err := wf.RunScan([]string{"/some/path"}, false)
+	roots, err := wf.RunScan(ctx, []string{"/some/path"}, false)
 	if roots != nil {
 		t.Errorf("roots: got %v, want nil", roots)
 	}
@@ -108,12 +90,54 @@ func TestRunScanReturnsContextCanceledWithoutRunning(t *testing.T) {
 	}
 }
 
+// A scan root that is the library, holds it, or sits in it is refused before
+// anything is walked; a sibling folder is fine.
+func TestRunScanRefusesRootsOverlappingTheLibrary(t *testing.T) {
+	base := t.TempDir()
+	library := filepath.Join(base, "library")
+	for _, d := range []string{"library/2024", "photos", "library-old"} {
+		if err := os.MkdirAll(filepath.Join(base, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tests := []struct {
+		name    string
+		root    string
+		refused bool
+	}{
+		{"the library itself", library, true},
+		{"a folder holding the library", base, true},
+		{"a folder inside the library", filepath.Join(library, "2024"), true},
+		{"a sibling whose name starts the same", filepath.Join(base, "library-old"), false},
+	}
+	d := dbtest.New(t)
+	cfg := &config.Configuration{Workers: 1, AppDBPath: filepath.Join(library, ".wandersort.db")}
+	wf := NewWorkflow(d, logger.NewNoopLogger(), cfg, Deps{})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root, err := wf.path.RealPath(tt.root) // roots arrive canonical
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = wf.checkOverlap([]string{root})
+			if got := errors.Is(err, ErrOverlapsLibrary); got != tt.refused {
+				t.Errorf("refused = %v (err %v), want %v", got, err, tt.refused)
+			}
+		})
+	}
+
+	// and RunScan asks before walking anything
+	if _, err := wf.RunScan(context.Background(), []string{base}, false); !errors.Is(err, ErrOverlapsLibrary) {
+		t.Errorf("RunScan over the library's parent = %v, want ErrOverlapsLibrary", err)
+	}
+}
+
 // TestWorkflowPhasesOrderAndMessages pins the phase pipeline order
-// (scan→metadata→score→vfs) and that every phase kind has a start message —
+// (scan→metadata→vfs) and that every phase kind has a start message —
 // a phase with no entry in phaseMessageByKind silently falls back to the
 // generic "Working…" line, which would go unnoticed without this check.
 func TestWorkflowPhasesOrderAndMessages(t *testing.T) {
-	wf, _ := newTestWorkflow(t, context.Background())
+	wf, _ := newTestWorkflow(t)
 
 	phases := wf.workflowPhases([]string{"/root"}, false)
 
@@ -140,7 +164,7 @@ func TestWorkflowPhasesOrderAndMessages(t *testing.T) {
 // user-facing summary line — these are read by real users in the console/TUI,
 // so a silent format change should fail a test, not just look different.
 func TestPhaseSummaryFormatting(t *testing.T) {
-	wf, _ := newTestWorkflow(t, context.Background())
+	wf, _ := newTestWorkflow(t)
 	phases := wf.workflowPhases([]string{"/root"}, false)
 
 	want := map[workflowPhaseKind]string{
@@ -160,7 +184,7 @@ func TestPhaseSummaryFormatting(t *testing.T) {
 // metadata phase applies when the download dependency never became ready — the
 // phase must fail rather than run metadata.New with an empty path.
 func TestMetadataPhaseWrapsExiftoolDepsError(t *testing.T) {
-	wf, _ := newTestWorkflow(t, context.Background())
+	wf, _ := newTestWorkflow(t)
 	wf.deps = Deps{
 		Exiftool: func() (string, error) { return "", errors.New("download failed") },
 	}
@@ -176,7 +200,7 @@ func TestMetadataPhaseWrapsExiftoolDepsError(t *testing.T) {
 		t.Fatal("no metadata phase found")
 	}
 
-	_, err := metaPhase.run()
+	_, err := metaPhase.run(context.Background())
 	if err == nil || err.Error() != "exiftool: download failed" {
 		t.Errorf("got %v, want wrapped \"exiftool: download failed\"", err)
 	}
@@ -185,7 +209,7 @@ func TestMetadataPhaseWrapsExiftoolDepsError(t *testing.T) {
 // TestVFSPhaseWrapsLocationDepsError mirrors the metadata case for the vfs
 // phase's "location resolver: %w" wrap.
 func TestVFSPhaseWrapsLocationDepsError(t *testing.T) {
-	wf, _ := newTestWorkflow(t, context.Background())
+	wf, _ := newTestWorkflow(t)
 	wf.deps = Deps{
 		Location: func() (*location.Resolver, error) { return nil, errors.New("download failed") },
 	}
@@ -201,22 +225,8 @@ func TestVFSPhaseWrapsLocationDepsError(t *testing.T) {
 		t.Fatal("no vfs phase found")
 	}
 
-	_, err := vfsPhase.run()
+	_, err := vfsPhase.run(context.Background())
 	if err == nil || err.Error() != "location resolver: download failed" {
 		t.Errorf("got %v, want wrapped \"location resolver: download failed\"", err)
 	}
-}
-
-// TestFinalizeSessionLogsOutcome is a trivial-looking function, but it's the
-// one place a run's terminal status/error actually gets logged — a silent
-// signature change here (e.g. swapping which log level success uses) would
-// otherwise go unnoticed since nothing else calls it.
-func TestFinalizeSessionLogsOutcome(t *testing.T) {
-	wf, _ := newTestWorkflow(t, context.Background())
-
-	// Neither call should panic; the no-op logger discards everything, so
-	// this only pins that both branches (error present / absent) run cleanly.
-	errStr := "boom"
-	wf.finalizeSession(db.StatusFailed, &errStr)
-	wf.finalizeSession(db.StatusCompleted, nil)
 }

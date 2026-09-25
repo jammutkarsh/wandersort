@@ -30,14 +30,6 @@ const (
 	LocationDB
 )
 
-// Workflow result sentinels: nothing persists them, they just classify how a
-// run ended.
-const (
-	StatusCompleted = "COMPLETED"
-	StatusFailed    = "FAILED"
-	StatusCancelled = "CANCELLED"
-)
-
 // TimeLayout is RFC3339 with fixed-width nanoseconds. Fixed width keeps
 // lexicographic string comparison in SQL consistent with time order; values
 // are always stored in UTC via FormatTime and shown in the user's local zone
