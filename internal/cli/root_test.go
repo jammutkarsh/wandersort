@@ -61,7 +61,7 @@ func TestNewRootCmdWiresSubcommands(t *testing.T) {
 	// group with no compiler error either.
 	want := [][]string{
 		{"add"},
-		{"review"},
+		{"organise"},
 		{"execute"},
 		{"check"},
 		{"admin"},

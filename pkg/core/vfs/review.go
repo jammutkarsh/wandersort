@@ -6,7 +6,7 @@
 
 package vfs
 
-// review.go is the reconcile core behind `wandersort review`: exposes the
+// review.go is the reconcile core behind `wandersort organise`: exposes the
 // pending plan as a directory tree, applies edits back onto folder_nodes and
 // virtual_fs_entries, and remembers the names the reviewer typed. Nodes match
 // by their folder_nodes id, never by tree diff.

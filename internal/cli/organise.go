@@ -18,24 +18,24 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
-func (a *app) newReviewCmd() *cobra.Command {
+func (a *app) newOrganiseCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "review",
-		Short: "Review and correct the proposed folder structure",
+		Use:   "organise",
+		Short: "Correct the proposed folder structure before anything moves",
 		Long: `Walks the folder hierarchy proposed by the last scan so you can rename,
 merge, drop and flatten folders before anything is moved. Every edit is kept
 as you make it, across sessions; 'wandersort execute' applies them and copies
 the files. Names you type are remembered and offered as rename completions in
 later reviews.`,
-		Example: `# Review interactively
-wandersort review`,
+		Example: `# Correct the plan interactively
+wandersort organise`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// An alt-screen review in a pipe was never usable; say so instead
 			// of drawing one into a file.
 			if !a.isTuiEnabled(cmd) {
-				return fmt.Errorf("review needs an interactive terminal — 'wandersort execute' copies the plan as proposed")
+				return fmt.Errorf("organise needs an interactive terminal — 'wandersort execute' copies the plan as proposed")
 			}
-			// Opens the app on the review tab — the same session a bare
+			// Opens the app on the Organise tab — the same session a bare
 			// `wandersort` gives, so a reviewer who finds the folders wrong can
 			// fix the settings and come back without relaunching. The shell
 			// opens the lock, the database and the tree itself, and reports a

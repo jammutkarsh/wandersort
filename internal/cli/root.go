@@ -37,7 +37,7 @@ func (a *app) newRootCmd() *cobra.Command {
 video folders and it fingerprints every file, works out which are duplicates,
 and plans a folder tree you can read.
 
-Three verbs do the work: 'add' puts files into the plan, 'review' lets you
+Three verbs do the work: 'add' puts files into the plan, 'organise' lets you
 correct the plan, and 'execute' copies (or moves) the files in. 'check'
 re-reads the library later to prove nothing has rotted. Run bare 'wandersort' to do all of it on screen —
 the first run asks for your settings, and ctrl+t switches between them after.`,
@@ -48,7 +48,7 @@ wandersort
 wandersort add --paths ~/Pictures,/Volumes/SD
 
 # Correct the plan, then copy the files in
-wandersort review
+wandersort organise
 wandersort execute
 
 # Check the library is still what was recorded
@@ -85,7 +85,7 @@ wandersort check`,
 	rootCmd.PersistentFlags().Bool(flagPlain, false, "Disable the full-screen TUI; use plain line logging")
 
 	rootCmd.AddCommand(a.newAddCmd())
-	rootCmd.AddCommand(a.newReviewCmd())
+	rootCmd.AddCommand(a.newOrganiseCmd())
 	rootCmd.AddCommand(a.newExecuteCmd())
 	rootCmd.AddCommand(a.newCheckCmd())
 	rootCmd.AddCommand(a.newAdminCmd())

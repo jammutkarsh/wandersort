@@ -131,7 +131,7 @@ func (a *app) runAddPlain(paths []string, force bool) error {
 
 	// No -o needed: the library just added to is the one the next launch
 	// opens on (config.New reads the history this run wrote).
-	a.Log.Info(fmt.Sprintf("Added in %s. Run 'wandersort review' to check the plan, then 'wandersort execute' to copy the files in.", time.Since(start).Round(time.Millisecond)),
+	a.Log.Info(fmt.Sprintf("Added in %s. Run 'wandersort organise' to correct the plan, then 'wandersort execute' to copy the files in.", time.Since(start).Round(time.Millisecond)),
 		logger.UserKey, true, "addedPaths", scanPaths)
 	return nil
 }

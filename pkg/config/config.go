@@ -59,7 +59,7 @@ type Configuration struct {
 // (see LoadSettings), since a library's rules travel with the library.
 //
 // The output folder is the most recently used one that still exists, so
-// `wandersort review` on a later launch opens the library the last scan
+// `wandersort organise` on a later launch opens the library the last scan
 // filled; a caller with an explicit folder passes it to SetOutput.
 func New() (*Configuration, error) {
 	home, err := os.UserHomeDir()

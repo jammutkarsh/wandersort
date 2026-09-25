@@ -32,10 +32,10 @@ one scan ever runs against it at a time (see "Conventions" below):
 - `main.go` — calls `cli.Execute()` and prints its error. **No logger here**
   — it's built later (see below).
 - `internal/cli/` — cobra CLI. One file per command, plus `app.go` and `root.go`.
-  **The command set is `add`, `review`, `execute`, `check` and `admin
-  clear|db|report`** (commit 3f00215; the root help already names `organise`,
-  the next stage, which will fold review and execute together). The old
-  names are gone: `scan` is `add` (`add.go`), `verify` is `check`
+  **The command set is `add`, `organise`, `execute`, `check` and `admin
+  clear|db|report`**. The old names are gone: `review` is `organise`
+  (`organise.go`; it opens the shell's Organise tab, still `tabReview` and the
+  `internal/review` package inside), `scan` is `add` (`add.go`), `verify` is `check`
   (`check.go`), `issue` is `admin report` (`admin_report.go`), `reset` is
   `admin clear` (`admin_clear.go`, the peek copies) and `admin db --reset`,
   `recover` is `admin db --restore` (`admin_db.go`), and there is no `config`
@@ -356,7 +356,7 @@ one scan ever runs against it at a time (see "Conventions" below):
     `BuildAnchors`-then-copy-`resolver.Anchors` ritual (duplicated in
     `workflow` and `cli/review`) made it. `user_labels`' `SAVED_PLACE` kind is
     legacy: nothing writes it, the CHECK constraint just still allows it.
-  - `review.go` — `review` cmd: interactive is
+  - `organise.go` — `organise` cmd (was `review`): interactive is
     `runShell(shellStart{tab: tabReview})`, so a reviewer who finds the
     folders wrong can fix the settings and come back without relaunching; a
     missing library says so on the home screen rather than refusing to start

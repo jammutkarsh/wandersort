@@ -10,7 +10,7 @@ import "github.com/spf13/cobra"
 
 // newAdminCmd groups the commands that are about the library itself rather
 // than about the photos in it. Nothing here is part of organising a library,
-// which is why none of it sits at the top level next to add/review/execute/check:
+// which is why none of it sits at the top level next to add/organise/execute/check:
 // a user who never has a problem never types `admin`.
 func (a *app) newAdminCmd() *cobra.Command {
 	cmd := &cobra.Command{

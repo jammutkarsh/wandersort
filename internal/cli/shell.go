@@ -34,7 +34,7 @@ const (
 	numTabs
 )
 
-var tabNames = [numTabs]string{"Add", "Settings", "Review"}
+var tabNames = [numTabs]string{"Add", "Settings", "Organise"}
 
 // shellStart is which tab a session opens on, and with what. Every full-screen
 // entry point goes through the shell — bare `wandersort` (an empty start), and
@@ -328,7 +328,7 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 		// nothing has nothing kept to mention.
 		m.refresh()
 		if m.lib.HasEdits() {
-			note = "Review edits kept — run 'wandersort execute' to apply them and copy the files."
+			note = "Your edits are kept — run 'wandersort execute' to apply them and copy the files."
 			m.a.Log.Info(note, logger.UserKey, true)
 		}
 		m.screens[tabReview], m.reviewReady = nil, false
@@ -494,7 +494,7 @@ func (m *shellModel) openSettings() tea.Cmd {
 // openReview builds the review over whatever is in the database, off the UI
 // goroutine — the lock, the DB open and BuildTree are all too slow to run in
 // Update. Shared by [ctrl+r] on the home screen, [ctrl+t] into an
-// unprefetched review tab, `wandersort review`, and a settings-triggered
+// unprefetched review tab, `wandersort organise`, and a settings-triggered
 // re-plan (settingsSaved) swapping in the fresh proposal.
 func (m *shellModel) openReview() tea.Cmd {
 	if m.opening {

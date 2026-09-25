@@ -25,7 +25,7 @@ func (a *app) newExecuteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "execute",
 		Short: "Copy or move approved files into the output folder",
-		Long: `Applies your 'wandersort review' edits to the plan, approves it, and
+		Long: `Applies your 'wandersort organise' edits to the plan, approves it, and
 transfers every file from its source into <output>/<planned folder>. Copy is
 the default and never touches a source file; --move deletes each source only
 after its copy there is verified complete. Stops before changing anything if
