@@ -114,8 +114,32 @@ func (fc *FileClassifier) ClassifyName(name string) (mediaType string, shouldPro
 	}
 }
 
+// libraryBundleSuffixes are folders another photo app owns. Their contents
+// look like media — originals, and thousands of JPEG thumbnails and previews
+// — but they are that app's database: planning its thumbnails files junk as
+// photos, and moving its originals out breaks the app's library for good.
+// Matched case-insensitively, since HFS+/APFS and exFAT ignore case.
+var libraryBundleSuffixes = []string{
+	".photoslibrary",        // Apple Photos
+	".photolibrary",         // iPhoto
+	".migratedphotolibrary", // iPhoto library after Photos imported it
+	".aplibrary",            // Aperture
+	".lrdata",               // Lightroom previews and smart previews
+	".lrlibrary",            // Lightroom (cloud) local library
+	".cocatalogdb",          // Capture One catalog
+}
+
 func (fc *FileClassifier) ShouldIgnoreDir(name string) bool {
-	return fc.ignoredDirs[name]
+	if fc.ignoredDirs[name] {
+		return true
+	}
+	lower := strings.ToLower(name)
+	for _, suffix := range libraryBundleSuffixes {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 var (

@@ -99,6 +99,19 @@ func TestShouldIgnoreDir(t *testing.T) {
 	}{
 		{".git", true},
 		{".svn", true},
+
+		// another app's library: its originals must never be moved out
+		{"Photos Library.photoslibrary", true},
+		{"Photos Library.PhotosLibrary", true},
+		{"iPhoto Library.photolibrary", true},
+		{"iPhoto Library.migratedphotolibrary", true},
+		{"Aperture Library.aplibrary", true},
+		{"Catalog Previews.lrdata", true},
+		{"Catalog Smart Previews.lrdata", true},
+		{"Lightroom Library.lrlibrary", true},
+		{"Photos.cocatalogdb", true},
+		{"photoslibrary", false}, // a plain folder that happens to be named so
+		{"Goa Trip.photos", false},
 		{"node_modules", true},
 		{".Trash", true},
 		{"$RECYCLE.BIN", true},
