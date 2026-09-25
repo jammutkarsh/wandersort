@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -36,6 +37,11 @@ func seedApproved(t *testing.T, d *db.DB, id int64, targetRel, srcContent string
 	t.Helper()
 	src := filepath.Join(t.TempDir(), filepath.Base(targetRel))
 	if err := os.WriteFile(src, []byte(srcContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// the date SeedFile records, so the source reads as unchanged since the scan
+	scanned := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(src, scanned, scanned); err != nil {
 		t.Fatal(err)
 	}
 	dbtest.SeedFile(t, d, id, filepath.Dir(src), filepath.Base(src), int64(len(srcContent)))
@@ -983,5 +989,55 @@ func TestProductionTransferSkipsTakenNameBeforeCopying(t *testing.T) {
 	}
 	if slices.Contains(tried, dst) {
 		t.Errorf("copied into the taken name %s before moving on (tried %v)", dst, tried)
+	}
+}
+
+// A same-device move renames an unchanged source: the library file is the
+// source's own inode, nothing copied.
+func TestRunMoveRenamesUnchangedSource(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	src := seedApproved(t, d, 1, "A.jpg", "hello")
+	before, err := os.Stat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(filepath.Join(out, "A.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Error("library file is a copy, want the source renamed into place")
+	}
+}
+
+// A move whose source changed since the scan (same size, new bytes, new date)
+// is not renamed unchecked: it goes through the hash-checked copy, which
+// refuses it and keeps the source.
+func TestRunMoveChecksChangedSource(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	src := seedApproved(t, d, 1, "A.jpg", "hello")
+	if err := os.WriteFile(src, []byte("HELLO"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Done != 0 || rep.Failed != 1 {
+		t.Fatalf("got %+v, want the one file failed", rep)
+	}
+	if _, err := os.Stat(filepath.Join(out, "A.jpg")); !os.IsNotExist(err) {
+		t.Errorf("library A.jpg: %v, want nothing placed", err)
+	}
+	if got, err := os.ReadFile(src); err != nil || string(got) != "HELLO" {
+		t.Errorf("source = %q, %v; want it kept", got, err)
+	}
+	if _, errText := rowStatus(t, d, 1); errText == nil || !strings.Contains(*errText, "changed since it was scanned") {
+		t.Errorf("error = %v, want the checksum refusal", errText)
 	}
 }

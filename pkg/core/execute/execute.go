@@ -51,8 +51,18 @@ const (
 	ModeMove
 )
 
+// moveCopying is ModeMove for one source whose size or date changed since the
+// scan. A same-device rename would land bytes nothing checked against the
+// stored hash, so the file goes through the hash-checked copy instead and the
+// source is removed after, as a move across devices is. Chosen per file by
+// Run, never a Run's own Mode.
+const moveCopying Mode = -1
+
+// moves reports whether m removes the source once the file is placed.
+func (m Mode) moves() bool { return m == ModeMove || m == moveCopying }
+
 func (m Mode) String() string {
-	if m == ModeMove {
+	if m.moves() {
 		return "move"
 	}
 	return "copy"
@@ -134,11 +144,15 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		SourcePath string `db:"source_path"`
 		TargetPath string `db:"target_path"`
 		FileHash   string `db:"file_hash"`
+		Size       int64  `db:"file_size"`
+		ModifiedAt string `db:"file_modified_at"`
 	}
 	// A dry run reads the same list a real run would transfer.
 	if err := database.SQL.SelectContext(ctx, &rows,
-		`SELECT ve.id, ve.file_id, ve.source_path, ve.target_path, COALESCE(fm.file_hash, '') AS file_hash
-		FROM virtual_fs_entries ve LEFT JOIN file_metadata fm ON fm.file_id = ve.file_id
+		`SELECT ve.id, ve.file_id, ve.source_path, ve.target_path, COALESCE(fm.file_hash, '') AS file_hash,
+			fr.file_size, fr.file_modified_at
+		FROM virtual_fs_entries ve JOIN file_registry fr ON fr.id = ve.file_id
+		LEFT JOIN file_metadata fm ON fm.file_id = ve.file_id
 		WHERE `+db.PendingTransfer("ve.file_id")+` ORDER BY ve.id`); err != nil {
 		return Report{}, fmt.Errorf("load pending entries: %w", err)
 	}
@@ -203,7 +217,11 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 				xerr = &stepError{opStat, fmt.Errorf("source missing: %w", statErr)}
 			}
 		default:
-			dst, xerr = xfer(ctx, o.Mode, src, dst, r.FileHash, commit)
+			mode := o.Mode
+			if mode == ModeMove && (info.Size() != r.Size || db.FormatTime(info.ModTime()) != r.ModifiedAt) {
+				mode = moveCopying
+			}
+			dst, xerr = xfer(ctx, mode, src, dst, r.FileHash, commit)
 		}
 		if errors.Is(xerr, errSourceNotRemoved) {
 			// The file is in the library and already recorded there; the
@@ -487,7 +505,7 @@ func productionTransfer(ctx context.Context, mode Mode, src, dst, want string, c
 			return target, err
 		}
 		if holds(target, src, want) {
-			if mode != ModeMove {
+			if !mode.moves() {
 				return target, commit(target)
 			}
 			// The library copy matching the scan says nothing about the
@@ -543,8 +561,9 @@ func withSuffix(p string, n int) string {
 }
 
 // place puts src at exactly dst, failing with fs.ErrExist if dst is taken.
-// Move tries a same-device no-replace rename first — atomic, nothing copied,
-// so nothing to verify; any other failure (cross-device, mostly) falls back
+// Move tries a same-device no-replace rename first — atomic, nothing copied;
+// Run only allows it for a source whose size and date still match the scan
+// (moveCopying otherwise), which is the check a rename gets. Any other failure (cross-device, mostly) falls back
 // to copy, except a source that can't be removed, which a copy would fail on
 // too. A copy hashes the bytes as it writes them and lands only if they hash
 // to want (spec D22) — a source changed since the scan is not the file that
@@ -605,7 +624,7 @@ func place(mode Mode, src, dst, want string, commit func() error) error {
 		}
 		return err
 	}
-	if mode != ModeMove {
+	if !mode.moves() {
 		return nil
 	}
 	return removeSource(src)
