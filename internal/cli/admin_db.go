@@ -138,9 +138,21 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 		return nil
 	}
 
+	// Files already in the library are the one thing a reset loses track of
+	// for good: they stay on disk, but nothing records them, so the next
+	// import of the same card copies them in again. Say so in the question.
+	placed, err := a.AppDB.PlacedCount(ctx)
+	if err != nil {
+		return err
+	}
+	title := "Delete everything in the library database?"
+	detail := "What was scanned, the duplicates found, the plan and your edits. Your settings stay. 'wandersort admin db --restore' brings the rest back until the next transfer or reset."
+	if placed > 0 {
+		title = fmt.Sprintf("Forget the %d files already in the library?", placed)
+		detail = fmt.Sprintf("They stay in the library folder, but WanderSort stops knowing them: importing the same photos again copies them in a second time, and 'wandersort check' no longer looks at them. %s", detail)
+	}
 	yes, _ := cmd.Flags().GetBool(flagYes)
-	if !yes && !a.confirm(cmd, "Delete everything in the library database?",
-		"What was scanned, the duplicates found, the plan and your edits. Your settings stay. 'wandersort admin db --restore' brings the rest back until the next transfer or reset.") {
+	if !yes && !a.confirm(cmd, title, detail) {
 		return fmt.Errorf("reset cancelled")
 	}
 

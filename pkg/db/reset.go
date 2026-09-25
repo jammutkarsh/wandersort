@@ -91,3 +91,15 @@ func (d *DB) IsEmpty(ctx context.Context) (bool, error) {
 	}
 	return !found, nil
 }
+
+// PlacedCount is how many files the library already holds. A reset forgets
+// them: they stay in the library folder, but nothing records them any more,
+// so a card imported again copies them a second time.
+func (d *DB) PlacedCount(ctx context.Context) (int, error) {
+	var n int
+	if err := d.SQL.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM file_registry WHERE placed = 1`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("reset: count placed files: %w", err)
+	}
+	return n, nil
+}

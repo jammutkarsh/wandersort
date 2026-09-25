@@ -100,3 +100,21 @@ func TestResetKeepsLibrarySettings(t *testing.T) {
 		t.Error("a library holding only its settings must still count as empty")
 	}
 }
+
+// PlacedCount counts only files already in the library, the ones a reset
+// would forget.
+func TestPlacedCount(t *testing.T) {
+	ctx := context.Background()
+	d := dbtest.New(t)
+	if n, err := d.PlacedCount(ctx); err != nil || n != 0 {
+		t.Fatalf("empty library: PlacedCount = %d, %v; want 0", n, err)
+	}
+	dbtest.SeedFile(t, d, 1, "/src", "a.jpg", 1)
+	dbtest.SeedFile(t, d, 2, "/src", "b.jpg", 1)
+	dbtest.SeedFile(t, d, 3, "/src", "c.jpg", 1)
+	dbtest.SeedPlaced(t, d, 1)
+	dbtest.SeedPlaced(t, d, 3)
+	if n, err := d.PlacedCount(ctx); err != nil || n != 2 {
+		t.Errorf("PlacedCount = %d, %v; want 2", n, err)
+	}
+}
