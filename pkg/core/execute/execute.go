@@ -4,9 +4,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package execute is the phase vfs.go's package doc has always promised:
-// "a future Execute phase performs the copy/move." It reads every planned
-// row of virtual_fs_entries whose file is not yet placed and has no TRANSFER
+// Package execute copies or moves planned files into the library. It reads
+// every planned row of virtual_fs_entries whose file is not yet placed and has no TRANSFER
 // error, and places that file at outputDir/target_path: success sets
 // file_registry.placed, failure records an errors row. Review only ever
 // writes database rows; this is the one phase that touches the user's media
@@ -97,7 +96,7 @@ type transfer func(ctx context.Context, mode Mode, src, dst, want string, commit
 // does anything it cannot take back.
 type commitFn func(landed string) error
 
-// Run performs o.Mode over every APPROVED entry in database, placing each at
+// Run performs o.Mode over every pending entry in database, placing each at
 // outputDir/target_path, and reports what happened. The caller holds the
 // output lock (lock.AcquireOutput) for the same reason scan does: this writes
 // to that directory.
@@ -432,7 +431,8 @@ func alreadyLanded(dst, want string) (string, bool) {
 }
 
 // errSourceNotRemoved means the file landed, verified, but a move could not remove
-// its source. Run records the row DONE anyway: the library holds the file.
+// its source. Run counts the file placed anyway: the library holds it, and
+// commit has already recorded it there.
 var errSourceNotRemoved = errors.New("placed, but the source could not be removed")
 
 // productionTransfer places src at dst, or at the first free dst_N beside
@@ -443,9 +443,9 @@ var errSourceNotRemoved = errors.New("placed, but the source could not be remove
 // error that moves on to the next name.
 //
 // A taken name already holding this very file is where it lands: a crash
-// before the async writer recorded an earlier copy, or `wandersort admin db --restore`
-// putting rows back to APPROVED whose files are already placed. Taking the
-// next _N there would place the file twice.
+// between an earlier copy landing and its row committing, or `wandersort
+// admin db --restore` putting back rows as pending whose files are already
+// placed. Taking the next _N there would place the file twice.
 func productionTransfer(ctx context.Context, mode Mode, src, dst, want string, commit commitFn) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return dst, err
