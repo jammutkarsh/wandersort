@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/sync/semaphore"
 
@@ -229,6 +230,35 @@ func TestExtractor(t *testing.T) {
 			}
 			if rows != 1 {
 				t.Errorf("failed extraction should leave one hashed row with NULL exif columns, got %d", rows)
+			}
+		}},
+		// A closed writer stops every worker. The producer used to go on
+		// waiting to hand out the next file with nobody left to take it, and
+		// Run never returned
+		{"RunReturnsWhenTheWriterCloses", func(t *testing.T) {
+			d := dbtest.New(t)
+			root := t.TempDir()
+			for i := range 20 {
+				name := fmt.Sprintf("p%02d.jpg", i)
+				if err := os.WriteFile(filepath.Join(root, name), []byte("bytes"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				dbtest.SeedFile(t, d, int64(i+1), root, name, 5)
+			}
+			d.Writer.Close()
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := New(d, logger.NewNoopLogger(), missingExiftool(t), 1).Run(context.Background())
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Error("Run reported success with nothing written")
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("Run hung after the writer closed")
 			}
 		}},
 		// Sidecars (.AAE) carry no EXIF of their own, so running exiftool on them

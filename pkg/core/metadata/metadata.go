@@ -186,8 +186,15 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 		})
 	}
 	wg.Wait()
+	// Workers stop early only on shutdown or a closed writer. The first
+	// already cancels; the second doesn't, and a producer blocked handing out
+	// the next file would then wait forever for a worker that is gone.
+	cancel()
 
 	if err := <-producerErr; err != nil {
+		if ctx.Err() == nil && errors.Is(err, context.Canceled) {
+			return 0, errors.New("metadata: the database writer closed before every file was read")
+		}
 		return 0, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -420,7 +427,7 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 		}
 	}()
 
-	hash, err := e.readFile(ctx, file)
+	sum, err := e.readFile(ctx, file)
 	if err != nil {
 		// A cancelled pipeline aborts the budget wait rather than the
 		// read; that is shutdown, not a bad file, so don't record it.
@@ -467,7 +474,7 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 	e.log.Info("Reading", logger.StreamKey, true,
 		"file", filepath.Base(file.absPath), "extracted", extracted.Add(1), "total", total)
 
-	if !e.db.Writer.Write(e.store(file.id, hash, meta)) {
+	if !e.db.Writer.Write(e.store(file.id, sum, meta)) {
 		e.log.Warn("Bulk writer closed; dropping metadata write", "fileId", file.id)
 		return false
 	}
@@ -544,7 +551,7 @@ func HashFile(filePath string) (string, error) {
 
 // store writes the hash and the EXIF columns as one row — which is what marks
 // the file read — and clears the READ failure the row's existence supersedes
-func (e *Extractor) store(fileID int64, hash string, meta classifier.CommonMetadata) db.DBOperation {
+func (e *Extractor) store(fileID int64, sum string, meta classifier.CommonMetadata) db.DBOperation {
 	isScreenshot := 0
 	if meta.IsScreenshot {
 		isScreenshot = 1
@@ -564,7 +571,7 @@ func (e *Extractor) store(fileID int64, hash string, meta classifier.CommonMetad
 				exif_date_time_original, exif_create_date, exif_creation_date, exif_media_create_date,
 				is_screenshot
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			hash,
+			sum,
 			fileID,
 			db.IntOrNil(meta.ImageWidth),
 			db.IntOrNil(meta.ImageHeight),
