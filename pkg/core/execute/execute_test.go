@@ -25,6 +25,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -1100,5 +1101,125 @@ func TestLeftBehindNamesNeverReadFiles(t *testing.T) {
 	want := []string{filepath.Join("/card/DCIM", "failed.jpg"), filepath.Join("/card/DCIM", "unread.jpg")}
 	if !slices.Equal(got, want) {
 		t.Errorf("LeftBehind = %v, want %v", got, want)
+	}
+}
+
+// seedPlanWithRename plans one file under 2024/06_June/03 and leaves a review
+// draft in out renaming the day to Goa-Trip. Returns the entry's id.
+func seedPlanWithRename(t *testing.T, d *db.DB, out string) int64 {
+	t.Helper()
+	seedApproved(t, d, 1, "2024/06_June/03/a.jpg", "photo")
+	tree, err := vfs.BuildTree(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := vfs.OpenDraft(out, tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := tree[0].Children[0].Children[0]
+	if _, err := draft.Apply(vfs.Edit{Op: vfs.OpRename, Node: day.ID, From: day.Name, To: "Goa-Trip"}); err != nil {
+		t.Fatal(err)
+	}
+	return 1
+}
+
+// Spec D18 from Run's side: the review's edits reach the plan before any file
+// moves, the file lands under the renamed folder, the draft is gone, and
+// OnApplied runs once the plan is written.
+func TestRunAppliesTheReviewDraftFirst(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	id := seedPlanWithRename(t, d, out)
+	applied := 0
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{OnApplied: func() { applied++ }})
+	if err != nil || rep.Done != 1 {
+		t.Fatalf("Run = %+v, %v; want one file placed", rep, err)
+	}
+	if applied != 1 {
+		t.Errorf("OnApplied ran %d times, want once", applied)
+	}
+	if _, err := os.Stat(filepath.Join(out, "2024/06_June/Goa-Trip/a.jpg")); err != nil {
+		t.Errorf("file not under the renamed folder: %v", err)
+	}
+	if got := targetPath(t, d, id); got != "2024/06_June/Goa-Trip/a.jpg" {
+		t.Errorf("target = %q, want the renamed folder", got)
+	}
+	if _, err := os.Stat(filepath.Join(out, vfs.DraftFileName)); !os.IsNotExist(err) {
+		t.Errorf("draft still there after Run: %v", err)
+	}
+}
+
+// A dry run reports the paths the real run will use — the review's edits
+// applied — and leaves the plan, the draft and the output as they were.
+func TestRunDryRunReportsEditedPaths(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	id := seedPlanWithRename(t, d, out)
+	var targets []string
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{
+		DryRun:     true,
+		OnApplied:  func() { t.Error("OnApplied must not run on a dry run") },
+		OnProgress: func(target string, _ int64, _, _ int) { targets = append(targets, target) },
+	})
+	if err != nil || rep.Done != 1 {
+		t.Fatalf("dry run = %+v, %v; want one file", rep, err)
+	}
+	if want := []string{"2024/06_June/Goa-Trip/a.jpg"}; !slices.Equal(targets, want) {
+		t.Errorf("dry run reported %v, want %v", targets, want)
+	}
+	if got := targetPath(t, d, id); got != "2024/06_June/03/a.jpg" {
+		t.Errorf("a dry run wrote the plan: target = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(out, vfs.DraftFileName)); err != nil {
+		t.Errorf("a dry run removed the draft: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "2024")); !os.IsNotExist(err) {
+		t.Errorf("a dry run wrote to the output: %v", err)
+	}
+}
+
+// A plan the output can't hold is refused before anything changes: the
+// draft stays unapplied, no backup is written, no file moves.
+func TestRunRefusesPlanThatDoesNotFit(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	id := seedPlanWithRename(t, d, out)
+	orig := spaceOf
+	spaceOf = func(string) (uint64, uint64, error) { return 1 << 20, 1 << 30, nil }
+	t.Cleanup(func() { spaceOf = orig })
+
+	_, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{OnApplied: func() { t.Error("OnApplied ran on a refused plan") }})
+	var full *NotEnoughSpaceError
+	if !errors.As(err, &full) || full.Free != 1<<20 || full.Files != 5 || full.Needed <= full.Free {
+		t.Fatalf("err = %v, want a NotEnoughSpaceError with the figures", err)
+	}
+	if !strings.Contains(err.Error(), "nothing was changed") {
+		t.Errorf("message %q should say nothing changed", err)
+	}
+	if got := targetPath(t, d, id); got != "2024/06_June/03/a.jpg" {
+		t.Errorf("a refused plan was edited: target = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(out, vfs.DraftFileName)); err != nil {
+		t.Errorf("draft gone after a refusal: %v", err)
+	}
+	for _, name := range []string{db.BackupFileName, "2024"} {
+		if _, err := os.Stat(filepath.Join(out, name)); !os.IsNotExist(err) {
+			t.Errorf("%s written by a refused plan: %v", name, err)
+		}
+	}
+}
+
+// An unreadable free-space figure doesn't block the transfer: each file still
+// lands whole or not at all.
+func TestRunTransfersWhenFreeSpaceIsUnknown(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	seedApproved(t, d, 1, "2024/06_June/03/a.jpg", "photo")
+	orig := spaceOf
+	spaceOf = func(string) (uint64, uint64, error) { return 0, 0, errors.New("statfs failed") }
+	t.Cleanup(func() { spaceOf = orig })
+	if rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil || rep.Done != 1 {
+		t.Fatalf("Run = %+v, %v; want the file placed", rep, err)
 	}
 }

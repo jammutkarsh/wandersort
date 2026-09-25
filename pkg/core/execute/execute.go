@@ -36,6 +36,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
@@ -72,8 +73,13 @@ func (m Mode) String() string {
 type Options struct {
 	Mode Mode
 	// DryRun reports what would happen and touches nothing — no file is
-	// written, no row changes.
+	// written, no row changes. It reports the paths with the review's edits
+	// applied, the same ones a real run would use.
 	DryRun bool
+	// OnApplied runs once the review's edits are in the plan, before any file
+	// moves (never on a dry run). The review's peek copies are removed here:
+	// with the plan written there is nothing left to peek at.
+	OnApplied func()
 	// OnProgress reports after each row is decided: its target path, source
 	// size, and how many of the total are done. nil if the caller doesn't
 	// care (the plain CLI path just reads the returned Report).
@@ -84,6 +90,17 @@ type Options struct {
 type Report struct {
 	Done, Failed int
 	Bytes        int64
+}
+
+// NotEnoughSpaceError is Run refusing a transfer the output volume can't
+// hold. Nothing was changed: the check runs before the edits apply.
+type NotEnoughSpaceError struct {
+	Needed, Files, Reserve, Free uint64
+}
+
+func (e *NotEnoughSpaceError) Error() string {
+	return fmt.Sprintf("not enough free space: the plan needs %s (%s of files, plus room for the database backup and %s kept free), only %s free at the output — nothing was changed",
+		volume.HumanBytes(e.Needed), volume.HumanBytes(e.Files), volume.HumanBytes(e.Reserve), volume.HumanBytes(e.Free))
 }
 
 // Pending is what a transfer started right now would handle: every planned
@@ -150,10 +167,13 @@ type transfer func(ctx context.Context, mode Mode, src, dst, want string, commit
 // does anything it cannot take back.
 type commitFn func(landed string) error
 
-// Run performs o.Mode over every pending entry in database, placing each at
-// outputDir/target_path, and reports what happened. The caller holds the
-// output lock (lock.AcquireOutput) for the same reason scan does: this writes
-// to that directory.
+// Run is the whole transfer (spec D18): refuse a plan the output can't hold
+// (*NotEnoughSpaceError, nothing changed), write the review's draft into the
+// plan, back the database up, then perform o.Mode over every pending entry,
+// placing each at outputDir/target_path, and report what happened. A dry run
+// does none of the writing and reports the paths a real run would use. The
+// caller holds the output lock (lock.AcquireOutput) for the same reason scan
+// does: this writes to that directory.
 func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, o Options) (Report, error) {
 	xfer := productionTransfer
 	if o.DryRun {
@@ -162,24 +182,99 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	return run(ctx, database, log, outputDir, o, xfer)
 }
 
-func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, o Options, xfer transfer) (Report, error) {
-	var rows []struct {
-		ID         int64  `db:"id"`
-		FileID     int64  `db:"file_id"`
-		SourcePath string `db:"source_path"`
-		TargetPath string `db:"target_path"`
-		FileHash   string `db:"file_hash"`
-		Size       int64  `db:"file_size"`
-		ModifiedAt string `db:"file_modified_at"`
-	}
-	// A dry run reads the same list a real run would transfer.
-	if err := database.SQL.SelectContext(ctx, &rows,
+// pendingRow is one file a run will place.
+type pendingRow struct {
+	ID         int64  `db:"id"`
+	FileID     int64  `db:"file_id"`
+	SourcePath string `db:"source_path"`
+	TargetPath string `db:"target_path"`
+	FileHash   string `db:"file_hash"`
+	Size       int64  `db:"file_size"`
+	ModifiedAt string `db:"file_modified_at"`
+}
+
+func loadPending(ctx context.Context, q sqlx.QueryerContext) ([]pendingRow, error) {
+	var rows []pendingRow
+	if err := sqlx.SelectContext(ctx, q, &rows,
 		`SELECT ve.id, ve.file_id, ve.source_path, ve.target_path, COALESCE(fm.file_hash, '') AS file_hash,
 			fr.file_size, fr.file_modified_at
 		FROM virtual_fs_entries ve JOIN file_registry fr ON fr.id = ve.file_id
 		LEFT JOIN file_metadata fm ON fm.file_id = ve.file_id
 		WHERE `+db.PendingTransfer("ve.file_id")+` ORDER BY ve.id`); err != nil {
-		return Report{}, fmt.Errorf("load pending entries: %w", err)
+		return nil, fmt.Errorf("load pending entries: %w", err)
+	}
+	return rows, nil
+}
+
+// prepare is spec D18's order before any file moves: room for the whole plan
+// first, so a refusal changes nothing; then the review's edits go into the
+// plan in one transaction; then the rows to place are read. A dry run applies
+// the edits in a transaction it rolls back, so it reads the same rows a real
+// run would, at the same paths.
+func prepare(ctx context.Context, database *db.DB, outputDir string, o Options) ([]pendingRow, error) {
+	if o.DryRun {
+		var rows []pendingRow
+		err := vfs.PreviewDraft(ctx, database, outputDir, func(ctx context.Context, q sqlx.QueryerContext) error {
+			var err error
+			rows, err = loadPending(ctx, q)
+			return err
+		})
+		return rows, err
+	}
+	if err := checkFits(ctx, database, outputDir); err != nil {
+		return nil, err
+	}
+	if err := vfs.ApplyDraft(ctx, database, outputDir); err != nil {
+		return nil, fmt.Errorf("apply review edits: %w", err)
+	}
+	if o.OnApplied != nil {
+		o.OnApplied()
+	}
+	return loadPending(ctx, database.SQL)
+}
+
+// checkFits refuses a transfer the output volume can't hold: every file not
+// yet transferred (a review edit never changes a file's size, so the total is
+// the same before and after the draft applies), room for the backup Run writes
+// first, and a reserve so the disk is never filled to its last byte
+// (volume.TransferNeeds). The database's size is its page count, which the
+// backup — a VACUUM INTO — never exceeds. An unreadable free-space figure lets
+// the transfer run; each file still lands whole or not at all.
+//
+// ponytail: a same-volume move only renames and needs no room for the files,
+// but this counts them anyway. Split the check by mode (or volume) if that's
+// ever the transfer someone is blocked on.
+// spaceOf is volume.Space, called through a variable so a test can run out
+// of room.
+var spaceOf = volume.Space
+
+func checkFits(ctx context.Context, database *db.DB, outputDir string) error {
+	_, pending, err := Pending(ctx, database)
+	if err != nil {
+		return err
+	}
+	var dbBytes int64
+	if err := database.SQL.GetContext(ctx, &dbBytes,
+		`SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()`); err != nil {
+		return fmt.Errorf("size the database: %w", err)
+	}
+	free, total, err := spaceOf(outputDir)
+	if err != nil {
+		return nil
+	}
+	if needed := volume.TransferNeeds(uint64(pending), uint64(dbBytes), total); needed > free {
+		return &NotEnoughSpaceError{
+			Needed: needed, Files: uint64(pending), Free: free,
+			Reserve: needed - uint64(pending) - 2*uint64(dbBytes),
+		}
+	}
+	return nil
+}
+
+func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, o Options, xfer transfer) (Report, error) {
+	rows, err := prepare(ctx, database, outputDir, o)
+	if err != nil {
+		return Report{}, err
 	}
 	if len(rows) == 0 {
 		return Report{}, nil

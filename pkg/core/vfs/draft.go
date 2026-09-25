@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/jmoiron/sqlx"
+
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 )
@@ -321,10 +323,10 @@ func present(tree []Node, ids []int64) []int64 {
 }
 
 // ApplyDraft writes the review's edits into the plan (spec D18): replays the
-// draft over the stored tree, then Confirm applies it and approves every
-// still-proposed row in one transaction, then the draft goes. Run before a
-// transfer — review itself never writes the plan. A library with nothing left
-// to review only drops the draft.
+// draft over the stored tree, then Confirm applies it in one transaction,
+// then the draft goes. execute.Run calls it before a transfer — review itself
+// never writes the plan. A library with nothing left to review, or a draft
+// with no edits, only drops the draft.
 func ApplyDraft(ctx context.Context, database *db.DB, outputDir string) error {
 	tree, err := BuildTree(ctx, database)
 	if err != nil {
@@ -334,10 +336,34 @@ func ApplyDraft(ctx context.Context, database *db.DB, outputDir string) error {
 	if err != nil {
 		return err
 	}
-	if len(tree) > 0 {
+	// no edits is the plan as it stands: nothing to confirm
+	if len(tree) > 0 && len(d.edits) > 0 {
 		if err := Confirm(ctx, database, d.Tree()); err != nil {
 			return err
 		}
 	}
 	return RemoveDraft(outputDir)
+}
+
+// PreviewDraft runs read against the plan as ApplyDraft would leave it —
+// edits applied, draft still on disk — inside a transaction that is then
+// rolled back. It is how a dry run reports the paths a real run will use
+// without writing anything.
+func PreviewDraft(ctx context.Context, database *db.DB, outputDir string, read func(context.Context, sqlx.QueryerContext) error) error {
+	tree, err := BuildTree(ctx, database)
+	if err != nil {
+		return err
+	}
+	d, err := OpenDraft(outputDir, tree)
+	if err != nil {
+		return err
+	}
+	return database.Writer.DryRun(func(ctx context.Context, tx *sqlx.Tx) error {
+		if len(tree) > 0 && len(d.edits) > 0 {
+			if err := confirm(ctx, tx, d.Tree()); err != nil {
+				return fmt.Errorf("apply review edits: %w", err)
+			}
+		}
+		return read(ctx, tx)
+	})
 }

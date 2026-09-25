@@ -53,6 +53,46 @@ func TestFlushDrainsEnqueuedOps(t *testing.T) {
 	}
 }
 
+// DryRun lets op see its own writes and then keeps none of them; op's error
+// comes back as is.
+func TestDryRunRollsBack(t *testing.T) {
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	count := func(q sqlx.QueryerContext) int {
+		var n int
+		if err := sqlx.GetContext(context.Background(), q, &n, `SELECT COUNT(*) FROM user_labels WHERE label='dry'`); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if err := d.Writer.DryRun(func(ctx context.Context, tx *sqlx.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('dry', 'EVENT')`); err != nil {
+			return err
+		}
+		if n := count(tx); n != 1 {
+			t.Errorf("inside the dry run: count = %d, want its own write visible", n)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(d.SQL); n != 0 {
+		t.Errorf("after the dry run: count = %d, want nothing kept", n)
+	}
+	wantErr := fmt.Errorf("deliberate failure")
+	if err := d.Writer.DryRun(func(context.Context, *sqlx.Tx) error { return wantErr }); !errors.Is(err, wantErr) {
+		t.Errorf("DryRun error = %v, want %v", err, wantErr)
+	}
+	d.Writer.Close()
+	if err := d.Writer.DryRun(func(context.Context, *sqlx.Tx) error { return nil }); err == nil {
+		t.Error("DryRun on a closed writer must fail")
+	}
+}
+
 func TestWriteSyncReturnsOperationOutcome(t *testing.T) {
 	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {

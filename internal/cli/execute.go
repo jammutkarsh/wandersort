@@ -16,10 +16,8 @@ import (
 
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
-	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
-	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 func (a *app) newExecuteCmd() *cobra.Command {
@@ -46,7 +44,7 @@ wandersort execute --move`,
 	}
 
 	cmd.Flags().Bool(flagMove, false, "Move files instead of copying, deleting each source once its copy is verified")
-	cmd.Flags().Bool(flagDryRun, false, "Report what would be transferred without touching anything (review edits not applied)")
+	cmd.Flags().Bool(flagDryRun, false, "Report what would be transferred, and where, without touching anything")
 	cmd.Flags().Bool(flagYes, false, "Skip the confirmation prompt --move asks for")
 	return cmd
 }
@@ -90,27 +88,19 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 	}
 	defer a.reportLeftBehind(left)
 
-	// Spec D18: room for the whole plan first, so a refusal changes nothing;
-	// then the review's draft goes into the plan and approves it, in one
-	// transaction; only then does a file move.
-	if !dryRun {
-		if err := a.checkPlanFits(ctx, outputDir); err != nil {
-			return err
-		}
-		if err := vfs.ApplyDraft(ctx, a.AppDB, outputDir); err != nil {
-			return fmt.Errorf("apply review edits: %w", err)
-		}
-		// the plan is written: nothing is left to peek at
-		if err := review.CleanPreviews(); err != nil {
-			a.Log.Warn("could not remove the preview copies", "error", err)
-		}
-	}
-
 	mode := execute.ModeCopy
 	if move {
 		mode = execute.ModeMove
 	}
-	rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{Mode: mode, DryRun: dryRun})
+	rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{
+		Mode:   mode,
+		DryRun: dryRun,
+		OnApplied: func() {
+			if err := review.CleanPreviews(); err != nil {
+				a.Log.Warn("could not remove the preview copies", "error", err)
+			}
+		},
+	})
 	if errors.Is(err, context.Canceled) {
 		// every file not yet reached is still pending; nothing is half-placed
 		return fmt.Errorf("stopped after %d files — run 'wandersort execute' again to carry on from there", rep.Done)
@@ -154,37 +144,4 @@ func (a *app) reportLeftBehind(left []string) {
 		fmt.Fprintf(os.Stderr, "    … and %d more (see the log)\n", len(left)-maxLeftBehindShown)
 	}
 	fmt.Fprintln(os.Stderr, "  Keep these sources; 'wandersort add' tries them again.")
-}
-
-// checkPlanFits refuses a transfer the output volume can't hold: every file
-// not yet transferred (a review edit never changes a file's size, so the
-// total is the same before and after the draft applies), room for the backup
-// execute writes first, and a reserve so the disk is never filled to its last
-// byte (volume.TransferNeeds). An unreadable free-space figure lets the
-// transfer run; each file still lands whole or not at all.
-//
-// ponytail: a same-volume move only renames and needs no room for the files,
-// but this counts them anyway. Split the check by mode (or volume) if that's
-// ever the transfer someone is blocked on.
-func (a *app) checkPlanFits(ctx context.Context, outputDir string) error {
-	_, pending, err := execute.Pending(ctx, a.AppDB)
-	if err != nil {
-		return err
-	}
-	var dbBytes int64
-	for _, p := range []string{a.Config.AppDBPath, a.Config.AppDBPath + "-wal"} {
-		if info, err := os.Stat(p); err == nil {
-			dbBytes += info.Size()
-		}
-	}
-	free, total, err := volume.Space(outputDir)
-	if err != nil {
-		return nil
-	}
-	if needed := volume.TransferNeeds(uint64(pending), uint64(dbBytes), total); needed > free {
-		return fmt.Errorf("not enough free space: the plan needs %s (%s of files, plus room for the database backup and %s kept free), only %s free at the output — nothing was changed",
-			volume.HumanBytes(needed), volume.HumanBytes(uint64(pending)),
-			volume.HumanBytes(needed-uint64(pending)-2*uint64(dbBytes)), volume.HumanBytes(free))
-	}
-	return nil
 }

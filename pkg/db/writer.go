@@ -107,6 +107,25 @@ func (bw *BulkWriter) WriteSync(op DBOperation) error {
 	return tx.Commit()
 }
 
+// DryRun runs op in a transaction of its own and always rolls it back: a
+// read of what the database would hold after op, with nothing written. Same
+// ordering and lock as WriteSync.
+func (bw *BulkWriter) DryRun(op DBOperation) error {
+	bw.Flush()
+	bw.mu.RLock()
+	defer bw.mu.RUnlock()
+	if bw.closed.Load() {
+		return fmt.Errorf("writer closed")
+	}
+	ctx := context.Background()
+	tx, err := bw.sqlDB.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	return op(ctx, tx)
+}
+
 // Flush blocks until all currently-enqueued operations have been written to the
 // database. Use this at phase boundaries to guarantee visibility before reads
 func (bw *BulkWriter) Flush() {

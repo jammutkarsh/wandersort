@@ -218,8 +218,19 @@ func Labels(ctx context.Context, database *db.DB, log logger.Logger) []string {
 // and entries, and remembers every name the reviewer typed in user_labels, so
 // the next review's rename completions offer it. The write is synchronous: a nil return means committed.
 func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
+	if err := database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+		return confirm(ctx, tx, roots)
+	}); err != nil {
+		return fmt.Errorf("confirm vfs: %w", err)
+	}
+	return nil
+}
+
+// confirm is Confirm inside the caller's transaction, so a dry run can apply
+// the same edits and roll them back.
+func confirm(ctx context.Context, tx *sqlx.Tx, roots []Node) error {
 	var entryCount int
-	if err := database.SQL.GetContext(ctx, &entryCount,
+	if err := tx.GetContext(ctx, &entryCount,
 		`SELECT COUNT(*) FROM virtual_fs_entries`); err != nil {
 		return fmt.Errorf("count vfs entries: %w", err)
 	}
@@ -227,112 +238,107 @@ func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 		return ErrNoProposal
 	}
 
-	if err := database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
-		// only still-reviewable rows are moved; executed/failed rows keep
-		// the paths they were moved under
-		var entries []struct {
-			ID         int64  `db:"id"`
-			NodeID     int64  `db:"node_id"`
-			TargetPath string `db:"target_path"`
-			SourcePath string `db:"source_path"`
-		}
-		if err := tx.SelectContext(ctx, &entries,
-			`SELECT id, node_id, target_path, source_path FROM virtual_fs_entries WHERE `+
-				db.PendingTransfer("file_id")+` ORDER BY id`); err != nil {
-			return err
-		}
-		// a rescan replaces the proposal set wholesale; if it won the race the
-		// rows are gone and this confirm must fail, not half-apply
-		if len(entries) == 0 {
-			return fmt.Errorf("%w: proposal was replaced by a newer scan", ErrNoProposal)
-		}
+	// only still-reviewable rows are moved; executed/failed rows keep
+	// the paths they were moved under
+	var entries []struct {
+		ID         int64  `db:"id"`
+		NodeID     int64  `db:"node_id"`
+		TargetPath string `db:"target_path"`
+		SourcePath string `db:"source_path"`
+	}
+	if err := tx.SelectContext(ctx, &entries,
+		`SELECT id, node_id, target_path, source_path FROM virtual_fs_entries WHERE `+
+			db.PendingTransfer("file_id")+` ORDER BY id`); err != nil {
+		return err
+	}
+	// a rescan replaces the proposal set wholesale; if it won the race the
+	// rows are gone and this confirm must fail, not half-apply
+	if len(entries) == 0 {
+		return fmt.Errorf("%w: proposal was replaced by a newer scan", ErrNoProposal)
+	}
 
-		twins, err := splitPlacedFolders(ctx, tx)
-		if err != nil {
-			return err
-		}
-		folders, err := loadFolderRows(ctx, tx)
-		if err != nil {
-			return err
-		}
-		edits, err := readTree(remapIDs(roots, twins), folders)
-		if err != nil {
-			return err
-		}
-		if err := edits.apply(ctx, tx); err != nil {
-			return err
-		}
-		if folders, err = loadFolderRows(ctx, tx); err != nil {
-			return err
-		}
-		dirs := map[int64]string{}
+	twins, err := splitPlacedFolders(ctx, tx)
+	if err != nil {
+		return err
+	}
+	folders, err := loadFolderRows(ctx, tx)
+	if err != nil {
+		return err
+	}
+	edits, err := readTree(remapIDs(roots, twins), folders)
+	if err != nil {
+		return err
+	}
+	if err := edits.apply(ctx, tx); err != nil {
+		return err
+	}
+	if folders, err = loadFolderRows(ctx, tx); err != nil {
+		return err
+	}
+	dirs := map[int64]string{}
 
-		// Collapsing dirs can land two files on the same basename; buildTargets'
-		// uniqueness guarantee only held for its own layout, so re-establish it:
-		// unmoved rows and placed files claim their path first, moved rows take
-		// the next _N — one number per capture group (assignSuffix), so an edit
-		// and its photo keep matching names.
-		//
-		// ponytail: groups are rebuilt from source dir + captureStem, with no
-		// time window, and numbers go out in row order, not capture time (D25).
-		// Both are stable run to run; a pair split across folders only stays
-		// matched when both folders move. Persist the pair key if that bites.
-		placed, err := placedPaths(ctx, tx)
-		if err != nil {
-			return err
+	// Collapsing dirs can land two files on the same basename; buildTargets'
+	// uniqueness guarantee only held for its own layout, so re-establish it:
+	// unmoved rows and placed files claim their path first, moved rows take
+	// the next _N — one number per capture group (assignSuffix), so an edit
+	// and its photo keep matching names.
+	//
+	// ponytail: groups are rebuilt from source dir + captureStem, with no
+	// time window, and numbers go out in row order, not capture time (D25).
+	// Both are stable run to run; a pair split across folders only stays
+	// matched when both folders move. Persist the pair key if that bites.
+	placed, err := placedPaths(ctx, tx)
+	if err != nil {
+		return err
+	}
+	taken := make(map[string]bool, len(placed)+len(entries))
+	for _, p := range placed {
+		taken[nameKey(p)] = true
+	}
+	type move struct {
+		id   int64
+		dir  string
+		base string
+	}
+	groups := map[string][]move{}
+	var keys []string
+	for _, e := range entries {
+		// split and merged-away folders' entries were moved above
+		nodeID := e.NodeID
+		if twin, ok := twins[nodeID]; ok {
+			nodeID = twin
 		}
-		taken := make(map[string]bool, len(placed)+len(entries))
-		for _, p := range placed {
-			taken[nameKey(p)] = true
+		nodeID = edits.survivor(nodeID)
+		newDir := folderPath(folders, dirs, nodeID)
+		if newDir == path.Dir(e.TargetPath) {
+			taken[nameKey(e.TargetPath)] = true
+			continue
 		}
-		type move struct {
-			id   int64
-			dir  string
-			base string
+		key := path.Dir(e.SourcePath) + "|" + captureStem(path.Base(e.SourcePath))
+		if groups[key] == nil {
+			keys = append(keys, key)
 		}
-		groups := map[string][]move{}
-		var keys []string
-		for _, e := range entries {
-			// split and merged-away folders' entries were moved above
-			nodeID := e.NodeID
-			if twin, ok := twins[nodeID]; ok {
-				nodeID = twin
-			}
-			nodeID = edits.survivor(nodeID)
-			newDir := folderPath(folders, dirs, nodeID)
-			if newDir == path.Dir(e.TargetPath) {
-				taken[nameKey(e.TargetPath)] = true
-				continue
-			}
-			key := path.Dir(e.SourcePath) + "|" + captureStem(path.Base(e.SourcePath))
-			if groups[key] == nil {
-				keys = append(keys, key)
-			}
-			groups[key] = append(groups[key], move{e.ID, newDir, path.Base(e.TargetPath)})
-		}
-		for _, key := range keys {
-			members := groups[key]
-			paths := make([]string, len(members))
-			assignSuffix(taken, paths, func(k int) (string, string) {
-				return members[k].dir, members[k].base
-			})
-			for k, mv := range members {
-				if _, err := tx.ExecContext(ctx,
-					`UPDATE virtual_fs_entries SET target_path = ? WHERE id = ?`,
-					paths[k], mv.id); err != nil {
-					return err
-				}
-			}
-		}
-		for _, name := range edits.learned {
+		groups[key] = append(groups[key], move{e.ID, newDir, path.Base(e.TargetPath)})
+	}
+	for _, key := range keys {
+		members := groups[key]
+		paths := make([]string, len(members))
+		assignSuffix(taken, paths, func(k int) (string, string) {
+			return members[k].dir, members[k].base
+		})
+		for k, mv := range members {
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO user_labels (label, kind) VALUES (?, 'EVENT') ON CONFLICT DO NOTHING`, name); err != nil {
+				`UPDATE virtual_fs_entries SET target_path = ? WHERE id = ?`,
+				paths[k], mv.id); err != nil {
 				return err
 			}
 		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("confirm vfs: %w", err)
+	}
+	for _, name := range edits.learned {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO user_labels (label, kind) VALUES (?, 'EVENT') ON CONFLICT DO NOTHING`, name); err != nil {
+			return err
+		}
 	}
 	return nil
 }

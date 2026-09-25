@@ -393,19 +393,13 @@ one scan ever runs against it at a time (see "Conventions" below):
     **The TUI itself lives in `internal/review/`** — see below; it has no
     rebuild concept of its own any more, only `[R]` as a reset of the draft
     (see the `Model` notes below).
-  - `execute.go` — `execute` cmd: **the one place review edits reach the
-    database and files move** (spec D18). In order: `--move` without `--yes` asks (`confirm`; `--copy`, the
-    default, never does — it never touches a source); `checkPlanFits`
-    (`volume.TransferNeeds`: the pending files' bytes from `execute.Pending`,
-    twice the database —
-    the backup's plain and compressed copies coexist briefly — and a reserve
-    of 1 GiB or 1% of the volume, whichever is more, against `volume.Space`;
-    a hard stop before anything changes, `ponytail:` it counts a same-volume
-    move's files too);
-    `vfs.ApplyDraft` (replay the draft, `Confirm` it — which applies the
-    edits in one transaction — then delete the file); `CleanPreviews`;
-    `execute.Run`. `--dry-run` skips the apply and reports the same pending
-    rows at their proposed paths (without the draft's edits).
+  - `execute.go` — `execute` cmd: asks the `--move` question (`confirm`;
+    `--copy`, the default, never does — it never touches a source), then
+    calls `execute.Run` and prints the report. **The spec-D18 order lives in
+    `execute.Run`, not here** (see `pkg/core/execute` below), so issue 21's
+    copy screen calls the same one function and can't get it wrong; the
+    command only hands it `OnApplied`, which sweeps the peek copies
+    (`review.CleanPreviews` is in `internal/`, which `pkg` can't import).
     Safe to re-run: `execute.Run` only ever selects pending rows (file not
     placed, no `TRANSFER` error), so a placed file is skipped and a run stopped partway resumes on
     its own next time; a crash between the apply and the draft's removal
@@ -691,7 +685,8 @@ one scan ever runs against it at a time (see "Conventions" below):
   peeking a dozen folders in one session can't evict the one being looked at
   now. `maxPreviewBytes` (250MB) still caps a single peek. Nothing
   is deleted on exit any more — **the sweep happens when the plan is
-  written** (`CleanPreviews`, called by `execute` once the draft is applied)
+  written** (`CleanPreviews`, run from `execute.Run`'s `OnApplied` once the
+  draft is applied)
   and from `wandersort admin clear`, since at that point there is nothing left to
   peek at. Leaving a review deliberately keeps the copies for the next
   session.
@@ -1483,7 +1478,19 @@ tree over the whole library.
   file's `errors` rows, failure writes a `TRANSFER` row (op `stat`/`mkdir`/
   `copy`/`rename`/`hash`/`remove-source`, from `stepError`) through
   `db.RecordError` — so "which files failed and why" is a query. There is no
-  row status any more. `Run(ctx, db, log, outputDir, Options{Mode, DryRun})` is the whole
+  row status any more. **`Run` owns the spec-D18 order** (`prepare`): first
+  `checkFits` (`volume.TransferNeeds`: `Pending`'s bytes, twice the database
+  — its page count, which the backup's `VACUUM INTO` never exceeds; the
+  plain and compressed copies coexist briefly — and a reserve of 1 GiB or 1%
+  of the volume, whichever is more, against `volume.Space` via the `spaceOf`
+  test seam; a refusal is `*NotEnoughSpaceError` and changes nothing,
+  `ponytail:` it counts a same-volume move's files too), then
+  `vfs.ApplyDraft`, then `Options.OnApplied`, then the backup and the
+  transfers. **A dry run reports the edited paths**: `vfs.PreviewDraft`
+  applies the draft inside `BulkWriter.DryRun`, a transaction that is always
+  rolled back, and reads the pending rows there — it used to skip the draft
+  and report paths the real run would not use. A draft with no edits skips
+  `Confirm` entirely (nothing to apply). `Run(ctx, db, log, outputDir, Options{Mode, DryRun, OnApplied})` is the whole
   surface; `Mode` is `Copy` (the zero value — ship the safe default) or
   `Move`. **Deliberately sequential**, per
   `.tickets/apply-phase-unmeasured.md`: nothing has ever measured this
