@@ -69,7 +69,7 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 	backup := filepath.Join(filepath.Dir(a.Config.AppDBPath), db.BackupFileName)
 	info, err := os.Stat(backup)
 	if os.IsNotExist(err) {
-		return fmt.Errorf("no backup found at %s — one is written by 'wandersort organise' and by 'wandersort admin db --reset'", backup)
+		return fmt.Errorf("no backup found at %s — one is written by 'wandersort execute' and by 'wandersort admin db --reset'", backup)
 	}
 	if err != nil {
 		return fmt.Errorf("backup %s: %w", backup, err)

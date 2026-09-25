@@ -68,7 +68,7 @@ func (a *app) runCheck(cmd *cobra.Command) error {
 // act on, and these are their photos.
 func reportVerify(rep verify.Report, full bool) error {
 	if rep.Checked == 0 {
-		fmt.Fprintln(os.Stderr, "Nothing in the library yet — run 'wandersort organise' to put files in it.")
+		fmt.Fprintln(os.Stderr, "Nothing in the library yet — run 'wandersort execute' to put files in it.")
 		return nil
 	}
 	if rep.Sound() {

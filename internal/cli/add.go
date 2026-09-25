@@ -49,7 +49,7 @@ func (a *app) newAddCmd() *cobra.Command {
 		Long: `Reads the given folders, fingerprints every photo and video in them, works
 out which are duplicates of each other, and plans where each one belongs.
 
-Nothing is copied or moved — 'wandersort organise' does that. This only adds
+Nothing is copied or moved — 'wandersort execute' does that. This only adds
 files to the plan.
 
 Opens WanderSort on the Add tab, the same app a bare 'wandersort' opens, so
@@ -131,7 +131,7 @@ func (a *app) runAddPlain(paths []string, force bool) error {
 
 	// No -o needed: the library just added to is the one the next launch
 	// opens on (config.New reads the history this run wrote).
-	a.Log.Info(fmt.Sprintf("Added in %s. Run 'wandersort organise' to review the plan and move the files.", time.Since(start).Round(time.Millisecond)),
+	a.Log.Info(fmt.Sprintf("Added in %s. Run 'wandersort review' to check the plan, then 'wandersort execute' to copy the files in.", time.Since(start).Round(time.Millisecond)),
 		logger.UserKey, true, "addedPaths", scanPaths)
 	return nil
 }
