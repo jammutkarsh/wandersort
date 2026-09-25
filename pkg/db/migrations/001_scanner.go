@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS errors (
     kind TEXT NOT NULL,
     -- everything that varies, as one JSON object of named fields: message,
     -- chain (the unwrapped errors), frames, syscall. Stored whole; only the
-    -- export (wandersort issue) has its paths replaced. Go errors carry no
+    -- export (wandersort admin report) has its paths replaced. Go errors carry no
     -- stack, so "frames" is where the pipeline recorded the failure, not where
     -- the OS call returned: it names the code path, it is no post-mortem
     -- trace. A caught panic puts its real stack there. Read in Go only.

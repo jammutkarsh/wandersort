@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package report turns the errors table into what `wandersort issue` ships: the
+// Package report turns the errors table into what `wandersort admin report` ships: the
 // rows as named fields with their paths replaced, and a grouped summary — enough
 // to find the bug, and nothing about the person's photos. The database stores
 // everything; only this export is scrubbed.

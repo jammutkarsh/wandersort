@@ -53,7 +53,7 @@ var previewRootDir = filepath.Join(os.TempDir(), "wandersort-previews")
 
 // PreviewRoot is where every peek copy lives. Fixed, not an os.MkdirTemp name,
 // so a copy made in one session is still there — and still reused — in the
-// next. Cleaned by a finished review and by `wandersort reset`.
+// next. Cleaned by a finished review and by `wandersort admin clear`.
 func PreviewRoot() string { return previewRootDir }
 
 // CleanPreviews removes every preview copy.

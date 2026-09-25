@@ -123,7 +123,7 @@ func CheckLibrary(dir string) error {
 	}
 	for _, e := range entries {
 		if e.Name() == db.BackupFileName {
-			return fmt.Errorf("output folder %s has a database backup (%s) but no database; run 'wandersort recover' to restore it", dir, db.BackupFileName)
+			return fmt.Errorf("output folder %s has a database backup (%s) but no database; run 'wandersort admin db --restore' to restore it", dir, db.BackupFileName)
 		}
 	}
 	for _, e := range entries {

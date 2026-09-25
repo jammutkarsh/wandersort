@@ -95,7 +95,7 @@ func (r Report) Sound() bool {
 //
 // A file that verifies has its VERIFY error row cleared, and one that fails
 // gets a fresh one: the errors table holds only live problems (spec D29), so
-// `wandersort issue` ships exactly the failures that are still true.
+// `wandersort admin report` ships exactly the failures that are still true.
 func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, o Options) (Report, error) {
 	var rows []struct {
 		FileID int64  `db:"file_id"`

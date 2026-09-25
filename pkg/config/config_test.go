@@ -233,8 +233,8 @@ func TestCheckLibrary(t *testing.T) {
 			if err != nil && !strings.Contains(err.Error(), dir) {
 				t.Errorf("error %q does not name the folder", err)
 			}
-			if slices.Contains(tt.files, ".wandersort.db.zst") && (err == nil || !strings.Contains(err.Error(), "wandersort recover")) {
-				t.Errorf("error %v does not point at 'wandersort recover'", err)
+			if slices.Contains(tt.files, ".wandersort.db.zst") && (err == nil || !strings.Contains(err.Error(), "wandersort admin db --restore")) {
+				t.Errorf("error %v does not point at 'wandersort admin db --restore'", err)
 			}
 		})
 	}

@@ -56,7 +56,7 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 	yes, _ := cmd.Flags().GetBool(flagYes)
 
 	if !a.libraryExists() {
-		return fmt.Errorf("no database found — run 'wandersort scan' first")
+		return fmt.Errorf("no database found — run 'wandersort add' first")
 	}
 
 	outputDir := a.Config.OutputDir()
@@ -105,7 +105,7 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 		return err
 	}
 	if rep.Done == 0 && rep.Failed == 0 {
-		fmt.Fprintln(os.Stderr, "Nothing left to transfer — run 'wandersort scan' to plan more files.")
+		fmt.Fprintln(os.Stderr, "Nothing left to transfer — run 'wandersort add' to plan more files.")
 		return nil
 	}
 	if rep.Failed > 0 {

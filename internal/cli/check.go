@@ -27,7 +27,7 @@ database holding your folder structure is sound, and reports any leftover
 temp files a crashed transfer left behind.
 
 Nothing is changed or deleted. A file that no longer matches is reported
-here and kept in the library's error list, so 'wandersort issue' carries it.`,
+here and kept in the library's error list, so 'wandersort admin report' carries it.`,
 		Example: `# Quick pass: is everything still there, at the right size?
 wandersort check
 

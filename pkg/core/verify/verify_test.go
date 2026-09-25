@@ -122,7 +122,7 @@ func TestVerifyFindsATruncatedFile(t *testing.T) {
 
 // The errors table holds only live problems (spec D29), so a file that fails
 // and is then put right must stop being reported — by anything reading that
-// table, `wandersort issue` included.
+// table, `wandersort admin report` included.
 func TestVerifyClearsAProblemOnceItIsFixed(t *testing.T) {
 	d, out := dbtest.New(t), t.TempDir()
 	abs := seedPlaced(t, d, out, 1, "2024/A.jpg", "hello")

@@ -185,7 +185,7 @@ func (m shellModel) Init() tea.Cmd {
 	cmd := m.screens[tabScan].Init()
 	switch {
 	case len(m.start.paths) > 0:
-		// `wandersort scan -p …`: the paths are already answered, so skip the
+		// `wandersort add -p …`: the paths are already answered, so skip the
 		// folder input and go straight into the run.
 		return tea.Batch(cmd, msgCmd(tui.StartScanMsg{Paths: m.start.paths, Force: m.start.force}))
 	case m.start.tab == tabSettings:

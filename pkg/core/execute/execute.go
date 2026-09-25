@@ -278,7 +278,7 @@ func cleanupPlacedDuplicates(ctx context.Context, database *db.DB, outputDir str
 	// database's knowledge of every surviving copy with it, and there is no
 	// other record of them. Checked by existence and size, not by hash: this
 	// runs after every transfer, and re-reading the library each time is what
-	// `wandersort verify` is for.
+	// `wandersort check --full` is for.
 	var ids []int64
 	for _, r := range rows {
 		abs := filepath.Join(outputDir, wspath.FromLibrary(stdpath.Join(r.PlacedDir, r.PlacedName)))
@@ -443,7 +443,7 @@ var errSourceNotRemoved = errors.New("placed, but the source could not be remove
 // error that moves on to the next name.
 //
 // A taken name already holding this very file is where it lands: a crash
-// before the async writer recorded an earlier copy, or `wandersort recover`
+// before the async writer recorded an earlier copy, or `wandersort admin db --restore`
 // putting rows back to APPROVED whose files are already placed. Taking the
 // next _N there would place the file twice.
 func productionTransfer(ctx context.Context, mode Mode, src, dst, want string, commit commitFn) (string, error) {

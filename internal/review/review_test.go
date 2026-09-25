@@ -122,7 +122,7 @@ func TestReview(t *testing.T) {
 			}
 		}},
 		// TestCleanPreviewsRemovesEverything covers the sweep a saved plan and
-		// `wandersort reset` both run: copies survive an unsaved exit, but once the
+		// `wandersort admin clear` both run: copies survive an unsaved exit, but once the
 		// plan is written there is nothing left to peek at.
 		{"CleanPreviewsRemovesEverything", func(t *testing.T) {
 			root := usePreviewRoot(t)

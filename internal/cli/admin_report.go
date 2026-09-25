@@ -133,7 +133,7 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 
 	errorRows, summary := a.exportErrors(redactPaths)
 	if w, err := zw.Create("about.txt"); err == nil {
-		fmt.Fprintf(w, "wandersort issue report\ncreated: %s\nos: %s/%s\n",
+		fmt.Fprintf(w, "wandersort admin report\ncreated: %s\nos: %s/%s\n",
 			time.Now().Format(time.RFC3339), runtime.GOOS, runtime.GOARCH)
 		if redactPaths {
 			fmt.Fprintf(w, "\nlogs: left out (--redact-paths)\n")
