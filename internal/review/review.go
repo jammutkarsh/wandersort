@@ -21,17 +21,14 @@ import (
 )
 
 // Options is everything the review TUI needs. Resolver may be nil — rename
-// autocomplete degrades gracefully without it. Tree is the plan as the
-// database holds it; Edits is the draft journal (vfs.ReadDraft) replayed on
-// top of it, and every edit made on screen is appended to that file in
-// OutputDir.
+// autocomplete degrades gracefully without it. Draft is the plan with the
+// reviewer's edits so far (vfs.OpenDraft); every edit made on screen goes
+// through it and into its journal.
 type Options struct {
-	DB        *db.DB
-	Tree      []vfs.Node
-	Edits     []vfs.Edit
-	Resolver  *location.Resolver
-	Log       logger.Logger
-	OutputDir string
+	DB       *db.DB
+	Draft    *vfs.Draft
+	Resolver *location.Resolver
+	Log      logger.Logger
 }
 
 // Screen returns the review as an app-shell screen — the only interactive
@@ -40,7 +37,7 @@ type Options struct {
 // writes nothing but the draft file: leaving hands back to the shell with
 // tui.Switch(nil), and `wandersort execute` applies the edits.
 func Screen(ctx context.Context, o Options) tui.Tab {
-	return newModel(o.Tree, o.Edits, ctx, o.DB, o.Resolver, o.Log, o.OutputDir)
+	return newModel(o.Draft, ctx, o.DB, o.Resolver, o.Log)
 }
 
 // Busy is never true for the review: it reads a plan and writes a journal,
@@ -100,11 +97,10 @@ type Model struct {
 	editing bool
 	input   string
 
-	ctx       context.Context
-	db        *db.DB
-	resolver  *location.Resolver
-	log       logger.Logger
-	outputDir string // where the draft file lives, next to the database
+	ctx      context.Context
+	db       *db.DB
+	resolver *location.Resolver
+	log      logger.Logger
 
 	// Rename autocomplete. Both sources are fetched up front and filtered in
 	// memory per keystroke, so typing never hits the DB.
@@ -118,11 +114,10 @@ type Model struct {
 	visualMode   bool
 	visualAnchor int
 	showHelp     bool // [?] — full-screen key reference; any key closes it
-	// base is the plan as the database holds it, never edited; edits is the
-	// draft journal on top of it. The tree on screen is always base with
-	// edits replayed, which is what lets [u] drop a line and [R] drop them all.
-	base        []vfs.Node
-	edits       []vfs.Edit
+	// draft owns the plan as proposed, the edit journal and the tree they
+	// make; tree above is always draft.Tree(), which is what lets [u] drop a
+	// line and [R] drop them all.
+	draft       *vfs.Draft
 	statusMsg   string
 	statusIsErr bool // rejection, not confirmation: rendered in a warning colour
 
@@ -132,7 +127,7 @@ type Model struct {
 	spin       spinner.Model
 }
 
-func newModel(tree []vfs.Node, edits []vfs.Edit, ctx context.Context, database *db.DB, resolver *location.Resolver, log logger.Logger, outputDir string) Model {
+func newModel(draft *vfs.Draft, ctx context.Context, database *db.DB, resolver *location.Resolver, log logger.Logger) Model {
 	// same spinner the scan and install screens run
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -140,14 +135,12 @@ func newModel(tree []vfs.Node, edits []vfs.Edit, ctx context.Context, database *
 	m := Model{
 		spin:       sp,
 		suggCursor: -1,
-		base:       tree,
-		edits:      edits,
-		tree:       vfs.Replay(vfs.CloneTree(tree), edits),
+		draft:      draft,
+		tree:       draft.Tree(),
 		ctx:        ctx,
 		db:         database,
 		resolver:   resolver,
 		log:        log,
-		outputDir:  outputDir,
 	}
 	m.rows = buildRows(m.tree)
 	// user_labels only changes when execute applies a plan, never while this
@@ -159,12 +152,10 @@ func newModel(tree []vfs.Node, edits []vfs.Edit, ctx context.Context, database *
 // reset is [R]: throw the draft away and show the plan as proposed. The
 // database is untouched — it never held the edits.
 func (m Model) reset() Model {
-	if err := vfs.RemoveDraft(m.outputDir); err != nil {
+	if err := m.draft.Reset(); err != nil {
 		m.statusMsg, m.statusIsErr = err.Error(), true
 		return m
 	}
-	m.edits = nil
-	m.tree = vfs.CloneTree(m.base)
 	m.cursor, m.offset = 0, 0
 	m.visualMode = false
 	m.reflow()
@@ -192,7 +183,7 @@ func (m Model) wrapDim(s string) string {
 
 // reflow rebuilds the row list after a tree edit (rename, merge, drop, undo).
 func (m *Model) reflow() {
-	vfs.SortTree(m.tree)
+	m.tree = m.draft.Tree()
 	m.rows = buildRows(m.tree)
 	m.cursor = min(m.cursor, len(m.rows)-1) // the tree may have shrunk
 }

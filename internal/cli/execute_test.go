@@ -55,9 +55,7 @@ func TestRunExecuteAppliesDraft(t *testing.T) {
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := vfs.AppendDraft(dir, vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: day, From: "03", To: "Goa-Trip"}); err != nil {
-		t.Fatal(err)
-	}
+	seedDraft(t, dir, vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: day, From: "03", To: "Goa-Trip"})
 
 	a := &app{Log: logger.NewNoopLogger(), Config: cfg}
 	err = a.runExecute(execCmd(t))

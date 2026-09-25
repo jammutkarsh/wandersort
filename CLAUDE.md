@@ -388,8 +388,8 @@ one scan ever runs against it at a time (see "Conventions" below):
     — one function, rather than each caller re-deriving "reopen then
     propose". The re-plan also throws the review draft away (`Propose`
     removes it, see `pkg/core/vfs` below): its folder IDs no longer exist.
-    `newReviewScreen` reads the draft (`vfs.ReadDraft`) and hands it to the
-    screen as `Options.Edits`.
+    `newReviewScreen` opens the draft over the tree (`vfs.OpenDraft`) and
+    hands it to the screen as `Options.Draft`.
     **The TUI itself lives in `internal/review/`** — see below; it has no
     rebuild concept of its own any more, only `[R]` as a reset of the draft
     (see the `Model` notes below).
@@ -446,14 +446,22 @@ one scan ever runs against it at a time (see "Conventions" below):
   = `.wandersort.draft` next to the database, `pkg/core/vfs/draft.go`). Every
   landed edit appends one JSON line (`vfs.Edit`: `rename` with node/from/to;
   `merge` with every node, anchor first; `drop`/`flatten` with every node of
-  the `[V]` range, since the range is one edit and one `[u]`) and syncs it
-  (`Model.record`); a failed write undoes the edit on screen too. The model
-  keeps `base` (the tree as loaded, never edited) and `edits`; the tree on
-  screen is always `vfs.Replay(CloneTree(base), edits)`. **Replay is
+  the `[V]` range, since the range is one edit and one `[u]`) and syncs it;
+  a failed write undoes the edit too. **`vfs.Draft` is the whole of it** —
+  `OpenDraft(dir, base)`, then `Apply(Edit)`, `Undo`, `Reset`, `Tree`,
+  `Edits`. It keeps `base` (the tree as loaded, never edited) and the edits;
+  its tree is always base with the edits replayed. **One dispatch
+  (`applyEdit`) runs an edit whether it is made live or replayed from the
+  file**, so the rules — fixed folders included — are stated once: there
+  used to be a second switch in the replay and a second fixed-folder check
+  in the TUI's rename, free to drift. The file helpers
+  (`readDraft`/`appendDraft`/`writeDraft`) and the tree edits are unexported;
+  only `RemoveDraft` (a re-plan, a reset without a tree) and `ApplyDraft`
+  are left beside the type. **Replay is
   idempotent** — an edit naming folders that are gone, or that changes
   nothing, is skipped — which is what makes a crash between `ApplyDraft`'s
   commit and its file removal harmless. A torn last line (a crash
-  mid-append) is dropped **and the file rewritten without it** (`ReadDraft`;
+  mid-append) is dropped **and the file rewritten without it** (`readDraft`;
   likewise a whole last edit missing only its newline is kept and the file
   rewritten with one):
   left in place, the next append glued onto it, lost that edit, and the one
@@ -470,18 +478,22 @@ one scan ever runs against it at a time (see "Conventions" below):
 
   **The tree-reshaping rules themselves — merge, drop, flatten, and the
   tree-walking helpers they share — live in `pkg/core/vfs/edit.go`
-  (`vfs.MergeNodes`/`DropNodes`/`FlattenNodes`/`SortTree`/`CloneTree`/
-  `FindNode`), not on `Model`.** They take a `[]vfs.Node` and a list of IDs and
+  (`mergeNodes`/`dropNodes`/`flattenNodes`/`sortTree`/`cloneTree`, all
+  unexported, reached only through `Draft.Apply`; `FindNode` stays exported),
+  not on `Model`.** They take a `[]vfs.Node` and a list of IDs and
   return the edited tree plus what happened; nothing in that file knows a
   keypress or a row exists. `Model`'s `mergeSelection`/`dropFolders`/
   `flattenFolders` are thin callers: resolve `selectedRows()` into an ID list,
-  call across the seam, then apply the result back onto cursor/journal/status
-  state the tree edit itself has no business touching. This is also
+  hand the draft a `vfs.Edit`, then word the returned `vfs.Outcome` for the
+  status line and apply it back onto cursor/status state the tree edit itself
+  has no business touching. This is also
   `MergedIDs`' one owner now — `vfs.Confirm` was already the other half of
   that invariant (interpreting what this file writes), so putting both in
   `pkg/core/vfs` means one package, not two, understands it. The payoff: a
   tree edit is tested by stating a tree, calling the function, asserting the
-  result (`pkg/core/vfs/edit_test.go`) — no `tea.KeyMsg`, no terminal.
+  result (`pkg/core/vfs/edit_test.go`, and `draft_test.go`'s
+  `TestDraftSession` for apply/refuse/undo/reset through the `Draft`) — no
+  `tea.KeyMsg`, no terminal.
   `review_test.go` still drives some of the same edits through keypresses,
   but that's now testing the wiring (selection → ID list → seam call), not
   the reshaping logic itself.
@@ -500,13 +512,13 @@ one scan ever runs against it at a time (see "Conventions" below):
   Vim-style merge: `V` starts a contiguous range (sequential — no picking
   rows out of order), `m` **folds every row in the range at the anchor row's
   depth into one node under their lowest common ancestor**
-  (`vfs.MergeNodes`, via `chainTo`/`commonChain` +
+  (`mergeNodes`, via `chainTo`/`commonChain` +
   `FindNode`/`removeChildByID` — a real tree-splice, not just a rename),
   named after **the row `V` was pressed on** — its own name, which is
   already the rename the reviewer typed on it, since a rename is written
   straight onto the node — with the summed
   `FileCount`. `mergeSelection` pulls the anchor's ID to the front of the
-  slice it hands `vfs.MergeNodes` (which always keeps `ids[0]`) precisely so
+  edit it hands the draft (`mergeNodes` always keeps `ids[0]`) precisely so
   this holds regardless of which direction the range was extended in:
   `selectedRows()` normalizes low/high to tree order for iteration, so
   extending *upward* from the anchor would otherwise silently hand naming to
@@ -549,17 +561,18 @@ one scan ever runs against it at a time (see "Conventions" below):
   children (the Month/Day scaffolding between two branches) are skipped, not
   merged. **`u` undoes every edit all the way back**, not just the
   last one: every edit — renames included — goes through
-  `Model.applyEdit`, which journals it; `[u]` drops the draft's last line
-  (`vfs.WriteDraft`, temp file + rename) and replays the rest onto `base`.
+  `Model.applyEdit` into `Draft.Apply`, which journals it; `[u]`
+  (`Draft.Undo`) drops the draft's last line (temp file + rename) and
+  replays the rest onto `base`.
   The journal is the whole history, so there is no snapshot stack and no cap.
   `d`/`D` **remove nesting the reviewer doesn't want**. Both act on
   `selectedRows` — a `[V]` range (every row in it at the anchor row's depth,
   the same rule `m` uses) or just the cursor row when there's no selection.
   Nothing acts tree-wide:
-  - `d` (`dropFolders` → `vfs.DropNodes`) drops **each selected folder**,
+  - `d` (`dropFolders` → `dropNodes`) drops **each selected folder**,
     lifting its children onto its parent. Refused on a Year or Month row
     (see fixed folders below).
-  - `D` (`flattenFolders` → `vfs.FlattenNodes`) collapses **everything below** each selected
+  - `D` (`flattenFolders` → `flattenNodes`) collapses **everything below** each selected
     folder into it, so the whole subtree's files sit directly in it and the folder
     itself stays. Refused on a Year (its Months would go); works on a Month,
     since the Month survives to hold them.
@@ -574,11 +587,11 @@ one scan ever runs against it at a time (see "Conventions" below):
   `[m]` over them and `[d]` are refused with a `⚠` status line, `[D]` on a
   Year too. Settings can't turn them off and new files find them by name
   (D15), so a renamed month made the next batch plan a second `03_March`
-  beside it. The guards sit in `MergeNodes`/`DropNodes`/`FlattenNodes`
-  and the rename key (`keys.go` + `applyRename`).
+  beside it. The guards sit in `mergeNodes`/`dropNodes`/`flattenNodes`
+  and `applyEdit`'s rename case — once, for live edits and replay alike.
 
-  **Every structural edit re-sorts the tree by name (`vfs.SortTree`, called
-  from `reflow`) and the merge puts the cursor on the surviving folder
+  **Every structural edit re-sorts the tree by name (`sortTree`, run by
+  `Draft.Apply` and after each replayed edit) and the merge puts the cursor on the surviving folder
   (`focusNode`).** Splices append — a merged node, or children lifted by a
   drop — at the end of the parent's list, so a 575-file day jumped below its
   siblings and got reported as "the merge deleted my folder". It hadn't; it
@@ -596,7 +609,7 @@ one scan ever runs against it at a time (see "Conventions" below):
   ever shown, over in `cli/review.go` (see above); by the time a reviewer
   sees a tree, it already matches the current settings.
   **`R` is a plain reset, not a rebuild, and asks nothing** — it deletes the
-  draft file and shows `base`, the plan as proposed. The database is
+  draft file (`Draft.Reset`) and shows `base`, the plan as proposed. The database is
   untouched (it never held the edits), so there is no query and no spinner.
   Capital `R` because `r` is rename. Cursor and selection reset with it.
   **The screen is built from `pkg/tui`, like scan and config** — it used to

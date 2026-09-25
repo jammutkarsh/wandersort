@@ -384,7 +384,7 @@ func readTree(roots []Node, folders map[int64]folderRow) (treeEdits, error) {
 					e.mergedInto[id] = twin
 				}
 				id = twin
-				// the same merge rule MergeNodes applies, since this is one
+				// the same merge rule mergeNodes applies, since this is one
 				e.bounds[id] = e.bounds[id].Union(n.Bounds)
 			} else {
 				seen[k] = id
@@ -415,7 +415,7 @@ func remapIDs(roots []Node, twins map[int64]int64) []Node {
 	if len(twins) == 0 {
 		return roots
 	}
-	out := CloneTree(roots)
+	out := cloneTree(roots)
 	var walk func(nodes []Node)
 	walk = func(nodes []Node) {
 		for i := range nodes {

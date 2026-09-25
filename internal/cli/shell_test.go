@@ -413,9 +413,7 @@ func TestShellModel(t *testing.T) {
 				m := testShell(t)
 				m.a.Config.AppDBPath = filepath.Join(t.TempDir(), ".wandersort.db")
 				if withEdit {
-					if err := vfs.AppendDraft(filepath.Dir(m.a.Config.AppDBPath), vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: 1, To: "x"}); err != nil {
-						t.Fatal(err)
-					}
+					seedDraft(t, filepath.Dir(m.a.Config.AppDBPath), vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: 1, To: "x"})
 				}
 				m.screens[tabReview], m.reviewReady = &probe{name: "review"}, true
 				m.tab = tabReview

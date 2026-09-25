@@ -8,6 +8,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json/v2"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,14 +80,9 @@ func TestReadState(t *testing.T) {
 		{"CountsTheReviewEditsWaiting", func(t *testing.T) {
 			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
 			fakeProposal(t, a)
-			for _, e := range []vfs.Edit{
-				{Seq: 1, Op: vfs.OpRename, Node: 1, From: "03", To: "Goa"},
-				{Seq: 2, Op: vfs.OpDrop, Nodes: []int64{2}},
-			} {
-				if err := vfs.AppendDraft(a.Config.OutputDir(), e); err != nil {
-					t.Fatal(err)
-				}
-			}
+			seedDraft(t, a.Config.OutputDir(),
+				vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: 1, From: "03", To: "Goa"},
+				vfs.Edit{Seq: 2, Op: vfs.OpDrop, Nodes: []int64{2}})
 			s := a.readState(context.Background())
 			if s.Edits != 2 || !s.HasEdits() {
 				t.Errorf("state = %+v, want two edits waiting", s)
@@ -104,7 +100,7 @@ func TestReadState(t *testing.T) {
 			if err := os.WriteFile(draft, []byte("{not json\n{\"seq\":2,\"op\":\"drop\"}\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := vfs.ReadDraft(a.Config.OutputDir()); err == nil {
+			if _, err := vfs.OpenDraft(a.Config.OutputDir(), nil); err == nil {
 				t.Fatal("this draft should be unreadable, or the test proves nothing")
 			}
 			if s := a.readState(context.Background()); !s.HasEdits() {
@@ -114,5 +110,22 @@ func TestReadState(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.fn)
+	}
+}
+
+// seedDraft writes edits as the review's journal in dir, the way a review
+// session left them, without needing a plan they apply to.
+func seedDraft(t *testing.T, dir string, edits ...vfs.Edit) {
+	t.Helper()
+	var buf []byte
+	for _, e := range edits {
+		line, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf = append(append(buf, line...), '\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, vfs.DraftFileName), buf, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

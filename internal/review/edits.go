@@ -12,65 +12,40 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 )
 
-// record journals one landed edit (spec D17): the draft file first, so an
-// edit on screen is one a crash can't lose, then the in-memory copy [u] pops.
-// A failed write undoes the edit on screen too — the reviewer would otherwise
-// see a change that the next session has never heard of.
-func (m *Model) record(e vfs.Edit) {
-	e.Seq = len(m.edits) + 1
-	if err := vfs.AppendDraft(m.outputDir, e); err != nil {
-		m.tree = vfs.Replay(vfs.CloneTree(m.base), m.edits)
-		m.reflow()
-		m.statusMsg, m.statusIsErr = err.Error(), true
-		return
-	}
-	m.edits = append(m.edits, e)
-}
-
-// undo drops the last edit from the draft and rebuilds the tree from the plan
-// as proposed plus the edits left — the journal is the whole history, so
-// there is no snapshot stack to keep beside it.
+// undo drops the last edit from the draft; the tree comes back as the plan
+// plus the edits left.
 func (m *Model) undo() {
-	n := len(m.edits)
-	if n == 0 {
-		m.statusMsg, m.statusIsErr = "nothing left to undo", true
-		return
-	}
-	if err := vfs.WriteDraft(m.outputDir, m.edits[:n-1]); err != nil {
+	last, err := m.draft.Undo()
+	if err != nil {
 		m.statusMsg, m.statusIsErr = err.Error(), true
 		return
 	}
-	last := m.edits[n-1]
-	m.edits = m.edits[:n-1]
-	m.tree = vfs.Replay(vfs.CloneTree(m.base), m.edits)
 	m.reflow()
 	left := ""
-	if len(m.edits) > 0 {
-		left = fmt.Sprintf(" (%d more)", len(m.edits))
+	if n := len(m.draft.Edits()); n > 0 {
+		left = fmt.Sprintf(" (%d more)", n)
 	}
 	m.statusMsg, m.statusIsErr = "undid "+last.Op+left, false
 }
 
-// applyEdit runs one structural tree edit: apply, reflow, journal, report.
-// Returns whether the edit landed, so a caller with follow-up work (merge
-// re-focusing the surviving node) knows whether to do it. The edit functions
-// validate before they touch the tree, so a refusal leaves it as it was.
-func (m *Model) applyEdit(e vfs.Edit, edit func([]vfs.Node) ([]vfs.Node, string, error)) bool {
-	newTree, status, err := edit(m.tree)
+// applyEdit hands one edit to the draft, which applies and journals it, then
+// reflows and reports. Returns the outcome and whether the edit landed, so a
+// caller with follow-up work (re-focusing the surviving node) knows whether to
+// do it. A refused edit, or one the journal couldn't record, changes nothing.
+func (m *Model) applyEdit(e vfs.Edit, status func(vfs.Outcome) string) (vfs.Outcome, bool) {
+	out, err := m.draft.Apply(e)
+	m.reflow()
 	if err != nil {
 		m.statusMsg, m.statusIsErr = err.Error(), true
-		return false
+		return out, false
 	}
-	m.tree = newTree
-	m.reflow()
 	m.visualMode = false
-	m.statusMsg, m.statusIsErr = status, false
-	m.record(e)
-	return !m.statusIsErr
+	m.statusMsg, m.statusIsErr = status(out), false
+	return out, true
 }
 
 // mergeSelection folds the selected folders into one node under their lowest
-// common ancestor. It only resolves the row selection into IDs — vfs.MergeNodes
+// common ancestor. It only resolves the row selection into IDs — the draft
 // does the actual reshaping.
 func (m *Model) mergeSelection() {
 	if !m.visualMode {
@@ -95,38 +70,24 @@ func (m *Model) mergeSelection() {
 		}
 	}
 
-	var mergedID int64
-	if ok := m.applyEdit(vfs.Edit{Op: vfs.OpMerge, Nodes: ids}, func(tree []vfs.Node) ([]vfs.Node, string, error) {
-		newTree, id, name, ancestor, err := vfs.MergeNodes(tree, ids)
-		if err != nil {
-			return nil, "", err
-		}
-		mergedID = id
-		return newTree, fmt.Sprintf("merged %d folders into %q under %q ([u] to undo)", len(ids), name, ancestor), nil
+	if out, ok := m.applyEdit(vfs.Edit{Op: vfs.OpMerge, Nodes: ids}, func(o vfs.Outcome) string {
+		return fmt.Sprintf("merged %d folders into %q under %q ([u] to undo)", len(ids), o.Name, o.Parent)
 	}); ok {
-		m.focusNode(mergedID)
+		m.focusNode(out.Focus)
 	}
 }
 
 // applyRename writes the name straight onto the node — there is no pending
 // rename layer, so nothing is left over to render as an arrow or to survive an
-// undo. Journalled like any other edit, so [u] reverts it the same way.
+// undo. An edit like any other, so [u] reverts it the same way.
 func (m *Model) applyRename(name string) {
 	row := m.rows[m.cursor]
 	id, old := row.node.ID, row.node.Name
 	if name == "" || name == old {
 		return
 	}
-	if ok := m.applyEdit(vfs.Edit{Op: vfs.OpRename, Node: id, From: old, To: name}, func(tree []vfs.Node) ([]vfs.Node, string, error) {
-		n := vfs.FindNode(tree, id)
-		if n == nil {
-			return nil, "", fmt.Errorf("internal error locating %q", old)
-		}
-		if n.Fixed() {
-			return nil, "", vfs.ErrFixedFolder
-		}
-		n.Name = name
-		return tree, fmt.Sprintf("renamed %q to %q ([u] to undo)", old, name), nil
+	if _, ok := m.applyEdit(vfs.Edit{Op: vfs.OpRename, Node: id, From: old, To: name}, func(vfs.Outcome) string {
+		return fmt.Sprintf("renamed %q to %q ([u] to undo)", old, name)
 	}); ok {
 		m.focusNode(id) // the re-sort may have moved it
 	}
@@ -156,28 +117,25 @@ func (m *Model) selectedRows() []*reviewRow {
 }
 
 // dropFolders removes each selected folder and lifts its children onto its
-// parent, one group-by level shallower. vfs.DropNodes does the reshaping.
+// parent, one group-by level shallower. The draft does the reshaping.
 func (m *Model) dropFolders(targets []*reviewRow) {
 	ids := make([]int64, len(targets))
 	for i, r := range targets {
 		ids[i] = r.node.ID
 	}
 
-	m.applyEdit(vfs.Edit{Op: vfs.OpDrop, Nodes: ids}, func(tree []vfs.Node) ([]vfs.Node, string, error) {
-		newTree, names, err := vfs.DropNodes(tree, ids)
-		if err != nil {
-			return nil, "", err
-		}
+	m.applyEdit(vfs.Edit{Op: vfs.OpDrop, Nodes: ids}, func(o vfs.Outcome) string {
+		names := o.Names
 		what := fmt.Sprintf("dropped %q", names[0])
 		if len(names) > 1 {
 			what = fmt.Sprintf("dropped %d folders", len(names))
 		}
-		return newTree, what + " — their files moved up one level ([u] to undo)", nil
+		return what + " — their files moved up one level ([u] to undo)"
 	})
 }
 
 // flattenFolders collapses everything below each selected folder into it,
-// the folder itself staying put. vfs.FlattenNodes does the reshaping.
+// the folder itself staying put. The draft does the reshaping.
 func (m *Model) flattenFolders(targets []*reviewRow) {
 	ids := make([]int64, len(targets))
 	for i, r := range targets {
@@ -186,15 +144,12 @@ func (m *Model) flattenFolders(targets []*reviewRow) {
 
 	// over a [V] range the folders stay separate — folding them together is
 	// [m]'s job, not this one
-	m.applyEdit(vfs.Edit{Op: vfs.OpFlatten, Nodes: ids}, func(tree []vfs.Node) ([]vfs.Node, string, error) {
-		newTree, absorbed, names, err := vfs.FlattenNodes(tree, ids)
-		if err != nil {
-			return nil, "", err
-		}
+	m.applyEdit(vfs.Edit{Op: vfs.OpFlatten, Nodes: ids}, func(o vfs.Outcome) string {
+		names := o.Names
 		into := fmt.Sprintf("%q", names[len(names)-1])
 		if len(names) > 1 {
 			into = fmt.Sprintf("%d folders", len(names))
 		}
-		return newTree, fmt.Sprintf("flattened %d subfolders into %s ([u] to undo)", absorbed, into), nil
+		return fmt.Sprintf("flattened %d subfolders into %s ([u] to undo)", o.Absorbed, into)
 	})
 }

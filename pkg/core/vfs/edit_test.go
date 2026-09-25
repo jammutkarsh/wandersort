@@ -82,7 +82,7 @@ func groupedTree() []Node {
 func TestMergeNodesSiblingsSucceeds(t *testing.T) {
 	tree := siblingTree()
 
-	newTree, mergedID, name, ancestor, err := MergeNodes(tree, pids("2024/June/03", "2024/June/09"))
+	newTree, mergedID, name, ancestor, err := mergeNodes(tree, pids("2024/June/03", "2024/June/09"))
 	if err != nil {
 		t.Fatalf("MergeNodes: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestMergeNodesCombinesDayRanges(t *testing.T) {
 		ids[i] = pid(id)
 	}
 
-	newTree, mergedID, name, _, err := MergeNodes(tree, ids)
+	newTree, mergedID, name, _, err := mergeNodes(tree, ids)
 	if err != nil {
 		t.Fatalf("MergeNodes: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestMergeNodesSkipsDayRangeOutsideDateFolders(t *testing.T) {
 		{ID: pid("root/Goa"), Name: "Goa", FileCount: 1},
 	}}}
 
-	_, _, name, _, err := MergeNodes(tree, pids("root/03", "root/Goa"))
+	_, _, name, _, err := mergeNodes(tree, pids("root/03", "root/Goa"))
 	if err != nil {
 		t.Fatalf("MergeNodes: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestMergeNodesSkipsDayRangeOutsideDateFolders(t *testing.T) {
 func TestMergeNodesAcrossBranchesCollapsesToOneNode(t *testing.T) {
 	tree := crossBranchTree()
 
-	newTree, _, _, _, err := MergeNodes(tree,
+	newTree, _, _, _, err := mergeNodes(tree,
 		pids("2017/April/20/Canon EOS 700D", "2017/August/15/Canon EOS 700D"))
 	if err != nil {
 		t.Fatalf("MergeNodes: %v", err)
@@ -183,14 +183,14 @@ func TestMergeNodesRejectsWithNoCommonAncestor(t *testing.T) {
 		{ID: pid("2018"), Name: "2018", Children: []Node{{ID: pid("2018/Camera"), Name: "Camera", FileCount: 1}}},
 	}
 
-	_, _, _, _, err := MergeNodes(tree, pids("2017/Camera", "2018/Camera"))
+	_, _, _, _, err := mergeNodes(tree, pids("2017/Camera", "2018/Camera"))
 	if err == nil {
 		t.Fatal("expected rejection for leaves with no common ancestor")
 	}
 }
 
 func TestMergeNodesRejectsFewerThanTwo(t *testing.T) {
-	if _, _, _, _, err := MergeNodes(siblingTree(), pids("2024/June/03")); err == nil {
+	if _, _, _, _, err := mergeNodes(siblingTree(), pids("2024/June/03")); err == nil {
 		t.Fatal("expected rejection for a single ID")
 	}
 }
@@ -202,7 +202,7 @@ func TestMergeNodesKeepsAnchorRename(t *testing.T) {
 	tree := siblingTree()
 	FindNode(tree, pid("2024/June/03")).Name = "Renamed"
 
-	_, _, name, _, err := MergeNodes(tree, pids("2024/June/03", "2024/June/09"))
+	_, _, name, _, err := mergeNodes(tree, pids("2024/June/03", "2024/June/09"))
 	if err != nil {
 		t.Fatalf("MergeNodes: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestMergeNodesKeepsAnchorRename(t *testing.T) {
 func TestFlattenNodesCollapsesEverythingBelow(t *testing.T) {
 	tree := groupedTree()
 
-	newTree, absorbed, names, err := FlattenNodes(tree, pids("2023/April"))
+	newTree, absorbed, names, err := flattenNodes(tree, pids("2023/April"))
 	if err != nil {
 		t.Fatalf("FlattenNodes: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestFlattenNodesCollapsesEverythingBelow(t *testing.T) {
 func TestFlattenNodesRejectsALeaf(t *testing.T) {
 	tree := groupedTree()
 
-	if _, _, _, err := FlattenNodes(tree, pids("2023/April/Indore/Apple iPhone 13")); err == nil {
+	if _, _, _, err := flattenNodes(tree, pids("2023/April/Indore/Apple iPhone 13")); err == nil {
 		t.Fatal("expected a rejection flattening a leaf")
 	}
 }
@@ -257,7 +257,7 @@ func TestFlattenNodesRejectsALeaf(t *testing.T) {
 func TestDropNodesLiftsChildren(t *testing.T) {
 	tree := groupedTree()
 
-	newTree, names, err := DropNodes(tree, pids("2023/April/Indore"))
+	newTree, names, err := dropNodes(tree, pids("2023/April/Indore"))
 	if err != nil {
 		t.Fatalf("DropNodes: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestDropNodesLiftsChildren(t *testing.T) {
 func TestDropNodesRejectsTopLevel(t *testing.T) {
 	tree := groupedTree()
 
-	newTree, _, err := DropNodes(tree, pids("2023"))
+	newTree, _, err := dropNodes(tree, pids("2023"))
 	if err == nil {
 		t.Fatal("expected rejection dropping a top-level folder")
 	}
@@ -295,7 +295,7 @@ func TestSortTreeOrdersSplicedChildren(t *testing.T) {
 		{ID: pid("2024/April"), Name: "April"},
 	}}}
 
-	SortTree(tree)
+	sortTree(tree)
 
 	if tree[0].Children[0].Name != "April" || tree[0].Children[1].Name != "June" {
 		t.Errorf("children = %v, want name order", tree[0].Children)
@@ -304,7 +304,7 @@ func TestSortTreeOrdersSplicedChildren(t *testing.T) {
 
 func TestCloneTreeIsIndependentOfTheOriginal(t *testing.T) {
 	tree := siblingTree()
-	clone := CloneTree(tree)
+	clone := cloneTree(tree)
 
 	tree[0].Children[0].Children[0].FileCount = 99
 	tree[0].Children[0].Children[0].MergedIDs = append(tree[0].Children[0].Children[0].MergedIDs, 99)
@@ -370,7 +370,7 @@ func TestEditsTransformBounds(t *testing.T) {
 	with := func(c Constraint, f func(*Constraint)) Constraint { f(&c); return c }
 	merge := func(ids ...string) func(t *testing.T, tree []Node) []Node {
 		return func(t *testing.T, tree []Node) []Node {
-			tree, _, _, _, err := MergeNodes(tree, pids(ids...))
+			tree, _, _, _, err := mergeNodes(tree, pids(ids...))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -402,7 +402,7 @@ func TestEditsTransformBounds(t *testing.T) {
 		{
 			name: "drop pushes into children",
 			edit: func(t *testing.T, tree []Node) []Node {
-				tree, _, err := DropNodes(tree, pids("b/2024/03/12"))
+				tree, _, err := dropNodes(tree, pids("b/2024/03/12"))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -415,7 +415,7 @@ func TestEditsTransformBounds(t *testing.T) {
 		{
 			name: "flatten keeps its own",
 			edit: func(t *testing.T, tree []Node) []Node {
-				tree, _, _, err := FlattenNodes(tree, pids("b/2024/03"))
+				tree, _, _, err := flattenNodes(tree, pids("b/2024/03"))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -518,10 +518,10 @@ func TestBoundsAlternatives(t *testing.T) {
 // lift both under.
 func TestMergeNodesRejectsAncestor(t *testing.T) {
 	tree := boundsTree()
-	if _, _, _, _, err := MergeNodes(tree, pids("b/2024/03/05", "b/2024/03/05/Goa")); err == nil {
+	if _, _, _, _, err := mergeNodes(tree, pids("b/2024/03/05", "b/2024/03/05/Goa")); err == nil {
 		t.Error("merged a folder with its own child, want an error")
 	}
-	if _, _, _, _, err := MergeNodes(tree, pids("b/2024/03/05/Goa", "b/2024/03/05")); err == nil {
+	if _, _, _, _, err := mergeNodes(tree, pids("b/2024/03/05/Goa", "b/2024/03/05")); err == nil {
 		t.Error("merged a folder with its own parent, want an error")
 	}
 }
@@ -539,19 +539,19 @@ func TestEditsRefuseFixedFolders(t *testing.T) {
 			}},
 		}}}
 	}
-	if _, _, _, _, err := MergeNodes(tree(), pids("2024/June", "2024/July")); !errors.Is(err, ErrFixedFolder) {
+	if _, _, _, _, err := mergeNodes(tree(), pids("2024/June", "2024/July")); !errors.Is(err, ErrFixedFolder) {
 		t.Errorf("merge months: err = %v, want ErrFixedFolder", err)
 	}
-	if _, _, err := DropNodes(tree(), pids("2024/June")); !errors.Is(err, ErrFixedFolder) {
+	if _, _, err := dropNodes(tree(), pids("2024/June")); !errors.Is(err, ErrFixedFolder) {
 		t.Errorf("drop month: err = %v, want ErrFixedFolder", err)
 	}
-	if _, _, _, err := FlattenNodes(tree(), pids("2024")); !errors.Is(err, ErrFixedFolder) {
+	if _, _, _, err := flattenNodes(tree(), pids("2024")); !errors.Is(err, ErrFixedFolder) {
 		t.Errorf("flatten year: err = %v, want ErrFixedFolder", err)
 	}
-	if _, _, _, err := FlattenNodes(tree(), pids("2024/June")); err != nil {
+	if _, _, _, err := flattenNodes(tree(), pids("2024/June")); err != nil {
 		t.Errorf("flatten month: %v, want it to work", err)
 	}
-	if _, _, _, _, err := MergeNodes(tree(), pids("2024/June/03", "2024/July/09")); err != nil {
+	if _, _, _, _, err := mergeNodes(tree(), pids("2024/June/03", "2024/July/09")); err != nil {
 		t.Errorf("merge days across months: %v, want it to work", err)
 	}
 }

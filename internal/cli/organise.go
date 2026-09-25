@@ -89,16 +89,14 @@ func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
 		return nil, fmt.Errorf("everything here is already organized — nothing left to review")
 	}
 	// a re-plan above already dropped the draft along with the old folder IDs
-	edits, err := vfs.ReadDraft(outputDir)
+	draft, err := vfs.OpenDraft(outputDir, tree)
 	if err != nil {
 		return nil, err
 	}
 	return review.Screen(ctx, review.Options{
-		DB:        a.AppDB,
-		Tree:      tree,
-		Edits:     edits,
-		Resolver:  resolver,
-		Log:       a.Log,
-		OutputDir: outputDir,
+		DB:       a.AppDB,
+		Draft:    draft,
+		Resolver: resolver,
+		Log:      a.Log,
 	}), nil
 }

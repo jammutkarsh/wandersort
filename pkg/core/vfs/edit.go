@@ -17,7 +17,7 @@ import (
 
 // This file holds the review tree's reshaping rules (merge/drop/flatten) as
 // plain []Node functions with no TUI knowledge, testable by stating a tree
-// and asserting the result. Each mutates in place — CloneTree first for undo.
+// and asserting the result. Each mutates in place — cloneTree first for undo.
 
 // Constraint is one way a file can belong in a folder (spec D13): an AND of
 // levels. A nil level constrains nothing; an empty non-nil one matches
@@ -211,28 +211,28 @@ func pushDown(n *Node) {
 	}
 }
 
-// SortTree restores name order after a structural edit — BuildTree emits
+// sortTree restores name order after a structural edit — BuildTree emits
 // sorted levels, but a splice (merge, drop, flatten) appends, and a folder
 // landing below its siblings instead of between them reads as "the edit
 // deleted it".
-func SortTree(nodes []Node) {
+func sortTree(nodes []Node) {
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 	for i := range nodes {
-		SortTree(nodes[i].Children)
+		sortTree(nodes[i].Children)
 	}
 }
 
-// CloneTree deep-copies a node tree so a caller's undo snapshot is unaffected
+// cloneTree deep-copies a node tree so a caller's undo snapshot is unaffected
 // by later in-place mutation. Trees are folders only, never files, so a clone
 // is cheap.
-func CloneTree(nodes []Node) []Node {
+func cloneTree(nodes []Node) []Node {
 	if nodes == nil {
 		return nil
 	}
 	out := make([]Node, len(nodes))
 	for i, n := range nodes {
 		out[i] = n
-		out[i].Children = CloneTree(n.Children)
+		out[i].Children = cloneTree(n.Children)
 		if n.Samples != nil {
 			out[i].Samples = append([]string(nil), n.Samples...)
 		}
@@ -442,10 +442,10 @@ type mergePick struct {
 	value  Node
 }
 
-// MergeNodes folds every node in ids into one, under their lowest common
+// mergeNodes folds every node in ids into one, under their lowest common
 // ancestor. Returns the surviving node's ID, its name, and the
 // ancestor's name for the caller's status line.
-func MergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name, ancestorName string, err error) {
+func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name, ancestorName string, err error) {
 	// Assumes no id in ids is an ancestor of another — the review TUI's
 	// same-depth-only selection already guarantees that.
 	if len(ids) < 2 {
@@ -489,7 +489,7 @@ func MergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 		for _, between := range chain[len(shared) : len(chain)-1] {
 			picks[i].value.Bounds = picks[i].value.Bounds.Intersect(FindNode(tree, between).Bounds)
 		}
-		picks[i].value.Children = CloneTree(picks[i].value.Children)
+		picks[i].value.Children = cloneTree(picks[i].value.Children)
 		pushDown(&picks[i].value)
 	}
 
@@ -530,7 +530,7 @@ func MergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 	return tree, merged.ID, target, lca.Name, nil
 }
 
-// DropNodes removes each node in ids, lifting its children onto its parent,
+// dropNodes removes each node in ids, lifting its children onto its parent,
 // one group-by level shallower. Returns the dropped nodes' names, in order.
 //
 // ponytail: a drop (and a flatten below) does not survive a re-plan that runs
@@ -546,7 +546,7 @@ func MergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 // (issue 21). Recording the removal on the surviving folder's bounds would
 // also work and costs far more — don't reach for it unless the offer isn't
 // enough.
-func DropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err error) {
+func dropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err error) {
 	type drop struct {
 		parentID int64
 		node     Node
@@ -592,12 +592,12 @@ func DropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err er
 	return tree, names, nil
 }
 
-// FlattenNodes collapses everything below each node in ids directly into it
+// flattenNodes collapses everything below each node in ids directly into it
 // (`2023/April/Indore/Apple iPhone 13` flattened at April becomes
 // `2023/April` holding all ten files). Returns the flattened nodes' names.
-// Carries DropNodes' ponytail caveat: a re-plan over the leftovers of a
+// Carries dropNodes' ponytail caveat: a re-plan over the leftovers of a
 // stopped execute proposes the collapsed levels again.
-func FlattenNodes(tree []Node, ids []int64) (newTree []Node, absorbed int, names []string, err error) {
+func flattenNodes(tree []Node, ids []int64) (newTree []Node, absorbed int, names []string, err error) {
 	var targets []int64
 	for _, id := range ids {
 		n := FindNode(tree, id)

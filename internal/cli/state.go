@@ -71,10 +71,11 @@ func (s libraryState) HasEdits() bool { return s.Edits > 0 }
 func (a *app) readState(ctx context.Context) libraryState {
 	s := libraryState{Exists: a.libraryExists()}
 
-	if edits, err := vfs.ReadDraft(a.Config.OutputDir()); err != nil {
+	// no plan to replay onto: this only counts the journal
+	if d, err := vfs.OpenDraft(a.Config.OutputDir(), nil); err != nil {
 		s.Edits = 1 // unreadable: something is there, and execute will say what
 	} else {
-		s.Edits = len(edits)
+		s.Edits = len(d.Edits())
 	}
 
 	if a.AppDB == nil {

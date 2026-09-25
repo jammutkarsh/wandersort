@@ -243,7 +243,7 @@ func TestConfirmMergeAcrossDaysDropsOldPlaceFolder(t *testing.T) {
 	if len(leaves) != 2 {
 		t.Fatalf("want two device folders, got %d", len(leaves))
 	}
-	tree, _, _, _, err = MergeNodes(tree, []int64{leaves[0].ID, leaves[1].ID})
+	tree, _, _, _, err = mergeNodes(tree, []int64{leaves[0].ID, leaves[1].ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestConfirmStoresEditedBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	leaves := leafNodes(tree)
-	tree, id, _, _, err := MergeNodes(tree, []int64{leaves[0].ID, leaves[1].ID})
+	tree, id, _, _, err := mergeNodes(tree, []int64{leaves[0].ID, leaves[1].ID})
 	if err != nil {
 		t.Fatal(err)
 	}
