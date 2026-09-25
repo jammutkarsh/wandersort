@@ -864,6 +864,40 @@ func TestRunRecordsLandedFileWhoseSourceIsGone(t *testing.T) {
 	}
 }
 
+// A landed file is found past a gap in the _N names: a deleted _1 does not
+// hide the file at _2, and the one at _1's neighbour with the wrong size is
+// never taken for it.
+func TestRunRecordsLandedFilePastAGap(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
+	if err := os.MkdirAll(filepath.Join(out, "2024"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"A.jpg":   "someone else's photo",
+		"A_2.jpg": "hello",
+	} {
+		if err := os.WriteFile(filepath.Join(out, "2024", name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(src); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Done != 1 || rep.Failed != 0 {
+		t.Fatalf("report = %+v, want the file at A_2.jpg recorded", rep)
+	}
+	if got := targetPath(t, d, 1); got != "2024/A_2.jpg" {
+		t.Errorf("target = %q, want 2024/A_2.jpg", got)
+	}
+}
+
 // A missing source with nothing in the library is still a plain failure: the
 // reconcile above must not swallow a file the user actually deleted.
 func TestRunFailsWhenSourceIsGoneAndNothingLanded(t *testing.T) {

@@ -234,7 +234,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 			// library whether it holds the file before writing the row off —
 			// the alternative is a TRANSFER error that is never retried on a
 			// file that is sitting there, correct, all along.
-			if landed, ok := alreadyLanded(dst, r.FileHash); ok {
+			if landed, ok := alreadyLanded(dst, r.FileHash, r.Size); ok {
 				log.Info("found the file already in the library; recording it", "target", landed)
 				dst = landed
 				xerr = commit(landed)
@@ -465,25 +465,30 @@ func markFailed(database *db.DB, fileID int64, xerr error) error {
 	})
 }
 
-// maxLandedProbe bounds the search for an already-landed file. Names are
-// handed out in order, so the file is at dst or within the first few _N
-// beside it; a library with more collisions than this on one name has a
-// bigger problem than a slow probe.
+// maxLandedProbe bounds the search for an already-landed file: dst and the
+// _N names beside it up to this. A library with more collisions than this on
+// one name has a bigger problem than a missed match.
 const maxLandedProbe = 64
 
 // alreadyLanded answers the one question a missing source leaves open: did
 // this file already land, and only the row saying so go missing? It looks at
-// the planned name and the _N names beside it for a file whose bytes hash to
-// what the scan recorded. Nothing else can tell a crashed-mid-run file apart
-// from a source the user deleted, and the two deserve opposite answers.
-func alreadyLanded(dst, want string) (string, bool) {
+// the planned name and the _N names beside it for a file of the scanned size
+// whose bytes hash to what the scan recorded. Nothing else can tell a
+// crashed-mid-run file apart from a source the user deleted, and the two
+// deserve opposite answers.
+//
+// Every name up to maxLandedProbe is looked at, not just the unbroken run
+// from dst: a _1 someone deleted leaves a gap, and the file can still be
+// sitting at _2. A missing name costs one stat and a wrong-size one no read,
+// so only a real candidate is hashed.
+func alreadyLanded(dst, want string, size int64) (string, bool) {
 	if want == "" {
 		return "", false
 	}
 	for n := 0; n < maxLandedProbe; n++ {
 		p := withSuffix(dst, n)
-		if _, err := os.Stat(p); err != nil {
-			return "", false // names are used in order, so a gap is the end
+		if info, err := os.Stat(p); err != nil || info.Size() != size {
+			continue
 		}
 		if got, err := metadata.HashFile(p); err == nil && got == want {
 			return p, true
