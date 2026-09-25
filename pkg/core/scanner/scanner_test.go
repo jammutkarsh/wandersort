@@ -8,6 +8,7 @@ package scanner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -96,7 +97,7 @@ func TestScanner(t *testing.T) {
 			root := createTestTree(t)
 			sc := newTestScanner(t)
 			filesChan := make(chan FileDiscovery, 200)
-			err := sc.walkRoot(context.Background(), root, "", filesChan)
+			_, err := sc.walkRoot(context.Background(), root, "", filesChan)
 			close(filesChan)
 			if err != nil {
 				t.Fatalf("walkRoot: %v", err)
@@ -126,7 +127,7 @@ func TestScanner(t *testing.T) {
 			cancel() // cancel immediately
 
 			filesChan := make(chan FileDiscovery, 200)
-			err := sc.walkRoot(ctx, root, "", filesChan)
+			_, err := sc.walkRoot(ctx, root, "", filesChan)
 			close(filesChan)
 
 			if err == nil {
@@ -146,7 +147,7 @@ func TestScanner(t *testing.T) {
 			var wg sync.WaitGroup
 			for range walkers {
 				wg.Go(func() {
-					_ = sc.walkRoot(context.Background(), root, "", filesChan)
+					_, _ = sc.walkRoot(context.Background(), root, "", filesChan)
 				})
 			}
 
@@ -338,7 +339,7 @@ func TestScanner(t *testing.T) {
 			dbtest.SeedFile(t, d, 1, "/photos/trips", "gone.jpg", 10)
 			dbtest.SeedFile(t, d, 2, "/", "root.jpg", 10)
 
-			if err := sc.sweep(ctx, time.Now(), "/"); err != nil {
+			if err := sc.sweep(ctx, time.Now(), "/", walkGaps{}); err != nil {
 				t.Fatalf("sweep: %v", err)
 			}
 
@@ -432,6 +433,33 @@ func TestScanner(t *testing.T) {
 				t.Errorf("failed root's row last_seen_at changed to %s, want unchanged %s", rows["photo.jpg"].LastSeenAt, seenAfterFirst)
 			}
 		}},
+		// SweepKeepsWhatTheWalkCouldNotSee: a folder the walk could not list,
+		// or a file it could not stat, was unseen — not gone — so its rows stay
+		{"SweepKeepsWhatTheWalkCouldNotSee", func(t *testing.T) {
+			ctx := context.Background()
+			sc, d := newDBScanner(t)
+
+			dbtest.SeedFile(t, d, 1, "/lib/locked", "a.jpg", 10)
+			dbtest.SeedFile(t, d, 2, "/lib/locked/deeper", "b.jpg", 10)
+			dbtest.SeedFile(t, d, 3, "/lib", "unstattable.jpg", 10)
+			dbtest.SeedFile(t, d, 4, "/lib", "gone.jpg", 10)
+			dbtest.SeedFile(t, d, 5, "/lib/locked-not", "gone.jpg", 10)
+
+			gaps := walkGaps{
+				dirs:  []string{"/lib/locked"},
+				files: [][2]string{{"/lib", "unstattable.jpg"}},
+			}
+			if err := sc.sweep(ctx, time.Now(), "/lib", gaps); err != nil {
+				t.Fatalf("sweep: %v", err)
+			}
+			var left []int64
+			if err := d.SQL.Select(&left, `SELECT id FROM file_registry ORDER BY id`); err != nil {
+				t.Fatal(err)
+			}
+			if fmt.Sprint(left) != "[1 2 3]" {
+				t.Errorf("rows left = %v, want [1 2 3] (unseen kept, vanished swept)", left)
+			}
+		}},
 		// TestSweepDeletesDependentRows: a vanished file's metadata, vfs-plan and
 		// error rows go with it by cascade — no grace window, no leftovers
 		{"SweepDeletesDependentRows", func(t *testing.T) {
@@ -446,7 +474,7 @@ func TestScanner(t *testing.T) {
 			dbtest.SeedEntry(t, d, 1, "/gone/vanished.jpg", "stale/vanished.jpg")
 			dbtest.SeedTransferError(t, d, 1, "boom")
 
-			if err := sc.sweep(ctx, time.Now(), "/gone"); err != nil {
+			if err := sc.sweep(ctx, time.Now(), "/gone", walkGaps{}); err != nil {
 				t.Fatalf("sweep: %v", err)
 			}
 

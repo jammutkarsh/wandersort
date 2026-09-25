@@ -15,7 +15,6 @@ const FileOriginSource = "SOURCE"
 // FileDiscovery is the lightweight struct used during directory walking.
 // Dir is the file's absolute parent directory
 type FileDiscovery struct {
-	ID         int64
 	Dir        string
 	Name       string
 	Size       int64

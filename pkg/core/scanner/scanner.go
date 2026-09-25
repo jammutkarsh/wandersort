@@ -61,6 +61,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 	type scanResult struct {
 		root  string // canonical absolute root, "" when canonicalization failed
 		count int
+		gaps  walkGaps
 		err   error
 	}
 
@@ -91,23 +92,15 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 				}
 
 				volumeUUID := s.volumes.ForPath(absRoot)
-				discoveredChan, walkErr := s.scan(ctx, absRoot, volumeUUID, force)
-
-				count := 0
-				// Drain the channel to both count stored discoveries and wait until
-				// scan/store has fully finished this path
-				for range discoveredChan {
-					count++
-				}
-
-				if err := <-walkErr; err != nil {
+				count, gaps, err := s.scan(ctx, absRoot, volumeUUID, force)
+				if err != nil {
 					s.log.Error("Failed to scan path", "path", absRoot, "error", err)
 					results <- scanResult{root: absRoot, count: count, err: fmt.Errorf("scan failed for %s: %w", path, err)}
 					continue
 				}
 
 				s.log.Info("Scanned path", "path", absRoot, "filesDiscovered", count)
-				results <- scanResult{root: absRoot, count: count}
+				results <- scanResult{root: absRoot, count: count, gaps: gaps}
 			}
 		})
 	}
@@ -116,9 +109,9 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 	workers.Wait()
 	close(results)
 
-	// Flush before sweeping: dbWritesWG tracks upsert execution inside the
-	// batch transaction, not its commit, so only a writer flush guarantees the
-	// sweep's own statement sees every last_seen_at update
+	// Flush before sweeping: the upserts are queued, not written, so only a
+	// writer flush guarantees the sweep's own statement sees every
+	// last_seen_at update
 	s.db.Writer.Flush()
 
 	totalFiles := 0
@@ -131,7 +124,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 			}
 			continue
 		}
-		if err := s.sweep(ctx, scanStartedAt, result.root); err != nil {
+		if err := s.sweep(ctx, scanStartedAt, result.root, result.gaps); err != nil {
 			s.log.Error("Failed to sweep path", "path", result.root, "error", err)
 			if firstScanErr == nil {
 				firstScanErr = err
@@ -142,39 +135,50 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 	return totalFiles, firstScanErr
 }
 
-// scan walks absRoot and returns a discovery channel plus a single-shot
-// error channel that resolves once the discovery channel is drained.
-func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, force bool) (<-chan FileDiscovery, <-chan error) {
+// scan walks absRoot and queues one upsert per file it finds, returning how
+// many it queued and the parts of the tree the walk could not see.
+func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, force bool) (int, walkGaps, error) {
 	s.log.Info("Scanning path", "path", absRoot)
-	fileDiscoveryChannel := make(chan FileDiscovery, 2*s.workers)
-	scanResultsChannel := make(chan FileDiscovery, 2*s.workers)
-	walkErr := make(chan error, 1)
-
-	// Separate channels decouple the walk from the DB write, so a slow
-	// writer never blocks directory traversal.
-
-	// Producer
+	// A separate walker goroutine decouples traversal from queueing, so a
+	// full writer queue never stalls the directory walk mid-read.
+	discoveries := make(chan FileDiscovery, 2*s.workers)
+	var gaps walkGaps
+	var walkErr error
 	go func() {
-		defer close(scanResultsChannel)
-
-		err := s.walkRoot(ctx, absRoot, volumeUUID, scanResultsChannel)
-		if err != nil {
-			s.log.Error("Walk root failed", "path", absRoot, "error", err)
+		defer close(discoveries)
+		gaps, walkErr = s.walkRoot(ctx, absRoot, volumeUUID, discoveries)
+		if walkErr != nil {
+			s.log.Error("Walk root failed", "path", absRoot, "error", walkErr)
 		}
-		walkErr <- err
 	}()
 
-	// Consumer
-	go func() {
-		s.store(ctx, scanResultsChannel, fileDiscoveryChannel, force)
-	}()
-
-	return fileDiscoveryChannel, walkErr
+	count := 0
+	for file := range discoveries {
+		if !s.db.Writer.Write(s.storeScan(file, force)) {
+			s.log.Warn("Bulk writer closed; dropping discovery write", "path", file.Name)
+			continue
+		}
+		count++
+	}
+	// the channel closing is what makes gaps and walkErr safe to read
+	return count, gaps, walkErr
 }
+
+// walkGaps is what a walk could not see under its root: directories it could
+// not list, and files it could not stat. Their rows were not re-seen because
+// the walk was blind there, not because the files are gone, so the sweep must
+// leave them alone.
+type walkGaps struct {
+	dirs  []string    // source-path form
+	files [][2]string // (file_dir, file_name), source-path form
+}
+
+func (g walkGaps) empty() bool { return len(g.dirs) == 0 && len(g.files) == 0 }
 
 // walkRoot walks absRoot (already canonical) and emits FileDiscovery records
 // carrying the file's absolute directory and name
-func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, output chan<- FileDiscovery) error {
+func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, output chan<- FileDiscovery) (walkGaps, error) {
+	var gaps walkGaps
 	err := filepath.WalkDir(absRoot, func(p string, d fs.DirEntry, err error) error {
 		// Check for context cancellation
 		select {
@@ -191,6 +195,9 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 				return fmt.Errorf("root unreadable: %w", err)
 			}
 			s.log.Error("Walk error", "inputPath", absRoot, "walkingPath", s.path.RelativeToHome(p), "error", err)
+			// WalkDir reports a failure below the root for a directory it
+			// could not list: everything under it is unseen, not gone
+			gaps.dirs = append(gaps.dirs, path.ToSourcePath(p))
 			return nil // Continue walking
 		}
 
@@ -217,6 +224,7 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 		info, err := d.Info()
 		if err != nil {
 			s.log.Warn("Failed to get file info", "inputPath", absRoot, "walkingPath", s.path.RelativeToHome(p), "error", err)
+			gaps.files = append(gaps.files, [2]string{path.ToSourcePath(filepath.Dir(p)), d.Name()})
 			return nil
 		}
 
@@ -243,10 +251,15 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("walk %q: %w", absRoot, err)
+		return gaps, fmt.Errorf("walk %q: %w", absRoot, err)
 	}
-	return nil
+	return gaps, nil
 }
+
+// maxSweepGaps bounds how many unseen paths the sweep will spell out as
+// exclusions. Past it the walk was blind to too much of the tree for a
+// sweep to mean anything, and it is skipped until a cleaner walk.
+const maxSweepGaps = 1000
 
 // sweep hard-deletes rows under root not re-seen this scan (last_seen_at
 // still older than scanStartedAt), plan and metadata rows included. Only
@@ -255,7 +268,16 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 // window: a placed file's row was already repointed at a library-relative
 // path by execute, which is never under a scan root, so it is never a sweep
 // candidate — nothing else needs the retention a soft delete used to buy.
-func (s *Scanner) sweep(ctx context.Context, scanStartedAt time.Time, root string) error {
+//
+// Rows under gaps are kept: the walk could not see there, which says nothing
+// about whether the files are still on disk. A transient EIO on one folder
+// used to sweep that folder's rows away, hashes and plan with them.
+func (s *Scanner) sweep(ctx context.Context, scanStartedAt time.Time, root string, gaps walkGaps) error {
+	if len(gaps.dirs)+len(gaps.files) > maxSweepGaps {
+		s.log.Warn("Skipping cleanup of vanished files: too much of this folder could not be read",
+			logger.UserKey, true, "path", root, "unreadable", len(gaps.dirs)+len(gaps.files))
+		return nil
+	}
 	// Range match on (file_dir, file_name) avoids a full table scan and
 	// needs no LIKE escaping for roots containing % or _. file_dir is stored
 	// through path.ToSourcePath (separator only, never the bytes of a name),
@@ -273,11 +295,23 @@ func (s *Scanner) sweep(ctx context.Context, scanStartedAt time.Time, root strin
 	}
 	defer tx.Rollback()
 
+	query := `DELETE FROM file_registry WHERE last_seen_at < ? AND ` + underDir
+	args := []any{cutoff, trimmed, prefix, prefixEnd}
+	if !gaps.empty() {
+		for _, d := range gaps.dirs {
+			d = strings.TrimSuffix(d, "/")
+			query += ` AND NOT ` + underDir
+			args = append(args, d, d+"/", d+string(rune('/'+1)))
+		}
+		for _, f := range gaps.files {
+			query += ` AND NOT (file_dir = ? AND file_name = ?)`
+			args = append(args, f[0], f[1])
+		}
+	}
+
 	// The registry row alone: metadata, plan and error rows go with it, by
 	// ON DELETE CASCADE
-	result, err := tx.ExecContext(ctx,
-		`DELETE FROM file_registry WHERE last_seen_at < ? AND (file_dir = ? OR (file_dir >= ? AND file_dir < ?))`,
-		cutoff, trimmed, prefix, prefixEnd)
+	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("sweep %q: %w", root, err)
 	}
@@ -293,30 +327,16 @@ func (s *Scanner) sweep(ctx context.Context, scanStartedAt time.Time, root strin
 	return nil
 }
 
-// store drains the discovery channel and enqueues each file to the BulkWriter
-func (s *Scanner) store(ctx context.Context, discoveries <-chan FileDiscovery, storedFiles chan<- FileDiscovery, force bool) {
-	var dbWritesWG sync.WaitGroup
+// underDir matches a row in a directory or anywhere below it, given the
+// directory, the directory plus "/", and the directory plus the rune after
+// "/" — a range match, so it seeks and needs no LIKE escaping.
+const underDir = `(file_dir = ? OR (file_dir >= ? AND file_dir < ?))`
 
-	defer func() {
-		dbWritesWG.Wait()
-		close(storedFiles)
-	}()
-
-	for file := range discoveries {
-		dbWritesWG.Add(1)
-		operation := s.storeScan(ctx, &dbWritesWG, storedFiles, file, force)
-		enqueued := s.db.Writer.Write(operation)
-		if !enqueued {
-			dbWritesWG.Done()
-			s.log.Warn("Bulk writer closed; dropping discovery write", "path", file.Name)
-		}
-	}
-}
-
-// storeScan builds the DB callback consumed by BulkWriter.Write. The
-// db.DBOperation shape (func(ctx, tx) error) has no return value, so fileID
-// is written into the local file copy and sent downstream during execution.
-func (s *Scanner) storeScan(ctx context.Context, dbWritesWG *sync.WaitGroup, storedFiles chan<- FileDiscovery, file FileDiscovery, force bool) db.DBOperation {
+// storeScan builds the DB callback consumed by BulkWriter.Write. It must do
+// nothing outside tx: a batch that fails replays every op in it, including
+// ones that already ran, so any other effect would happen twice — it once
+// carried a WaitGroup.Done() and panicked the scan with a negative counter.
+func (s *Scanner) storeScan(file FileDiscovery, force bool) db.DBOperation {
 	// A file whose size or mtime moved (or any file under force) is not the
 	// file that was read: its hash, tags and planned folder describe something
 	// else. Delete the row — metadata, plan and error rows cascade — and let
@@ -335,67 +355,28 @@ func (s *Scanner) storeScan(ctx context.Context, dbWritesWG *sync.WaitGroup, sto
 		ON CONFLICT (file_dir, file_name) DO UPDATE SET
 			last_seen_at = excluded.last_seen_at,
 			file_origin = excluded.file_origin,
-			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid)
-		RETURNING id`
+			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid)`
 
 	forceInt := 0
 	if force {
 		forceInt = 1
 	}
 
-	queryFileState := func(dbCtx context.Context, tx *sqlx.Tx) (int64, error) {
-		var fileID int64
+	return func(ctx context.Context, tx *sqlx.Tx) error {
 		now := db.FormatTime(time.Now())
 		modifiedAt := db.FormatTime(file.ModTime)
-		if _, err := tx.ExecContext(dbCtx, replaceChanged,
+		if _, err := tx.ExecContext(ctx, replaceChanged,
 			file.Dir, file.Name, file.Size, modifiedAt, forceInt); err != nil {
-			return 0, err
-		}
-		err := tx.QueryRowContext(
-			dbCtx,
-			query,
-			file.Dir,
-			file.Name,
-			file.Size,
-			modifiedAt,
-			db.StrOrNil(file.VolumeUUID),
-			file.MediaType,
-			file.Extension,
-			FileOriginSource,
-			now,
-			now,
-		).Scan(&fileID)
-		return fileID, err
-	}
-	execute := func(dbCtx context.Context, tx *sqlx.Tx) error {
-		defer dbWritesWG.Done()
-
-		select {
-		case <-dbCtx.Done():
-			return dbCtx.Err()
-		default:
-		}
-
-		fileID, err := queryFileState(dbCtx, tx)
-		if err != nil {
 			s.log.Warn("Failed to upsert file", "path", file.Name, "error", err)
-			return nil // Continue processing other files in batch
+			return nil // one bad row must not fail its whole batch
 		}
-
-		file.ID = fileID
-
-		// The row is already written at this point — forwarding it downstream
-		// is best-effort, not part of "did the DB write succeed". Returning
-		// ctx.Err() here made a cancelled pipeline look like a DB failure:
-		// BulkWriter would roll back and retry the op, so the file would be
-		// written and reported to storedFiles a second time on retry, on top
-		// of a Done() double-fire on the already-invoked WaitGroup entry.
-		select {
-		case storedFiles <- file:
-		case <-ctx.Done():
+		if _, err := tx.ExecContext(ctx, query,
+			file.Dir, file.Name, file.Size, modifiedAt,
+			db.StrOrNil(file.VolumeUUID), file.MediaType, file.Extension,
+			FileOriginSource, now, now,
+		); err != nil {
+			s.log.Warn("Failed to upsert file", "path", file.Name, "error", err)
 		}
-
 		return nil
 	}
-	return execute
 }
