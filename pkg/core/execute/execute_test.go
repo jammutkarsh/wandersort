@@ -9,6 +9,7 @@ package execute
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -728,19 +729,21 @@ func TestPlaceCommitsOnlyOnceTheFileIsInPlace(t *testing.T) {
 	if _, err := os.Stat(src); err != nil {
 		t.Errorf("copy touched the source: %v", err)
 	}
+	if _, err := os.Stat(dst); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("an unrecorded copy was left in the library: %v", err)
+	}
 }
 
 // A same-device move is one atomic rename, so a commit that fails afterwards
-// cannot lose the file — but it does leave the library holding something no
-// row accounts for. The next run has to recognise it and record it, or a
-// crash mid-move writes every in-flight file off permanently.
-func TestRunMoveWithFailedCommitIsRecoveredByTheNextRun(t *testing.T) {
+// cannot lose the file — but left there, it is a library file no row accounts
+// for, behind a failure row that stops any later run from reconciling it. The
+// rename is undone instead, and the next run moves it for real.
+func TestRunMoveWithFailedCommitPutsTheSourceBack(t *testing.T) {
 	d := dbtest.New(t)
 	out := t.TempDir()
 	src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
 
-	// Force the commit to fail exactly where a rolled-back batch would.
-	d.Writer.Close()
+	d.Writer.Close() // every commit fails
 	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
 	if err != nil {
 		t.Fatal(err)
@@ -748,16 +751,13 @@ func TestRunMoveWithFailedCommitIsRecoveredByTheNextRun(t *testing.T) {
 	if rep.Done != 0 || rep.Failed != 1 {
 		t.Errorf("report = %+v, want nothing counted as done", rep)
 	}
-	if _, err := os.Stat(filepath.Join(out, "2024", "A.jpg")); err != nil {
-		t.Fatalf("the file should be in the library: %v", err)
+	if _, err := os.Stat(filepath.Join(out, "2024", "A.jpg")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("an unrecorded file was left in the library: %v", err)
 	}
-	if _, err := os.Stat(src); err == nil {
-		t.Error("the rename should have consumed the source")
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("the source should be back where it was: %v", err)
 	}
 
-	// Same library, a working writer, and the failure cleared the way a retry
-	// would: the file is found where it landed and recorded, rather than
-	// written off for a source that is gone.
 	d.Writer = db.NewBulkWriter(d.SQL, logger.NewNoopLogger())
 	if _, err := d.SQL.Exec(`DELETE FROM errors WHERE stage = ?`, db.StageTransfer); err != nil {
 		t.Fatal(err)
@@ -767,10 +767,34 @@ func TestRunMoveWithFailedCommitIsRecoveredByTheNextRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rep.Done != 1 {
-		t.Errorf("report = %+v, want the landed file recovered", rep)
+		t.Errorf("report = %+v, want the file moved", rep)
 	}
 	if status, detail := rowStatus(t, d, 1); status != statePlaced {
 		t.Errorf("status = %q (%v), want %q", status, detail, statePlaced)
+	}
+}
+
+// Stopping between files leaves every file not yet reached pending, says so,
+// and records nothing about it.
+func TestRunStopsBetweenFilesWhenCancelled(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	seedApproved(t, d, 1, "2024/A.jpg", "hello")
+	seedApproved(t, d, 2, "2024/B.jpg", "world")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rep, err := Run(ctx, d, logger.NewNoopLogger(), out, Options{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if rep.Done != 0 || rep.Failed != 0 {
+		t.Errorf("report = %+v, want nothing touched", rep)
+	}
+	for _, id := range []int64{1, 2} {
+		if status, _ := rowStatus(t, d, id); status != statePending {
+			t.Errorf("row %d = %q, want %q", id, status, statePending)
+		}
 	}
 }
 

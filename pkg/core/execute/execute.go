@@ -537,7 +537,16 @@ func place(mode Mode, src, dst, want string, commit func() error) error {
 			// a database commit down into pkg/atomicfile, which imports
 			// nothing else in this project, to close a bookkeeping gap that
 			// alreadyLanded already recovers on the next run.
-			return commit()
+			if err := commit(); err != nil {
+				// Not recorded, so put it back: a file in the library that no
+				// row knows about is exactly what the failure row about to be
+				// written would stop the next run from ever reconciling.
+				if rerr := atomicfile.Rename(dst, src); rerr != nil {
+					return errors.Join(err, fmt.Errorf("the file stays at %s, unrecorded: %w", dst, rerr))
+				}
+				return err
+			}
+			return nil
 		}
 		if errors.Is(err, fs.ErrExist) {
 			return err
@@ -560,6 +569,12 @@ func place(mode Mode, src, dst, want string, commit func() error) error {
 	// unlinked: the other order leaves a crash holding a library file nothing
 	// knows about and no source to re-read it from.
 	if err := commit(); err != nil {
+		// Not recorded, so not kept: the source is untouched, and a library
+		// copy no row accounts for would sit beside the retry's own. This
+		// name was free until the copy above took it, so it is ours to remove.
+		if rerr := os.Remove(dst); rerr != nil {
+			return errors.Join(err, fmt.Errorf("the copy stays at %s, unrecorded: %w", dst, rerr))
+		}
 		return err
 	}
 	if mode != ModeMove {
