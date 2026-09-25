@@ -4,10 +4,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package atomicfile copies one local file to another without ever leaving a
-// partial file at the destination. Third caller (review's preview copy,
-// execute's Copy adapter, and — soon — the review TUI's copy tests) is where
-// this stops being a per-package helper.
+// Package atomicfile places files without ever leaving a partial one at the
+// destination, replacing an existing one, or losing one to a power cut: the
+// copy and move under execute, review's preview copies, and the database's
+// safety copies all go through it.
 package atomicfile
 
 import (
@@ -42,7 +42,7 @@ const copyBufferSize = 1 << 20
 // read. The copy keeps src's permission bits, less any execute bits, and its
 // modification time.
 func Copy(src, dest string, tee io.Writer, check func() error) (int64, error) {
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	if err := MkdirAll(filepath.Dir(dest)); err != nil {
 		return 0, fmt.Errorf("create dest dir %s: %w", filepath.Dir(dest), err)
 	}
 
@@ -112,10 +112,51 @@ func Copy(src, dest string, tee io.Writer, check func() error) (int64, error) {
 	return n, nil
 }
 
+// MkdirAll creates dir and any missing parents, like os.MkdirAll, and makes
+// each one it created durable by syncing the folder that holds it. A file
+// synced into a folder whose own entry never reached the disk is lost with
+// it after a power cut on a filesystem without a journal (exFAT, FAT — what
+// external photo drives usually are); journaled filesystems happen to order
+// it right, but nothing promises that.
+func MkdirAll(dir string) error {
+	dir = filepath.Clean(dir)
+	var created []string
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(d); err == nil {
+			break
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		created = append(created, d)
+		if parent := filepath.Dir(d); parent == d {
+			break
+		}
+	}
+	if len(created) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	// topmost first: each new folder's entry lives in the folder above it
+	for i := len(created) - 1; i >= 0; i-- {
+		if err := syncDir(filepath.Dir(created[i])); err != nil {
+			return fmt.Errorf("sync dir %s: %w", filepath.Dir(created[i]), err)
+		}
+	}
+	return nil
+}
+
 // ErrSourceKept means Rename linked newpath but could not remove oldpath, and
 // undid the link: nothing changed. Copying instead would not help — it would
 // fail on the same remove — so a caller with a copy fallback checks for this.
 var ErrSourceKept = errors.New("source could not be removed")
+
+// ErrSourceLeft means RenameCommit linked newpath, committed it, and then
+// could not remove oldpath. The file is at newpath and recorded there; oldpath
+// is a second name for it. Unlike ErrSourceKept, nothing is undone — commit
+// already happened.
+var ErrSourceLeft = errors.New("moved and recorded, but the source name could not be removed")
 
 // Rename moves oldpath to newpath without ever replacing an existing newpath,
 // which os.Rename silently does on macOS and Linux. It is a hard link then an
@@ -130,14 +171,53 @@ var ErrSourceKept = errors.New("source could not be removed")
 // oldpath and newpath naming one directory entry is not a move at all: the
 // file is already there, and linking or unlinking would delete its only name.
 func Rename(oldpath, newpath string) error {
+	return renameCommit(oldpath, newpath, nil)
+}
+
+// RenameCommit is Rename with commit run at the one moment it is safe to
+// record the move: once newpath durably names the file and before oldpath is
+// unlinked. A crash then leaves either no record and both names, or a record
+// and the file where the record says — never a moved file nothing records.
+// commit failing undoes the move (the new link, or the rename) and returns
+// its error. Once commit succeeded, a source that cannot be unlinked is
+// ErrSourceLeft rather than an undo.
+//
+// ponytail: where hard links don't exist (exFAT, some network mounts) the
+// move is one rename, so commit can only follow it: a crash in between
+// leaves the file moved and unrecorded, which the caller has to recover.
+func RenameCommit(oldpath, newpath string, commit func() error) error {
+	if commit == nil {
+		commit = func() error { return nil }
+	}
+	return renameCommit(oldpath, newpath, commit)
+}
+
+func renameCommit(oldpath, newpath string, commit func() error) error {
 	if sameEntry(oldpath, newpath) {
+		if commit != nil {
+			return commit()
+		}
 		return nil
 	}
 	err := os.Link(oldpath, newpath)
 	if err == nil || errors.Is(err, fs.ErrExist) && halfDoneMove(oldpath, newpath) {
+		if commit != nil {
+			// newpath has to survive a power cut before anything records it
+			if err := syncDirs(newpath); err != nil {
+				os.Remove(newpath)
+				return err
+			}
+			if err := commit(); err != nil {
+				os.Remove(newpath) // oldpath still names the file
+				return err
+			}
+		}
 		// Already gone (a sync client, the user) is a finished move: newpath
 		// is now the file's only name, and undoing the link would delete it.
 		if err := os.Remove(oldpath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			if commit != nil {
+				return fmt.Errorf("%w: remove %s: %w", ErrSourceLeft, oldpath, err)
+			}
 			os.Remove(newpath)
 			return fmt.Errorf("%w: remove %s after linking it to %s: %w", ErrSourceKept, oldpath, newpath, err)
 		}
@@ -159,7 +239,18 @@ func Rename(oldpath, newpath string) error {
 	if err := os.Rename(oldpath, newpath); err != nil {
 		return fmt.Errorf("rename to %s: %w", newpath, err)
 	}
-	return syncDirs(newpath, oldpath)
+	if err := syncDirs(newpath, oldpath); err != nil {
+		return err
+	}
+	if commit != nil {
+		if err := commit(); err != nil {
+			if rerr := os.Rename(newpath, oldpath); rerr != nil {
+				return errors.Join(err, fmt.Errorf("the file stays at %s, unrecorded: %w", newpath, rerr))
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // syncDirs makes the directory entries this package just created and removed

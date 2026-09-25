@@ -890,3 +890,55 @@ func TestCleanupKeepsDuplicatesWhenThePlacedFileIsGone(t *testing.T) {
 		t.Error("the cleanup forgot a duplicate of a file that is no longer in the library")
 	}
 }
+
+// A same-device move records the file while it still has both names: a crash
+// after the record leaves a source name behind, never a moved file nothing
+// records (which a scan before the next execute would then have swept).
+func TestPlaceMoveCommitsWhileBothNamesExist(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "A.jpg")
+	if err := os.WriteFile(src, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "lib", "A.jpg")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var srcThere, dstThere bool
+	err := place(ModeMove, src, dst, hashOf("hello"), func() error {
+		_, e1 := os.Stat(src)
+		_, e2 := os.Stat(dst)
+		srcThere, dstThere = e1 == nil, e2 == nil
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !srcThere || !dstThere {
+		t.Errorf("at commit: source there = %v, destination there = %v; want both", srcThere, dstThere)
+	}
+	if _, err := os.Stat(src); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("source still there after the move: %v", err)
+	}
+}
+
+// A name already taken is skipped without copying into it first.
+func TestProductionTransferSkipsTakenNameBeforeCopying(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "A.jpg")
+	if err := os.WriteFile(src, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "lib", "A.jpg")
+	if err := os.MkdirAll(dst, 0o755); err != nil { // a folder holds the name: a copy could never land there
+		t.Fatal(err)
+	}
+	landed, err := productionTransfer(context.Background(), ModeCopy, src, dst, hashOf("hello"),
+		func(string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := withSuffix(dst, 1); landed != want {
+		t.Errorf("landed at %s, want %s", landed, want)
+	}
+}

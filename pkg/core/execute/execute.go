@@ -450,12 +450,20 @@ func productionTransfer(ctx context.Context, mode Mode, src, dst, want string, c
 	if err := ctx.Err(); err != nil {
 		return dst, err
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	if err := atomicfile.MkdirAll(filepath.Dir(dst)); err != nil {
 		return dst, &stepError{opMkdir, fmt.Errorf("create dest dir: %w", err)}
 	}
 	for n := 0; ; n++ {
 		target := withSuffix(dst, n)
-		err := place(mode, src, target, want, func() error { return commit(target) })
+		// A taken name is seen before a byte is copied: a copy only learns
+		// it at the final link, so every collision used to cost the whole
+		// file again. The link still refuses a name taken in between.
+		var err error
+		if _, statErr := os.Lstat(target); statErr == nil {
+			err = fs.ErrExist
+		} else {
+			err = place(mode, src, target, want, func() error { return commit(target) })
+		}
 		if !errors.Is(err, fs.ErrExist) {
 			return target, err
 		}
@@ -527,33 +535,30 @@ func withSuffix(p string, n int) string {
 // occupied dst never loses it at all.
 func place(mode Mode, src, dst, want string, commit func() error) error {
 	if mode == ModeMove {
-		err := atomicfile.Rename(src, dst)
-		if err == nil {
-			// Committing after the rename, not before it. There *is* an
-			// interval to order around — atomicfile.Rename is a link then an
-			// unlink — but nothing is at risk inside it: at every instant at
-			// least one name points at the file, and no bytes were in flight,
-			// so a crash anywhere loses nothing. Using it would mean handing
-			// a database commit down into pkg/atomicfile, which imports
-			// nothing else in this project, to close a bookkeeping gap that
-			// alreadyLanded already recovers on the next run.
-			if err := commit(); err != nil {
-				// Not recorded, so put it back: a file in the library that no
-				// row knows about is exactly what the failure row about to be
-				// written would stop the next run from ever reconciling.
-				if rerr := atomicfile.Rename(dst, src); rerr != nil {
-					return errors.Join(err, fmt.Errorf("the file stays at %s, unrecorded: %w", dst, rerr))
-				}
-				return err
-			}
+		// The commit sits inside the rename, between the new name landing
+		// and the old one going: the database records the file in the
+		// library while it still has its source name too. Committing after
+		// the rename instead left a crash window with the file moved and
+		// nothing recording it — and a scan before the next execute then
+		// swept the source's row, leaving a library file nothing tracks.
+		var commitErr error
+		err := atomicfile.RenameCommit(src, dst, func() error {
+			commitErr = commit()
+			return commitErr
+		})
+		switch {
+		case err == nil:
 			return nil
-		}
-		if errors.Is(err, fs.ErrExist) {
+		case commitErr != nil:
+			return err // not recorded, so the move was undone
+		case errors.Is(err, atomicfile.ErrSourceLeft):
+			return &stepError{opRemoveSource, fmt.Errorf("%w: %w", errSourceNotRemoved, err)}
+		case errors.Is(err, fs.ErrExist):
 			return err
-		}
-		if errors.Is(err, atomicfile.ErrSourceKept) {
+		case errors.Is(err, atomicfile.ErrSourceKept):
 			return &stepError{opRename, err}
 		}
+		// anything else — another device, mostly — falls back to a copy
 	}
 
 	h := metadata.NewHasher()

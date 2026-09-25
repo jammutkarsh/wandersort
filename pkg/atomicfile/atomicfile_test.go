@@ -284,3 +284,89 @@ func TestSyncDir(t *testing.T) {
 		}
 	}
 }
+
+func TestMkdirAll(t *testing.T) {
+	base := t.TempDir()
+	deep := filepath.Join(base, "2024", "08_August", "Goa")
+	if err := MkdirAll(deep); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(deep); err != nil || !info.IsDir() {
+		t.Fatalf("folder not created: %v", err)
+	}
+	if err := MkdirAll(deep); err != nil {
+		t.Errorf("existing folder: %v", err)
+	}
+	blocker := filepath.Join(base, "file")
+	write(t, blocker, "x")
+	if err := MkdirAll(filepath.Join(blocker, "sub")); err == nil {
+		t.Error("MkdirAll under a file = nil, want an error")
+	}
+}
+
+func TestRenameCommit(t *testing.T) {
+	t.Run("commit sees both names, then the source goes", func(t *testing.T) {
+		dir := t.TempDir()
+		src, dst := filepath.Join(dir, "a.jpg"), filepath.Join(dir, "b.jpg")
+		write(t, src, "photo")
+		var both bool
+		err := RenameCommit(src, dst, func() error {
+			_, e1 := os.Stat(src)
+			_, e2 := os.Stat(dst)
+			both = e1 == nil && e2 == nil
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !both {
+			t.Error("commit ran without both names in place")
+		}
+		if _, err := os.Stat(src); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("source left behind: %v", err)
+		}
+		if read(t, dst) != "photo" {
+			t.Error("destination lost the bytes")
+		}
+	})
+	t.Run("a failed commit undoes the move", func(t *testing.T) {
+		dir := t.TempDir()
+		src, dst := filepath.Join(dir, "a.jpg"), filepath.Join(dir, "b.jpg")
+		write(t, src, "photo")
+		boom := errors.New("boom")
+		if err := RenameCommit(src, dst, func() error { return boom }); !errors.Is(err, boom) {
+			t.Fatalf("err = %v, want the commit's", err)
+		}
+		if read(t, src) != "photo" {
+			t.Error("source lost")
+		}
+		if _, err := os.Stat(dst); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("destination left behind: %v", err)
+		}
+	})
+	t.Run("a file already in place is still committed", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "a.jpg")
+		write(t, p, "photo")
+		called := false
+		if err := RenameCommit(p, p, func() error { called = true; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if !called || read(t, p) != "photo" {
+			t.Errorf("called = %v; file must stay", called)
+		}
+	})
+	t.Run("a taken name is refused without committing", func(t *testing.T) {
+		dir := t.TempDir()
+		src, dst := filepath.Join(dir, "a.jpg"), filepath.Join(dir, "b.jpg")
+		write(t, src, "photo")
+		write(t, dst, "other")
+		called := false
+		if err := RenameCommit(src, dst, func() error { called = true; return nil }); !errors.Is(err, fs.ErrExist) {
+			t.Fatalf("err = %v, want fs.ErrExist", err)
+		}
+		if called {
+			t.Error("committed a move that did not happen")
+		}
+	})
+}
