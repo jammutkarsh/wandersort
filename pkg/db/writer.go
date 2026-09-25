@@ -23,8 +23,7 @@ const (
 	// writerBatchSize triggers a flush when the pending batch reaches this many ops
 	writerBatchSize = 5000
 	// writerFlushInterval ensures periodic flushes even if batch size isn't reached
-	writerFlushInterval   = 100 * time.Millisecond
-	batchExecutionTimeout = 5 * time.Second
+	writerFlushInterval = 100 * time.Millisecond
 )
 
 type DBOperation func(ctx context.Context, tx *sqlx.Tx) error
@@ -77,38 +76,35 @@ func (bw *BulkWriter) Write(op DBOperation) bool {
 	return true
 }
 
-// WriteSync enqueues op, blocks until it has actually been executed, and
-// returns the op's error. Use it for user-initiated writes whose outcome must
-// be reported (a review confirm), as opposed to pipeline writes where Write's
+// WriteSync runs op in a transaction of its own, after everything already
+// enqueued, and returns the transaction's outcome: nil means committed. Use
+// it for writes whose outcome must be reported (a review save, a file
+// recorded as placed), as opposed to pipeline writes where Write's
 // fire-and-forget batching is the point.
+//
+// It does not go through the batch. A batch that fails replays its ops one
+// by one, so an op run inside it could report success from a transaction
+// that was then rolled back — and whether the replay happens at all depends
+// on every other op in the batch. There is one connection, so a transaction
+// of its own costs no contention; holding the read lock keeps Close from
+// shutting the database under it.
 func (bw *BulkWriter) WriteSync(op DBOperation) error {
-	// buffered for both attempts: the batch tx, then the individual-tx
-	// fallback the batch failure path replays every op through
-	res := make(chan error, 2)
-	wrapped := func(ctx context.Context, tx *sqlx.Tx) error {
-		err := op(ctx, tx)
-		res <- err
-		return err
-	}
-	if !bw.Write(wrapped) {
+	bw.Flush()
+	bw.mu.RLock()
+	defer bw.mu.RUnlock()
+	if bw.closed.Load() {
 		return fmt.Errorf("writer closed")
 	}
-	bw.Flush()
-	// Flush returning means every enqueued op (including a fallback replay)
-	// has run, so the last result is the authoritative one
-	var err error
-	got := false
-	for {
-		select {
-		case e := <-res:
-			err, got = e, true
-		default:
-			if !got {
-				return fmt.Errorf("writer closed before write executed")
-			}
-			return err
-		}
+	ctx := context.Background()
+	tx, err := bw.sqlDB.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
 	}
+	defer tx.Rollback()
+	if err := op(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Flush blocks until all currently-enqueued operations have been written to the
@@ -201,24 +197,25 @@ func (bw *BulkWriter) start() {
 	}
 }
 
-// executeBatch runs all operations in a single transaction
-// Falls back to executeIndividually on commit/operation failure
+// executeBatch runs all operations in a single transaction, falling back to
+// executeIndividually on any failure so one bad op costs only itself.
 //
-// ponytail: on fallback this re-invokes every op in the batch, including
-// ones that already ran once in this same doomed transaction — safe only
-// because DBOperation callers are expected to have no side effects beyond
-// the tx itself. scanner.storeScan violated that (a WaitGroup.Done() per
-// invocation) and double-fired on retry; fixed there, not here. A caller
-// with irrevocable per-invocation side effects will hit the same class of
-// bug again — fix would be a per-op post-commit hook so side effects fire
-// exactly once, after the operation is durably committed.
+// The fallback re-invokes every op, including ones that already ran in the
+// rolled-back batch, so an op must have no effect beyond its transaction —
+// anything it does outside tx happens once per attempt. Ops that need a
+// reported outcome go through WriteSync, which never replays.
+//
+// No deadline: an op here is a durable write already accepted from a phase,
+// and aborting it partway only turns a slow disk into lost rows. SQLite's own
+// busy_timeout bounds lock waits, and the one connection has nothing else to
+// wait on.
 func (bw *BulkWriter) executeBatch(batch []DBOperation) error {
-	ctx, cancel := context.WithTimeout(context.Background(), batchExecutionTimeout)
-	defer cancel()
+	ctx := context.Background()
 
 	tx, err := bw.sqlDB.BeginTxx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		bw.log.Warn("Bulk batch begin failed; retrying operations individually", "error", err, "size", len(batch))
+		return bw.executeIndividually(ctx, batch)
 	}
 	defer tx.Rollback()
 

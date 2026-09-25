@@ -81,6 +81,56 @@ func TestWriteSyncReturnsOperationOutcome(t *testing.T) {
 	}
 }
 
+// TestWriteSyncTruthfulBesideFailingBatch guards WriteSync's one promise: nil
+// means committed. It used to run inside the batch, so an op that succeeded in
+// a batch another op then failed reported nil from a rolled-back transaction —
+// the review save and the placed-file record both trusted that nil.
+func TestWriteSyncTruthfulBesideFailingBatch(t *testing.T) {
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), AppDB, logger.NewNoopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	insert := func(label string) DBOperation {
+		return func(ctx context.Context, tx *sqlx.Tx) error {
+			_, err := tx.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES (?, 'EVENT')`, label)
+			return err
+		}
+	}
+	d.Writer.Write(insert("before"))
+	d.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error { return errors.New("poison") })
+
+	// sees what was enqueued before it
+	var before int
+	if err := d.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+		return tx.GetContext(ctx, &before, `SELECT COUNT(*) FROM user_labels WHERE label = 'before'`)
+	}); err != nil || before != 1 {
+		t.Fatalf("WriteSync ran before earlier writes: err=%v before=%d", err, before)
+	}
+
+	if err := d.Writer.WriteSync(insert("sync")); err != nil {
+		t.Fatalf("WriteSync: %v", err)
+	}
+	// an op that writes and then fails leaves nothing behind
+	failing := func(ctx context.Context, tx *sqlx.Tx) error {
+		if err := insert("rolled-back")(ctx, tx); err != nil {
+			return err
+		}
+		return errors.New("late failure")
+	}
+	if err := d.Writer.WriteSync(failing); err == nil {
+		t.Fatal("WriteSync reported success for a failing op")
+	}
+	var got []string
+	if err := d.SQL.Select(&got, `SELECT label FROM user_labels ORDER BY id`); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "before,sync" {
+		t.Fatalf("labels = %v, want [before sync]", got)
+	}
+}
+
 func TestWriteReturnsFalseAfterClose(t *testing.T) {
 	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), AppDB, logger.NewNoopLogger())
 	if err != nil {
