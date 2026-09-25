@@ -146,6 +146,23 @@ func openAppDB(dbPath string, log logger.Logger) (*DB, error) {
 
 	sqlxDB := sqlx.NewDb(sqlDB, "sqlite")
 
+	// A migration rewrites the user's only record of their library, so an
+	// existing library is backed up first, beside the regular backup (not
+	// over it). A fresh database has nothing to lose; a newer one is refused.
+	pending, applied, err := migrations.Pending(sqlxDB)
+	if err != nil {
+		sqlxDB.Close()
+		return nil, fmt.Errorf("appDB: %w", err)
+	}
+	if pending > 0 && applied > 0 {
+		dest := filepath.Join(filepath.Dir(dbPath), PreMigrationBackupFileName)
+		if err := (&DB{SQL: sqlxDB}).Backup(context.Background(), dest); err != nil {
+			sqlxDB.Close()
+			return nil, fmt.Errorf("appDB: back up before upgrading the database (nothing was changed): %w", err)
+		}
+		log.Info("Backed up the library database before upgrading it", "backup", dest)
+	}
+
 	count, err := migrations.Run(sqlxDB)
 	if err != nil {
 		sqlxDB.Close()

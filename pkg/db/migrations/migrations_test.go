@@ -7,6 +7,7 @@
 package migrations
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/jmoiron/sqlx"
@@ -43,6 +44,35 @@ func TestMigrations(t *testing.T) {
 		name string
 		fn   func(t *testing.T)
 	}{
+		{"RunRefusesVersionsItDoesNotKnow", func(t *testing.T) {
+			db := openTestDB(t)
+			swapSchemas(t, []Migration{testMigration(1), testMigration(2)})
+			if _, err := Run(db); err != nil {
+				t.Fatal(err)
+			}
+			// an older build: knows only version 1
+			swapSchemas(t, []Migration{testMigration(1)})
+			if _, err := Run(db); !errors.Is(err, ErrNewerSchema) {
+				t.Fatalf("Run = %v, want ErrNewerSchema", err)
+			}
+			if _, _, err := Pending(db); !errors.Is(err, ErrNewerSchema) {
+				t.Fatalf("Pending = %v, want ErrNewerSchema", err)
+			}
+		}},
+		{"PendingCountsWhatRunWouldApply", func(t *testing.T) {
+			db := openTestDB(t)
+			swapSchemas(t, []Migration{testMigration(1)})
+			if p, a, err := Pending(db); err != nil || p != 1 || a != 0 {
+				t.Fatalf("fresh: Pending = (%d, %d, %v), want (1, 0, nil)", p, a, err)
+			}
+			if _, err := Run(db); err != nil {
+				t.Fatal(err)
+			}
+			swapSchemas(t, []Migration{testMigration(1), testMigration(2)})
+			if p, a, err := Pending(db); err != nil || p != 1 || a != 1 {
+				t.Fatalf("upgrade: Pending = (%d, %d, %v), want (1, 1, nil)", p, a, err)
+			}
+		}},
 		{"RunAppliesOutOfOrderVersionsOnce", func(t *testing.T) {
 			db := openTestDB(t)
 

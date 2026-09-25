@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/db/migrations"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -309,5 +310,46 @@ func TestRestoreRecreatesDeletedDatabase(t *testing.T) {
 	var n int
 	if err := d.QueryRowContext(ctx, `SELECT count(*) FROM user_labels`).Scan(&n); err != nil || n != 1 {
 		t.Errorf("user_labels = %d, %v; want 1", n, err)
+	}
+}
+
+// Opening an existing library that needs a migration backs it up first, to a
+// file of its own; a library from a newer build is refused untouched.
+func TestOpenBacksUpBeforeMigratingAndRefusesNewerSchema(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	live := filepath.Join(dir, ".wandersort.db")
+	open := func() (*DB, error) { return New(ctx, live, AppDB, logger.NewNoopLogger()) }
+
+	d, err := open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, PreMigrationBackupFileName)); !os.IsNotExist(err) {
+		t.Fatalf("a fresh database was backed up: %v", err)
+	}
+	// pretend the newest migration has not run yet
+	if _, err := d.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = (SELECT MAX(version) FROM schema_migrations)`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	if d, err := open(); err == nil { // re-running an applied CREATE may fail; the backup must exist either way
+		d.Close()
+	}
+	if _, err := os.Stat(filepath.Join(dir, PreMigrationBackupFileName)); err != nil {
+		t.Fatalf("no backup before the upgrade: %v", err)
+	}
+
+	os.Remove(live)
+	d, err = open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (999)`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	if _, err := open(); !errors.Is(err, migrations.ErrNewerSchema) {
+		t.Fatalf("open = %v, want ErrNewerSchema", err)
 	}
 }

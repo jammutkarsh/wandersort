@@ -27,6 +27,11 @@ import (
 // zstd-compressed, named for what is inside and what compressed it.
 const BackupFileName = ".wandersort.db.zst"
 
+// PreMigrationBackupFileName is the backup taken before a new WanderSort
+// version upgrades the library database — kept apart from BackupFileName so
+// the next execute run doesn't overwrite it with the upgraded state.
+const PreMigrationBackupFileName = ".wandersort.db.pre-upgrade.zst"
+
 // BeforeRestoreFileName is the database a restore replaced, kept beside it
 // so a restore run by mistake can itself be undone: rename it back over
 // .wandersort.db. One is kept; the next restore overwrites it.
