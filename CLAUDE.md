@@ -702,7 +702,10 @@ Back in `internal/cli/`:
     other than its own run's, under `logs/`, + `about.txt`, into the **current
     directory**, not the library; db opt-in via `--include-db` (holds paths/GPS).
     Always ships `errors.json` from the `errors` table (see `pkg/report`),
-    home directory rewritten to `$HOME`; `--redact-paths` replaces every path.
+    home directory rewritten to `$HOME` — in the logs too; `--redact-paths`
+    replaces every path in `errors.json` and **leaves the logs out** (free
+    text can't be promised path-free), and can't be combined with
+    `--include-db`.
 - `reset.go` — bare `reset` clears only the peek copies
     (`review.CleanPreviews()`), asks nothing, and names `--db` for the rest:
     nothing about throwing away a cache is worth a question. `reset --db` is
@@ -893,6 +896,14 @@ tree over the whole library.
   sets `last_seen_at` to the write-time `now()` for every file it touches,
   which is guaranteed to land after `scanStartedAt`, so the two checks are
   equivalent — one just doesn't need an identity to compare against.
+  **"Clean" means the root walked, not that every folder under it did**: the
+  walk records the folders it couldn't list and the files it couldn't stat
+  (`walkGaps`), and `sweep` keeps rows under them — unseen is not gone (a
+  transient EIO used to sweep a folder's hashes and plan away). Past
+  `maxSweepGaps` the sweep is skipped for that root. **The upsert op does
+  nothing outside its transaction**: the writer replays a failed batch op by
+  op, so a `WaitGroup.Done()` it once carried fired twice and panicked the
+  scan.
   **There is no soft delete, no `deleted_at`, and no retention window any
   more** (spec D10: only what is in the library matters) — `sweep` deletes
   the vanished file's `file_registry` row, in one transaction, immediately;
@@ -1432,8 +1443,10 @@ tree over the whole library.
   being in the library before its only other copy is destroyed. A crash
   between the two leaves a duplicate; the other order left the library
   holding a file nothing knew about and no source to re-read it from. A
-  `commit` error means the file stays and the source is kept, and the row is
-  counted failed. (A *same-device* move commits **after** its rename instead.
+  `commit` error **undoes the transfer** — a copy is removed (the name was
+  free until it took it), a same-device move is renamed back — and the row
+  is counted failed: a failed row is not pending, so a file left in the
+  library behind it would never be reconciled. (A *same-device* move commits **after** its rename instead.
   There is an interval inside `atomicfile.Rename` — the link, then the unlink
   — but nothing is at risk in it: at every instant at least one name points at
   the file and no bytes were in flight, so a crash there loses nothing. Using
@@ -1470,7 +1483,9 @@ tree over the whole library.
   move alike; `markFailed` never touches it, so a failed transfer
   stays `placed = 0`. **Both are `WriteSync`, not the fire-and-forget
   `Write` every other phase uses, and both return their error** — this is the
-  one row whose absence the user pays for in photos. Batched writes drop a
+  one row whose absence the user pays for in photos. `WriteSync` runs in a
+  transaction of its own, never inside a batch: in a batch it once reported
+  nil for an op a later op's failure had rolled back. Batched writes drop a
   failed batch into a log line (`writer.go`'s `flush` has nowhere to return
   one), so the run could report `Done: 4812 files` with every `placed = 1`
   rolled back, and in move mode the sources were already gone. `Report.Done`
@@ -1650,8 +1665,11 @@ tree over the whole library.
   (`report.Errors`): every row as named fields (stage, op, kind, attempts,
   the file's media type/extension/size/volume class, `detail` nested) with
   paths replaced — the home directory becomes the literal `$HOME` by exact,
-  segment-bounded replacement (no guessing); `--redact-paths` swaps every path
-  for `<source>/<name>/<target>/<library>/<path>`. Also a grouped summary
+  segment-bounded replacement (no guessing, `ScrubHome` for the logs);
+  `--redact-paths` swaps every path for `<source>/<name>/<target>/<library>/<path>`.
+  An unrecorded path runs to a quote, newline or Go's `op path: reason`
+  colon, **spaces included** — stopping at a space leaked the personal part
+  of `Goa Trip 2024`. Also a grouped summary
   (`31 x READ/open/permission-denied at metadata.go:412, .HEIC, removable`)
   for `about.txt`. `issue` opens the database read-only on its own, never
   through `openLibrary`.
@@ -1701,7 +1719,10 @@ tree over the whole library.
   connection to the live file; `issue --include-db` copies raw bytes, so it is
   unaffected. `backup.go`: `Backup`/`Restore` (see `execute/` and
   `cli/recover.go`); `writer.go` batched
-  writes; `reset.go` `DB.ResetAll` (the FK-safe factory wipe behind
+  writes — **no deadline** (a 5s one used to abort slow batches and doom
+  their fallback with the same dead context), a failed batch replays op by
+  op so an op must touch nothing outside its tx, and `WriteSync` bypasses the
+  batch entirely; `reset.go` `DB.ResetAll` (the FK-safe factory wipe behind
   `wandersort reset` — it lives here, not in the CLI layer, because it is a
   database operation); `migrations/` numbered
   Go migrations; `dbtest/` shared test fixtures
@@ -1929,7 +1950,9 @@ tree over the whole library.
     `binDir`, else download+extract), `fetchReleaseMeta`, `checkVersion`,
     `extractTarGz`. Moved verbatim from the old `pkg/exiftool/verify.go`.
   - `location_setup.go` — `downloadLocationDB`, `verifyLocationDB`
-    (checksum + `geonames_cities` row count against the published meta), and
+    (checksum + `geonames_cities` row count against the published meta —
+    fetched **first and required**, and a database failing verification is
+    removed with it, since the download is skipped while the file exists), and
     `OpenLocationResolver` (download → open → verify → `location.NewResolver`
     — the **exported** entry point both `Coordinator` and
     `pkg/location/locationtest` use, so a test exercising a `Resolver`
