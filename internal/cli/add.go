@@ -7,10 +7,7 @@
 package cli
 
 import (
-	"context"
 	"fmt"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -111,7 +108,7 @@ func (a *app) runAdd(cmd *cobra.Command, paths []string, force bool) error {
 // confirmation prompt needed.
 func (a *app) runAddPlain(paths []string, force bool) error {
 	start := time.Now()
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := interruptible()
 	defer cancel()
 
 	if err := a.openLibrary(ctx); err != nil {

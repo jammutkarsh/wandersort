@@ -8,6 +8,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -68,7 +69,8 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 		return fmt.Errorf("execute cancelled")
 	}
 
-	ctx := context.Background()
+	ctx, cancel := interruptible()
+	defer cancel()
 	if err := a.openLibrary(ctx); err != nil {
 		return err
 	}
@@ -95,6 +97,10 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 		mode = execute.ModeMove
 	}
 	rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{Mode: mode, DryRun: dryRun})
+	if errors.Is(err, context.Canceled) {
+		// every file not yet reached is still pending; nothing is half-placed
+		return fmt.Errorf("stopped after %d files — run 'wandersort execute' again to carry on from there", rep.Done)
+	}
 	if err != nil {
 		return err
 	}

@@ -12,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jammutkarsh/wandersort/pkg/config"
@@ -45,6 +47,20 @@ type app struct {
 func Execute() error {
 	a := &app{}
 	return a.newRootCmd().Execute()
+}
+
+// interruptible is the context a plain command that touches the library runs
+// under. The first ctrl+c (or SIGTERM) cancels it, so the work stops at its
+// next safe point and the deferred closes — writer flush, database, output
+// lock — still run. A second one gets the default behaviour back and ends
+// the process, for work that won't unwind.
+func interruptible() (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
 }
 
 // newDeps builds a Coordinator wired to this app's config and log.

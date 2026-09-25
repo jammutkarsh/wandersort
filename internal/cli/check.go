@@ -7,7 +7,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"os"
 
@@ -50,7 +49,8 @@ func (a *app) runCheck(cmd *cobra.Command) error {
 		return fmt.Errorf("no library found at %s — run 'wandersort add' first", a.Config.OutputDir())
 	}
 
-	ctx := context.Background()
+	ctx, cancel := interruptible()
+	defer cancel()
 	if err := a.openLibrary(ctx); err != nil {
 		return err
 	}

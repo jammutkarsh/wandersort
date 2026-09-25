@@ -221,6 +221,14 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	}
 	database.Writer.Flush()
 
+	if err := ctx.Err(); err != nil {
+		// Stopped between files: everything not reached is still pending and
+		// the next run starts there. The duplicate cleanup waits for a run
+		// that finishes.
+		log.Info(summary(o, rep, time.Since(start).Round(time.Millisecond))+" — stopped", logger.UserKey, true)
+		return rep, err
+	}
+
 	if !o.DryRun {
 		// GC failure leaves duplicates a little longer; never fail the run over it
 		if err := cleanupPlacedDuplicates(ctx, database, outputDir); err != nil {

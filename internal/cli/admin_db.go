@@ -7,7 +7,6 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -92,7 +91,8 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 	}
 	defer l.Unlock()
 
-	ctx := context.Background()
+	ctx, cancel := interruptible()
+	defer cancel()
 	if err := db.Restore(ctx, backup, a.Config.AppDBPath); errors.Is(err, db.ErrInUse) {
 		return fmt.Errorf("%w — close it (a sqlite browser, a backup tool) and try again; nothing was changed", err)
 	} else if err != nil {
@@ -119,7 +119,8 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 		return fmt.Errorf("no database found — nothing to reset")
 	}
 
-	ctx := context.Background()
+	ctx, cancel := interruptible()
+	defer cancel()
 	if err := a.openLibrary(ctx); err != nil {
 		return err
 	}
