@@ -11,7 +11,7 @@ lives where and how the pieces fit.
 ## What WanderSort is
 
 A black-box media organizer. Feed it unorganized photos/videos; it produces an
-ordered folder hierarchy. Pipeline runs in ordered phases per `wandersort scan`
+ordered folder hierarchy. Pipeline runs in ordered phases per `wandersort add`
 invocation — there is no persisted session/run record and no in-memory run
 identity either; the output DB (one per output path) is the durable state,
 and `lock.AcquireOutput`'s exclusive PID lock is what already guarantees only
@@ -29,9 +29,19 @@ one scan ever runs against it at a time (see "Conventions" below):
 
 ## Entry point & CLI
 
-- `main.go` — builds `config.Defaults()` and calls `cli.Execute(cfg)`. **No
-  logger here** — it's built later (see below).
-- `internal/cli/` — cobra CLI. One file per command, plus `app.go` and `root.go`:
+- `main.go` — calls `cli.Execute()` and prints its error. **No logger here**
+  — it's built later (see below).
+- `internal/cli/` — cobra CLI. One file per command, plus `app.go` and `root.go`.
+  **The command set is `add`, `review`, `execute`, `check` and `admin
+  clear|db|report`** (commit 3f00215; the root help already names `organise`,
+  the next stage, which will fold review and execute together). The old
+  names are gone: `scan` is `add` (`add.go`), `verify` is `check`
+  (`check.go`), `issue` is `admin report` (`admin_report.go`), `reset` is
+  `admin clear` (`admin_clear.go`, the peek copies) and `admin db --reset`,
+  `recover` is `admin db --restore` (`admin_db.go`), and there is no `config`
+  command — the settings wizard is only a shell tab (`settings_form.go`,
+  `settings_examples.go`). Notes below that still say `wandersort scan` or
+  `config` describe the same code under its old name.
   - `app.go` — `Execute(cfg)`, **the package's only exported symbol**, plus the
     unexported `app` struct and everything hanging off it: `openLibrary`,
     `closeDBs`, `lockOutput`, `isTuiEnabled`, and `newDeps` — the one-line
@@ -192,8 +202,9 @@ one scan ever runs against it at a time (see "Conventions" below):
     wizard closes back into the shell instead of ending a process, so a
     printed receipt has nowhere to land and that line is the only
     confirmation the save gets.
-  - `config.go` — `config` cmd: **the settings wizard** (there is no `setup`
-    command — dependency downloads belong to `scan`). `buildConfigForm` +
+  - `settings_form.go` / `settings_examples.go` — **the settings wizard**, a
+    shell tab (the `config` command that used to host it is gone; there is
+    no `setup` command either — dependency downloads belong to `add`). `buildConfigForm` +
     `tui.FormModel`: a top-down stacked form (answered fields collapse to
     summary rows, StageList-style) written by `app.saveSettings` into the
     library's own `library_settings` row — one whole row, since the wizard
@@ -280,10 +291,10 @@ one scan ever runs against it at a time (see "Conventions" below):
     instead of running the wizard when `--print`/`-p` is given or
     stdout/stderr isn't a terminal (`wandersort config | grep …`, `> file`) —
     launching a full-screen wizard into a pipe is never what the caller meant.
-  - `scan.go` — `scan` cmd (the pipeline). Two functions and a helper: the
+  - `add.go` — `add` cmd (was `scan`; the pipeline). Two functions and a helper: the
     interactive path is `runShell(shellStart{tab: tabScan, paths: paths})` —
     the same session a bare `wandersort` opens, just landing on the scan tab —
-    and `runScanPlain` is everything else. **`--paths` is not
+    and `runAddPlain` is everything else. **`--paths` is not
     `MarkFlagRequired`**: without it the scan tab opens on its own folder
     input, which is the answer, and refusing to open the app over a question it
     is about to ask made `scan` the one command that couldn't just be run. The
@@ -383,11 +394,13 @@ one scan ever runs against it at a time (see "Conventions" below):
     rebuild concept of its own any more, only `[R]` as a reset of the draft
     (see the `Model` notes below).
   - `execute.go` — `execute` cmd: **the one place review edits reach the
-    database and files move** (spec D18). In order: refuse on a stale
-    settings stamp; `--move` without `--yes` asks (`confirm`; `--copy`, the
+    database and files move** (spec D18). In order: `--move` without `--yes` asks (`confirm`; `--copy`, the
     default, never does — it never touches a source); `checkPlanFits`
-    (`vfs.PendingBytes` against `volume.FreeBytes`, a hard stop before
-    anything changes, `ponytail:` it refuses a same-volume move too);
+    (`volume.TransferNeeds`: the pending files' bytes, twice the database —
+    the backup's plain and compressed copies coexist briefly — and a reserve
+    of 1 GiB or 1% of the volume, whichever is more, against `volume.Space`;
+    a hard stop before anything changes, `ponytail:` it counts a same-volume
+    move's files too);
     `vfs.ApplyDraft` (replay the draft, `Confirm` it — which applies the
     edits in one transaction — then delete the file); `CleanPreviews`;
     `execute.Run`. `--dry-run` skips the apply and reports the same pending
@@ -665,7 +678,7 @@ one scan ever runs against it at a time (see "Conventions" below):
   now. `maxPreviewBytes` (250MB) still caps a single peek. Nothing
   is deleted on exit any more — **the sweep happens when the plan is
   written** (`CleanPreviews`, called by `execute` once the draft is applied)
-  and from `wandersort reset`, since at that point there is nothing left to
+  and from `wandersort admin clear`, since at that point there is nothing left to
   peek at. Leaving a review deliberately keeps the copies for the next
   session.
   **A rejected merge (`statusIsErr`) renders in `tui.Attn`, not
@@ -690,15 +703,15 @@ Back in `internal/cli/`:
     WanderSort is" above), there was nothing left for it to read, so it was
     deleted rather than rewritten. `wandersort review` is the natural next
     step after `scan` now.
-- `verify.go` — `verify` cmd: `pkg/core/verify` plus the one thing that
+- `check.go` — `check` cmd (was `verify`): `pkg/core/verify` plus the one thing that
     package deliberately doesn't do, which is say it out loud. **Every
     failing file is named on screen, not only in the log** — a count is not
     something a person can act on, and these are their photos. `--full`
     re-reads contents; without it the pass is existence and size and the
     output says so, and points at `--full` for the rest. A damaged database
-    names `wandersort recover`; strays are listed as safe to delete. Exits
+    names `wandersort admin db --restore`; strays are listed as safe to delete. Exits
     non-zero only on real problems, never on strays alone.
-- `issue.go` — `issue` cmd: zips the newest `issueLogs` (5) non-empty logs
+- `admin_report.go` — `admin report` (was `issue`): zips the newest `issueLogs` (5) non-empty logs
     other than its own run's, under `logs/`, + `about.txt`, into the **current
     directory**, not the library; db opt-in via `--include-db` (holds paths/GPS).
     Always ships `errors.json` from the `errors` table (see `pkg/report`),
@@ -706,13 +719,14 @@ Back in `internal/cli/`:
     replaces every path in `errors.json` and **leaves the logs out** (free
     text can't be promised path-free), and can't be combined with
     `--include-db`.
-- `reset.go` — bare `reset` clears only the peek copies
+- `admin_clear.go` / `admin_db.go --reset` (were `reset` / `reset --db`) —
+    `admin clear` clears only the peek copies
     (`review.CleanPreviews()`), asks nothing, and names `--db` for the rest:
-    nothing about throwing away a cache is worth a question. `reset --db` is
+    nothing about throwing away a cache is worth a question. `admin db --reset` is
     the factory wipe (confirm prompt unless `--yes`). **An already-empty
     database is not wiped at all** (`db.IsEmpty`, "nothing to reset"): its
     backup would replace the one holding what the earlier reset deleted with
-    an empty copy, leaving `recover` nothing to bring back. Otherwise it
+    an empty copy, leaving `--restore` nothing to bring back. Otherwise it
     **backs the database up first** (`db.Backup`, the same
     `.wandersort.db.zst` execute writes — a failed backup stops the wipe),
     then clears the rows, the review draft — which describes a proposal that
@@ -720,10 +734,10 @@ Back in `internal/cli/`:
     **The library's settings row survives a reset** (`db.ResetAll` doesn't
     touch `library_settings`): a factory wipe of the *data* is not a request
     to forget which folders the user wants. `config.CheckLibrary` points a folder holding the backup
-    but no database at `recover` instead of refusing it as foreign.
-- `recover.go` — `recover`: `db.Restore` puts `.wandersort.db.zst` back
-    (confirm unless `--yes`), which is what makes both `reset --db` and an
-    execute run undoable. The backup is kept. **Not `openLibrary`**: that
+    but no database at `admin db --restore` instead of refusing it as foreign.
+- `admin_db.go --restore` (was `recover`): `db.Restore` puts
+    `.wandersort.db.zst` back (confirm unless `--yes`), which is what makes
+    both `--reset` and an execute run undoable. The backup is kept. **Not `openLibrary`**: that
     would open the very database being replaced. It takes the output lock
     (keeps other wandersort processes out), then `Restore`:
   - **decompresses the backup** (zstd) into a temp file beside the live
@@ -735,13 +749,19 @@ Back in `internal/cli/`:
       `locking_mode=EXCLUSIVE` + `journal_mode=DELETE`, which SQLite only
       allows with every other connection gone, and whose lock is then held
       until close so nobody opens it mid-restore;
+  - **keeps the database it is about to replace** as
+      `.wandersort.db.before-restore` (`keepBeforeRestore`) — a byte copy
+      under the exclusive lock, so it works on a database too damaged for
+      SQLite to read, with `VACUUM INTO` as the fallback (Windows can't read
+      SQLite's locked byte range past 1 GiB). A restore run by mistake is
+      undone by renaming it back;
   - copies through SQLite's online backup API (`NewRestore`) on that same
       connection — **never a file swap**: the pages go through SQLite's own
       rollback journal, so a crash rolls back to the old database, and there
       is no `-wal` file to delete by hand and get wrong.
     Then it opens the result once with `db.New` to prove it is a library.
 - `app.go`'s `confirm` is the one yes/no prompt (`execute --move`,
-    `reset --db`, `recover`): a `tui.ConfirmModel` in the TUI, y/N on stdin
+    `admin db --reset`, `admin db --restore`): a `tui.ConfirmModel` in the TUI, y/N on stdin
     under `--plain`/non-TTY.
 - `state.go` — **the one answer to "what can the user do next?"**
     (`libraryState`, `app.readState`, `app.libraryExists`). It used to be
@@ -832,11 +852,17 @@ tree over the whole library.
 
 ## Core pipeline (`pkg/core/`)
 
-- `workflow/` — orchestrator. `RunScan` runs the `runSession` phase loop
-  (scan→metadata→score→vfs) synchronously on the calling goroutine, so a CLI
+- `workflow/` — orchestrator. `RunScan(ctx, paths, force)` runs the phase loop
+  (scan→metadata→vfs) synchronously on the calling goroutine, so a CLI
   invocation streams progress and blocks until the scan finishes. It runs
   `scanRoots` first — canonicalize, drop duplicates, prune any root nested under
-  another (O(n) after a lex sort) — returning the roots actually walked. That
+  another (`path.ReduceRoots`, checked against *every* kept root: a lex sort
+  does not keep a folder's descendants adjacent — `/a b` sorts between `/a`
+  and `/a/c` — and a last-only check walked `/a/c` twice) — returning the
+  roots actually walked. **A root that is the library, holds it, or sits in
+  it is refused** (`ErrOverlapsLibrary`, `path.Overlaps`) before anything is
+  walked: scanning the library as a source re-read placed files and planned
+  any untracked file in it back into the library. That
   pruning used to live in an HTTP layer (removed along with `serve` — this is
   now a single-entry-point CLI), which meant `wandersort scan` reached through
   `internal/api` to get at it. `NewWorkflow` takes a `Deps` — two blocking
@@ -845,8 +871,10 @@ tree over the whole library.
   phase closures, calling `deps.Exiftool()`/`deps.Location()` right before
   running, so a first-ever TUI scan walks while the downloads are still going.
   The metadata phase is the first to block on exiftool now that hashing no
-  longer runs ahead of it — the walk is all the cover the download gets. Plain-console scans, which install everything up front, wrap
-  the values in `workflow.ReadyDeps`. **`appCfg` is fixed for the run** —
+  longer runs ahead of it. In practice both `add` paths now wait for both
+  downloads before any phase starts (`waitForDeps`, `add.go`), so a failed
+  download is one clear error instead of a phase failing mid-run; the lazy
+  getters remain the seam. **`appCfg` is fixed for the run** —
   there is no `UpdateConfig`/mid-run retargeting any more: the settings tab
   is unreachable while a scan runs (`cli/shell.go`'s `nextTab`), so nothing
   can save a change for the vfs phase to pick up mid-flight. `BuildAnchors`
@@ -860,7 +888,7 @@ tree over the whole library.
   level, and within one process `RunScan` only ever runs once, synchronously,
   per `scan` invocation (the old `claimRoots`/`activeRoots` map existed for
   the since-removed `serve` API's concurrent sessions and was unreachable
-  dead code by the time it was deleted). `helpers.go` holds `CheckOutputSpace`
+  dead code by the time it was deleted). `pkg/volume/space.go` holds `CheckOutputSpace`
   — exported because `review` runs the same check: the last look before a
   plan is approved is exactly where "the output volume is too small" is still
   actionable. It fires **at the end of the run**, next to the "run wandersort
@@ -885,17 +913,32 @@ tree over the whole library.
   progress bar and the phase-summary lines above were always driven by the
   phase's own return value and by `StreamKey` log lines, never by reading
   those columns back, so nothing was lost when the table went away.
+  **A run's outcome is its error, not a status string**: a phase failure
+  comes back as `%s phase failed: %w`, a cancellation as `pipeline cancelled
+  during %s phase: %w`, so `errors.Is(err, context.Canceled)` works at the
+  call site. (`RunScan` used to return `errors.New` of a message, which lost
+  the chain; the `db.StatusCompleted/Failed/Cancelled` strings existed only
+  for that and are gone.) **The context is a `RunScan` parameter, never a
+  `Workflow` field**: the shell runs many scans in one process, and a stored
+  context outliving its scan is the trap.
 - `scanner/` — phase 1. Bounded-worker directory walk. Files are identified by
   absolute `(file_dir, file_name)`; each root's volume UUID is stamped for
-  future drive re-anchoring. `Run` captures `scanStartedAt := time.Now()`
-  once, before any walking begins; after a clean walk, `sweep` **hard-deletes**
-  rows under that root whose `last_seen_at` is still older than
-  `scanStartedAt` — i.e. the walk didn't re-see them. This replaced an earlier
-  session-identity check (`scan_session_id != this session`) with a pure
-  wall-clock cutoff once sessions were removed: `storeScan`'s upsert always
-  sets `last_seen_at` to the write-time `now()` for every file it touches,
-  which is guaranteed to land after `scanStartedAt`, so the two checks are
-  equivalent — one just doesn't need an identity to compare against.
+  future drive re-anchoring. `Run` numbers the scan — `MAX(last_seen_scan) +
+  1`, newer than every stored row, and the output lock means no other scan
+  takes the same number — and `storeScan` stamps it on every row it sees;
+  after a clean walk, `sweep` **hard-deletes** rows under that root whose
+  `last_seen_scan` is older, i.e. the walk didn't re-see them. **A counter,
+  never a clock**: it was a `time.Now()` cutoff against `last_seen_at`, and a
+  wall clock steps backwards (NTP, waking from sleep), so a file seen in that
+  window compared as unseen and lost its hash and plan. UTC doesn't help — the
+  clock itself moves. `last_seen_at` is still written, for people reading the
+  table. **The sweep also keeps rows the walk may not have been looking at**:
+  a root that walks clean but *empty* while the library knows files under it
+  (an unmounted drive's mount point is an empty, readable folder) sweeps
+  nothing and says so; rows stamped with a different volume UUID than the one
+  now at the root are kept (macOS mounts every unnamed card at `/Volumes/NO
+  NAME`, so a second card would have swept the first's rows). Unknown UUIDs
+  on either side sweep as before.
   **"Clean" means the root walked, not that every folder under it did**: the
   walk records the folders it couldn't list and the files it couldn't stat
   (`walkGaps`), and `sweep` keeps rows under them — unseen is not gone (a
@@ -997,7 +1040,13 @@ tree over the whole library.
   EXIF, so spawning exiftool on them is pure waste. **An extraction failure is
   not a file failure**: it warns, persists empty EXIF columns, and the
   file counts as read, with no `errors` row (the hash and folder context are still enough for the VFS to
-  place it). Workers write straight through `db.Writer` — it already serializes
+  place it). **Except when exiftool itself failed** (`exiftool.ErrProcess`:
+  the process died, hung past `extractTimeout`, or its pipes broke): that is a
+  `READ` row with op `exiftool`, because the tags are unknown rather than
+  empty, and an empty row would mark the file read and plan it by its file
+  date for good. `--force` retries it. (A pool that never started — no
+  binary — still persists empty rows; the workflow installs exiftool before
+  this phase, so that path is tests only.) Workers write straight through `db.Writer` — it already serializes
   every operation, so a separate store goroutine would only add a channel.
   Persists `exif_creation_date` alongside `exif_create_date` — a real
   reported bug: a QuickTime video's `CreateDate` is the raw UTC timestamp with
@@ -1008,33 +1057,15 @@ tree over the whole library.
   parsing (see `deriveAll`'s `takenAt` comment), because every *other*
   timestamp here is naive local wall-clock and applying the real offset would
   shift the video away from siblings that never had one applied.
-- `scorer/` — phase 3. **Kept deliberately, against the deletion test.** The
-  rule itself is 23 lines of `perFileScore` and the rest is group iteration,
-  so folding it into `vfs.loadMasters` looks like a saving — but `is_master`
-  is not an implementation detail of this phase, it is *the persisted result
-  of a Go decision made available to SQL elsewhere*. Three queries in two
-  other packages read it (`vfs.persist`'s protected set, twice, and the
-  output-space estimate), and the election rule — regexes and scores — is not
-  expressible in SQL. Deleting the phase does not move the rule, it forces
-  every reader to recompute it or have it plumbed in, and `pkg/volume` sits
-  *below* `core` in the import graph so it could not reach the rule at all
-  without inverting an edge. (The size estimate no longer asks: identical
-  bytes are identical sizes, so it groups by `file_hash` instead — one file
-  per hash, same answer, and one fewer package depending on a column whose
-  meaning is owned above it.) Elects master via folder-naming heuristics over
-  `file_registry`; re-promotes solo survivors of shrunken groups. **A placed
-  file (`file_registry.placed = 1`) always keeps the election for its hash,
-  full stop, no scoring** — `Run`'s per-group loop checks `placed` first and
-  short-circuits to that member the instant it sees one. `placed` is a fact
-  about the file, not the plan (`execute.markResult` sets it once the file
-  actually lands, copy or move alike; nothing ever clears it), so it survives
-  a re-scan that only replaces `virtual_fs_entries`. Without this, a
-  re-scanned duplicate could out-score the placed copy on path heuristics
-  alone (a card photo in `Goa Trip` beats the same file already placed under
-  the generic `…/Photos`), which used to demote the placed file, get it
-  deleted by `vfs.persist`'s "no longer a live master" cleanup, and propose
-  the duplicate for copying again — a reported bug (issue 06/07, spec D11,
-  the SD-card re-import case).
+- `vfs/elect.go` — duplicate election. **There is no `scorer/` phase and no
+  `file_metadata.is_master` column any more**: `electMasters` picks one copy
+  per hash, by folder-naming heuristics, from the rows `loadMasters` already
+  holds, every run. A hash with a placed member is dropped in SQL before the
+  election ever sees it — that file *is* the master of its hash (spec
+  D10/D11), which is what keeps a re-imported card from being copied a second
+  time. Computing it beats persisting it: a persisted answer went stale
+  between runs, and a re-scanned `Goa Trip` duplicate out-scored the placed
+  copy, flipped its flag, and got proposed again (issue 06/07).
 - `vfs/` — phase 4. **`Plan` is two halves**: `deriveAll`/`resolveLocations`,
   which are the only passes needing anything from outside (the metadata the
   scan stored, and geonames), and `shape`, which turns those derived facts
@@ -1068,10 +1099,8 @@ tree over the whole library.
   *unapproved* row and leaves an approved plan alone (safe to call again
   mid-review — see `cli/review.go`'s `rebuildTree`). **A placed file
   (`file_registry.placed = 1`) is never re-proposed**: `loadMasters` filters
-  `placed = 0` outright, and `persist`'s "no longer a live master" delete
-  treats `is_master = 1 OR placed = 1` as protected — the scorer already
-  never lets a placed file lose `is_master` (see `scorer/` above), so this is
-  the backstop, not the primary defense. Its row is the plan from
+  `placed = 0` outright and drops any hash group with a placed member (see
+  `vfs/elect.go` above), and `persist` never deletes a placed file's row. Its row is the plan from
   here on; nothing here touches it. `persist` **flushes the
   writer before returning**: the
   writer is an async FIFO, and every caller reads the rows straight back
@@ -1446,13 +1475,21 @@ tree over the whole library.
   `commit` error **undoes the transfer** — a copy is removed (the name was
   free until it took it), a same-device move is renamed back — and the row
   is counted failed: a failed row is not pending, so a file left in the
-  library behind it would never be reconciled. (A *same-device* move commits **after** its rename instead.
-  There is an interval inside `atomicfile.Rename` — the link, then the unlink
-  — but nothing is at risk in it: at every instant at least one name points at
-  the file and no bytes were in flight, so a crash there loses nothing. Using
-  it would mean handing a database commit down into `pkg/atomicfile`, which
-  imports nothing else in the project, to close a bookkeeping gap
-  `alreadyLanded` already recovers.)
+  library behind it would never be reconciled. **A same-device move commits
+  inside its rename** (`atomicfile.RenameCommit`): after the new link lands
+  and its folder is synced, before the old name is unlinked. It used to
+  commit after the rename, on the theory that `alreadyLanded` recovers the
+  gap — but only `execute` runs `alreadyLanded`, and a scan before it swept
+  the vanished source's row, leaving a library file nothing tracks. The
+  commit is a callback, so `pkg/atomicfile` still imports nothing. Where hard
+  links don't exist (exFAT, some network mounts) the move is one rename and
+  the commit can only follow it (`ponytail:` there). **A taken destination is
+  seen before a byte is copied** (`os.Lstat` in `productionTransfer`): a copy
+  only learns it at the final link, so each collision used to cost the whole
+  file again. **New folders go through `atomicfile.MkdirAll`**, which syncs
+  each created folder into its parent — on exFAT/FAT (no journal) a power cut
+  could otherwise drop the folder, and the file in it, after a move had
+  deleted the source.
   Two real implementations —
   `productionTransfer` (a same-device `atomicfile.Rename` for `Move`, else
   `atomicfile.Copy`; `Copy` never unlinks `src`, `Move` only does once the
@@ -1466,8 +1503,9 @@ tree over the whole library.
   both fail with `fs.ErrExist` on an occupied destination, and that error
   moves on to `name_1.ext`, `name_2.ext`… — **unless the taken name already
   holds this file** (`holds`: same size, then `metadata.HashFile` equals
-  `want`), which is where it lands: a crash before the async writer recorded
-  an earlier copy, or `recover` putting placed rows back to pending, would
+  `want`), which is where it lands: a crash between an earlier copy landing
+  and its row committing, or `admin db --restore` putting placed rows back to
+  pending, would
   otherwise place a second copy at `_1`. A move there hashes the **source**
   too before deleting it — the library copy matching the scan says nothing
   about a source edited since (same size), and deleting that edit was a bug
@@ -1516,16 +1554,17 @@ tree over the whole library.
   stamp table and no padding any more (they existed only to keep a
   duplicate finder from pairing the two). **At the end of every run (not on a dry run), `cleanupPlacedDuplicates`
   hard-deletes every other `file_registry`/`file_metadata` row sharing a
-  placed file's hash** — the duplicates the scorer never elected, and a copy
+  placed file's hash** — the duplicates the election passed over, and a copy
   of an already-placed file a later scan saw again. It reads
   `file_registry.placed = 1` fresh every run (so a run that stops early is
   picked up by the next one), collects the target ids in one query up front,
   and deletes the `file_registry` rows alone — a fixed id list; metadata, plan and
   error rows go by `ON DELETE CASCADE`, which is what orders it now. A file
-  with a `READ` error has no metadata row, so it is never a target: the scorer guard (see `scorer/` above) means a placed file's hash
-  never has a second live master to begin with. **The caller holds the
+  with a `READ` error has no metadata row, so it is never a target: the
+  election never proposes a second copy of a placed hash (see `vfs/elect.go`
+  above). **The caller holds the
   output lock**
-  (`lock.AcquireOutput`), same contract `scan` has — `execute.Run` assumes
+  (`lock.AcquireOutput`), same contract `add` has — `execute.Run` assumes
   it, it does not take it.
   **The cleanup only forgets a duplicate while the file it duplicates is
   actually there** — it stats the placed file and compares its size first.
@@ -1533,7 +1572,7 @@ tree over the whole library.
   copies is the only record of them, so a placed file that lost its bytes
   (a crash, a bad sector, anything outside WanderSort) must not take them
   with it. Existence and size, not a hash: this runs after every transfer,
-  and re-reading the whole library each time is what `verify` is for.
+  and re-reading the whole library each time is what `check --full` is for.
 - `verify/` — the phase nothing else does: **is what the database recorded
   still true on disk?** Every placed file's hash is stored at scan time and
   checked once, while the copy is written; after that the bytes are never
@@ -1559,9 +1598,13 @@ tree over the whole library.
   proposal about it rather than a record of it. Failures go into the
   `errors` table as `VERIFY` rows and a file that verifies has its row
   deleted, so the table keeps holding only live problems (D29) and
-  `wandersort issue` ships exactly the failures still true. Sequential, like
-  `execute` and for the same reason: nothing has measured it, so there is
-  nothing to size a pool against.
+  `wandersort admin report` ships exactly the failures still true. Sequential,
+  like `execute` and for the same reason: nothing has measured it, so there is
+  nothing to size a pool against. **Results go through the batched writer, not
+  `WriteSync`**: with `synchronous=FULL` a synced transaction per file flushed
+  the drive's cache once per placed file — most of a 100k-file check on a hard
+  disk — and a lost result only costs a re-check. `Run` flushes before it
+  reports.
 
 ## Supporting packages (`pkg/`)
 
@@ -1661,7 +1704,7 @@ tree over the whole library.
   reads, no flag layering, no CLI framework** — the precedence chain,
   `Overrides`/`TriBool` and the whole `config.yaml` machinery went with issue
   10.
-- `report/` — what `wandersort issue` ships from the `errors` table
+- `report/` — what `wandersort admin report` ships from the `errors` table
   (`report.Errors`): every row as named fields (stage, op, kind, attempts,
   the file's media type/extension/size/volume class, `detail` nested) with
   paths replaced — the home directory becomes the literal `$HOME` by exact,
@@ -1694,7 +1737,18 @@ tree over the whole library.
   photo is in the library and its source may be deleted. Writes are batched
   (see `writer.go`), so the cost is a handful of fsyncs a second rather than
   one per row; `fullfsync` is set too, which is the only thing that flushes
-  the drive's own cache on darwin. `errors.go`:
+  the drive's own cache on darwin. **`mmap_size` is 0**: the library usually
+  lives on an external or network drive, and when it drops mid-read a mapped
+  page faults with SIGBUS and kills the process (mid-execute included), where
+  `read()` returns an error SQLite handles. **Opening a library with pending
+  migrations backs it up first** (`PreMigrationBackupFileName`,
+  `.wandersort.db.pre-upgrade.zst`, apart from the regular backup so the next
+  execute doesn't overwrite it), and **a database recording a migration
+  version this build doesn't know is refused** (`migrations.ErrNewerSchema`):
+  an older build would otherwise run against a schema it was never written
+  for. The backup file (`Backup`) is `Sync`ed and its folder synced after the
+  rename — without both, a power cut could put an empty file under the
+  backup's name. `errors.go`:
   the `errors` table's writer, `RecordError(ctx, tx, fileID, stage, op, err)`
   — one row per (file, stage), replaced with `attempts` bumped; derives `kind`
   from the error, stores `detail` as JSON (message, unwrapped chain, frames,
@@ -1718,12 +1772,12 @@ tree over the whole library.
   "database is locked" — reads included. Nothing in-process may open a second
   connection to the live file; `issue --include-db` copies raw bytes, so it is
   unaffected. `backup.go`: `Backup`/`Restore` (see `execute/` and
-  `cli/recover.go`); `writer.go` batched
+  `cli/admin_db.go --restore`); `writer.go` batched
   writes — **no deadline** (a 5s one used to abort slow batches and doom
   their fallback with the same dead context), a failed batch replays op by
   op so an op must touch nothing outside its tx, and `WriteSync` bypasses the
   batch entirely; `reset.go` `DB.ResetAll` (the FK-safe factory wipe behind
-  `wandersort reset` — it lives here, not in the CLI layer, because it is a
+  `wandersort admin db --reset` — it lives here, not in the CLI layer, because it is a
   database operation); `migrations/` numbered
   Go migrations; `dbtest/` shared test fixtures
   (fresh migrated DB + seed helpers) used by every pipeline package's tests.
@@ -1732,8 +1786,9 @@ tree over the whole library.
 - `volume/` — best-effort volume-UUID resolution per scan root (diskutil on
   darwin, /dev/disk/by-uuid on linux, volume GUID via winapi on windows —
   cross-compiled only, untested on real hardware), cached per path; also
-  `FreeBytes` for the post-scan output-volume space preflight (warn-only,
-  `workflow.warnIfLowSpace`). Also `Class`/`ClassForPath` (`class.go`) — how a
+  `Space`/`FreeBytes` for the post-scan output-volume space preflight
+  (warn-only, `CheckOutputSpace`) and `TransferNeeds` for execute's hard
+  check. Also `Class`/`ClassForPath` (`class.go`) — how a
   volume behaves under concurrent reads (`ClassRotational`/`SolidState`/
   `Removable`/`Network`/`Unknown`), read by `pkg/core/metadata` to size its
   read budget. Same best-effort contract as `ForPath`: **`ClassUnknown` is a
@@ -1868,11 +1923,22 @@ tree over the whole library.
   and reads only the `CommonMetadata` keys it needs. **Tolerant by design:** a
   type mismatch on any single exiftool tag no longer fails the whole decode
   (this replaced 11 giant strict per-format structs). No per-format files.
+  `ShouldIgnoreDir` also skips **other photo apps' library bundles** by
+  suffix, case-insensitively (`libraryBundleSuffixes`: `.photoslibrary`,
+  `.photolibrary`, `.aplibrary`, `.lrdata`, …): their thumbnails look like
+  media, and moving their originals out breaks that app's library.
 - `exiftool/` — `Extractor`: runs an already-installed exiftool binary
   (`-json -n`) and parses its output via `classifier.ParseMetadata`. That's
   the whole package — no version check, no download, no install directory.
   Those live in `pkg/install` (`setupExiftool`; see below), which is the one
-  place that resolves *a path* to hand `exiftool.New`.
+  place that resolves *a path* to hand `exiftool.New`. **A path with a line
+  break is refused** (`ErrUnsafePath`): the `-@` argument file is one argument
+  per line, so a newline in a filename would turn the rest of it into
+  exiftool options — and exiftool writes files. **Every call has a timeout**
+  (`extractTimeout`, 2 min) and a cancelled `ctx` does the same: both kill the
+  process, since a read blocked on its stdout can't be interrupted any other
+  way. That leaves the worker dead (`ErrProcess`); `Pool.Extract` replaces a
+  dead worker before handing it out.
 - `path/` — path canonicalization / home-relative helpers, plus
   `SanitizeSegment` (moved from `pkg/core/vfs`): what a derived *segment*
   (not a full path) is allowed to contain — strips `/\:,` and whitespace to
@@ -1903,7 +1969,13 @@ tree over the whole library.
   next to its only caller, and stays that way — it streams from an
   `http.Response.Body`, not a local file, so it is a genuinely different
   shape from the copy below rather than the same rule twice.
-- `atomicfile/` — `Copy(src, dest, tee, check) (int64, error)`: a temp file
+- `atomicfile/` — `Copy`, `Rename`/`RenameCommit`, `MkdirAll` and `SyncDir`.
+  `RenameCommit` runs a caller's commit between the new link landing (its
+  folder synced) and the old name going — execute's move records the file
+  there; a failed commit undoes the link, and a source that can't be removed
+  after a commit is `ErrSourceLeft` (recorded, both names) rather than an
+  undo. `MkdirAll` syncs each folder it creates into its parent (exFAT/FAT
+  have no journal to order that). `Copy(src, dest, tee, check) (int64, error)`: a temp file
   in dest's directory, then `Rename`, so a failure partway never leaves a
   partial file at dest. **The temp file is `Sync`ed before the rename and
   `Rename` fsyncs the directories it touched** (`syncDirs`/`syncDir`): closing
