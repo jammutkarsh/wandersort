@@ -9,6 +9,7 @@ package path
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -147,6 +148,38 @@ func TestReduceRoots_FilterDuplicatePaths(t *testing.T) {
 
 	if !have[resolvedRoot] || !have[resolvedOtherRoot] {
 		t.Fatalf("missing expected roots, got: %v", paths)
+	}
+}
+
+// A sibling whose name extends the root's with a character that sorts before
+// the separator ("a b" < "a/") lands between a root and its child after the
+// sort; the child must still be pruned.
+func TestReduceRoots_PrunesChildPastSiblingThatSortsBetween(t *testing.T) {
+	base := t.TempDir()
+	for _, d := range []string{"a/c", "a b", "a-x"} {
+		if err := os.MkdirAll(filepath.Join(base, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := New()
+	resolved, err := r.RealPath(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReduceRoots(r, []string{
+		filepath.Join(base, "a"), filepath.Join(base, "a b"),
+		filepath.Join(base, "a-x"), filepath.Join(base, "a", "c"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		filepath.Join(resolved, "a"), filepath.Join(resolved, "a b"), filepath.Join(resolved, "a-x"),
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("ReduceRoots = %v, want %v", got, want)
 	}
 }
 

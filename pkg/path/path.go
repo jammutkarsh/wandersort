@@ -146,11 +146,21 @@ func ReduceRoots(r *Resolver, paths []string) ([]string, error) {
 	}
 	sort.Strings(canonicalPaths)
 
-	// O(N) prune: after lex sort, any descendant of an accepted root immediately
-	// follows it, so comparing against only the last accepted root suffices.
+	// Compared against every accepted root, not just the last: a lex sort does
+	// not keep a folder's descendants next to it — "/a b" sorts between "/a"
+	// and "/a/c", because a space sorts before the separator — so a
+	// last-only check kept "/a/c" and walked it twice. Roots are a handful,
+	// so the quadratic loop costs nothing.
 	effectivePaths := make([]string, 0, len(canonicalPaths))
 	for _, candidate := range canonicalPaths {
-		if len(effectivePaths) == 0 || !isChildPath(effectivePaths[len(effectivePaths)-1], candidate) {
+		nested := false
+		for _, root := range effectivePaths {
+			if isChildPath(root, candidate) {
+				nested = true
+				break
+			}
+		}
+		if !nested {
 			effectivePaths = append(effectivePaths, candidate)
 		}
 	}
