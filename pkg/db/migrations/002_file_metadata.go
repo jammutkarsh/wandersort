@@ -18,7 +18,10 @@ const fileMetadata = `
 CREATE TABLE IF NOT EXISTS file_metadata (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_hash TEXT NOT NULL,
-    file_id INTEGER NOT NULL REFERENCES file_registry(id) ON DELETE CASCADE,
+    -- one metadata row per file: a second one would list the file twice in
+    -- every join, so execute would transfer it twice and a re-plan would
+    -- fail on the one-plan-per-file index
+    file_id INTEGER NOT NULL UNIQUE REFERENCES file_registry(id) ON DELETE CASCADE,
 
     exif_image_width        INTEGER,
     exif_image_height       INTEGER,
@@ -49,10 +52,7 @@ CREATE TABLE IF NOT EXISTS file_metadata (
     created_at TEXT DEFAULT ` + sqlNowDefault + `
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_file_metadata_hash_file ON file_metadata(file_hash, file_id);
--- file_id is the second column above, so a plain "WHERE file_id = ?" (every
--- vfs.BuildTree/vfs.Propose join) can't seek on it — SQLite falls
--- back to a full table scan per outer row. That's the actual gap between
--- "the proposal is already finalized" and "review takes forever to open".
-CREATE INDEX IF NOT EXISTS idx_file_metadata_file_id ON file_metadata(file_id);
+-- file_id's UNIQUE is its own index; this one serves duplicate grouping and
+-- every hash join (elect, execute's duplicate cleanup)
+CREATE INDEX IF NOT EXISTS idx_file_metadata_hash ON file_metadata(file_hash);
 `

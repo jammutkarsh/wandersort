@@ -186,7 +186,7 @@ CREATE TABLE errors (
 **Purpose:** Links files to their content hash and caches per-hash EXIF data. The scorer uses this table to find duplicate files and elect a master.
 
 **How deduplication works:**
-Each hashed file inserts one row into `file_metadata` — `(file_hash, file_id)` pairs are unique, but multiple files can share the same hash. The scorer queries:
+Each hashed file inserts exactly one row into `file_metadata` — `file_id` is unique, but multiple files can share the same hash. The scorer queries:
 
 ```sql
 SELECT file_hash FROM file_metadata
@@ -223,4 +223,5 @@ This yields duplicate hashes. For each hash, the scorer JOINs `file_registry` to
 ```
 
 **Indexes:**
-- `idx_file_metadata_hash_file` (UNIQUE): Prevents duplicate (hash, file) entries and serves hash-only lookups via the leftmost column.
+- `file_id` UNIQUE: one metadata row per file, enforced by the schema.
+- `idx_file_metadata_hash`: duplicate grouping and every hash join.
