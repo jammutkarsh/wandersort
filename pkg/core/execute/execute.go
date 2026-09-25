@@ -105,6 +105,31 @@ func Pending(ctx context.Context, database *db.DB) (files int, bytes int64, err 
 	return n.Files, n.Bytes, nil
 }
 
+// LeftBehind lists, as source paths, every file a scan found that no transfer
+// will bring into the library: it has never been read (it failed, or a run
+// stopped first), so it has no hash, no plan and no place in any Report. The
+// next add tries it again. Whoever is about to treat a source as done — a
+// move, a card about to be formatted — needs these named, since nothing else
+// in a run mentions them.
+func LeftBehind(ctx context.Context, database *db.DB) ([]string, error) {
+	var rows []struct {
+		Dir  string `db:"file_dir"`
+		Name string `db:"file_name"`
+	}
+	if err := database.SQL.SelectContext(ctx, &rows, `
+		SELECT f.file_dir, f.file_name FROM file_registry f
+		WHERE f.placed = 0
+		  AND NOT EXISTS (SELECT 1 FROM file_metadata m WHERE m.file_id = f.id)
+		ORDER BY f.file_dir, f.file_name`); err != nil {
+		return nil, fmt.Errorf("list files left behind: %w", err)
+	}
+	paths := make([]string, len(rows))
+	for i, r := range rows {
+		paths[i] = filepath.Join(wspath.FromSourcePath(r.Dir), r.Name)
+	}
+	return paths, nil
+}
+
 // transfer places src at dst, creating dst's parent directories, and returns
 // where the file actually landed — dst, or the next free _N name beside it
 // when dst is already taken. want is the file_hash the scan stored: a copy

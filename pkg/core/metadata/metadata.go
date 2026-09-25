@@ -54,15 +54,22 @@ const hashPrefix = "blake3:"
 // process, and a 64-core box genuinely wants 64 of those.
 const maxReadBudget = 16
 
-// unreadFiles is the one definition of "still to read": no metadata row, and
-// no READ failure recorded for it. The count, the volume grouping and the
-// producer's pages all ask through it, so they cannot disagree about what is
-// left. Nothing is written to hand a file out — the predicate only shrinks as
-// workers store their rows.
+// unreadFiles is the one definition of "still to read": no metadata row. The
+// count, the volume grouping and the producer's pages all ask through it, so
+// they cannot disagree about what is left. Nothing is written to hand a file
+// out — the predicate only shrinks as workers store their rows.
+//
+// A file that failed to read before is still unread and is tried again every
+// run: most read failures are a card reader or a USB cable, gone by the next
+// add, and a file skipped for good is a photo left out of the library that
+// nobody is told about. Within one run the forward-only cursor hands each
+// file out once, so a failure costs one attempt per run.
+//
+// ponytail: a file exiftool hangs on costs its full timeout on every add;
+// skip after N attempts (errors.attempts) if that ever adds up.
 const unreadFiles = `
 	FROM file_registry f
-	WHERE NOT EXISTS (SELECT 1 FROM file_metadata m WHERE m.file_id = f.id)
-	  AND NOT EXISTS (SELECT 1 FROM errors e WHERE e.file_id = f.id AND e.stage = '` + db.StageRead + `')`
+	WHERE NOT EXISTS (SELECT 1 FROM file_metadata m WHERE m.file_id = f.id)`
 
 // readBatchSize is how many unread files one page asks for. 256 keeps the
 // worker channel (2*workers) fed without holding a long-running statement open.
@@ -163,10 +170,10 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 
 	e.log.Info("Extracting metadata")
 
-	// Taken before any file is handed out, so the closing count below can tell
-	// this run's failures from ones a previous run already recorded: a file
-	// that failed before is never handed out again, so its row keeps the older
-	// last_seen_at. Timestamps are fixed-width, so they compare as text.
+	// Taken before any file is handed out, so the closing count below is this
+	// run's failures: every failed file is tried again and its row's
+	// last_seen_at moves on, and one that read fine this time has no row.
+	// Timestamps are fixed-width, so they compare as text.
 	runStartedAt := db.FormatTime(time.Now())
 
 	var total int
@@ -203,10 +210,7 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 
 	persisted := int(extracted.Load())
 	e.log.Info("Metadata extraction complete", "filesRead", persisted)
-	// Files that failed stay out of the unread set for good, so the run ends
-	// instead of counting them as work remaining. Say so once, for this run's
-	// failures only — repeating a count that includes older ones every scan
-	// reads as the same files failing again.
+	// Files that failed are tried again next run; say how many failed this one.
 	e.db.Writer.Flush()
 	var unreadable int
 	if err := e.db.QueryRowContext(ctx,
@@ -467,7 +471,7 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 			// exiftool itself died or hung: the file's tags are unknown, not
 			// empty. Persisting an empty row would mark the file read and plan
 			// it by file date alone, for good — so record a READ failure
-			// instead, which the end-of-run count reports and --force retries.
+			// instead, which the end-of-run count reports and the next run retries.
 			if errors.Is(err, exiftool.ErrProcess) {
 				e.log.Error("exiftool failed on file", "fileId", file.id, "path", file.absPath, "error", err)
 				e.db.Writer.Write(storeFailure(file.id, opExiftool, db.WithStack(err)))
@@ -598,9 +602,8 @@ func (e *Extractor) store(fileID int64, sum string, meta classifier.CommonMetada
 	}
 }
 
-// storeFailure records why the file could not be read. It has no metadata
-// row (that is what "unread" means), so the errors row alone keeps it out of
-// the next page and the next run until its bytes change.
+// storeFailure records why the file could not be read, bumping attempts on a
+// file that failed before. The file stays unread, so the next run tries again.
 func storeFailure(fileID int64, op string, err error) db.DBOperation {
 	return func(ctx context.Context, tx *sqlx.Tx) error {
 		return db.RecordError(ctx, tx, fileID, db.StageRead, op, err)

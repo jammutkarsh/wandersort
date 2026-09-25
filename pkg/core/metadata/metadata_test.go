@@ -333,7 +333,7 @@ func TestExtractor(t *testing.T) {
 		}},
 		// A file that cannot be read gets a READ error and no metadata, and is
 		// not attempted again until its row is replaced
-		{"RunRecordsHashFailureAndSkipsItNextTime", func(t *testing.T) {
+		{"RunRecordsHashFailureAndRetriesItNextTime", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
 
@@ -373,8 +373,36 @@ func TestExtractor(t *testing.T) {
 			if err := d.SQL.Get(&row.Attempts, `SELECT attempts FROM errors WHERE file_id = 1`); err != nil {
 				t.Fatal(err)
 			}
-			if count != 0 || row.Attempts != 1 {
-				t.Errorf("second run read %d files, attempts = %d; a failed file must be skipped", count, row.Attempts)
+			if count != 0 || row.Attempts != 2 {
+				t.Errorf("second run read %d files, attempts = %d; want the failed file tried again (0 read, 2 attempts)", count, row.Attempts)
+			}
+		}},
+		// A read that failed once (the card reader dropped out) is read the
+		// next run once the file is back, with no --force and no change to it.
+		{"RunReadsAFileThatFailedBefore", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+			dir := t.TempDir()
+			dbtest.SeedFile(t, d, 1, dir, "back.jpg", 5)
+
+			if _, err := New(d, logger.NewNoopLogger(), missingExiftool(t), 1).Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			d.Writer.Flush()
+			if got := state(t, d, 1); got != stateFailed {
+				t.Fatalf("state = %s, want %s", got, stateFailed)
+			}
+
+			if err := os.WriteFile(filepath.Join(dir, "back.jpg"), []byte("photo"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			count, err := New(d, logger.NewNoopLogger(), missingExiftool(t), 1).Run(ctx)
+			if err != nil {
+				t.Fatalf("second Run: %v", err)
+			}
+			d.Writer.Flush()
+			if got := state(t, d, 1); count != 1 || got != stateRead {
+				t.Errorf("second run read %d files, state = %s; want 1, %s", count, got, stateRead)
 			}
 		}},
 		// A read that works clears the failure it superseded, in the same

@@ -17,6 +17,7 @@ import (
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
@@ -61,20 +62,33 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 
 	outputDir := a.Config.OutputDir()
 
-	// Copy never touches a source, so it never asks. Move is the one thing in
-	// this codebase that can delete the user's files — it asks unless the
-	// caller already said --yes (a dry run deletes nothing either way).
-	if move && !dryRun && !yes && !a.confirm(cmd, "Move files instead of copying?",
-		"Each source file is deleted once its copy at the output is verified complete — this cannot be undone.") {
-		return fmt.Errorf("execute cancelled")
-	}
-
 	ctx, cancel := interruptible()
 	defer cancel()
 	if err := a.openLibrary(ctx); err != nil {
 		return err
 	}
 	defer a.closeDBs()
+
+	left, err := execute.LeftBehind(ctx, a.AppDB)
+	if err != nil {
+		return err
+	}
+
+	// Copy never touches a source, so it never asks. Move is the one thing in
+	// this codebase that can delete the user's files — it asks unless the
+	// caller already said --yes (a dry run deletes nothing either way). Files
+	// that were never read are named in the question: they are not moved, and
+	// a source emptied of everything else looks done.
+	if move && !dryRun && !yes {
+		detail := "Each source file is deleted once its copy at the output is verified complete — this cannot be undone."
+		if len(left) > 0 {
+			detail += fmt.Sprintf(" %d source files could not be read and will stay where they are — keep their folders.", len(left))
+		}
+		if !a.confirm(cmd, "Move files instead of copying?", detail) {
+			return fmt.Errorf("execute cancelled")
+		}
+	}
+	defer a.reportLeftBehind(left)
 
 	// Spec D18: room for the whole plan first, so a refusal changes nothing;
 	// then the review's draft goes into the plan and approves it, in one
@@ -113,6 +127,33 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 	}
 	fmt.Fprintln(os.Stderr, tui.OK.Render(fmt.Sprintf("Done: %d files.", rep.Done)))
 	return nil
+}
+
+// maxLeftBehindShown bounds how many never-read files execute names on
+// screen; the log has every one.
+const maxLeftBehindShown = 10
+
+// reportLeftBehind names the source files no transfer will bring in because
+// they were never read. Deferred, so it is the last thing a run prints,
+// whatever the run's own outcome — it is what to check before treating a
+// source as done.
+func (a *app) reportLeftBehind(left []string) {
+	if len(left) == 0 {
+		return
+	}
+	for _, p := range left {
+		a.Log.Info("never read, so not transferred", "source", p)
+	}
+	paths := wspath.New()
+	fmt.Fprintf(os.Stderr, "%s %d source files could not be read, so they are not in the library and were not moved:\n",
+		tui.Attn.Render("⚠"), len(left))
+	for _, p := range left[:min(len(left), maxLeftBehindShown)] {
+		fmt.Fprintf(os.Stderr, "    %s\n", paths.RelativeToHome(p))
+	}
+	if len(left) > maxLeftBehindShown {
+		fmt.Fprintf(os.Stderr, "    … and %d more (see the log)\n", len(left)-maxLeftBehindShown)
+	}
+	fmt.Fprintln(os.Stderr, "  Keep these sources; 'wandersort add' tries them again.")
 }
 
 // checkPlanFits refuses a transfer the output volume can't hold: every file

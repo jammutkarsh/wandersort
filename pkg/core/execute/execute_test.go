@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
@@ -1039,5 +1040,31 @@ func TestRunMoveChecksChangedSource(t *testing.T) {
 	}
 	if _, errText := rowStatus(t, d, 1); errText == nil || !strings.Contains(*errText, "changed since it was scanned") {
 		t.Errorf("error = %v, want the checksum refusal", errText)
+	}
+}
+
+// LeftBehind names exactly the files no transfer will bring in: never read,
+// whether a read failed or never happened. A read file (planned or a
+// duplicate) and a placed one are accounted for.
+func TestLeftBehindNamesNeverReadFiles(t *testing.T) {
+	d := dbtest.New(t)
+	seedApproved(t, d, 1, "read.jpg", "read")
+	dbtest.SeedFile(t, d, 2, "/card/DCIM", "failed.jpg", 1)
+	dbtest.SeedFile(t, d, 3, "/card/DCIM", "unread.jpg", 1)
+	if err := d.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+		return db.RecordError(ctx, tx, 2, db.StageRead, "open", errors.New("reader dropped out"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedApproved(t, d, 4, "placed.jpg", "placed")
+	dbtest.SeedPlaced(t, d, 4)
+
+	got, err := LeftBehind(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join("/card/DCIM", "failed.jpg"), filepath.Join("/card/DCIM", "unread.jpg")}
+	if !slices.Equal(got, want) {
+		t.Errorf("LeftBehind = %v, want %v", got, want)
 	}
 }
