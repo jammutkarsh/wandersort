@@ -210,8 +210,23 @@ func walkStrings(v any, fn func(string) string) any {
 
 // pathToken is any absolute path left after the exact replacements, for
 // --redact-paths only: a directory nobody recorded (a failed mkdir's) has no
-// entry to match against.
-var pathToken = regexp.MustCompile(`(^|[^A-Za-z0-9_.$>-])((?:[A-Za-z]:)?[\\/][^\s"',):]*)`)
+// entry to match against. A path runs to the end of the string, a quote, a
+// newline or a colon that isn't part of it (Go's "op path: reason"), and
+// takes spaces with it: folder names with spaces are the personal ones, and
+// stopping at the first space left "Trip 2024/IMG_1.jpg" behind. Where that
+// guesses wrong it swallows too much, which is the side to be wrong on.
+var pathToken = regexp.MustCompile(`(^|[^A-Za-z0-9_.$>-])((?:[A-Za-z]:)?[\\/](?:[^"\n:]|:[^\s"\n])*)`)
+
+// ScrubHome replaces the home directory with $HOME everywhere in text, as a
+// whole path segment, including where JSON escaping doubled its backslashes
+// (a Windows home inside a JSON log line).
+func ScrubHome(text, home string) string {
+	text = replaceHome(text, home)
+	if escaped := strings.ReplaceAll(home, `\`, `\\`); escaped != home {
+		text = replacePath(text, escaped, HomePlaceholder)
+	}
+	return text
+}
 
 // scrub replaces the paths in s.
 func (k knownPaths) scrub(s string) string {

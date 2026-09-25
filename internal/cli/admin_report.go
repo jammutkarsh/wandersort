@@ -8,9 +8,11 @@ package cli
 
 import (
 	"archive/zip"
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -48,7 +50,9 @@ metadata; add --include-db only if you are comfortable sharing that.
 What went wrong with individual files is included regardless, as errors.json:
 each failure's step, kind and technical detail, with your home directory
 written as $HOME. Folder names below it stay, since they are what makes a
-report debuggable — use --redact-paths to replace every path instead.`,
+report debuggable — use --redact-paths to replace every path instead. The logs
+get the same $HOME treatment; with --redact-paths they are left out, since
+free-form log lines can't be promised path-free.`,
 		Example: `wandersort admin report
 wandersort admin report --redact-paths
 wandersort admin report --include-db`,
@@ -56,15 +60,19 @@ wandersort admin report --include-db`,
 			return a.runIssue(includeDB, redactPaths)
 		},
 	}
-	cmd.Flags().BoolVar(&redactPaths, "redact-paths", false, "Replace every path in the error report, not just your home directory")
+	cmd.Flags().BoolVar(&redactPaths, "redact-paths", false, "Replace every path in the error report and leave the logs out")
 	cmd.Flags().BoolVar(&includeDB, "include-db", false, "Also include the database (contains file paths and metadata)")
+	// the database is nothing but paths: shipping it "redacted" would be a lie
+	cmd.MarkFlagsMutuallyExclusive("redact-paths", "include-db")
 	return cmd
 }
 
 // zipEntry is a source file on disk and the name it gets inside the archive.
+// home, when set, is written as $HOME wherever it appears.
 type zipEntry struct {
 	src  string
 	name string
+	home string
 }
 
 // issueLogs is how many past runs' logs an issue zip carries: the run being
@@ -72,6 +80,7 @@ type zipEntry struct {
 const issueLogs = 5
 
 func (a *app) runIssue(includeDB, redactPaths bool) error {
+	home, _ := os.UserHomeDir()
 	var entries []zipEntry
 	for _, p := range logger.Recent(a.Config.LogDir, 0) {
 		// This run's own log says nothing about the problem; an empty one is a
@@ -79,13 +88,19 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 		if info, err := os.Stat(p); p == a.logFile.Path() || err != nil || info.Size() == 0 {
 			continue
 		}
-		entries = append(entries, zipEntry{p, "logs/" + filepath.Base(p)})
+		entries = append(entries, zipEntry{p, "logs/" + filepath.Base(p), home})
 		if len(entries) == issueLogs {
 			break
 		}
 	}
 	if len(entries) == 0 {
 		return fmt.Errorf("no log data found in %s — run a scan first", a.Config.LogDir)
+	}
+	if redactPaths {
+		// A log line is free text: an error string, a folder name in a
+		// message. The error report's rows are structured enough to redact;
+		// these are not, so they stay home rather than half-redacted.
+		entries = nil
 	}
 	logCount := len(entries)
 
@@ -94,7 +109,7 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 		for _, suffix := range []string{"", "-wal", "-shm"} {
 			src := a.Config.AppDBPath + suffix
 			if _, err := os.Stat(src); err == nil {
-				entries = append(entries, zipEntry{src, "wandersort.db" + suffix})
+				entries = append(entries, zipEntry{src, "wandersort.db" + suffix, ""})
 			}
 		}
 		if len(entries) == logCount {
@@ -119,6 +134,9 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 	if w, err := zw.Create("about.txt"); err == nil {
 		fmt.Fprintf(w, "wandersort issue report\ncreated: %s\nos: %s/%s\n",
 			time.Now().Format(time.RFC3339), runtime.GOOS, runtime.GOARCH)
+		if redactPaths {
+			fmt.Fprintf(w, "\nlogs: left out (--redact-paths)\n")
+		}
 		if len(summary) > 0 {
 			fmt.Fprintf(w, "\nfile errors (see errors.json):\n")
 			for _, line := range summary {
@@ -137,7 +155,7 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 	}
 
 	for _, e := range entries {
-		if err := addFileToZip(zw, e.src, e.name); err != nil {
+		if err := addFileToZip(zw, e.src, e.name, e.home); err != nil {
 			zw.Close()
 			return fmt.Errorf("add %s: %w", e.name, err)
 		}
@@ -182,7 +200,9 @@ func (a *app) exportErrors(redactPaths bool) ([]report.Row, []string) {
 	return rows, summary
 }
 
-func addFileToZip(zw *zip.Writer, srcPath, entryName string) error {
+// addFileToZip copies srcPath into the archive as entryName, with home, when
+// set, written as $HOME on every line.
+func addFileToZip(zw *zip.Writer, srcPath, entryName, home string) error {
 	f, err := os.Open(srcPath)
 	if err != nil {
 		return err
@@ -193,6 +213,21 @@ func addFileToZip(zw *zip.Writer, srcPath, entryName string) error {
 	if err != nil {
 		return err
 	}
-	_, err = io.Copy(w, f)
-	return err
+	if home == "" {
+		_, err = io.Copy(w, f)
+		return err
+	}
+	r := bufio.NewReader(f)
+	for {
+		line, err := r.ReadString('\n')
+		if _, werr := io.WriteString(w, report.ScrubHome(line, home)); werr != nil {
+			return werr
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 }

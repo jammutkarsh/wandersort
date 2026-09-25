@@ -51,6 +51,12 @@ func TestScrub(t *testing.T) {
 			"copy <source> to <target>: mkdir <path>: denied",
 			[]string{"/Users", "zzuser", "Volumes", "IMG_0231"},
 		},
+		{
+			"redact takes a path with spaces whole", true,
+			"open /Users/zzuser/Pictures/Goa Trip 2024/Mum (2).jpg: permission denied",
+			"open <path>: permission denied",
+			[]string{"Goa", "Trip", "Mum"},
+		},
 		{"redact keeps a module-relative frame file", true, "pkg/core/metadata/metadata.go", "pkg/core/metadata/metadata.go", nil},
 	}
 	for _, tt := range tests {

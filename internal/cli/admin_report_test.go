@@ -93,6 +93,43 @@ func TestRunIssuePackagesRecentLogs(t *testing.T) {
 	}
 }
 
+// The logs are shipped with the home directory as $HOME, like errors.json;
+// with --redact-paths they are not shipped at all, since free-form lines
+// can't be promised path-free.
+func TestRunIssueScrubsOrOmitsLogs(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		t.Skip("no usable home directory")
+	}
+	line := fmt.Sprintf(`{"msg":"Failed to hash file","path":%q}`+"\n", filepath.Join(home, "Pictures", "Goa Trip", "IMG_1.jpg"))
+	for _, redact := range []bool{false, true} {
+		a, dir := issueApp(t, map[string]string{"2026-01-01T10-00-00_1.log": line})
+		if err := a.runIssue(false, redact); err != nil {
+			t.Fatalf("runIssue: %v", err)
+		}
+		zips, names := readZips(t, dir)
+		if redact {
+			if names["logs/2026-01-01T10-00-00_1.log"] {
+				t.Error("--redact-paths shipped a log")
+			}
+			continue
+		}
+		zr, err := zip.OpenReader(zips[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := zr.Open("logs/2026-01-01T10-00-00_1.log")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := io.ReadAll(f)
+		zr.Close()
+		if strings.Contains(string(got), home) || !strings.Contains(string(got), "$HOME") {
+			t.Errorf("log shipped as %s, want the home directory as $HOME", got)
+		}
+	}
+}
+
 func TestRunIssueIncludesDBWhenRequested(t *testing.T) {
 	a, dir := issueApp(t, map[string]string{"2026-01-01T10-00-00_1.log": "some log data\n"})
 	if err := os.MkdirAll(filepath.Dir(a.Config.AppDBPath), 0o755); err != nil {
@@ -175,7 +212,7 @@ func TestAddFileToZipMissingSource(t *testing.T) {
 	zw := zip.NewWriter(zf)
 	defer zw.Close()
 
-	if err := addFileToZip(zw, filepath.Join(dir, "does-not-exist"), "entry"); err == nil {
+	if err := addFileToZip(zw, filepath.Join(dir, "does-not-exist"), "entry", ""); err == nil {
 		t.Error("addFileToZip must fail when the source file doesn't exist")
 	}
 }
