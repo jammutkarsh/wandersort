@@ -477,18 +477,3 @@ func (e treeEdits) apply(ctx context.Context, tx *sqlx.Tx) error {
 	}
 	return pruneFolders(ctx, tx)
 }
-
-// PendingBytes sums the size of every still-untransferred file — what a
-// transfer started right now would actually write, before a single byte
-// moves. A rename doesn't change a file's size, so checking before the review's
-// edits are applied gives the same total, and a refusal changes nothing.
-func PendingBytes(ctx context.Context, database *db.DB) (int64, error) {
-	var n int64
-	if err := database.SQL.GetContext(ctx, &n,
-		`SELECT COALESCE(SUM(fr.file_size), 0) FROM virtual_fs_entries vfe
-		 JOIN file_registry fr ON fr.id = vfe.file_id
-		 WHERE `+db.PendingTransfer("vfe.file_id")); err != nil {
-		return 0, fmt.Errorf("size pending files: %w", err)
-	}
-	return n, nil
-}

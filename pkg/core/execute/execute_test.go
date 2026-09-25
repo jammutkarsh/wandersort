@@ -284,6 +284,31 @@ func TestRunSkipsPlacedAndFailedRows(t *testing.T) {
 	}
 }
 
+// Pending counts exactly what Run would transfer: a placed file and one with
+// a failed transfer are not waiting, and an empty library waits for nothing.
+func TestPendingCountsWhatRunWouldTransfer(t *testing.T) {
+	d := dbtest.New(t)
+	ctx := context.Background()
+	if files, bytes, err := Pending(ctx, d); err != nil || files != 0 || bytes != 0 {
+		t.Fatalf("empty library: %d files, %d bytes, %v; want nothing", files, bytes, err)
+	}
+	seedApproved(t, d, 1, "placed.jpg", "placed")
+	dbtest.SeedPlaced(t, d, 1)
+	seedApproved(t, d, 2, "failed.jpg", "failed")
+	dbtest.SeedTransferError(t, d, 2, "earlier failure")
+	seedApproved(t, d, 3, "a.jpg", "abc")
+	seedApproved(t, d, 4, "b.jpg", "defgh")
+
+	files, bytes, err := Pending(ctx, d)
+	if err != nil || files != 2 || bytes != 8 {
+		t.Fatalf("Pending = %d files, %d bytes, %v; want 2 files, 8 bytes", files, bytes, err)
+	}
+	rep, err := Run(ctx, d, logger.NewNoopLogger(), t.TempDir(), Options{DryRun: true})
+	if err != nil || rep.Done != files || rep.Bytes != bytes {
+		t.Errorf("dry run = %+v, %v; want the %d files, %d bytes Pending counted", rep, err, files, bytes)
+	}
+}
+
 // A failure records op and kind, and a later success in the same store
 // (markResult) removes the row — errors only ever holds live problems.
 func TestMarkResultRecordsAndClearsError(t *testing.T) {

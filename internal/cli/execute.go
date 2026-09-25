@@ -126,7 +126,7 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 // but this counts them anyway. Split the check by mode (or volume) if that's
 // ever the transfer someone is blocked on.
 func (a *app) checkPlanFits(ctx context.Context, outputDir string) error {
-	pending, err := vfs.PendingBytes(ctx, a.AppDB)
+	_, pending, err := execute.Pending(ctx, a.AppDB)
 	if err != nil {
 		return err
 	}

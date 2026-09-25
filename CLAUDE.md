@@ -396,7 +396,8 @@ one scan ever runs against it at a time (see "Conventions" below):
   - `execute.go` — `execute` cmd: **the one place review edits reach the
     database and files move** (spec D18). In order: `--move` without `--yes` asks (`confirm`; `--copy`, the
     default, never does — it never touches a source); `checkPlanFits`
-    (`volume.TransferNeeds`: the pending files' bytes, twice the database —
+    (`volume.TransferNeeds`: the pending files' bytes from `execute.Pending`,
+    twice the database —
     the backup's plain and compressed copies coexist briefly — and a reserve
     of 1 GiB or 1% of the volume, whichever is more, against `volume.Space`;
     a hard stop before anything changes, `ponytail:` it counts a same-volume
@@ -789,8 +790,10 @@ Back in `internal/cli/`:
     if it isn't there, and a session that only looks around must do neither
     (`openLibrary`). So `Exists` (a stat) and `Edits` (the draft) are always
     true, while `Open` and `Planned` are zero until this session has really
-    opened it. `CanReview()` reads `Exists` when shut and `Planned > 0` when
-    open — so a library with everything already organized stops saying
+    opened it. `Planned` is `execute.Pending`'s file count — the one
+    definition of "waiting to transfer", next to the rows `execute.Run`
+    reads, so the CLI writes no SQL of its own. `CanReview()` reads `Exists`
+    when shut and `Planned > 0` when open — so a library with everything already organized stops saying
     `✓ ready` and then telling the reviewer there is nothing there. A count
     that fails is treated as "reachable": a library we can't count is still a
     library, and the screen behind the tab reports the real error.

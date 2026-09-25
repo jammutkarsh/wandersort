@@ -10,8 +10,8 @@ import (
 	"context"
 	"os"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
-	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
 // libraryState is what the app knows about the library right now — enough to
@@ -82,8 +82,9 @@ func (a *app) readState(ctx context.Context) libraryState {
 		return s
 	}
 	s.Open = true
-	if err := a.AppDB.SQL.GetContext(ctx, &s.Planned,
-		`SELECT count(*) FROM virtual_fs_entries ve WHERE `+db.PendingTransfer("ve.file_id")); err != nil {
+	planned, _, err := execute.Pending(ctx, a.AppDB)
+	s.Planned = planned
+	if err != nil {
 		// A library we can't count is still a library; the tab stays reachable
 		// and the screen behind it reports the real error.
 		a.Log.Warn("could not count the planned files", "error", err)

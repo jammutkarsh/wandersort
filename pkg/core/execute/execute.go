@@ -76,6 +76,25 @@ type Report struct {
 	Bytes        int64
 }
 
+// Pending is what a transfer started right now would handle: every planned
+// file not yet in the library and without a failed transfer, and their total
+// size. The same rows Run reads, counted without reading them; a review edit
+// never changes a file's size, so the total is the same before and after the
+// draft applies.
+func Pending(ctx context.Context, database *db.DB) (files int, bytes int64, err error) {
+	var n struct {
+		Files int   `db:"files"`
+		Bytes int64 `db:"bytes"`
+	}
+	if err := database.SQL.GetContext(ctx, &n,
+		`SELECT count(*) AS files, COALESCE(SUM(fr.file_size), 0) AS bytes
+		FROM virtual_fs_entries ve JOIN file_registry fr ON fr.id = ve.file_id
+		WHERE `+db.PendingTransfer("ve.file_id")); err != nil {
+		return 0, 0, fmt.Errorf("count pending files: %w", err)
+	}
+	return n.Files, n.Bytes, nil
+}
+
 // transfer places src at dst, creating dst's parent directories, and returns
 // where the file actually landed — dst, or the next free _N name beside it
 // when dst is already taken. want is the file_hash the scan stored: a copy
