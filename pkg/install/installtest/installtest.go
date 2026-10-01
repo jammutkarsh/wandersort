@@ -1,13 +1,5 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
-// Package installtest opens the real location.db for tests via
-// install.OpenLocationResolver — the app's exact setup path, not a
-// hand-fabricated fixture. Lives under pkg/install since that's the one
-// package that knows a downloadable dependency's version/location/readiness.
+// Package installtest opens the real location.db for tests through
+// install.OpenLocationResolver, the app's own setup path.
 package installtest
 
 import (
@@ -37,14 +29,8 @@ func Resolver(t testing.TB) *location.Resolver {
 	return resolver
 }
 
-// depsDir is where a downloadable dependency is expected on disk.
-// WANDERSORT_TEST_DEPS_DIR, set by `make test` (which runs `make test-deps`
-// first via scripts/fetchtestdeps), points at a gitignored test/deps
-// directory pre-populated with visible download progress — so a plain
-// `go test` never triggers install.OpenLocationResolver's own silent,
-// no-progress download mid test run. Unset (running go test directly,
-// outside make) falls back to the app's real ~/.wandersort cache,
-// downloading on first use exactly as wandersort itself would.
+// depsDir is where test dependencies live: WANDERSORT_TEST_DEPS_DIR (set by
+// `make test`, prefetched with progress), else the app's ~/.wandersort cache.
 func depsDir(t testing.TB) string {
 	t.Helper()
 	if dir := os.Getenv("WANDERSORT_TEST_DEPS_DIR"); dir != "" {

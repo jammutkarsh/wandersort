@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -67,10 +61,8 @@ func (a *app) runCheck(cmd *cobra.Command) error {
 	return reportVerify(rep, full)
 }
 
-// reportVerify prints what the check found. Every failing file is named on
-// screen, not only in the log: a list of counts is not something a person can
-// act on, and these are their photos. Files are grouped by what is wrong with
-// them, one heading per kind and one line per file.
+// reportVerify prints what the check found, every failing file by name,
+// grouped by kind of problem.
 func reportVerify(rep verify.Report, full bool) error {
 	if rep.Checked == 0 {
 		fmt.Fprintln(os.Stderr, "Nothing in the library yet — run 'wandersort execute' to put files in it.")
@@ -125,10 +117,8 @@ func reportVerify(rep verify.Report, full bool) error {
 	return fmt.Errorf("%d of %d files do not match the library's records", len(rep.Problems), rep.Checked)
 }
 
-// problemGroup is every problem of one kind, under the heading that names it.
-// detail says whether each file's own detail is worth a line: a size differs
-// per file, while "contents changed" would only repeat the heading (and two
-// long hashes).
+// problemGroup is every problem of one kind. detail says whether each file's
+// own detail adds anything to the heading.
 type problemGroup struct {
 	heading  string
 	detail   bool

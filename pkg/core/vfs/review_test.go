@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import (
@@ -220,7 +214,7 @@ func TestReview(t *testing.T) {
 		// TestConfirmSuffixesCollidingBasenames covers a data-loss risk opened when
 		// Confirm stopped rejecting colliding renames: collapsing two dirs onto one
 		// can land two *different* masters on the same basename (phone counters get
-		// reused across shoots). buildTargets' uniqueness only held for the layout it
+		// reused across shoots). assignTargetPaths' uniqueness only held for the layout it
 		// generated, so Confirm has to re-establish it or the Execute phase would copy
 		// one file over the other.
 		{"ConfirmSuffixesCollidingBasenames", func(t *testing.T) {
@@ -394,7 +388,7 @@ func TestConfigForNoneSentinel(t *testing.T) {
 
 // A file already in the library holds its name: a rename that lands a new file
 // on it gets the next _N, compared NFC- and case-insensitively, the same rule
-// buildTargets follows.
+// assignTargetPaths follows.
 func TestReviewConfirmAvoidsPlacedNames(t *testing.T) {
 	h := newHarness(t)
 	fresh := h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))

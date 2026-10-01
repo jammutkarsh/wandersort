@@ -1,14 +1,5 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
-// Package install versions, downloads, verifies, and coordinates
-// wandersort's two downloadable dependencies (exiftool, location database)
-// for every command that needs them. pkg/exiftool and pkg/location only run
-// the already-installed binary / query the already-open DB — this package
-// owns all version/URL/layout knowledge instead.
+// Package install versions, downloads, verifies and coordinates the two
+// downloadable dependencies (exiftool, location database).
 package install
 
 import (
@@ -20,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -31,9 +23,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-// The phase names Options.OnProgress reports under. Exported because a caller
-// routing progress to more than one screen has to tell them apart — the shell
-// reports the location download to the settings wizard as well as to the scan.
+// Phase names Options.OnProgress reports under.
 const (
 	PhaseExiftool = "exiftool"
 	PhaseLocation = "location"
@@ -49,11 +39,11 @@ type Options struct {
 }
 
 // Coordinator installs exiftool and the location database under one install
-// lock and hands out their readiness through typed getters. Zero value is
-// not usable; construct with New.
+// lock and hands out readiness through blocking getters. Construct with New.
 type Coordinator struct {
-	opts Options
-	ctx  context.Context // set by Start/StartLocationOnly; lets awaitLog give up on cancel
+	opts    Options
+	started sync.Once       // Start/StartLocationOnly close the ready channels once
+	ctx     context.Context // set by Start/StartLocationOnly; lets awaitLog give up on cancel
 
 	exifPath  string
 	exifErr   error
@@ -74,9 +64,13 @@ func New(opts Options) *Coordinator {
 	}
 }
 
-// Start installs exiftool then the location database and returns
-// immediately; the goroutine runs so scan/hash can proceed concurrently.
+// Start installs exiftool then the location database in the background.
+// Only the first Start or StartLocationOnly call does anything.
 func (c *Coordinator) Start(ctx context.Context) {
+	c.started.Do(func() { c.start(ctx) })
+}
+
+func (c *Coordinator) start(ctx context.Context) {
 	c.ctx = ctx
 	go func() {
 		l, err := c.acquireLock(ctx)
@@ -96,6 +90,7 @@ func (c *Coordinator) Start(ctx context.Context) {
 		}
 		close(c.exifReady)
 		if c.exifErr != nil {
+			c.locErr = fmt.Errorf("location database not installed: %w", c.exifErr)
 			close(c.locReady)
 			return
 		}
@@ -105,10 +100,13 @@ func (c *Coordinator) Start(ctx context.Context) {
 	}()
 }
 
-// StartLocationOnly installs just the location database — for a caller (the
-// config wizard) with no use for exiftool. onReady, if not nil, runs once
-// the database has resolved, success or failure.
+// StartLocationOnly installs just the location database. onReady, if not nil,
+// runs once it resolves.
 func (c *Coordinator) StartLocationOnly(ctx context.Context, onReady func(error)) {
+	c.started.Do(func() { c.startLocationOnly(ctx, onReady) })
+}
+
+func (c *Coordinator) startLocationOnly(ctx context.Context, onReady func(error)) {
 	c.ctx = ctx
 	close(c.exifReady) // nothing waits on exiftool through this Coordinator
 	go func() {
@@ -147,13 +145,8 @@ func (c *Coordinator) acquireLock(ctx context.Context) (*lock.Lock, error) {
 	return l, nil
 }
 
-// progressThrottle caps how often a download's byte-progress reaches the UI.
-// progressReader reports on every io.Copy chunk (32KB) with no rate limit of
-// its own; a reconnect after a network drop can deliver a burst of buffered
-// chunks back-to-back, and each one is a blocking send on bubbletea's
-// unbuffered message channel — enough of them in a row starves every other
-// phase's own progress messages out of the single-threaded UI loop, which
-// reads as that phase having hung.
+// progressThrottle caps how often byte progress reaches the UI: an unthrottled
+// burst of chunks blocks bubbletea's message loop and starves other phases.
 const progressThrottle = 100 * time.Millisecond
 
 func (c *Coordinator) progressFor(phase string) func(done, total int64) {
@@ -175,11 +168,8 @@ func (c *Coordinator) progressFor(phase string) func(done, total int64) {
 // returns it — the blocking getters wait instead.
 var ErrPending = errors.New("dependency is still downloading")
 
-// Exiftool blocks until the exiftool binary is ready, saying so only if the
-// call actually has to wait. Narration is a property of waiting, not of who
-// asked: a caller that finds the binary already installed sees nothing, and
-// one stalled behind its own process's still-running download is told why
-// rather than looking hung.
+// Exiftool blocks until the binary is ready, logging "Waiting for …" only if
+// it actually has to wait.
 func (c *Coordinator) Exiftool() (string, error) {
 	if err := c.awaitLog(c.exifReady, "Waiting for the exiftool download to finish…"); err != nil {
 		return "", err
@@ -196,11 +186,8 @@ func (c *Coordinator) Location() (*location.Resolver, error) {
 	return c.resolver, c.locErr
 }
 
-// LocationNow returns the resolver without ever blocking — for a caller (a
-// form validator running on every keystroke) that cannot wait on a download.
-// ErrPending means the install is still running and asking again later may
-// work; any other error means it never will, which is a different answer: a
-// wizard holds a field on the first and waves it through on the second.
+// LocationNow returns the resolver without blocking. ErrPending means still
+// installing (ask later); any other error means it never will.
 func (c *Coordinator) LocationNow() (*location.Resolver, error) {
 	select {
 	case <-c.locReady:
@@ -210,10 +197,8 @@ func (c *Coordinator) LocationNow() (*location.Resolver, error) {
 	}
 }
 
-// LocationDBIfReady returns the opened location database handle without
-// blocking, or nil if Location hasn't resolved yet (or was never started) —
-// for a caller (closeDBs) that must never wait on a download just to shut
-// down cleanly.
+// LocationDBIfReady returns the location database handle without blocking, or
+// nil if not resolved.
 func (c *Coordinator) LocationDBIfReady() *db.DB {
 	select {
 	case <-c.locReady:
@@ -223,11 +208,8 @@ func (c *Coordinator) LocationDBIfReady() *db.DB {
 	}
 }
 
-// awaitLog logs why only if ch isn't already closed — a caller stalled
-// behind its own process's still-running download, not a competing one. It
-// also gives up on ctx cancellation (ctrl+c) instead of blocking until the
-// download itself finishes or fails, which otherwise made cancel look like
-// it did nothing while a phase was parked here.
+// awaitLog waits on ch, logging why only if it isn't already closed, and gives
+// up on ctx cancellation.
 func (c *Coordinator) awaitLog(ch <-chan struct{}, why string) error {
 	select {
 	case <-ch:
@@ -250,36 +232,26 @@ func (c *Coordinator) awaitLog(ch <-chan struct{}, why string) error {
 }
 
 const (
-	// downloadStallTimeout aborts an attempt with no new bytes in this long —
-	// a dead TCP connection (e.g. wifi→ethernet switch) never tells us
-	// itself, so io.Copy would otherwise hang forever instead of retrying.
-	// It's armed before the request is even sent, so it also has to cover
-	// DNS+TCP+TLS+first-byte — 1s was too tight for that on a real (non-loopback)
-	// network and turned ordinary latency into spurious retry storms.
+	// downloadStallTimeout aborts an attempt with no new bytes this long (a
+	// dead connection never errors itself). Armed before the request, so it
+	// also covers DNS/TCP/TLS/first byte.
 	downloadStallTimeout = 3 * time.Second
 
-	// downloadBackoffBase/Max bound the exponential retry delay: 1s, 2s, 4s,
-	// … capped at downloadBackoffMax, so a flaky connection doesn't get
-	// hammered at a fixed interval nor made to wait needlessly long once the
-	// network has clearly settled.
+	// downloadBackoffBase/Max bound the exponential retry delay
 	downloadBackoffBase = 1 * time.Second
 	downloadBackoffMax  = 8 * time.Second
 )
 
-// nonRetryable marks a download failure retrying can't fix — a bad URL
-// (status code) or a checksum mismatch will fail the exact same way every
-// time, so downloadFile gives up after the first attempt instead of retrying
-// forever on something no backoff will ever fix.
+// nonRetryable marks a download failure retrying can't fix (bad status code,
+// checksum mismatch).
 type nonRetryable struct{ err error }
 
 func (n *nonRetryable) Error() string { return n.err.Error() }
 func (n *nonRetryable) Unwrap() error { return n.err }
 
 // downloadFile fetches url to dest atomically, verifying wantSHA256 if set.
-// On a transport failure it retries forever, with exponential backoff, until
-// it succeeds or ctx is cancelled (the user hit ctrl+c) — a flaky network is
-// not a reason to give up installing a required dependency. onProgress and
-// wantSHA256 may be nil/empty.
+// Transport failures retry forever with backoff until success or ctx is
+// cancelled.
 func downloadFile(ctx context.Context, log logger.Logger, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
 	cleanStaleDownloads(filepath.Dir(dest))
 
@@ -309,16 +281,10 @@ func downloadFile(ctx context.Context, log logger.Logger, dest, url, wantSHA256 
 	}
 }
 
-// terminalDownloadErr is downloadFile's final, non-retryable failure.
-// downloadAttempt cancels its own per-attempt context on a stall
-// (downloadStallTimeout) to turn a dead connection into a prompt error, which
-// wraps context.Canceled into err even though the caller's ctx was never
-// touched. Left as-is, that makes a plain network failure indistinguishable
-// from ctrl+c to anything checking errors.Is(err, context.Canceled) further
-// up the stack — which is exactly what surfaced as "pipeline cancelled
-// during exif phase" for an ordinary download failure. Only let
-// context.Canceled/DeadlineExceeded through when the outer ctx is the one
-// that's actually done.
+// terminalDownloadErr is downloadFile's final error. A stall cancels the
+// attempt's own context, so context.Canceled passes through only when the
+// caller's ctx is actually done; otherwise a network failure would read as
+// ctrl+c.
 func terminalDownloadErr(ctx context.Context, err error) error {
 	if err == nil || ctx.Err() != nil {
 		return err
@@ -329,9 +295,8 @@ func terminalDownloadErr(ctx context.Context, err error) error {
 	return err
 }
 
-// cleanStaleDownloads removes .dl-* temp files a killed process (SIGKILL,
-// panic) left behind — a graceful exit already cleans its own up via defer.
-// Best effort: a leftover is disk clutter, not a correctness problem.
+// cleanStaleDownloads removes .dl-* temp files a killed process left. Best
+// effort.
 func cleanStaleDownloads(dir string) {
 	matches, err := filepath.Glob(filepath.Join(dir, ".dl-*"))
 	if err != nil {
@@ -342,9 +307,8 @@ func cleanStaleDownloads(dir string) {
 	}
 }
 
-// downloadAttempt is one try at downloadFile's job. It cancels its own
-// request if downloadStallTimeout passes with no progress, turning a dead
-// connection into a prompt, retryable error instead of an indefinite hang.
+// downloadAttempt is one try at downloadFile, cancelled when no bytes arrive
+// for downloadStallTimeout.
 func downloadAttempt(ctx context.Context, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
 	attemptCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -354,11 +318,8 @@ func downloadAttempt(ctx context.Context, dest, url, wantSHA256 string, onProgre
 		return fmt.Errorf("create request %s: %w", url, err)
 	}
 
-	// stalled distinguishes "this attempt's own stall guard gave up" from any
-	// other failure: both cancel attemptCtx and read back as a bare "context
-	// canceled" from net/http, which read like the process was interrupted
-	// (ctrl+c) rather than what actually happened — a connection that
-	// produced no bytes for downloadStallTimeout.
+	// stalled tells this attempt's stall guard apart from other cancellations,
+	// which net/http reports identically
 	var stalled atomic.Bool
 	stall := time.AfterFunc(downloadStallTimeout, func() { stalled.Store(true); cancel() })
 	defer stall.Stop()
@@ -438,12 +399,8 @@ func fileSHA256(path string) (string, error) {
 	return fmt.Sprintf("%x", hasher.Sum(nil)), nil
 }
 
-// openZstd opens path and wraps it in a zstd decoder — the one place either
-// downloadable dependency's archive gets decompressed, so exiftool
-// (extractTarZst) and the location database (decompressZstd) share one
-// compression format and one decoder call instead of each carrying their
-// own. Callers must call the returned close func once done reading, which
-// releases the decoder's goroutines as well as the file handle.
+// openZstd opens path behind a zstd decoder (both dependencies ship zstd).
+// Call the returned close func when done.
 func openZstd(path string) (io.Reader, func(), error) {
 	f, err := os.Open(path)
 	if err != nil {

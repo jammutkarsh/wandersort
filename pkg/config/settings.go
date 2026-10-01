@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package config
 
 import (
@@ -17,9 +11,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
-// Settings are the settings that shape a library's folders. They live in that
-// library's own database (spec D2), so a second scan into the same folder uses
-// the rules that folder was organized under, whatever another library says.
+// Settings shape a library's folders. They live in the library's own
+// database, so a library keeps the rules it was organized under.
 type Settings struct {
 	// Rules are the ordered folder levels below Year/Month; empty keeps the
 	// default pair. See vfs.Rule* for the names.
@@ -41,9 +34,7 @@ func DefaultSettings() Settings {
 	}
 }
 
-// Equal reports whether two settings would plan the same folders. The test
-// behind "did this save change anything": a wizard visit that changes nothing
-// must not throw a plan away.
+// Equal reports whether two settings would plan the same folders.
 func (s Settings) Equal(o Settings) bool {
 	return s.CollapseLevels == o.CollapseLevels &&
 		s.SavedPlacesDateOnly == o.SavedPlacesDateOnly &&

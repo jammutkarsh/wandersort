@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import (
@@ -28,7 +22,7 @@ func TestPreviewPathsCollapseDropsUniformDeviceOnly(t *testing.T) {
 	if want := "2024/08_August/iPhone-13/a.jpg"; diff[0] != want {
 		t.Errorf("distinct device a: got %q, want %q", diff[0], want)
 	}
-	// Canon-Eos-700d, not Canon-EOS-700D: applyNameCase title-cases every
+	// Canon-Eos-700d, not Canon-EOS-700D: assignTargetPaths title-cases every
 	// word that isn't whitelisted, and the preview now runs it because the
 	// real pipeline does. Showing the unmangled name here was the drift this
 	// preview is meant not to have — it promised a folder the pipeline would

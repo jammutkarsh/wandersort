@@ -1,25 +1,13 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import (
 	"cmp"
-	"fmt"
 	"slices"
 	"time"
 )
 
-// maxFolderSpan is how long a cluster may run and still claim one Year/Month
-// folder for all of its files. A cluster grows for as long as consecutive
-// shots stay inside the gap, so a holiday shot daily is one unbroken cluster
-// running for a week — filing its Jan 05 photos under 2025/12_December (as
-// `Jan_05`, in the wrong Year tree entirely) was a reported bug. Past this
-// span it is a trip, not one sitting: every file keeps the month it was shot
-// in, and the day-merge folds the days into ranges as usual.
+// maxFolderSpan is the longest a cluster may run and still put all its files
+// in its start month. Longer clusters (a trip) keep each file's own month.
 const maxFolderSpan = 24 * time.Hour
 
 // cluster groups masters whose capture times sit within the configured gap of
@@ -29,106 +17,16 @@ type cluster struct {
 	start, end time.Time
 }
 
-// clusterAndSpill groups files by capture-time gap and gives a cluster with
-// *nothing* located a dated event segment instead of a location folder.
-//
-// It used to also spill one member's GPS city over the cluster's GPS-less
-// members. That invented a place: a 12h cluster is most of a day, so a DSLR
-// shot nine hours after a phone photo inherited the phone's city — and near a
-// saved place, which is where most GPS-less files sit, it named every one of
-// them after the saved place. A GPS-less file now keeps no location and
-// markUnknownLocations (plan.go) puts it in an Unknown folder beside its
-// located siblings, which says what is actually known.
-func clusterAndSpill(masters []masterFile, placed []time.Time, gap time.Duration) {
-	if gap <= 0 {
-		gap = defaultClusterGap
-	}
-
-	sortByCaptureTime(masters)
-	placed = slices.SortedFunc(slices.Values(placed), time.Time.Compare)
-
-	// Placed files join the clusters read-only (spec D16): they move a
-	// cluster's start and end, so a new file continuing a placed evening gets
-	// its month, but they are never members and nothing here writes to them.
-	var clusters []cluster
-	add := func(t time.Time, member int) {
-		if len(clusters) == 0 || t.Sub(clusters[len(clusters)-1].end) > gap {
-			clusters = append(clusters, cluster{start: t, end: t})
-		}
-		c := &clusters[len(clusters)-1]
-		if member >= 0 {
-			c.members = append(c.members, member)
-		}
-		c.end = t
-	}
-	p := 0
-	for i := range masters {
-		for ; p < len(placed) && placed[p].Before(masters[i].takenAt); p++ {
-			add(placed[p], -1)
-		}
-		add(masters[i].takenAt, i)
-	}
-	for ; p < len(placed); p++ {
-		add(placed[p], -1)
-	}
-
-	clusterNum := 0
-	for ci := range clusters {
-		c := &clusters[ci]
-
-		// Every member of a *short* cluster takes its Year/Month, whatever is
-		// decided below — an evening that runs past midnight into the next
-		// month is one event and belongs in one folder, not torn in two.
-		// Before both early-continues: a single-day cluster is unaffected
-		// (start is its own day) and a located cluster needs it just as much.
-		if c.end.Sub(c.start) <= maxFolderSpan {
-			for _, i := range c.members {
-				masters[i].folderDate = c.start
-			}
-		}
-
-		located := 0
-		for _, i := range c.members {
-			if masters[i].location != "" {
-				located++
-			}
-		}
-		if located == len(c.members) {
-			continue // nothing unlocated to decide
-		}
-		if located > 0 {
-			// mixed cluster: the GPS-less members get an Unknown folder next to
-			// their located siblings, not a place borrowed from them
-			continue
-		}
-
-		clusterNum++
-		id := fmt.Sprintf("c%d", clusterNum)
-
-		// nothing located: fall back to a dated segment. No member here is
-		// atSavedPlace — that always carries a real location.
-		// the new files' own days, not the placed ones around them
-		seg := eventSegment(masters[c.members[0]].takenAt, masters[c.members[len(c.members)-1]].takenAt)
-		for _, i := range c.members {
-			masters[i].clusterID = id
-			masters[i].eventSegment = seg
-		}
-	}
-}
-
-// sortKey is one master reduced to what the sort compares: the capture instant
-// plus the original index. 24 bytes against masterFile's 408, so a 100k library
-// sorts inside L2 instead of chasing 41 MB of struct.
+// sortKey is one master reduced to what the sort compares: 24 bytes instead of
+// the whole masterFile, so a large library sorts in cache.
 type sortKey struct {
 	sec  int64
 	idx  int   // indexes masters, so it holds whatever a slice can
 	nsec int32 // nanosecond-within-second, 0..999999999 by definition
 }
 
-// sortByCaptureTime orders masters oldest-first, stably. It sorts compact keys
-// and applies the permutation once: masterFile is a wide struct, so both moving
-// it and reaching through an index to read one time field off it touch cache
-// lines the comparison never needs.
+// sortByCaptureTime orders masters oldest-first, stably, by sorting compact
+// keys and applying the permutation once.
 func sortByCaptureTime(masters []masterFile) {
 	keys := make([]sortKey, len(masters))
 	for i := range masters {
@@ -149,10 +47,8 @@ func sortByCaptureTime(masters []masterFile) {
 		}
 		return cmp.Compare(a.idx, b.idx)
 	})
-	// Apply the permutation in place, following one cycle at a time: each
-	// master moves exactly once, and idx is reset to its own slot as it goes so
-	// the outer loop skips what a cycle already placed. The scratch-slice
-	// version of this had to zero 41 MB at 100k before writing a byte to it.
+	// Apply the permutation in place, one cycle at a time: each master moves
+	// once and idx is reset as it goes, so placed slots are skipped.
 	for k := range keys {
 		if keys[k].idx == k {
 			continue

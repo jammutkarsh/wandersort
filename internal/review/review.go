@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package review
 
 import (
@@ -20,10 +14,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
-// Options is everything the review TUI needs. Resolver may be nil — rename
-// autocomplete degrades gracefully without it. Draft is the plan with the
-// reviewer's edits so far (vfs.OpenDraft); every edit made on screen goes
-// through it and into its journal.
+// Options is everything the review needs. Resolver may be nil (no rename
+// completion). Draft holds the plan plus the edits so far.
 type Options struct {
 	DB       *db.DB
 	Draft    *vfs.Draft
@@ -31,11 +23,8 @@ type Options struct {
 	Log      logger.Logger
 }
 
-// Screen returns the review as an app-shell screen — the only interactive
-// entry point. Every full-screen command is the same shell opened on a
-// different tab, so a review is always hosted, never its own program. It
-// writes nothing but the draft file: leaving hands back to the shell with
-// tui.Switch(nil), and `wandersort execute` applies the edits.
+// Screen returns the review as a shell tab. It writes only the draft file;
+// `wandersort execute` applies the edits.
 func Screen(ctx context.Context, o Options) tui.Tab {
 	return newModel(o.Draft, ctx, o.DB, o.Resolver, o.Log)
 }
@@ -46,10 +35,8 @@ func (m Model) Busy() bool { return false }
 
 /* --- bubbletea model --- */
 
-// reviewRow is one visible line of the proposed hierarchy: a tree node at its
-// depth. Renames are written straight onto the node, so a row holds no name
-// state of its own. parent identifies true siblings for the merge command —
-// nil for top-level (Year) rows, which are siblings of each other too.
+// reviewRow is one visible line of the hierarchy: a node at its depth. parent
+// is nil for top-level (Year) rows.
 type reviewRow struct {
 	node   *vfs.Node
 	parent *vfs.Node
@@ -59,9 +46,8 @@ type reviewRow struct {
 	guide string
 }
 
-// flattenTree lays the whole tree out as rows top to bottom, so the reviewer
-// can walk the proposed hierarchy and rename any directory in place. It does
-// not fill in guide — see buildRows.
+// flattenTree lays the tree out as rows, top to bottom (guides filled later by
+// buildRows).
 func flattenTree(nodes []vfs.Node, depth int, parent *vfs.Node) []*reviewRow {
 	var rows []*reviewRow
 	for i := range nodes {
@@ -71,9 +57,8 @@ func flattenTree(nodes []vfs.Node, depth int, parent *vfs.Node) []*reviewRow {
 	return rows
 }
 
-// buildRows flattens tree and fills in each row's box-drawing guide
-// ("│  ├─ ") via tui.Guides — a row can't tell whether it's a last child from
-// its own depth alone, so that needs every row to exist first.
+// buildRows flattens tree and fills each row's box-drawing guide, which needs
+// every row to exist first.
 func buildRows(tree []vfs.Node) []*reviewRow {
 	rows := flattenTree(tree, 0, nil)
 	depths := make([]int, len(rows))
@@ -114,9 +99,8 @@ type Model struct {
 	visualMode   bool
 	visualAnchor int
 	showHelp     bool // [?] — full-screen key reference; any key closes it
-	// draft owns the plan as proposed, the edit journal and the tree they
-	// make; tree above is always draft.Tree(), which is what lets [u] drop a
-	// line and [R] drop them all.
+	// draft owns the base plan, the journal and the tree they make; tree is
+	// always draft.Tree()
 	draft       *vfs.Draft
 	statusMsg   string
 	statusIsErr bool // rejection, not confirmation: rendered in a warning colour
@@ -165,9 +149,8 @@ func (m Model) reset() Model {
 
 func (m Model) Init() tea.Cmd { return nil }
 
-// visibleRows is how many tree lines fit between the header and the footer.
-// Both are measured, never assumed to be a fixed height — the key help wraps
-// on a narrow terminal and the header carries a status line.
+// visibleRows is how many tree lines fit between the measured header and
+// footer.
 func (m Model) visibleRows() int {
 	return max(m.height-lipgloss.Height(m.header())-lipgloss.Height(m.footer()), 1)
 }
@@ -189,8 +172,7 @@ func (m *Model) reflow() {
 }
 
 // jumpSameDepth moves the cursor to the next ([n]) or previous ([N]) row at
-// the cursor's own depth, so a deep tree is walkable without scrolling through
-// every folder's contents.
+// the cursor's depth.
 func (m *Model) jumpSameDepth(step int) {
 	depth := m.rows[m.cursor].depth
 	// crosses into other branches by design: that is what lets [V][n][n] select
@@ -205,9 +187,7 @@ func (m *Model) jumpSameDepth(step int) {
 	m.statusMsg, m.statusIsErr = "no more folders at this level", true
 }
 
-// focusNode puts the cursor on a node by ID, so an edit that moves a folder
-// leaves the reviewer looking at where it went rather than at whatever row
-// happens to sit at the old index.
+// focusNode puts the cursor on a node by ID.
 func (m *Model) focusNode(id int64) {
 	for i, r := range m.rows {
 		if r.node.ID == id {

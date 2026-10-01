@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package install
 
 import (
@@ -32,21 +26,12 @@ const (
 
 	LocationDBFileName = "location.db"
 
-	// locationDBArchiveSuffix is appended to LocationDBFileName for the
-	// remote asset name and the local download target: the DB now ships
-	// zstd-compressed (fuzzy search needs the bigger geonames_trigrams
-	// table, see pkg/location's SearchByName, and that only stays a
-	// reasonable download size compressed). zstd over xz: decode speed
-	// barely moves with compression level and a pure-Go decoder
-	// (klauspost/compress) still runs orders of magnitude faster than a
-	// pure-Go xz decoder — a real difference for a ~400MB database decoded
-	// on every install. There is no uncompressed .db file on the remote any
-	// more.
+	// locationDBArchiveSuffix: the database ships zstd-compressed (pure-Go
+	// zstd decodes far faster than xz)
 	locationDBArchiveSuffix = ".zst"
 
-	// LocationMetaFileName is the metadata JSON published alongside the
-	// location database: version, date, and the checksum/row-counts
-	// verifyLocationDB checks a downloaded (and decompressed) copy against.
+	// LocationMetaFileName is the published metadata: version, date, checksum
+	// and row counts verifyLocationDB checks
 	LocationMetaFileName = "location.json"
 )
 
@@ -56,9 +41,8 @@ type locationMeta struct {
 	Rows map[string]int `json:"rows"`
 }
 
-// downloadLocationDB fetches the location database and its metadata if they
-// don't already exist. onProgress (may be nil) reports byte progress for a
-// TUI bar; the file log only records start/done milestones.
+// downloadLocationDB fetches the location database and its metadata if
+// missing. onProgress may be nil.
 func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) error {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return fmt.Errorf("create dir %q: %w", dbPath, err)
@@ -73,10 +57,8 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 		logger.PhaseKey, "location", logger.EventKey, "start",
 		"dir", path.New().RelativeToHome(dbPath))
 
-	// The metadata first, and required: it holds the checksum the database
-	// is verified against, and a database without it fails verification on
-	// every later start — while its presence alone stops it from ever being
-	// downloaded again.
+	// metadata first, and required: without it the database fails
+	// verification forever while never being re-downloaded
 	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
 	if err := downloadFile(ctx, log, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
 		return fmt.Errorf("download %s: %w", LocationMetaFileName, err)
@@ -89,10 +71,7 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 	if err := downloadFile(ctx, log, archivePath, LocationDownloadBaseURL+"/"+archiveName, "", onProgress); err != nil {
 		return fmt.Errorf("download %s: %w", archiveName, err)
 	}
-	// zstd decodes this in low single-digit seconds even in pure Go, but
-	// still logged (unlike exiftool's much smaller archive) since nothing
-	// else reports progress between the download bar finishing and this
-	// step's own completion.
+	// logged: nothing else reports progress during decompression
 	log.Info("Decompressing location database", logger.UserKey, true,
 		logger.PhaseKey, "location", logger.EventKey, "decompress")
 	if err := decompressZstd(archivePath, dbPath); err != nil {
@@ -108,10 +87,8 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 	return nil
 }
 
-// decompressZstd streams archivePath through openZstd into dest, writing
-// through a temp file in dest's own directory so a crash mid-decompress
-// never leaves a truncated location.db behind — same atomic
-// temp-file-then-rename pattern downloadFile itself uses.
+// decompressZstd streams archivePath into dest via a temp file and rename, so
+// a crash never leaves a truncated database.
 func decompressZstd(archivePath, dest string) error {
 	zr, closeZr, err := openZstd(archivePath)
 	if err != nil {
@@ -141,9 +118,8 @@ func decompressZstd(archivePath, dest string) error {
 	return nil
 }
 
-// verifyLocationDB checksums a downloaded database against its published
-// metadata, then checks the row count on the table Resolver's queries depend
-// on. Not UserKey-tagged: runs on every command, not just installs.
+// verifyLocationDB checks a database's checksum and the row count of every
+// table its metadata names.
 func verifyLocationDB(dbPath string, locationDB *db.DB, log logger.Logger) error {
 	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
 	data, err := os.ReadFile(metaPath)
@@ -167,10 +143,7 @@ func verifyLocationDB(dbPath string, locationDB *db.DB, log logger.Logger) error
 	}
 	log.Info("location db checksum verified", "path", dbPath, "hash", sum)
 
-	// Every table meta.Rows names gets checked, not just geonames_cities —
-	// this is what makes geonames_trigrams (the fuzzy-search index) verified
-	// too the moment the published meta grows that key, with no further
-	// change needed here.
+	// every table meta.Rows names is checked
 	for table, want := range meta.Rows {
 		var count int
 		if err := locationDB.QueryRowContext(context.Background(),
@@ -192,10 +165,8 @@ func removeIfExists(p string) error {
 	return nil
 }
 
-// OpenLocationResolver downloads (if missing), verifies, and opens the
-// location database, returning a ready Resolver plus the *db.DB (caller
-// owns closing it). The single download-open-verify path — installtest
-// exercises this exact function, not a hand-rolled approximation.
+// OpenLocationResolver downloads (if missing), verifies and opens the location
+// database. The caller owns closing the returned *db.DB.
 func OpenLocationResolver(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) (*location.Resolver, *db.DB, error) {
 	if err := downloadLocationDB(ctx, log, dbPath, onProgress); err != nil {
 		return nil, nil, fmt.Errorf("location db: %w", err)
@@ -208,10 +179,8 @@ func OpenLocationResolver(ctx context.Context, log logger.Logger, dbPath string,
 
 	if err := verifyLocationDB(dbPath, locationDB, log); err != nil {
 		locationDB.Close()
-		// A database that fails verification would otherwise stay: the
-		// download is skipped whenever the file exists, so every later start
-		// would fail the same way. Removing it makes the next start fetch a
-		// fresh copy.
+		// remove a database that fails verification, or every later start
+		// fails the same way (the download is skipped while it exists)
 		metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
 		if rerr := errors.Join(removeIfExists(dbPath), removeIfExists(metaPath)); rerr != nil {
 			log.Warn("could not remove the location database that failed verification", "error", rerr)

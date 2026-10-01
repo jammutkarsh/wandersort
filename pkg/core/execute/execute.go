@@ -1,24 +1,10 @@
-// Copyright (c) 2026 Utkarsh Chourasia
+// Package execute copies or moves planned files into the library: every
+// pending row is placed at outputDir/target_path, success sets placed, failure
+// records a TRANSFER error. The only phase that touches the user's media.
 //
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
-// Package execute copies or moves planned files into the library. It reads
-// every planned row of virtual_fs_entries whose file is not yet placed and has no TRANSFER
-// error, and places that file at outputDir/target_path: success sets
-// file_registry.placed, failure records an errors row. Review only ever
-// writes database rows; this is the one phase that touches the user's media
-// files.
-//
-// Deliberately sequential — see .tickets/apply-phase-unmeasured.md: nothing
-// has measured this phase's throughput yet, so there is nothing to size a
-// worker pool against. Resumable by construction instead of by an explicit
-// state machine: it only ever selects pending rows, so a run that stops
-// partway (crash, ctrl+c, a bad file) leaves every untouched row exactly
-// where a second run will pick it up. A file that failed keeps its TRANSFER
-// error row and is not retried automatically — the same contract a file the
-// metadata phase could not read has.
+// Sequential (nothing has measured its throughput) and resumable by
+// construction: it only selects pending rows, so a stopped run resumes where it
+// stopped. Failed files are not retried automatically.
 package execute
 
 import (
@@ -38,8 +24,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
-// Mode is Copy or Move. The zero value is Copy — the safe default per the
-// design ticket: ship Copy first, gate Move behind an explicit choice.
+// Mode is Copy or Move. The zero value is Copy, the safe default; Move must be
+// chosen explicitly.
 type Mode int
 
 const (
@@ -60,18 +46,18 @@ func (m Mode) String() string {
 // Options controls one Run.
 type Options struct {
 	Mode Mode
-	// DryRun reports what would happen and touches nothing — no file is
-	// written, no row changes. It reports the paths with the review's edits
-	// applied, the same ones a real run would use.
+	// DryRun touches nothing and reports the paths a real run would use, review
+	// edits applied.
 	DryRun bool
 	// OnApplied runs once the review's edits are in the plan, before any file
-	// moves (never on a dry run). The review's peek copies are removed here:
-	// with the plan written there is nothing left to peek at.
+	// moves (never on a dry run).
 	OnApplied func()
-	// OnProgress reports after each row is decided: its target path, source
-	// size, and how many of the total are done. nil if the caller doesn't
-	// care (the plain CLI path just reads the returned Report).
+	// OnProgress reports after each row: target, source size, done/total.
 	OnProgress func(target string, bytes int64, done, total int)
+
+	// freeSpace reports the output volume's free and total bytes; nil means
+	// volume.Space. Tests set it to run out of room.
+	freeSpace func(path string) (free, total uint64, err error)
 }
 
 // Report is what a Run produced.
@@ -91,11 +77,8 @@ func (e *NotEnoughSpaceError) Error() string {
 		volume.HumanBytes(e.Needed), volume.HumanBytes(e.Files), volume.HumanBytes(e.Reserve), volume.HumanBytes(e.Free))
 }
 
-// Pending is what a transfer started right now would handle: every planned
-// file not yet in the library and without a failed transfer, and their total
-// size. The same rows Run reads, counted without reading them; a review edit
-// never changes a file's size, so the total is the same before and after the
-// draft applies.
+// Pending counts the files a transfer started now would handle, and their total
+// size (review edits never change sizes).
 func Pending(ctx context.Context, database *db.DB) (files int, bytes int64, err error) {
 	var n struct {
 		Files int   `db:"files"`
@@ -110,12 +93,9 @@ func Pending(ctx context.Context, database *db.DB) (files int, bytes int64, err 
 	return n.Files, n.Bytes, nil
 }
 
-// LeftBehind lists, as source paths, every file a scan found that no transfer
-// will bring into the library: it has never been read (it failed, or a run
-// stopped first), so it has no hash, no plan and no place in any Report. The
-// next add tries it again. Whoever is about to treat a source as done — a
-// move, a card about to be formatted — needs these named, since nothing else
-// in a run mentions them.
+// LeftBehind lists, as source paths, every scanned file no transfer will bring
+// in because it was never read. The next add retries them; anyone about to
+// treat a source as done needs them named.
 func LeftBehind(ctx context.Context, database *db.DB) ([]string, error) {
 	var rows []struct {
 		Dir  string `db:"file_dir"`
@@ -135,13 +115,10 @@ func LeftBehind(ctx context.Context, database *db.DB) ([]string, error) {
 	return paths, nil
 }
 
-// Run is the whole transfer (spec D18): refuse a plan the output can't hold
-// (*NotEnoughSpaceError, nothing changed), write the review's draft into the
-// plan, back the database up, then perform o.Mode over every pending entry,
-// placing each at outputDir/target_path, and report what happened. A dry run
-// does none of the writing and reports the paths a real run would use. The
-// caller holds the output lock (lock.AcquireOutput) for the same reason scan
-// does: this writes to that directory.
+// Run is the whole transfer: refuse a plan the output can't hold
+// (*NotEnoughSpaceError, nothing changed), apply the review draft, back up the
+// database, then place every pending entry. A dry run writes nothing. The
+// caller holds the output lock.
 func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, o Options) (Report, error) {
 	xfer := productionTransfer
 	if o.DryRun {
@@ -178,11 +155,9 @@ func loadPending(ctx context.Context, q sqlx.QueryerContext) ([]pendingRow, erro
 	return rows, nil
 }
 
-// prepare is spec D18's order before any file moves: room for the whole plan
-// first, so a refusal changes nothing; then the review's edits go into the
-// plan in one transaction; then the rows to place are read. A dry run applies
-// the edits in a transaction it rolls back, so it reads the same rows a real
-// run would, at the same paths.
+// prepare does the pre-transfer steps in order: space check (so a refusal
+// changes nothing), apply the draft, read the pending rows. A dry run applies
+// the draft in a rolled-back transaction instead.
 func prepare(ctx context.Context, database *db.DB, outputDir string, o Options) ([]pendingRow, error) {
 	if o.DryRun {
 		var rows []pendingRow
@@ -193,7 +168,11 @@ func prepare(ctx context.Context, database *db.DB, outputDir string, o Options) 
 		})
 		return rows, err
 	}
-	if err := checkFits(ctx, database, outputDir); err != nil {
+	freeSpace := o.freeSpace
+	if freeSpace == nil {
+		freeSpace = volume.Space
+	}
+	if err := checkFits(ctx, database, outputDir, freeSpace); err != nil {
 		return nil, err
 	}
 	if err := vfs.ApplyDraft(ctx, database, outputDir); err != nil {
@@ -205,22 +184,13 @@ func prepare(ctx context.Context, database *db.DB, outputDir string, o Options) 
 	return loadPending(ctx, database.SQL)
 }
 
-// checkFits refuses a transfer the output volume can't hold: every file not
-// yet transferred (a review edit never changes a file's size, so the total is
-// the same before and after the draft applies), room for the backup Run writes
-// first, and a reserve so the disk is never filled to its last byte
-// (volume.TransferNeeds). The database's size is its page count, which the
-// backup — a VACUUM INTO — never exceeds. An unreadable free-space figure lets
-// the transfer run; each file still lands whole or not at all.
+// checkFits refuses a transfer the output volume can't hold: every pending file,
+// room for the backup (twice the database's page size), and a reserve
+// (volume.TransferNeeds). An unreadable free-space figure lets it run.
 //
-// ponytail: a same-volume move only renames and needs no room for the files,
-// but this counts them anyway. Split the check by mode (or volume) if that's
-// ever the transfer someone is blocked on.
-// spaceOf is volume.Space, called through a variable so a test can run out
-// of room.
-var spaceOf = volume.Space
-
-func checkFits(ctx context.Context, database *db.DB, outputDir string) error {
+// ponytail: a same-volume move needs no room for files but counts them anyway.
+// Split by mode or volume if someone is blocked on it.
+func checkFits(ctx context.Context, database *db.DB, outputDir string, freeSpace func(string) (uint64, uint64, error)) error {
 	_, pending, err := Pending(ctx, database)
 	if err != nil {
 		return err
@@ -230,7 +200,7 @@ func checkFits(ctx context.Context, database *db.DB, outputDir string) error {
 		`SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()`); err != nil {
 		return fmt.Errorf("size the database: %w", err)
 	}
-	free, total, err := spaceOf(outputDir)
+	free, total, err := freeSpace(outputDir)
 	if err != nil {
 		return nil
 	}
@@ -251,8 +221,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	if len(rows) == 0 {
 		return Report{}, nil
 	}
-	// Spec D24: the database is the only record of the plan and its edits.
-	// Photos survive a corrupted database; their structure's meaning doesn't.
+	// back up first: the database is the only record of the plan
 	if !o.DryRun {
 		if err := database.Backup(ctx, filepath.Join(outputDir, db.BackupFileName)); err != nil {
 			return Report{}, fmt.Errorf("back up database: %w", err)
@@ -300,9 +269,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 			continue
 		}
 		if xerr != nil {
-			// Landed and recorded, then something after it went wrong (a
-			// move's source that could not be removed, mostly). The library
-			// holds the file, so the row is right; say so and move on.
+			// placed and recorded, but e.g. a move's source wasn't removed
 			log.Warn("placed file, but the transfer did not finish cleanly", "source", src, "target", committed, "error", xerr)
 		}
 		rep.Done++
@@ -314,9 +281,8 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	database.Writer.Flush()
 
 	if err := ctx.Err(); err != nil {
-		// Stopped between files: everything not reached is still pending and
-		// the next run starts there. The duplicate cleanup waits for a run
-		// that finishes.
+		// stopped between files: the rest stays pending; duplicate cleanup
+		// waits for a run that finishes
 		log.Info(summary(o, rep, time.Since(start).Round(time.Millisecond))+" — stopped", logger.UserKey, true)
 		return rep, err
 	}
@@ -334,19 +300,12 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	return rep, nil
 }
 
-// cleanupPlacedDuplicates hard-deletes every file_registry row (and its
-// file_metadata row) whose content hash matches a placed file — the
-// duplicates that lost their election, and a copy of an already-placed file a
-// later scan saw again. Spec D10: only what is still in the library matters,
-// and a placed file's own row is the one true record from here on. Keyed off
-// file_registry.placed read fresh every run, so a run that stops early is
-// picked up by the next one; nothing here touches a file unrelated to any
-// placed hash.
+// cleanupPlacedDuplicates hard-deletes every registry row whose hash matches a
+// placed file (election losers, re-scanned copies). Reads placed fresh each
+// run, so a stopped run is picked up next time.
 func cleanupPlacedDuplicates(ctx context.Context, database *db.DB, outputDir string) error {
-	// Every file_metadata row sharing a hash with a placed file, except the
-	// placed file's own row. Read up front, before anything is deleted, so
-	// the delete works from one fixed id list. The placed file's own path
-	// comes along so it can be checked before its duplicates are forgotten.
+	// every metadata row sharing a placed file's hash, read up front as a fixed
+	// id list, with the placed file's path to check first
 	var rows []struct {
 		ID          int64  `db:"id"`
 		PlacedDir   string `db:"placed_dir"`
@@ -364,13 +323,9 @@ func cleanupPlacedDuplicates(ctx context.Context, database *db.DB, outputDir str
 		return fmt.Errorf("find placed duplicates: %w", err)
 	}
 
-	// Forgetting a duplicate is only safe while the file it duplicates is
-	// actually in the library. A transfer that lost its bytes — a crash, a
-	// bad sector, something outside WanderSort — would otherwise take the
-	// database's knowledge of every surviving copy with it, and there is no
-	// other record of them. Checked by existence and size, not by hash: this
-	// runs after every transfer, and re-reading the library each time is what
-	// `wandersort check --full` is for.
+	// only forget duplicates while the placed copy is really there (exists,
+	// right size): otherwise the database loses its only record of the
+	// survivors. Hashing is check --full's job.
 	var ids []int64
 	for _, r := range rows {
 		abs := filepath.Join(outputDir, wspath.FromLibrary(stdpath.Join(r.PlacedDir, r.PlacedName)))
@@ -415,14 +370,9 @@ func summary(o Options, rep Report, elapsed time.Duration) string {
 	return msg
 }
 
-// markPlaced records the file in the library at target (db.MarkPlaced).
-//
-// Synchronous, unlike every other write in the pipeline: this is the one row
-// whose absence the user pays for in photos. Fire-and-forget batching means
-// the run can report a file placed while the batch carrying that fact was
-// rolled back into a log line — and in move mode the source is gone by then.
-// WriteSync returns the transaction's own error, and with synchronous=FULL a
-// nil return means the row is on the disk, not merely in the page cache.
+// markPlaced records the file in the library at target. Synchronous: in a
+// batch, a rolled-back "placed" row could be reported as done after a move
+// already deleted the source.
 func markPlaced(database *db.DB, id, fileID int64, target string) error {
 	return database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
 		return db.MarkPlaced(ctx, tx, id, fileID, target)

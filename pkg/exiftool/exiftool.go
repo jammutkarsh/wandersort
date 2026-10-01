@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package exiftool
 
 import (
@@ -26,28 +20,20 @@ import (
 
 const readyToken = "{ready}"
 
-// extractTimeout bounds one file. exiftool reads a header, not the file, so a
-// healthy call takes milliseconds even on a slow disk; one that runs this long
-// is stuck (a malformed file looping the parser, a cloud placeholder that never
-// downloads) and would otherwise hold its worker, and the whole scan, forever.
-// A var so a test can shorten it.
-var extractTimeout = 2 * time.Minute
+// extractTimeout bounds one file. exiftool reads a header, so a call this long
+// is stuck (a parser loop, a cloud placeholder that never downloads).
+const extractTimeout = 2 * time.Minute
 
-// ErrProcess means the exiftool process itself failed — it died, hung past
-// extractTimeout, or its pipes broke — rather than the file being unreadable
-// to it. The worker is dead after this and the pool replaces it; the file's
-// metadata is unknown, not empty.
+// ErrProcess means the exiftool process failed (died, hung, broken pipes), not
+// the file: the worker is dead and the file's metadata is unknown, not empty.
 var ErrProcess = errors.New("exiftool process failed")
 
-// ErrUnsafePath means the path cannot be passed to exiftool at all. Its
-// argument file (-@) is one argument per line, so a newline in a filename
-// would end the path early and turn the rest of the name into exiftool
-// options — and exiftool writes files (-all= -overwrite_original).
+// ErrUnsafePath refuses a path with a line break: the -@ argument file is one
+// argument per line, so the rest would become exiftool options.
 var ErrUnsafePath = errors.New("path contains a line break and cannot be passed to exiftool")
 
-// exiftoolTags lists every tag ParseMetadata reads. Passing these to exiftool
-// instead of requesting all tags reduces the JSON payload by ~90%. -fast2 is
-// deliberately omitted: it drops GPS/CreationDate from QuickTime videos.
+// exiftoolTags lists every tag ParseMetadata reads (~90% smaller output than
+// all tags). No -fast2: it drops GPS/CreationDate from QuickTime videos.
 var exiftoolTags = []string{
 	"-ExifToolVersion", "-SourceFile", "-Directory", "-FileName", "-FileSize",
 	"-FilePermissions", "-FileType", "-FileTypeExtension", "-MIMEType",
@@ -72,9 +58,16 @@ type Extractor struct {
 	mu     sync.Mutex    // serializes access: exiftool handles one batch at a time
 	reader *bufio.Reader // reads stdout up to the {ready} sentinel
 	dead   bool          // killed or broken; the pool replaces it before reuse
+
+	timeout time.Duration // per-file bound; see extractTimeout
 }
 
+// New starts one exiftool -stay_open process.
 func New(exiftoolPath string) (*Extractor, error) {
+	return newExtractor(exiftoolPath, extractTimeout)
+}
+
+func newExtractor(exiftoolPath string, timeout time.Duration) (*Extractor, error) {
 	cmd := exec.Command(exiftoolPath, "-stay_open", "True", "-@", "-")
 
 	stdin, err := cmd.StdinPipe()
@@ -90,19 +83,16 @@ func New(exiftoolPath string) (*Extractor, error) {
 	}
 
 	return &Extractor{
-		cmd:    cmd,
-		stdin:  stdin,
-		reader: bufio.NewReaderSize(stdout, 64*1024),
+		cmd:     cmd,
+		stdin:   stdin,
+		reader:  bufio.NewReaderSize(stdout, 64*1024),
+		timeout: timeout,
 	}, nil
 }
 
-// Extract runs exiftool on a single file via the persistent process and
-// returns the parsed metadata or error. Only the tags ParseMetadata needs
-// are requested, cutting the JSON payload by ~90%.
-//
-// ctx cancellation and extractTimeout both kill the process: a read blocked
-// on its stdout cannot be interrupted any other way. That leaves the worker
-// dead (ErrProcess), and the pool starts a fresh one for the next file.
+// Extract runs exiftool on one file via the persistent process. Cancellation and
+// the timeout kill the process (the only way to unblock a stdout read), leaving
+// the worker dead (ErrProcess).
 func (e *Extractor) Extract(ctx context.Context, path string) (classifier.CommonMetadata, error) {
 	if strings.ContainsAny(path, "\r\n") {
 		return classifier.CommonMetadata{}, ErrUnsafePath
@@ -114,7 +104,7 @@ func (e *Extractor) Extract(ctx context.Context, path string) (classifier.Common
 		return classifier.CommonMetadata{}, fmt.Errorf("%w: worker already stopped", ErrProcess)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, extractTimeout)
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 	stop := context.AfterFunc(ctx, func() { e.cmd.Process.Kill() })
 	// A kill that raced a successful answer still took the process down:

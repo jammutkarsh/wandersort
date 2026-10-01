@@ -1,13 +1,5 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
-// Package vfs is the pipeline's final phase: it proposes a destination folder
-// hierarchy for every master file in the library, persisted as rows in
-// virtual_fs_entries, without touching anything on disk. The review flow
-// corrects it; the Execute phase performs the copy/move.
+// Package vfs proposes a destination folder hierarchy for every master file,
+// persisted in folder_nodes and virtual_fs_entries. Nothing on disk is touched.
 package vfs
 
 import (
@@ -44,16 +36,10 @@ func New(db *db.DB, resolver *location.Resolver, log logger.Logger, cfg Config) 
 	}
 }
 
-// Propose builds the proposal for the whole library from the user's settings —
-// the phase as a single call, for every caller that has an *config.Configuration
-// and a resolver (the scan pipeline, and cli's rebuildTree). Assembling the
-// Config and resolving the saved-place anchors are steps of the phase, not of
-// its callers; New is for a test or a caller that wants to state the Config
-// itself.
+// Propose builds the proposal for the whole library from the library's
+// settings: config, anchors, then Run.
 func Propose(ctx context.Context, database *db.DB, resolver *location.Resolver, appCfg *config.Configuration, log logger.Logger) (int, error) {
-	// A new proposal means new folder IDs, so review edits made against the old
-	// one mean nothing now (spec D19, D20): a scan and a settings re-plan both
-	// discard them here, before anything is replaced.
+	// a new proposal has new folder IDs, so old review edits are void
 	if appCfg.AppDBPath != "" {
 		if err := RemoveDraft(filepath.Dir(appCfg.AppDBPath)); err != nil {
 			return 0, err
@@ -65,8 +51,7 @@ func Propose(ctx context.Context, database *db.DB, resolver *location.Resolver, 
 	return New(database, resolver, log, cfg).Run(ctx)
 }
 
-// Run builds the virtual filesystem proposal for the whole library's master
-// files
+// Run builds and persists the proposal for every master in the library.
 func (v *VFS) Run(ctx context.Context) (int, error) {
 	v.log.Info("Building virtual filesystem")
 
@@ -107,9 +92,8 @@ func (v *VFS) Run(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// placedPaths is every library-relative path a placed file already holds. Both
-// planners that hand out names (buildTargets, Confirm) seed from it, so a new
-// file never takes one.
+// placedPaths is every library-relative path a placed file holds; new names
+// never take one.
 func placedPaths(ctx context.Context, q sqlx.QueryerContext) ([]string, error) {
 	var paths []string
 	if err := sqlx.SelectContext(ctx, q, &paths, `
@@ -131,8 +115,7 @@ const masterColumns = `
 	FROM file_registry fr
 	JOIN file_metadata fm ON fm.file_id = fr.id`
 
-// placedTimes is the capture time of every placed file, for the clustering to
-// read (spec D16). Undated files are left out: they join no cluster.
+// placedTimes is the capture time of every dated placed file.
 func (v *VFS) placedTimes(ctx context.Context) ([]time.Time, error) {
 	var placed []masterFile
 	if err := v.db.SQL.SelectContext(ctx, &placed, masterColumns+` WHERE fr.placed = 1`); err != nil {
@@ -147,19 +130,11 @@ func (v *VFS) placedTimes(ctx context.Context) ([]time.Time, error) {
 	return times, nil
 }
 
-// loadMasters reads every live, not-yet-placed file in the library with its
-// hashed metadata and elects one copy of each duplicate (see elect.go).
-//
-// A whole hash group is dropped in SQL when any member of it is already
-// placed: that file *is* the master of its hash — it is on disk at its target
-// and its row is the plan from here on (spec D10/D11) — so nothing in the
-// group has anything left to win, and none of it should be proposed again.
-// This is what keeps a re-imported card from being copied a second time.
-//
-// Not session-scoped: the proposal must cover earlier sessions' files too, or
-// the output would depend on scan history. Ordered by (file_dir, file_name),
-// not id, so the election's tie-break, the clustering and the collision
-// suffixes don't vary with insertion or worker order.
+// loadMasters reads every live, unplaced file with its metadata and elects one
+// copy per hash. A hash group with a placed member is dropped in SQL: the
+// placed file is that hash's master, so a re-imported card isn't copied again.
+// Ordered by (file_dir, file_name) so election, clustering and suffixes are
+// deterministic.
 func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 	var rows []masterFile
 	if err := v.db.SQL.SelectContext(ctx, &rows, masterColumns+`
@@ -180,26 +155,13 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 	return masters, nil
 }
 
-// persist replaces the pending part of the library's plan, and leaves every
-// row a transfer already decided alone (its file placed, or a TRANSFER error
-// recorded): a rebuild re-proposes what has not happened yet, not what has. A
-// kept row whose file is no longer a live master goes, or the plan would keep
-// promising to move a file that isn't there.
-//
-// One synchronous transaction: every caller reads the rows straight back (the
-// review rebuilds its tree the moment Propose returns), and the folder rows
-// the entries point at have to exist before the entries do.
+// persist replaces the pending part of the plan in one synchronous
+// transaction and leaves decided rows (placed, or TRANSFER error) alone, except
+// a failed row whose file is no longer an elected master.
 func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 	err := v.db.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
-		// A decided row is one whose file is placed or failed to transfer; that
-		// file must not be proposed a second time — UNIQUE(file_id) says so too.
-		// A placed file's row is kept unconditionally: it landed, so its row is
-		// the one true record of that (spec D10). The only decided rows whose
-		// fate is in question are the *failed* ones, and the question is
-		// whether their file is still the elected master of its hash — a plan
-		// for a file that lost its election promises a move that can't happen.
-		// There are a handful of these, never a library's worth, which is why
-		// the elected set can be carried in memory rather than in a column.
+		// A placed file's row is kept unconditionally. A failed row stays only
+		// while its file is still the elected master of its hash.
 		var failedIDs []int64
 		if err := tx.SelectContext(ctx, &failedIDs, `
 			SELECT file_id FROM virtual_fs_entries
@@ -245,9 +207,8 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 			}
 		}
 
-		// files a stopped copy left beside copied ones move to their own chain
-		// first, so the new plan finds that chain by name and joins it instead
-		// of showing a same-named twin next to it until the next review save
+		// split folders a stopped copy shares with placed files first, so the
+		// new plan joins that chain instead of showing a twin
 		if _, err := splitPlacedFolders(ctx, tx); err != nil {
 			return err
 		}
@@ -318,15 +279,12 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 	return len(masters), nil
 }
 
-// insertChunk is how many proposals go into one INSERT. A long VALUES list is
-// expensive for SQLite to compile, so this is a measured trough over 20k rows
-// (1 row 504ms, 50 rows 241ms, 500 rows 486ms), not "bigger is better".
+// insertChunk is rows per INSERT; measured on 20k rows (1: 504ms, 50: 241ms,
+// 500: 486ms).
 const insertChunk = 50
 
-// insertStatement builds one parameterised multi-row INSERT for a chunk, so
-// SQLite compiles the statement once instead of once per proposal. Masters in
-// kept already hold a decided entry and are skipped; n is how many rows the
-// statement actually inserts (0 = nothing to run).
+// insertStatement builds one multi-row INSERT for a chunk, skipping masters
+// in kept. n is the rows it inserts (0 = nothing to run).
 func insertStatement(chunk []masterFile, kept map[int64]bool) (stmt string, args []any, n int) {
 	var b strings.Builder
 	b.WriteString(`INSERT INTO virtual_fs_entries

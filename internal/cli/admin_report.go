@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -76,8 +70,8 @@ type zipEntry struct {
 	home string
 }
 
-// issueLogs is how many past runs' logs an issue zip carries: the run being
-// reported is rarely the newest, since the user ran other commands after it.
+// issueLogs is how many past runs' logs a report carries: the reported run is
+// rarely the newest.
 const issueLogs = 5
 
 func (a *app) runIssue(includeDB, redactPaths bool) error {
@@ -98,9 +92,7 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 		return fmt.Errorf("no log data found in %s — run a scan first", a.Config.LogDir)
 	}
 	if redactPaths {
-		// A log line is free text: an error string, a folder name in a
-		// message. The error report's rows are structured enough to redact;
-		// these are not, so they stay home rather than half-redacted.
+		// logs are free text and can't be reliably redacted, so they're left out
 		entries = nil
 	}
 	logCount := len(entries)
@@ -173,11 +165,9 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 	return nil
 }
 
-// exportErrors reads the library's errors table for the report. It opens the
-// database read-only, on its own: `issue` never takes the output lock or opens
-// the library, since it is what someone runs when that is going wrong. A
-// missing or busy database (another wandersort holds it) costs the error
-// report, never the logs.
+// exportErrors reads the errors table for the report, opening the database
+// read-only on its own (no lock, no openLibrary). A missing or busy database
+// costs the error report, never the logs.
 func (a *app) exportErrors(redactPaths bool) ([]report.Row, []string) {
 	if !a.libraryExists() {
 		return nil, nil

@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -48,9 +42,7 @@ wandersort admin db --reset --yes`,
 	cmd.Flags().Bool(flagRestore, false, "Put the database back from its backup")
 	cmd.Flags().Bool(flagReset, false, "Delete everything in the database except your settings")
 	cmd.Flags().Bool(flagYes, false, "Skip the confirmation prompt")
-	// One or the other, never both and never neither: `admin db` on its own is
-	// a noun with no verb, and cobra's own help is a better answer than a
-	// hand-rolled guard.
+	// exactly one of --restore/--reset
 	cmd.MarkFlagsMutuallyExclusive(flagRestore, flagReset)
 	cmd.MarkFlagsOneRequired(flagRestore, flagReset)
 	return cmd
@@ -82,8 +74,8 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 		return fmt.Errorf("restore cancelled")
 	}
 
-	// Not openLibrary: it would open the database this is about to replace,
-	// and Restore refuses while any connection has it open, ours included.
+	// not openLibrary: Restore refuses while any connection, ours included,
+	// has the database open
 	a.logFile.Persist()
 	l, err := a.lockOutput()
 	if err != nil {
@@ -112,9 +104,7 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 	return nil
 }
 
-// resetDB empties the library's data, keeping the settings (db.ResetAll never
-// touches library_settings): a factory wipe of what was scanned is not a
-// request to forget which folders the user wants.
+// resetDB empties the library's data but keeps its settings.
 func (a *app) resetDB(cmd *cobra.Command) error {
 	if !a.libraryExists() {
 		return fmt.Errorf("no database found — nothing to reset")
@@ -127,8 +117,8 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 	}
 	defer a.closeDBs()
 
-	// Already wiped: stop before the backup, which would replace the one
-	// holding what the earlier reset deleted with an empty copy.
+	// already empty: a backup now would overwrite the one holding the data
+	// the earlier reset deleted
 	empty, err := a.AppDB.IsEmpty(ctx)
 	if err != nil {
 		return err
@@ -138,9 +128,8 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 		return nil
 	}
 
-	// Files already in the library are the one thing a reset loses track of
-	// for good: they stay on disk, but nothing records them, so the next
-	// import of the same card copies them in again. Say so in the question.
+	// placed files stay on disk but untracked, so re-importing a card copies
+	// them again: say so in the question
 	placed, err := a.AppDB.PlacedCount(ctx)
 	if err != nil {
 		return err

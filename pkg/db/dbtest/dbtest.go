@@ -1,12 +1,5 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
-// Package dbtest provides shared database fixtures for tests: a fresh
-// migrated app database and seed helpers for the tables every pipeline
-// phase touches
+// Package dbtest provides shared test fixtures: a fresh migrated database and
+// seed helpers.
 package dbtest
 
 import (
@@ -55,11 +48,8 @@ func SeedHash(t testing.TB, d *db.DB, fileID int64, hash string) {
 	}
 }
 
-// SeedEntry inserts a pending virtual_fs_entries row for fileID, creating (or
-// reusing) the folder_nodes chain its target folder needs, and returns the
-// row's node_id. Placing or failing the file is a separate act (SeedPlaced,
-// SeedTransferError). Levels are left blank: a test that cares about them goes through
-// the planner instead.
+// SeedEntry inserts a pending virtual_fs_entries row for fileID with its
+// folder chain, and returns its node_id. Levels are left blank.
 func SeedEntry(t testing.TB, d *db.DB, fileID int64, source, target string) int64 {
 	t.Helper()
 	ctx := context.Background()

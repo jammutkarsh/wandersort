@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package logger
 
 import (
@@ -18,20 +12,15 @@ import (
 )
 
 const (
-	// keepLogs is how many log files Persist leaves in the folder, the new one
-	// included. Only runs that persisted count, so exploring the app never
-	// evicts a scan's log.
+	// keepLogs is how many persisted logs are kept, the new one included
 	keepLogs = 20
 	// maxBuffered is how much an unpersisted run holds in memory before it
 	// persists anyway: a run logging that much is doing real work.
 	maxBuffered = 1 << 20
 )
 
-// File is one process's log file. Records are held in memory until Persist,
-// and a run that never persists leaves no file at all — most launches only
-// look around the app, and a log of that is noise that costs a retention slot.
-// The caller persists once the run touches user data (a library is opened);
-// fileHandler persists on the first warning.
+// File is one process's log. Records stay in memory until Persist (on opening
+// a library, or the first warning); a run that never persists leaves no file.
 type File struct {
 	mu     sync.Mutex
 	dir    string
@@ -59,10 +48,8 @@ func (l *File) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Persist creates the file, named by UTC start time and PID so concurrent
-// processes never share one and names sort oldest first, flushes what was
-// buffered, and prunes the folder to the newest keepLogs. Idempotent and
-// nil-safe.
+// Persist creates the file (named by UTC start time and PID), flushes the
+// buffer and prunes to the newest keepLogs. Idempotent and nil-safe.
 func (l *File) Persist() {
 	if l == nil {
 		return

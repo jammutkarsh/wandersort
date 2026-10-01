@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -18,10 +12,8 @@ import (
 // folders would otherwise scroll a dropdown nobody reads.
 const maxDirSuggestions = 25
 
-// suggestDirs completes like a shell: the directories matching the typed
-// prefix, written home-relative. Shared by the config wizard's output-path
-// field and the shell's scan-folder input — both complete a directory, and a
-// second copy of this would drift from the first.
+// suggestDirs completes directories like a shell, home-relative. Shared by the
+// output-path field and the Add tab's folder input.
 func suggestDirs(paths *path.Resolver, typed string) []string {
 	typed = paths.ExpandPath(strings.TrimSpace(typed))
 	if typed == "" {
@@ -54,8 +46,8 @@ func suggestDirs(paths *path.Resolver, typed string) []string {
 	return out
 }
 
-// bundleExts are macOS package dirs that report IsDir() true but aren't a folder a person would pick.
-// ponytail: extension list, not a bundle-detection API — add here if a report names another one.
+// bundleExts are macOS package dirs that report IsDir() but aren't folders.
+// ponytail: extension list, not a bundle-detection API.
 var bundleExts = map[string]bool{".app": true}
 
 func isBundleDir(name string) bool {

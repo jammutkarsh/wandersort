@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package workflow
 
 import (
@@ -25,17 +19,15 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
-// Deps supplies the two downloadable dependencies, blocking until each
-// exists — only the metadata and vfs phases call these, so the walk can start
-// while the downloads are still running.
+// Deps supplies the two downloadable dependencies, blocking until each is
+// ready.
 type Deps struct {
 	Exiftool func() (string, error)             // path to the exiftool binary
 	Location func() (*location.Resolver, error) // open geonames resolver
 }
 
-// ErrOverlapsLibrary means a folder to scan is the library, or holds it, or
-// sits inside it. Scanning the library as a source would re-read files it
-// already holds and plan any file no row records into the library again.
+// ErrOverlapsLibrary means a folder to scan is, holds, or sits inside the
+// library.
 var ErrOverlapsLibrary = errors.New("overlaps the library")
 
 // Workflow orchestrates the phases of one scan.
@@ -56,10 +48,8 @@ type Workflow struct {
 type workflowPhase struct {
 	kind workflowPhaseKind
 	run  func(ctx context.Context) (int, error)
-	// summary is the one user-facing line this phase reports on success. The
-	// phase's elapsed time is appended to it rather than logged separately —
-	// two console lines per phase ("Scanned 15481 files", "scan phase took
-	// 1.996s") is twice the noise for one fact.
+	// summary is the phase's one user-facing success line; elapsed time is
+	// appended to it
 	summary func(count int) string
 }
 
@@ -84,9 +74,8 @@ var phaseMessageByKind = map[workflowPhaseKind]string{
 
 func NewWorkflow(db *db.DB, log logger.Logger, cfg *config.Configuration, deps Deps) *Workflow {
 	vfsCfg := vfs.ConfigFor(cfg)
-	// the output folder comes from --output-path or the library history and
-	// the rules from the library's own settings, so showing them up front is
-	// the only way to see what this run will do
+	// show the output folder and rules up front: they come from flags/history
+	// and the library's settings
 	rules := "none (flat Year/Month)"
 	if len(vfsCfg.Rules) > 0 {
 		rules = strings.Join(vfsCfg.Rules, ", ")
@@ -107,14 +96,9 @@ func NewWorkflow(db *db.DB, log logger.Logger, cfg *config.Configuration, deps D
 	}
 }
 
-// RunScan canonicalizes and prunes nested scan roots, then runs the pipeline
-// synchronously on the calling goroutine, so a CLI invocation streams progress
-// and blocks until the scan finishes. Returns the roots actually walked, and
-// an error if the run did not complete — wrapping context.Canceled when it was
-// stopped, so callers can tell the two apart with errors.Is. force re-reads
-// every file from disk (re-hash + re-exiftool) even when its size/mtime
-// haven't changed — for picking up a change to WanderSort's own extraction
-// logic without deleting the database.
+// RunScan canonicalizes and prunes nested roots, then runs the pipeline
+// synchronously. Returns the roots walked; a stopped run's error wraps
+// context.Canceled. force re-reads every file even if unchanged.
 func (wf *Workflow) RunScan(ctx context.Context, paths []string, force bool) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -231,9 +215,7 @@ func (wf *Workflow) run(ctx context.Context, phase workflowPhase) (int, error) {
 
 	wf.db.Writer.Flush() // make this phase's writes visible to the next one
 
-	// Checkpoint after every phase, not just at the end: a small WAL keeps the
-	// next phase's reads/writes cheaper. Not fatal — a failed one just leaves
-	// more for the next checkpoint (or Close) to do.
+	// checkpoint after every phase to keep the WAL small; not fatal
 	if cpErr := wf.db.Checkpoint(); cpErr != nil {
 		wf.log.Warn("Database checkpoint failed", "phase", string(phase.kind), "error", cpErr)
 	}

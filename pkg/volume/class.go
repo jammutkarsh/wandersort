@@ -1,20 +1,8 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package volume
 
-// Class is how a volume behaves under concurrent reads. It is the storage
-// half of a decision the CPU has no business making: eight readers is the
-// worst case for a spinning disk and near-optimal for an NVMe one.
-//
-// Detection is the initial guess, not the answer — a RAID can be mixed, a NAS
-// says nothing useful about its backing store, and rotational=0 cannot tell an
-// NVMe from a USB 2.0 stick on every platform. Consumers should treat the
-// class as a starting point, and ClassUnknown as a conservative answer rather
-// than a failure.
+// Class is how a volume behaves under concurrent reads. Detection is a best
+// guess (RAIDs mix, NASes hide their disks); treat ClassUnknown as a
+// conservative answer, not a failure.
 type Class int
 
 const (
@@ -49,10 +37,8 @@ func (c Class) String() string {
 	}
 }
 
-// ClassForPath reports how the volume containing path behaves under concurrent
-// reads. Best-effort, matching ForPath: an unresolvable class yields
-// ClassUnknown rather than an error, because the class tunes a read strategy
-// and is never a scan precondition
+// ClassForPath reports the class of the volume containing path, ClassUnknown
+// when it can't tell.
 func ClassForPath(path string) Class {
 	class, err := classForPath(path)
 	if err != nil {
@@ -61,9 +47,8 @@ func ClassForPath(path string) Class {
 	return class
 }
 
-// networkFilesystems are the fstype names that mean "the backing device is
-// somewhere else, and unknowable from here". Decided before anything else,
-// because a network mount's own storage is irrelevant to how it should be read
+// networkFilesystems are fstypes whose backing storage is unknowable here;
+// checked first.
 var networkFilesystems = map[string]bool{
 	"nfs": true, "nfs4": true, "cifs": true, "smbfs": true, "smb3": true,
 	"afpfs": true, "webdav": true, "davfs": true, "ftp": true,

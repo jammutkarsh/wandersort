@@ -1,15 +1,6 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
-// Package metadata is the pipeline's single read pass over every discovered
-// file: one worker hashes the bytes and then runs exiftool over the same file,
-// back to back, so the header read exiftool needs hits the page cache the hash
-// just warmed. Hashing and EXIF used to be two phases, which meant reading
-// every file twice — on a library big enough to matter, far enough apart that
-// the cache had already evicted it, so the second pass paid full disk cost.
+// Package metadata is the pipeline's only pass that reads file bytes: each
+// worker hashes a file, then runs exiftool on it while the page cache is warm.
+// Keep the two together; split, every file is read from disk twice.
 package metadata
 
 import (
@@ -47,26 +38,17 @@ const hashOutputSize = 32
 // of algorithm can never be mistaken for a match
 const hashPrefix = "blake3:"
 
-// maxReadBudget caps concurrent byte reads regardless of how many cores the
-// machine has. NVMe queues are deep, but random-read IOPS plateau somewhere
-// around 16-32 outstanding requests — past that it is the same throughput at
-// worse latency. The cap is on reads only: exiftool is a CPU-bound Perl
-// process, and a 64-core box genuinely wants 64 of those.
+// maxReadBudget caps concurrent byte reads: random-read IOPS plateau around
+// 16-32 outstanding requests. Only reads are capped; exiftool is CPU-bound.
 const maxReadBudget = 16
 
-// unreadFiles is the one definition of "still to read": no metadata row. The
-// count, the volume grouping and the producer's pages all ask through it, so
-// they cannot disagree about what is left. Nothing is written to hand a file
-// out — the predicate only shrinks as workers store their rows.
+// unreadFiles is the one definition of "still to read": no metadata row.
+// Handing a file out writes nothing. A file that failed before is retried
+// every run (most failures are a cable or card reader); the forward-only cursor
+// tries it once per run.
 //
-// A file that failed to read before is still unread and is tried again every
-// run: most read failures are a card reader or a USB cable, gone by the next
-// add, and a file skipped for good is a photo left out of the library that
-// nobody is told about. Within one run the forward-only cursor hands each
-// file out once, so a failure costs one attempt per run.
-//
-// ponytail: a file exiftool hangs on costs its full timeout on every add;
-// skip after N attempts (errors.attempts) if that ever adds up.
+// ponytail: a file exiftool hangs on costs its full timeout every add; skip
+// after N attempts (errors.attempts) if that adds up.
 const unreadFiles = `
 	FROM file_registry f
 	WHERE NOT EXISTS (SELECT 1 FROM file_metadata m WHERE m.file_id = f.id)`
@@ -75,9 +57,8 @@ const unreadFiles = `
 // worker channel (2*workers) fed without holding a long-running statement open.
 const readBatchSize = 256
 
-// fileRecord is what a page of unread files hands a worker: mediaType is carried so a
-// sidecar can be hashed without paying for an exiftool call it has no tags
-// for, and cost is what reading it charges the shared read budget
+// fileRecord is one unread file for a worker: mediaType lets a sidecar skip
+// exiftool, cost is its charge against the read budget.
 type fileRecord struct {
 	id        int64
 	absPath   string
@@ -92,16 +73,12 @@ type Extractor struct {
 	pool    *exiftool.Pool
 	workers int
 
-	// reads is admission control over the one thing the storage actually
-	// limits: bytes coming off the platter. Same idea as Postgres' per-device
-	// random_page_cost — a spinning disk charges the whole budget for one
-	// file, an SSD charges 1 — except it throttles rather than plans.
+	// reads admits byte reads by storage class: a spinning disk charges the
+	// whole budget, an SSD charges 1.
 	//
-	// ponytail: one shared budget couples physically independent devices, so
-	// an HDD read in flight also throttles an idle SSD. Only reachable at a
-	// volume boundary, since the producer drains one volume at a time;
-	// per-volume budgets are the upgrade path if a mixed library measures
-	// badly.
+	// ponytail: one shared budget couples independent devices (an HDD read
+	// throttles an idle SSD), only at volume boundaries since volumes drain
+	// one at a time. Per-volume budgets if a mixed library measures badly.
 	reads  *semaphore.Weighted
 	budget int64
 	// classes caches the storage class per volume UUID. Producer-only, so it
@@ -129,11 +106,9 @@ func New(database *db.DB, log logger.Logger, exiftoolPath string, workers int) *
 	}
 }
 
-// readTargets is how many files of a class may be read at once when the budget
-// is fully available. The class flips the sign of the concurrency term rather
-// than scaling it: on a spinning disk, eight readers drag the head across the
-// platter between reads and the interleave costs far more than the seeks it
-// was meant to overlap.
+// readTargets is how many files of a class may be read at once with the full
+// budget. Concurrent readers on a spinning disk cost more in seeks than they
+// overlap.
 var readTargets = map[volume.Class]int64{
 	volume.ClassRotational: 1, // seek interleave is the whole cost
 	volume.ClassRemovable:  2, // flash controllers stall on deep queues
@@ -170,10 +145,8 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 
 	e.log.Info("Extracting metadata")
 
-	// Taken before any file is handed out, so the closing count below is this
-	// run's failures: every failed file is tried again and its row's
-	// last_seen_at moves on, and one that read fine this time has no row.
-	// Timestamps are fixed-width, so they compare as text.
+	// taken before any file is handed out, so the closing count is this
+	// run's failures (fixed-width timestamps compare as text)
 	runStartedAt := db.FormatTime(time.Now())
 
 	var total int
@@ -183,9 +156,7 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 
 	go e.producer(ctxWithCancel, cancel, toRead, producerErr)
 
-	// Workers write straight through the BulkWriter rather than funnelling into
-	// a store goroutine: the writer already serializes every operation, so the
-	// extra hop would only add a channel
+	// workers write through the BulkWriter directly; it already serializes
 	var wg sync.WaitGroup
 	for range e.workers {
 		wg.Go(func() {
@@ -193,9 +164,8 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 		})
 	}
 	wg.Wait()
-	// Workers stop early only on shutdown or a closed writer. The first
-	// already cancels; the second doesn't, and a producer blocked handing out
-	// the next file would then wait forever for a worker that is gone.
+	// a closed writer doesn't cancel ctx, so cancel here or the producer
+	// blocks forever
 	cancel()
 
 	if err := <-producerErr; err != nil {
@@ -226,13 +196,9 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 	return persisted, nil
 }
 
-// producer drains one volume at a time, fastest first, and feeds the workers.
-// Ordering by device does not change total wall time — the same bytes are read
-// either way — but it front-loads progress, so an interrupted run has the cheap
-// files done and the progress bar moves early instead of crawling behind an
-// HDD. Within a volume the order is untouched: id is discovery order is walk
-// order is roughly directory order, which is as seek-friendly as a read order
-// gets.
+// producer drains one volume at a time, fastest first, so an interrupted run
+// has the cheap files done. Within a volume, id order is walk order: keep it,
+// it is the most seek-friendly order available.
 func (e *Extractor) producer(ctx context.Context, cancel context.CancelFunc, toRead chan<- fileRecord, producerErr chan<- error) {
 	defer close(toRead)
 
@@ -247,10 +213,8 @@ func (e *Extractor) producer(ctx context.Context, cancel context.CancelFunc, toR
 		return
 	}
 
-	// The final pass is unscoped: it catches any volume the grouping missed,
-	// so no row can be stranded by an edge case in the query above. Volumes
-	// already drained are excluded rather than re-read — their last files may
-	// still be in flight, so the unread predicate can still see them.
+	// the final pass is unscoped, catching any volume the grouping missed;
+	// drained volumes are excluded (their last files may still be in flight)
 	drained := make([]string, 0, len(volumes))
 	for _, v := range append(volumes, pendingVolume{all: true}) {
 		excluded, err := json.Marshal(drained)
@@ -285,19 +249,15 @@ func (e *Extractor) producer(ctx context.Context, cancel context.CancelFunc, toR
 	producerErr <- nil
 }
 
-// pendingVolume is one volume's share of the work still to read. all is the
-// closing sweep, and is not the same thing as an empty uuid — files whose
-// volume never resolved are a real group of their own, and scoping to them
-// with "no filter" would drain every other volume out of order
+// pendingVolume is one volume's unread work. all marks the closing sweep,
+// which differs from an empty uuid (files whose volume never resolved).
 type pendingVolume struct {
 	uuid string
 	cost int64
 	all  bool
 }
 
-// pendingVolumes groups the unread files by volume and prices each one. The
-// scan phase has already finished by the time this runs, so no new volume can
-// appear underneath it
+// pendingVolumes groups the unread files by volume and prices each.
 func (e *Extractor) pendingVolumes(ctx context.Context) ([]pendingVolume, error) {
 	rows, err := e.db.QueryContext(ctx, `
 		SELECT COALESCE(f.volume_uuid, ''), MIN(f.file_dir) `+unreadFiles+`
@@ -335,10 +295,8 @@ func (e *Extractor) pendingVolumes(ctx context.Context) ([]pendingVolume, error)
 	return volumes, nil
 }
 
-// classOf resolves and caches a volume's storage class. An unresolved UUID is
-// not worth a lookup: the same platform machinery produces both, so if the
-// UUID failed the class would too — and keying the cache on the directory
-// instead would spawn a resolution per directory
+// classOf resolves and caches a volume's storage class. An unresolved UUID
+// gets ClassUnknown without a lookup: the class would fail the same way.
 func (e *Extractor) classOf(uuid, sampleDir string) volume.Class {
 	if uuid == "" {
 		return volume.ClassUnknown
@@ -351,11 +309,9 @@ func (e *Extractor) classOf(uuid, sampleDir string) volume.Class {
 	return class
 }
 
-// nextBatch pages the unread files of one volume — of every volume not in
-// excluded (a JSON array of uuids), during the closing sweep — starting after
-// cursor. Reading claims nothing: a file is handed out by the producer, and
-// leaves the unread set only when its worker stores a row. An interrupted run
-// wrote nothing for the files in flight, so they are simply read again.
+// nextBatch pages one volume's unread files after cursor (during the closing
+// sweep, every volume not in excluded, a JSON uuid array). Claims nothing:
+// files in flight when a run stops are simply read again.
 func (e *Extractor) nextBatch(ctx context.Context, v pendingVolume, cursor int64, excluded string) ([]fileRecord, error) {
 	rows, err := e.db.QueryContext(ctx, `
 		SELECT f.id, f.file_dir, f.file_name, COALESCE(f.media_type, ''), COALESCE(f.volume_uuid, '') `+unreadFiles+`
@@ -417,9 +373,8 @@ const (
 	opStore    = "store"
 )
 
-// readOne hashes one file, reads its EXIF while the bytes are still cached, and
-// enqueues the single write that persists both. It reports false when the
-// worker should stop (shutdown, or the writer closed).
+// readOne hashes one file, reads its EXIF while cached, and enqueues one write
+// for both. Returns false when the worker should stop.
 func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *atomic.Int64, total int) (keepGoing bool) {
 	op := opHash
 	defer func() {
@@ -447,12 +402,10 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 		return true
 	}
 
-	// A failed extraction is not a failed file: the pipeline still knows the
-	// file's hash and its folder context, so the VFS can place it. Persist
-	// the empty metadata and move on — no errors row
+	// a failed extraction isn't a failed file: hash and folder still place it,
+	// so persist empty metadata with no errors row
 	var meta classifier.CommonMetadata
-	// Sidecars (iPhone .AAE edit files) carry no EXIF of their own, so
-	// spawning exiftool on them is pure waste — hash them and move on
+	// sidecars (.AAE edit files) carry no EXIF: hash only
 	if file.mediaType != classifier.MediaTypeSidecar {
 		op = opExiftool
 		var err error
@@ -462,16 +415,13 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 			err = fmt.Errorf("exiftool not available")
 		}
 		if err != nil {
-			// A cancelled pipeline kills the exiftool child mid-call — that
-			// is shutdown, not a bad file, so don't report it as an
-			// extraction failure.
+			// cancelled pipeline killed exiftool: shutdown, not a bad file
 			if ctx.Err() != nil {
 				return false
 			}
-			// exiftool itself died or hung: the file's tags are unknown, not
-			// empty. Persisting an empty row would mark the file read and plan
-			// it by file date alone, for good — so record a READ failure
-			// instead, which the end-of-run count reports and the next run retries.
+			// exiftool died or hung: tags unknown, not empty. An empty row
+			// would plan the file by its file date for good, so record a READ
+			// error and retry next run.
 			if errors.Is(err, exiftool.ErrProcess) {
 				e.log.Error("exiftool failed on file", "fileId", file.id, "path", file.absPath, "error", err)
 				e.db.Writer.Write(storeFailure(file.id, opExiftool, db.WithStack(err)))
@@ -493,11 +443,8 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 	return true
 }
 
-// readFile gates the byte read on the storage's weighted budget. exiftool is
-// deliberately left outside the gate: it reads a header the hash just warmed
-// in the page cache, and it is a CPU-bound Perl process rather than a seek —
-// throttling it to the disk's concurrency would trade the hash win straight
-// back for an exif loss
+// readFile gates the byte read on the storage budget. exiftool stays outside
+// the gate: it reads a warm header and is CPU-bound.
 func (e *Extractor) readFile(ctx context.Context, file fileRecord) (string, error) {
 	if err := e.reads.Acquire(ctx, file.cost); err != nil {
 		return "", err // cancelled
@@ -506,11 +453,8 @@ func (e *Extractor) readFile(ctx context.Context, file fileRecord) (string, erro
 	return HashFile(file.absPath)
 }
 
-// hashBufferSize is how much of a file is pulled per read syscall. io.Copy's
-// default is 32 KiB, which on a 783 GiB library is ~25.6 million syscalls and
-// gives the kernel a small window to read ahead into. 1 MiB is 32× fewer,
-// and small enough that a full pool of them is a rounding error next to the
-// exiftool processes running beside it.
+// hashBufferSize is bytes per read syscall: 32× fewer syscalls than io.Copy's
+// 32 KiB default, and a bigger read-ahead window.
 const hashBufferSize = 1 << 20
 
 // hashBuffers keeps one buffer per in-flight read alive rather than
@@ -522,22 +466,15 @@ var hashBuffers = sync.Pool{
 	},
 }
 
-// readerOnly hides every method but Read. Without it io.CopyBuffer **silently
-// ignores the buffer**: *os.File implements io.WriterTo, CopyBuffer prefers
-// that, and its generic fallback allocates its own 32 KiB — so the whole
-// change would be a no-op that still looks correct. Nothing is lost by hiding
-// it, since File.WriteTo only has a fast path when the destination is a
-// socket, and this destination is a hasher.
+// readerOnly hides WriteTo: *os.File implements it, io.CopyBuffer prefers it,
+// and its fallback ignores our buffer, silently. Nothing is lost (File.WriteTo
+// is only fast to sockets).
 type readerOnly struct{ io.Reader }
 
 // NewHasher returns the hasher every stored file_hash is computed with.
-// Execute feeds the bytes it copies through one, so the copy is checked
-// against the scan without reading anything twice.
 func NewHasher() hash.Hash { return blake3.New(hashOutputSize, nil) }
 
-// HashString is h's sum spelled the way file_hash stores it — the algorithm,
-// then hex — so a caller compares against the database without ever writing
-// the prefix itself.
+// HashString is h's sum as file_hash stores it: algorithm prefix, then hex.
 func HashString(h hash.Hash) string {
 	return hashPrefix + hex.EncodeToString(h.Sum(make([]byte, 0, hashOutputSize)))
 }

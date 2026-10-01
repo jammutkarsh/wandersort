@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package review
 
 import (
@@ -34,9 +28,8 @@ const (
 	// previewBudgetDivisor makes the budget for all preview copies together 5%
 	// of the temp volume (free space plus whatever the copies already hold).
 	previewBudgetDivisor = 20
-	// copyingPrefix names a copy still in progress. It is renamed onto its final
-	// hash name only once every file is in it, so a directory under that name
-	// existing at all means the copy finished.
+	// copyingPrefix names a copy in progress; it is renamed to its hash name
+	// only when complete, so the hash name existing means finished
 	copyingPrefix = ".copying-"
 )
 
@@ -51,9 +44,8 @@ type previewDoneMsg struct {
 // directory — nothing else reassigns it.
 var previewRootDir = filepath.Join(os.TempDir(), "wandersort-previews")
 
-// PreviewRoot is where every peek copy lives. Fixed, not an os.MkdirTemp name,
-// so a copy made in one session is still there — and still reused — in the
-// next. Cleaned by a finished review and by `wandersort admin clear`.
+// PreviewRoot is where every peek copy lives; fixed so copies are reused across
+// sessions. Cleaned by execute and `admin clear`.
 func PreviewRoot() string { return previewRootDir }
 
 // CleanPreviews removes every preview copy.
@@ -61,10 +53,8 @@ func CleanPreviews() error {
 	return os.RemoveAll(PreviewRoot())
 }
 
-// previewDirFor keys a preview by file membership, not node ID: a parent and
-// its only-child leaf carry the same files and share one copy. The name is a
-// hash of that membership, so the same folder maps to the same directory in
-// every session.
+// previewDirFor keys a preview by a hash of its file list, so a parent and its
+// only-child leaf share one copy, in every session.
 func previewDirFor(files []string) string {
 	sorted := slices.Clone(files)
 	sort.Strings(sorted)
@@ -72,9 +62,8 @@ func previewDirFor(files []string) string {
 	return filepath.Join(PreviewRoot(), hex.EncodeToString(sum[:8]))
 }
 
-// peekCmd copies a folder's files to its preview dir for the OS viewer,
-// reusing the copy from this or any earlier session if it is already there.
-// Runs off the UI goroutine.
+// peekCmd copies a folder's files to its preview dir (reusing an existing copy)
+// for the OS viewer, off the UI goroutine.
 func peekCmd(ctx context.Context, database *db.DB, node *vfs.Node) tea.Cmd {
 	return func() tea.Msg {
 		var files []string
@@ -112,11 +101,8 @@ func peekCmd(ctx context.Context, database *db.DB, node *vfs.Node) tea.Cmd {
 			}
 		}
 
-		// Copy aside, then rename into place: the rename is atomic (same
-		// directory, so same filesystem), which is what lets the hash name mean
-		// "complete" on its own. A copy killed partway leaves only a .copying-
-		// directory, which is never a cache hit and which makeRoom evicts like
-		// any other.
+		// copy aside, then rename into place (same filesystem, atomic); a
+		// killed copy leaves only a .copying- dir, never a cache hit
 		tmp, err := os.MkdirTemp(PreviewRoot(), copyingPrefix+"*")
 		if err != nil {
 			return previewDoneMsg{err: err}
@@ -136,9 +122,8 @@ func peekCmd(ctx context.Context, database *db.DB, node *vfs.Node) tea.Cmd {
 	}
 }
 
-// plannedBytes is what copyFiles will write for these files: their total size,
-// stopping at the same point the copy does. Unstattable files count as zero —
-// the copy will fail on them anyway.
+// plannedBytes is what copyFiles will write for these files; unstattable files
+// count as zero.
 func plannedBytes(files []string) int64 {
 	var total int64
 	for _, f := range files {
@@ -152,18 +137,15 @@ func plannedBytes(files []string) int64 {
 	return total
 }
 
-// touch marks a preview copy as just used, so makeRoom's mtime order is
-// least-recently-opened rather than oldest-created: peeking a dozen folders in
-// one session must not evict the one being looked at now. Best-effort — a
-// failed touch only makes that copy a likelier eviction.
+// touch marks a preview copy as just used, so eviction is least-recently-used.
+// Best-effort.
 func touch(dir string) {
 	now := time.Now()
 	_ = os.Chtimes(dir, now, now)
 }
 
-// makeRoom evicts the least recently opened preview copies until need bytes
-// fit in the budget: 5% of what the volume would have free with no copies on
-// it (free plus what they already hold). An unreadable root evicts nothing.
+// makeRoom evicts least-recently-used preview copies until need fits in 5% of
+// the volume's free space plus what the copies hold.
 func makeRoom(root string, need, free int64) error {
 	type copyDir struct {
 		path string

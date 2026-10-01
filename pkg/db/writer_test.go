@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package db
 
 import (
@@ -122,10 +116,8 @@ func TestWriteSyncReturnsOperationOutcome(t *testing.T) {
 	}
 }
 
-// TestWriteSyncTruthfulBesideFailingBatch guards WriteSync's one promise: nil
-// means committed. It used to run inside the batch, so an op that succeeded in
-// a batch another op then failed reported nil from a rolled-back transaction —
-// the review save and the placed-file record both trusted that nil.
+// TestWriteSyncTruthfulBesideFailingBatch: nil from WriteSync means committed,
+// even beside a failing batch.
 func TestWriteSyncTruthfulBesideFailingBatch(t *testing.T) {
 	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
 	if err != nil {

@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package db
 
 import (
@@ -75,9 +69,8 @@ func (d *DB) ResetAll(ctx context.Context) (ResetCounts, error) {
 	return resp, nil
 }
 
-// IsEmpty reports whether ResetAll would find anything to delete. A reset of
-// an empty database must not run at all: its backup would overwrite the one
-// holding the data an earlier reset wiped.
+// IsEmpty reports whether ResetAll would find nothing to delete. Resetting an
+// empty database would overwrite the backup holding the earlier reset's data.
 func (d *DB) IsEmpty(ctx context.Context) (bool, error) {
 	var found bool
 	err := d.SQL.QueryRowContext(ctx, `SELECT
@@ -92,9 +85,7 @@ func (d *DB) IsEmpty(ctx context.Context) (bool, error) {
 	return !found, nil
 }
 
-// PlacedCount is how many files the library already holds. A reset forgets
-// them: they stay in the library folder, but nothing records them any more,
-// so a card imported again copies them a second time.
+// PlacedCount is how many files the library holds; a reset forgets them.
 func (d *DB) PlacedCount(ctx context.Context) (int, error) {
 	var n int
 	if err := d.SQL.QueryRowContext(ctx,

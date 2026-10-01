@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import (
@@ -26,52 +20,346 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// Plan turns loaded master rows into their proposed destinations. It touches
-// no database and no files: everything it needs is in masters and cfg.
-//
-// Two halves. The first derives the facts a folder is chosen by, and is the
-// only part that needs anything from outside: the metadata the scan stored,
-// and geonames. The second — shape, below — turns those facts into paths and
-// is a pure function of them.
+// Plan sets every master's targetPath. It touches no database and no files:
+// derive facts, resolve locations, then assignTargetPaths.
 func Plan(ctx context.Context, masters []masterFile, cfg Config, geo *location.Resolver, log logger.Logger) error {
 	deriveAll(ctx, masters, cfg.Workers)
 	resolveLocations(ctx, masters, cfg, geo, log)
-	shape(ctx, masters, cfg)
+	assignTargetPaths(ctx, masters, cfg)
 	if ctx.Err() != nil { // don't leave a half-built proposal for persist to write
 		return ctx.Err()
 	}
 	return nil
 }
 
-// shape turns derived facts into folder paths: six passes whose order is the
-// whole rule, and which nothing outside this function may run piecemeal.
-//
-// It exists so there is exactly one copy of that order. PreviewPaths used to
-// hand-run two of these passes and fake a third's output, which made the
-// config wizard's examples a second, shorter pipeline that could — and did —
-// disagree with the real one about what a setting produces. Both callers run
-// this now, so an example is the real answer by construction rather than by
-// somebody keeping two lists in step.
-//
-// The skip set is computed once here rather than by each pass that needs it:
-// only device, orientation and media ever collapse, and nothing below changes
-// those, so recomputing it three times over every master was three times the
-// work for one answer.
-func shape(ctx context.Context, masters []masterFile, cfg Config) {
-	clusterAndSpill(masters, cfg.placedTimes, cfg.ClusterGap)
-	applyNameCase(ctx, masters, cfg.Workers)
-	skip := uninformativeLevels(masters, cfg)
-	unsuppressMixedSavedPlaces(masters, cfg, skip)
-	markUnknownLocations(masters, cfg, skip)
-	mergeSameLocationDays(masters, cfg)
-	buildTargets(ctx, masters, cfg, skip)
+// assignTargetPaths sets every master's targetPath from its derived facts.
+// Each step edits masters in place and reads what earlier steps wrote, so the
+// step order is the rule. Plan and PreviewPaths both run all of it.
+func assignTargetPaths(ctx context.Context, masters []masterFile, cfg Config) {
+	hasLocationRule := slices.Contains(cfg.Rules, RuleLocation)
+
+	// 1. Cluster by capture time (one cluster ≈ one event). Sorts masters.
+	// Writes folderDate for short clusters, and clusterID + eventSegment for
+	// clusters with nothing located. A GPS-less file never borrows a located
+	// sibling's city: step 5 gives it an Unknown folder instead.
+	gap := cfg.ClusterGap
+	if gap <= 0 {
+		gap = defaultClusterGap
+	}
+	sortByCaptureTime(masters)
+	placed := slices.SortedFunc(slices.Values(cfg.placedTimes), time.Time.Compare)
+
+	// Placed files move a cluster's start and end, so a new file continuing a
+	// placed evening gets its month, but they are never members.
+	var clusters []cluster
+	addToCluster := func(t time.Time, member int) {
+		if len(clusters) == 0 || t.Sub(clusters[len(clusters)-1].end) > gap {
+			clusters = append(clusters, cluster{start: t, end: t})
+		}
+		c := &clusters[len(clusters)-1]
+		if member >= 0 {
+			c.members = append(c.members, member)
+		}
+		c.end = t
+	}
+	p := 0
+	for i := range masters {
+		for ; p < len(placed) && placed[p].Before(masters[i].takenAt); p++ {
+			addToCluster(placed[p], -1)
+		}
+		addToCluster(masters[i].takenAt, i)
+	}
+	for ; p < len(placed); p++ {
+		addToCluster(placed[p], -1)
+	}
+
+	clusterNum := 0
+	for ci := range clusters {
+		c := &clusters[ci]
+
+		// An evening running past midnight into the next month is one event in
+		// one folder. Longer clusters (a trip) keep each file's own month.
+		if c.end.Sub(c.start) <= maxFolderSpan {
+			for _, i := range c.members {
+				masters[i].folderDate = c.start
+			}
+		}
+
+		located := 0
+		for _, i := range c.members {
+			if masters[i].location != "" {
+				located++
+			}
+		}
+		if len(c.members) == 0 || located > 0 {
+			continue // only placed files, or something located: nothing to decide
+		}
+
+		clusterNum++
+		id := fmt.Sprintf("c%d", clusterNum)
+		// the new files' own days, not the placed ones around them
+		seg := eventSegment(masters[c.members[0]].takenAt, masters[c.members[len(c.members)-1]].takenAt)
+		for _, i := range c.members {
+			masters[i].clusterID = id
+			masters[i].eventSegment = seg
+		}
+	}
+
+	// 2. Title-case location and device names. Filenames are left alone.
+	forEachMaster(ctx, masters, cfg.Workers, func(_ int, m *masterFile) {
+		m.location = caseName(m.location)
+		m.city = caseName(m.city)
+		m.device = caseName(m.device)
+	})
+
+	// 3. skip = collapsible levels naming at most one folder library-wide.
+	// Library-wide, not per branch, so the tree has one depth everywhere.
+	var skip map[string]bool
+	if cfg.CollapseLevels {
+		seen := map[string]map[string]bool{}
+		for _, level := range cfg.Rules {
+			if collapsibleLevels[level] {
+				seen[level] = map[string]bool{}
+			}
+		}
+		for i := range masters {
+			for level := range seen {
+				if seg := segmentFor(&masters[i], level, cfg); seg != "" {
+					seen[level][seg] = true
+				}
+			}
+		}
+		skip = map[string]bool{}
+		for level, values := range seen {
+			if len(values) <= 1 {
+				skip[level] = true
+			}
+		}
+	}
+
+	// 4. SavedPlacesDateOnly drops the city folder for everyday shots, unless
+	// the same parent folder also holds files from elsewhere: then those
+	// saved-place files keep their folder (keepLocationFolder) rather than
+	// sit loose beside nested neighbours. Must run before step 5, which needs
+	// the lifted city to decide on Unknown.
+	if cfg.SavedPlacesDateOnly && hasLocationRule {
+		mixed := map[string]bool{}
+		for i := range masters {
+			if m := &masters[i]; hasLocationLevel(m) && !m.atSavedPlace {
+				mixed[locationParent(m, skip, cfg)] = true
+			}
+		}
+		for i := range masters {
+			m := &masters[i]
+			if m.atSavedPlace && hasLocationLevel(m) && mixed[locationParent(m, skip, cfg)] {
+				m.keepLocationFolder = true
+			}
+		}
+	}
+
+	// 5. An unlocated file whose parent folder also holds located files gets
+	// location = Unknown, so step 6 merges its days like any other place. A
+	// folder whose files are all unlocated gets no Unknown level.
+	if hasLocationRule {
+		located := map[string]bool{}
+		for i := range masters {
+			if m := &masters[i]; hasLocationLevel(m) && segmentFor(m, RuleLocation, cfg) != "" {
+				located[locationParent(m, skip, cfg)] = true
+			}
+		}
+		for i := range masters {
+			m := &masters[i]
+			// atSavedPlace under SavedPlacesDateOnly is deliberately suppressed, not unknown
+			if !hasLocationLevel(m) || m.atSavedPlace || segmentFor(m, RuleLocation, cfg) != "" {
+				continue
+			}
+			if located[locationParent(m, skip, cfg)] {
+				m.location = UnknownLocation
+			}
+		}
+	}
+
+	// 6. Merge consecutive same-location days into one range folder
+	// (08/{02,03,04}/<city> → 08/02_04/<city>). Days are calendar dates, so a
+	// run may cross a month end; the whole run takes its first day's
+	// Year/Month. Writes dayOverride and folderDate. Location must sit at or
+	// above Date in Rules, or the range folder wouldn't contain the location.
+	dateIdx, locIdx := slices.Index(cfg.Rules, RuleDate), slices.Index(cfg.Rules, RuleLocation)
+	if cfg.MergeSameLocationDays && dateIdx >= 0 && (locIdx < 0 || dateIdx <= locIdx) {
+		// location → calendar days present
+		days := map[string]map[int]bool{}
+		for i := range masters {
+			m := &masters[i]
+			if !hasLocationLevel(m) || m.location == "" {
+				continue
+			}
+			if days[m.location] == nil {
+				days[m.location] = map[int]bool{}
+			}
+			days[m.location][calendarDay(m.takenAt)] = true
+		}
+
+		// dayRun is the folder a merged day lands in: its label and first day
+		type dayRun struct {
+			label string
+			first int
+		}
+
+		// A day lives in exactly one date folder, so every file of a day must
+		// agree on its run. A disagreeing day is dropped from merging and acts
+		// as a break, which can change the runs around it, so repeat until no
+		// new day breaks. Each pass only adds broken days, so it terminates.
+		broken := map[int]bool{}
+		var runs map[string]map[int]dayRun
+		for {
+			runs = map[string]map[int]dayRun{}
+			for loc, set := range days {
+				ds := make([]int, 0, len(set))
+				for d := range set {
+					if !broken[d] {
+						ds = append(ds, d)
+					}
+				}
+				sort.Ints(ds)
+				// every day inside a run of 2 or more consecutive days
+				for start := 0; start < len(ds); {
+					end := start
+					for end+1 < len(ds) && ds[end+1] == ds[end]+1 {
+						end++
+					}
+					if end > start {
+						lo, hi := ds[start], ds[end]
+						r := dayRun{dayRange(dayStart(lo), dayStart(hi)), lo}
+						if runs[loc] == nil {
+							runs[loc] = map[int]dayRun{}
+						}
+						for d := lo; d <= hi; d++ {
+							runs[loc][d] = r
+						}
+					}
+					start = end + 1
+				}
+			}
+
+			// one run per day, or the day breaks; a file with no location
+			// votes for "no run"
+			seen := map[int]dayRun{}
+			found := false
+			for i := range masters {
+				m := &masters[i]
+				if !hasLocationLevel(m) {
+					continue
+				}
+				d := calendarDay(m.takenAt)
+				if broken[d] {
+					continue
+				}
+				r := runs[m.location][d]
+				if prev, ok := seen[d]; ok && prev != r {
+					broken[d] = true
+					found = true
+					continue
+				}
+				seen[d] = r
+			}
+			if !found {
+				break
+			}
+		}
+
+		for i := range masters {
+			m := &masters[i]
+			if !hasLocationLevel(m) || m.location == "" || broken[calendarDay(m.takenAt)] {
+				continue
+			}
+			if r, ok := runs[m.location][calendarDay(m.takenAt)]; ok {
+				m.dayOverride, m.folderDate = r.label, dayStart(r.first)
+			}
+		}
+	}
+
+	// 7. Build each targetPath: a directory per file, then a collision-free
+	// file name in it.
+	for i := range masters {
+		masters[i].orderTime, masters[i].orderHash = masters[i].takenAt, masters[i].FileHash
+	}
+	groupDirs := captureDirs(masters, skip, cfg)
+	pairLiveVideos(masters)
+
+	// dirFor writes only its own master's dirLevels, so directories fan out.
+	dirs := make([]string, len(masters))
+	forEachMaster(ctx, masters, cfg.Workers, func(i int, m *masterFile) {
+		if dir, ok := groupDirs[i]; ok {
+			dirs[i] = dir // a capture group shares its leader's directory
+		} else if m.MediaType == classifier.MediaTypeSidecar {
+			// an unpaired sidecar has nothing to derive a folder from
+			dirs[i], m.dirLevels, m.dirBounds = OrphanDir, []string{LevelOrphan}, []Bounds{{{}}}
+		} else {
+			dirs[i] = dirFor(m, skip, cfg)
+		}
+		// a placed folder the file matches completely wins over the rules
+		if dir, ok := cfg.placedTree.route(m); ok {
+			dirs[i] = dir
+		}
+	})
+
+	// Names are assigned sequentially: who gets the bare name and who gets _2
+	// depends on the order files are reached. Seeded with placed files' names,
+	// which a new file must never take.
+	taken := make(map[string]bool, len(cfg.Placed)+len(masters))
+	for _, p := range cfg.Placed {
+		taken[nameKey(p)] = true
+	}
+
+	// Order by the capture group leader's time and hash, then the file's own
+	// name, never by source path, so any folder layout gives the same
+	// suffixes. A sidecar ranks with its photo, which Apple Photos pairs it
+	// with by name.
+	order := make([]int, len(masters))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int {
+		ma, mb := &masters[a], &masters[b]
+		return cmp.Or(
+			ma.orderTime.Compare(mb.orderTime),
+			strings.Compare(ma.orderHash, mb.orderHash),
+			strings.Compare(ma.FileName, mb.FileName),
+			strings.Compare(ma.absPath, mb.absPath),
+		)
+	})
+
+	// A capture group takes one suffix: the lowest number free for all members.
+	groups := map[string][]int{}
+	for _, i := range order {
+		if k := masters[i].pairKey; k != "" {
+			groups[k] = append(groups[k], i)
+		}
+	}
+	done := make([]bool, len(masters))
+	for _, i := range order {
+		if done[i] {
+			continue
+		}
+		members := []int{i}
+		if k := masters[i].pairKey; k != "" {
+			members = groups[k]
+		}
+		paths := make([]string, len(members))
+		for _, j := range members {
+			done[j] = true
+		}
+		assignSuffix(taken, paths, func(k int) (string, string) {
+			return dirs[members[k]], path.SanitizeFileName(masters[members[k]].FileName)
+		})
+		for k, j := range members {
+			masters[j].targetPath = paths[k]
+		}
+	}
 }
 
-// Sample is one synthetic file for PreviewPaths: a master as it stands after
-// Plan's first half, so a caller with no database and no geonames (the config
-// wizard) can ask what folders a Config would produce. It carries the derived
-// facts — when the shot was taken, where, on what — and nothing that shape
-// works out for itself.
+// Sample is one synthetic file for PreviewPaths: the derived facts a master
+// carries after Plan's first half.
 type Sample struct {
 	TakenAt      time.Time
 	Location     string // resolved city; "" = unknown
@@ -83,14 +371,8 @@ type Sample struct {
 	FileName     string
 }
 
-// PreviewPaths runs the real second half of the pipeline over made-up files,
-// so a wizard example is the proposal those settings would produce rather
-// than a shorter approximation of it. Collapse is measured across the whole
-// sample set, matching the library-wide rule below; the day merge, the
-// saved-place lift and the Unknown-location rule all really run.
-//
-// Paths come back in capture-time order, not the order the samples were
-// given: clustering sorts them, and every caller feeds them to a tree.
+// PreviewPaths runs assignTargetPaths over made-up files, so a settings example
+// is the real proposal. Paths come back in capture-time order.
 func PreviewPaths(cfg Config, samples []Sample) []string {
 	masters := make([]masterFile, len(samples))
 	for i, s := range samples {
@@ -105,7 +387,7 @@ func PreviewPaths(cfg Config, samples []Sample) []string {
 			height:       s.Height,
 		}
 	}
-	shape(context.Background(), masters, cfg)
+	assignTargetPaths(context.Background(), masters, cfg)
 	paths := make([]string, len(masters))
 	for i := range masters {
 		paths[i] = masters[i].targetPath
@@ -114,10 +396,7 @@ func PreviewPaths(cfg Config, samples []Sample) []string {
 }
 
 // forEachMaster runs fn over every master on `workers` goroutines (<= 1 runs
-// the plain loop). Only for passes that write index-disjointly — to fn's own
-// master, or to slot i of a side slice the caller owns — and read nothing
-// shared but immutable data, so no synchronisation is needed and the result is
-// identical at any worker count.
+// the plain loop). fn may write only to its own master or slot i.
 func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn func(i int, m *masterFile)) {
 	if workers <= 1 {
 		for i := range masters {
@@ -129,10 +408,8 @@ func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn fu
 		return
 	}
 
-	// Hand out contiguous runs, not single indices: deriveAll costs a few
-	// hundred nanoseconds per file, so one channel send per file made the pool
-	// slower than the plain loop. Runs are small enough that an expensive
-	// stretch (resolveLocations hitting uncached coordinates) still spreads.
+	// Hand out contiguous runs, not single indices: one channel send per file
+	// costs more than the work for cheap passes.
 	const runSize = 512
 	type run struct {
 		base    int // index this run's first master sits at, for callers that need it
@@ -161,9 +438,8 @@ func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn fu
 	wg.Wait()
 }
 
-// deriveAll fills the derived fields of every master from the metadata
-// persisted during hashing — exiftool already ran once per file there, so the
-// VFS phase never has to touch the files on disk again
+// deriveAll fills each master's derived fields from the stored metadata;
+// files on disk are never read again.
 func deriveAll(ctx context.Context, masters []masterFile, workers int) {
 	forEachMaster(ctx, masters, workers, func(_ int, m *masterFile) {
 		m.takenAt = m.captureTime()
@@ -195,14 +471,8 @@ func (m *masterFile) captureTime() time.Time {
 	return firstTime(deref(m.DBDateTaken), stripOffset(deref(m.DBCreationDate)), deref(m.DBCreateDate), deref(m.DBMediaCreateDate), m.ModifiedAt)
 }
 
-// resolveLocations reverse-geocodes every GPS-tagged master, then folds the
-// result into a nearby confirmed saved-place anchor so a home city's own
-// suburbs don't each get their own folder.
-//
-// This is the only part of the build that waits on anything — the resolver's
-// cache is a sync.Map over a read-only database with no connection cap, so the
-// lookups genuinely overlap. The result is a pure function of the coordinates,
-// so fanning out changes the order of the debug lines and nothing else.
+// resolveLocations reverse-geocodes every GPS-tagged master, then folds a
+// city within range of a saved place into that place.
 func resolveLocations(ctx context.Context, masters []masterFile, cfg Config, geo *location.Resolver, log logger.Logger) {
 	if geo == nil {
 		return
@@ -228,82 +498,9 @@ func resolveLocations(ctx context.Context, masters []masterFile, cfg Config, geo
 	})
 }
 
-// applyNameCase title-cases the derived location and device names after every
-// naming decision. Filenames are left alone.
-func applyNameCase(ctx context.Context, masters []masterFile, workers int) {
-	forEachMaster(ctx, masters, workers, func(_ int, m *masterFile) {
-		m.location = caseName(m.location)
-		m.city = caseName(m.city)
-		m.device = caseName(m.device)
-	})
-}
-
 // UnknownLocation is the location folder a file with no resolvable place gets
 // when located siblings share its parent folder.
 const UnknownLocation = "Unknown"
-
-// markUnknownLocations gives unlocated files a real location name, so they
-// stop sitting loose next to their located siblings and are treated like any
-// other location from here on — mergeSameLocationDays included, which is what
-// keeps their dates from being folded differently to everyone else's.
-//
-// A folder whose files are *all* unlocated gets no Unknown: the level would
-// hold exactly one child saying nothing the parent didn't already.
-func markUnknownLocations(masters []masterFile, cfg Config, skip map[string]bool) {
-	if !slices.Contains(cfg.Rules, RuleLocation) {
-		return
-	}
-	located := map[string]bool{}
-	for i := range masters {
-		if m := &masters[i]; hasLocationLevel(m) && segmentFor(m, RuleLocation, cfg) != "" {
-			located[locationParent(m, skip, cfg)] = true
-		}
-	}
-	for i := range masters {
-		m := &masters[i]
-		// atSavedPlace under SavedPlacesDateOnly is a deliberately suppressed
-		// folder, not an unknown one
-		if !hasLocationLevel(m) || m.atSavedPlace || segmentFor(m, RuleLocation, cfg) != "" {
-			continue
-		}
-		if located[locationParent(m, skip, cfg)] {
-			m.location = UnknownLocation
-		}
-	}
-}
-
-// unsuppressMixedSavedPlaces gives a saved-place file its location folder back
-// when the day it lands in also holds files from somewhere else.
-//
-// SavedPlacesDateOnly drops the city folder for everyday shots, which is right
-// when the whole day is everyday shots — the folder would repeat the same name
-// and say nothing. It is wrong the moment that day holds anything else: the
-// saved-place files sit loose in the day folder while their neighbours are
-// nested one level down, so the day reads as half-sorted. A real report:
-// `02/` holding a bare pile of home-town photos next to `02/Unknown/`.
-//
-// Runs before markUnknownLocations on purpose: the lifted city is what makes
-// the GPS-less files' Unknown folder appear beside it, rather than both piles
-// sitting loose together.
-func unsuppressMixedSavedPlaces(masters []masterFile, cfg Config, skip map[string]bool) {
-	if !cfg.SavedPlacesDateOnly || !slices.Contains(cfg.Rules, RuleLocation) {
-		return
-	}
-	// parent folder → does anything in it come from somewhere that isn't a
-	// saved place (a resolved city, or nothing resolved at all)
-	mixed := map[string]bool{}
-	for i := range masters {
-		if m := &masters[i]; hasLocationLevel(m) && !m.atSavedPlace {
-			mixed[locationParent(m, skip, cfg)] = true
-		}
-	}
-	for i := range masters {
-		m := &masters[i]
-		if m.atSavedPlace && hasLocationLevel(m) && mixed[locationParent(m, skip, cfg)] {
-			m.keepLocationFolder = true
-		}
-	}
-}
 
 // hasLocationLevel reports whether dirFor emits a location level for m at all
 // — an undated file goes straight to Fallback and a screenshot to Screenshots.
@@ -314,7 +511,7 @@ func hasLocationLevel(m *masterFile) bool {
 // locationParent is the folder path m's location level sits under: everything
 // dirFor emits above it. Files sharing it are siblings at that level.
 //
-// ponytail: computed pre-merge, so a located sibling that mergeSameLocationDays
+// ponytail: computed pre-merge, so a located sibling that the day merge (step 6)
 // later lifts into a day *range* leaves the Unknown behind alone in its day.
 // Order the two passes properly if that shows up in practice.
 func locationParent(m *masterFile, skip map[string]bool, cfg Config) string {
@@ -333,12 +530,9 @@ func locationParent(m *masterFile, skip map[string]bool, cfg Config) string {
 	return strings.Join(parts, "/")
 }
 
-// crossesFolderMonth reports whether m was shot in a different month from the
-// one its folder is under: a New Year's Eve cluster's Jan 01 shots filed under
-// December, or the September days of a Goa run that started in August. Its
-// bare day-of-month would be a lie inside that folder ("01" there reads as the
-// folder month's 1st), so an unmerged one gets a month-qualified day folder,
-// and every one states its full date in its folders' bounds (see boundsFor).
+// crossesFolderMonth reports whether m was shot in a different month from its
+// folder's (a cluster or day run crossing a month end). Such a file gets a
+// month-qualified day folder and its full date in its folders' bounds.
 func crossesFolderMonth(m *masterFile) bool {
 	t, f := m.takenAt, m.folderTime()
 	return t.Year() != f.Year() || t.Month() != f.Month()
@@ -364,220 +558,9 @@ func dayRange(lo, hi time.Time) string {
 	return eventSegment(lo, hi)
 }
 
-// mergeSameLocationDays collapses runs of consecutive same-location days into
-// one dated range: 2024/08/{02,03,04}/Goa becomes 2024/08/02_04/Goa. A Pune
-// day interleaved at 03 keeps its own folder; the review TUI can still split one.
-//
-// Days are calendar dates, so a run crossing a month or year end is one run,
-// and the whole of it goes under its first day's year and month (spec D27):
-// Goa from 28 August to 4 September is 2024/08_August/Aug_28-Sep_04/Goa.
-func mergeSameLocationDays(masters []masterFile, cfg Config) {
-	if !cfg.MergeSameLocationDays {
-		return
-	}
-	// m.location holds the real place even for saved-place files, so no special
-	// casing is needed here. Location must sit at/above Date in Rules, or the
-	// range folder wouldn't contain the location folder it's meant to.
-	di, li := slices.Index(cfg.Rules, RuleDate), slices.Index(cfg.Rules, RuleLocation)
-	if di < 0 || (li >= 0 && di > li) {
-		return
-	}
-
-	// location → calendar days present
-	days := map[string]map[int]bool{}
-	for i := range masters {
-		m := &masters[i]
-		if !hasLocationLevel(m) || m.location == "" {
-			continue
-		}
-		if days[m.location] == nil {
-			days[m.location] = map[int]bool{}
-		}
-		days[m.location][calendarDay(m.takenAt)] = true
-	}
-
-	// run is the folder a merged day lands in: its label and first day
-	type run struct {
-		label string
-		first int
-	}
-
-	// A day lives in exactly one date folder, so every file of a day has to
-	// agree on the run — one location's run cannot pull half a day into a
-	// range and leave the rest behind as a sibling `02`. Disagreeing days are
-	// dropped from merging and act as breaks, which can settle the runs around
-	// them, so this repeats until nothing new disagrees. Each pass only ever
-	// adds a broken day, so it terminates.
-	broken := map[int]bool{}
-	for {
-		runs := map[string]map[int]run{}
-		for loc, set := range days {
-			ds := make([]int, 0, len(set))
-			for d := range set {
-				if !broken[d] {
-					ds = append(ds, d)
-				}
-			}
-			sort.Ints(ds)
-			// every day inside a run of 2 or more consecutive days
-			for start := 0; start < len(ds); {
-				end := start
-				for end+1 < len(ds) && ds[end+1] == ds[end]+1 {
-					end++
-				}
-				if end > start {
-					lo, hi := ds[start], ds[end]
-					r := run{dayRange(dayStart(lo), dayStart(hi)), lo}
-					if runs[loc] == nil {
-						runs[loc] = map[int]run{}
-					}
-					for d := lo; d <= hi; d++ {
-						runs[loc][d] = r
-					}
-				}
-				start = end + 1
-			}
-		}
-
-		// one run per day, or the day breaks. A file with no location of its
-		// own votes for "no run" — it would be left behind in a plain day
-		// folder while its neighbours moved into one.
-		seen := map[int]run{}
-		found := false
-		for i := range masters {
-			m := &masters[i]
-			if !hasLocationLevel(m) {
-				continue
-			}
-			d := calendarDay(m.takenAt)
-			if broken[d] {
-				continue
-			}
-			r := runs[m.location][d]
-			if prev, ok := seen[d]; ok && prev != r {
-				broken[d] = true
-				found = true
-				continue
-			}
-			seen[d] = r
-		}
-		if found {
-			continue // a broken day can settle the runs around it — go again
-		}
-
-		for i := range masters {
-			m := &masters[i]
-			if !hasLocationLevel(m) || m.location == "" || broken[calendarDay(m.takenAt)] {
-				continue
-			}
-			if r, ok := runs[m.location][calendarDay(m.takenAt)]; ok {
-				m.dayOverride, m.folderDate = r.label, dayStart(r.first)
-			}
-		}
-		return
-	}
-}
-
-// buildTargets derives every master's destination independently, except for
-// a best-effort capture group (see captureDirs) that forces a sidecar/RAW+JPG
-// bundle into one shared directory.
-func buildTargets(ctx context.Context, masters []masterFile, cfg Config, skip map[string]bool) {
-	for i := range masters {
-		masters[i].orderTime, masters[i].orderHash = masters[i].takenAt, masters[i].FileHash
-	}
-	groupDirs := captureDirs(masters, skip, cfg)
-	pairLiveVideos(masters)
-
-	// dirFor reads one master plus the two library-wide maps above, and its only
-	// write is to that master's own dirLevels, so the directories fan out.
-	// The collision loop below deliberately does not: `taken` decides which of
-	// two files landing on the same path keeps it and which gets the _2, and
-	// that is settled by the order it reaches them.
-	dirs := make([]string, len(masters))
-	forEachMaster(ctx, masters, cfg.Workers, func(i int, m *masterFile) {
-		// captureDirs wins when it named a shared directory for this file's group
-		if dir, ok := groupDirs[i]; ok {
-			dirs[i] = dir
-		} else if m.MediaType == classifier.MediaTypeSidecar {
-			// A sidecar captureDirs couldn't pair with a photo (missing pair,
-			// rejected time/device agreement) has nothing of its own to derive a
-			// folder from — its mtime fallback would otherwise scatter it through
-			// the real hierarchy, often alone. Paired sidecars never reach here;
-			// they already got the leader's directory above.
-			dirs[i], m.dirLevels, m.dirBounds = OrphanDir, []string{LevelOrphan}, []Bounds{{{}}}
-		} else {
-			dirs[i] = dirFor(m, skip, cfg)
-		}
-		// a placed folder the file matches completely wins over what the
-		// rules would build for it (spec D15)
-		if dir, ok := cfg.placedTree.route(m); ok {
-			dirs[i] = dir
-		}
-	})
-
-	// Seeded with what is already on disk in the library: a new file must never
-	// take a name a placed file holds, even though placed files aren't masters.
-	taken := make(map[string]bool, len(cfg.Placed)+len(masters))
-	for _, p := range cfg.Placed {
-		taken[nameKey(p)] = true
-	}
-
-	// Who gets the bare name and who gets _2 is decided by capture time, then
-	// hash — not by source path — so the same files scanned from a different
-	// folder layout get the same suffixes. Both are the capture group's leader's
-	// (orderTime/orderHash), then the file's own name: Apple Photos pairs an
-	// .AAE edit with its photo by name, so a sidecar (no EXIF, arbitrary file
-	// date) has to take the same suffix its photo does. absPath only breaks a
-	// tie nothing about the content can.
-	order := make([]int, len(masters))
-	for i := range order {
-		order[i] = i
-	}
-	slices.SortStableFunc(order, func(a, b int) int {
-		ma, mb := &masters[a], &masters[b]
-		return cmp.Or(
-			ma.orderTime.Compare(mb.orderTime),
-			strings.Compare(ma.orderHash, mb.orderHash),
-			strings.Compare(ma.FileName, mb.FileName),
-			strings.Compare(ma.absPath, mb.absPath),
-		)
-	})
-
-	// A capture group takes one suffix: the lowest number free for every
-	// member, so an edit never ends up paired with another photo just because
-	// the photo's name was taken and its own wasn't.
-	groups := map[string][]int{}
-	for _, i := range order {
-		if k := masters[i].pairKey; k != "" {
-			groups[k] = append(groups[k], i)
-		}
-	}
-	done := make([]bool, len(masters))
-	for _, i := range order {
-		if done[i] {
-			continue
-		}
-		members := []int{i}
-		if k := masters[i].pairKey; k != "" {
-			members = groups[k]
-		}
-		paths := make([]string, len(members))
-		for _, j := range members {
-			done[j] = true
-		}
-		assignSuffix(taken, paths, func(k int) (string, string) {
-			return dirs[members[k]], path.SanitizeFileName(masters[members[k]].FileName)
-		})
-		for k, j := range members {
-			masters[j].targetPath = paths[k]
-		}
-	}
-}
-
 // assignSuffix fills paths with dir/stem[_N]ext for every member, using the
-// lowest N (1 = no suffix) at which all of them are free in taken and distinct
-// from each other, and marks them taken. Shared by buildTargets and Confirm so
-// the two planners can't disagree about what a collision is.
+// lowest N (1 = no suffix) free for all of them, and marks them taken. Shared
+// by assignTargetPaths and Confirm so both agree on what a collision is.
 func assignSuffix(taken map[string]bool, paths []string, member func(k int) (dir, name string)) {
 	for n := 1; ; n++ {
 		suffix := ""
@@ -606,12 +589,9 @@ func assignSuffix(taken map[string]bool, paths []string, member func(k int) (dir
 	}
 }
 
-// pairLiveVideos puts a Live Photo's .MOV in its photo's capture group — it
-// pairs with the .HEIC by name too. captureDirs leaves videos out (they must
-// not be pushed across the Photos/Videos split), so this only shares the
-// suffix and ordering key, never the folder. Same agreement window as
-// captureDirs: a reused counter (a .HEIC on the 14th, a .MOV on the 28th) is
-// not a pair. Several photos in range: the closest in time, then orderHash.
+// pairLiveVideos puts a Live Photo's video in its photo's capture group for
+// the suffix and ordering key only, never the folder (videos stay out of
+// captureDirs). Pairs within liveVideoWindow; closest in time wins.
 func pairLiveVideos(masters []masterFile) {
 	photos := map[string][]int{}
 	for i := range masters {
@@ -654,25 +634,20 @@ func nameKey(p string) string {
 	return strings.ToLower(norm.NFC.String(p))
 }
 
-// variantPrefixes folds an iPhone filename role marker to its canonical
-// form, so a companion file is recognised as the same capture as its
-// original: IMG_E1783 (edited) and IMG_O1783 (sidecar) both fold to IMG_1783.
+// variantPrefixes fold a phone's edited/original filename markers to the
+// canonical form, so IMG_E1783 and IMG_O1783 group with IMG_1783.
 var variantPrefixes = []struct{ variant, canonical string }{
 	{"IMG_E", "IMG_"},
 	{"IMG_O", "IMG_"},
 }
 
 // captureAgreementWindow is how far apart two EXIF capture times may sit and
-// still count as one capture. Not zero: an iPhone edit (IMG_E…) is written
-// after its original and can carry a DateTimeOriginal seconds later, which
-// used to break the group apart and strand the .AAE sidecar in a date folder
-// while its screenshot went to Screenshots. Reused filename counters — the
-// thing this check defends against — are hours or days apart, never minutes.
+// still be one capture: an edit is written seconds after its original, while a
+// reused filename counter is hours or days apart.
 const captureAgreementWindow = 5 * time.Minute
 
-// liveVideoWindow is how far a Live Photo's video may sit from its photo: both
-// come from one shutter press and share a timestamp. Not widened past a
-// second without a real pair sitting further apart, and never back to minutes.
+// liveVideoWindow is how far a Live Photo's video may sit from its photo: one
+// shutter press.
 const liveVideoWindow = time.Second
 
 // captureStem normalizes a filename to the key used to group same-capture
@@ -694,16 +669,14 @@ func (m *masterFile) hasExifTime() bool {
 	return deref(m.DBDateTaken) != "" || deref(m.DBCreationDate) != "" || deref(m.DBCreateDate) != "" || deref(m.DBMediaCreateDate) != ""
 }
 
-// captureDirs finds files that are one capture split across extensions (an
-// iPhone edit/sidecar bundle, or a RAW+JPG pair) and returns the directory
-// they should all share, keyed by master index.
+// captureDirs finds files that are one capture split across extensions
+// (edit/sidecar bundle, RAW+JPG) and returns their shared directory by index.
 func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int]string {
 	type group struct{ members []int }
 	groups := map[string]*group{}
 	for i := range masters {
-		// a Live Photo's .MOV already lands next to its .HEIC via shared
-		// GPS/timestamp (buildTargets); forcing it into the group dir here
-		// could push it across the Photos/Videos split instead
+		// videos stay out so a Live Photo video isn't pushed across the
+		// Photos/Videos split
 		if masters[i].MediaType == classifier.MediaTypeVideo {
 			continue
 		}
@@ -722,14 +695,9 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 		if len(g.members) < 2 {
 			continue
 		}
-		// A group only forms when its EXIF-timestamped members agree — a bare
-		// stem match isn't enough, since camera filename counters get reused
-		// across unrelated shoots. A sidecar has no EXIF time to vote with, so
-		// it rides along on whatever its siblings agree on. Time agreement
-		// alone isn't enough either: a counter can be reused by a *different*
-		// device on the same day (e.g. after a phone upgrade), which the
-		// window wouldn't catch — so members with a known device must also
-		// agree on it.
+		// A group needs its EXIF-timed members to agree on time (filename
+		// counters get reused) and, where known, on device. A sidecar has no
+		// EXIF time and rides along.
 		var lo, hi time.Time
 		device := ""
 		deviceMismatch := false
@@ -759,12 +727,8 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 			continue // can't safely anchor this group — leave members independent
 		}
 
-		// representative: a screenshot outranks everything (its whole point is
-		// that Rules don't apply to it, and a sidecar of one belongs in
-		// Screenshots with it), then anything over a sidecar (which carries no
-		// derived data of its own), then a resolved location over none (a
-		// GPS-less RAW must not drag the group into the fallback its JPG
-		// sibling would avoid), then canonical filename, then insertion order
+		// leader: screenshot (Rules don't apply to it), then non-sidecar, then
+		// located over unlocated, then canonical filename, then input order
 		leader, bestScore := g.members[0], -1
 		for _, i := range g.members {
 			score := 0
@@ -788,10 +752,8 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 		dir := dirFor(&masters[leader], skip, cfg)
 		for _, i := range g.members {
 			dirs[i] = dir
-			// buildTargets skips dirFor for a group member, so the leader's
-			// levels have to come along with the directory — without them
-			// every grouped file had no location folder and the review tree
-			// no GPS to re-query for that folder's renames
+			// the leader's levels come with its directory, or the member has
+			// no location folder (and no GPS for review renames)
 			masters[i].dirLevels = masters[leader].dirLevels
 			masters[i].dirBounds = masters[leader].dirBounds
 			// the leader's time and hash also rank the member when names
@@ -799,27 +761,20 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 			masters[i].orderTime = masters[leader].takenAt
 			masters[i].orderHash = masters[leader].FileHash
 			masters[i].pairKey = key
-			// …and so does the time the directory was derived from, or the
-			// member's own folder date disagrees with its path: a sidecar has
-			// no EXIF time of its own (it rides along on the group, see the
-			// window check above) and its file mtime can sit months away, so
-			// it surfaced in the review tree as one lone folder from a
-			// different year — a reported bug.
+			// and its folder date, or a sidecar (file mtime only) lands in a
+			// different month than its path
 			//
-			// ponytail: nothing to copy when the leader itself is undated, so
-			// a dated member of an undated group still lands under its own
-			// Fallback folder instead of the leader's. Give masterFile an
-			// explicit folder time if that ever turns up.
+			// ponytail: an undated leader has no folder time to copy, so a dated
+			// member still lands in its own Fallback folder. Give masterFile an
+			// explicit folder time if that turns up.
 			masters[i].folderDate = masters[leader].folderTime()
 		}
 	}
 	return dirs
 }
 
-// monthParts is the Year and Month folder pair, from folderTime — so every
-// file of a boundary-crossing cluster gets its cluster's month, and the two
-// places that need this pair (dirFor and locationParent) can never disagree
-// about which folder a file is in.
+// monthParts is the Year and Month folder pair from folderTime, shared by
+// dirFor and locationParent so they agree on a file's month.
 func monthParts(m *masterFile) []string {
 	t := m.folderTime()
 	return []string{
@@ -831,7 +786,7 @@ func monthParts(m *masterFile) []string {
 }
 
 // dirFor derives the directory segments for one master, honouring Rules
-// order. skip names the levels uninformativeLevels found nothing to say with.
+// order. skip names the levels assignTargetPaths step 3 found nothing to say with.
 func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 	if m.takenAt.IsZero() {
 		m.dirLevels, m.dirBounds = []string{LevelFallback}, []Bounds{{{}}}
@@ -866,10 +821,8 @@ func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 	return strings.Join(parts, "/")
 }
 
-// boundsFor is the constraint one folder dirFor emits puts on m (spec D13):
-// the value the segment was derived from, not its name. persist collects them
-// per folder, so a range folder lists its days and a saved place's folder
-// every city folded into it.
+// boundsFor is the constraint one dirFor folder puts on m: the value the
+// segment came from, not its name.
 func boundsFor(m *masterFile, level string) Constraint {
 	switch level {
 	case LevelYear:
@@ -914,12 +867,9 @@ func dayBounds(m *masterFile) Constraint {
 	return Constraint{Date: []int{m.takenAt.Day()}}
 }
 
-// fullDate is what a file shot outside its folder's month adds to its day
-// folder and every folder above it: year, month and day as one alternative.
-// Apart, they say too much — a bare month:[8,9] on August would admit 28
-// September into August's plain 28, and a December without the year would
-// admit 1 January 2024 into 2024/12_December. The year folder only needs it
-// across a year end; inside one year its own year already admits the file.
+// fullDate is the year+month+day alternative a file shot outside its folder's
+// month adds to its folders' bounds; separate month and day sets would admit
+// dates that were never there.
 func fullDate(m *masterFile) Constraint {
 	t := m.takenAt
 	return Constraint{Year: []int{t.Year()}, Month: []int{int(t.Month())}, Date: []int{t.Day()}}
@@ -933,13 +883,12 @@ func segmentFor(m *masterFile, level string, cfg Config) string {
 		// SavedPlacesDateOnly: an everyday place gets no location folder, just
 		// the (possibly merged) date range — m.location itself stays real,
 		// it's only the folder that's suppressed. Unless the day holds files
-		// from elsewhere too; see unsuppressMixedSavedPlaces.
+		// from elsewhere too; see assignTargetPaths step 4.
 		if m.atSavedPlace && cfg.SavedPlacesDateOnly && !m.keepLocationFolder {
 			return ""
 		}
-		// ladder: resolved city → dated event segment → nothing. No device or
-		// "Unsorted" rung: an unknown location says nothing rather than
-		// something false ("…/Canon EOS 700D/Canon EOS 700D/").
+		// ladder: resolved city → dated event segment → nothing. No device
+		// fallback: an unknown location says nothing rather than something false.
 		switch {
 		case m.location != "":
 			return m.location
@@ -986,38 +935,6 @@ var collapsibleLevels = map[string]bool{
 	RuleDevice:      true,
 	RuleOrientation: true,
 	RuleMedia:       true,
-}
-
-// uninformativeLevels finds collapsible levels resolving to at most one folder
-// name library-wide — "…/Goa/iPhone/Vertical/Photos/" is four folders deep to
-// reach one when every file is a vertical iPhone photo.
-func uninformativeLevels(masters []masterFile, cfg Config) map[string]bool {
-	if !cfg.CollapseLevels {
-		return nil
-	}
-	// measured library-wide, not per-branch: a level kept under one Day and
-	// dropped under the next would give the tree a different depth depending
-	// on where you stand
-	seen := map[string]map[string]bool{}
-	for _, level := range cfg.Rules {
-		if collapsibleLevels[level] {
-			seen[level] = map[string]bool{}
-		}
-	}
-	for i := range masters {
-		for level := range seen {
-			if seg := segmentFor(&masters[i], level, cfg); seg != "" {
-				seen[level][seg] = true
-			}
-		}
-	}
-	skip := map[string]bool{}
-	for level, values := range seen {
-		if len(values) <= 1 {
-			skip[level] = true
-		}
-	}
-	return skip
 }
 
 /* small parsing helpers — exiftool values arrive as strings */
@@ -1084,9 +1001,8 @@ func deref(s *string) string {
 	return *s
 }
 
-// caseWhitelist are words whose casing is already correct — title-casing
-// "iPhone" word-by-word would give "Iphone". Matched case-insensitively;
-// extend as more turn up in any derived name.
+// caseWhitelist are words whose mixed casing is already correct and must
+// survive title-casing. Matched case-insensitively.
 var caseWhitelist = map[string]string{
 	"iphone": "iPhone",
 }
@@ -1129,8 +1045,8 @@ func titleWord(w string) string {
 	return string(runes)
 }
 
-// deviceName joins Make and Model, avoiding duplication when the model
-// already contains the make (e.g. "Canon" + "Canon EOS R5")
+// deviceName joins Make and Model, skipping the make when the model already
+// starts with it.
 func deviceName(mk, model string) string {
 	switch {
 	case model == "":

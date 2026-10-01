@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package db
 
 import (
@@ -22,31 +16,25 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 )
 
-// BackupFileName is the one backup kept beside the library database (spec
-// D24), overwritten by every execute run and every `reset --db`: the database
-// zstd-compressed, named for what is inside and what compressed it.
+// BackupFileName is the one zstd-compressed backup kept beside the library
+// database, overwritten by every execute run and `admin db --reset`.
 const BackupFileName = ".wandersort.db.zst"
 
-// PreMigrationBackupFileName is the backup taken before a new WanderSort
-// version upgrades the library database — kept apart from BackupFileName so
-// the next execute run doesn't overwrite it with the upgraded state.
+// PreMigrationBackupFileName is the backup taken before a schema upgrade, kept
+// apart so the next execute doesn't overwrite it.
 const PreMigrationBackupFileName = ".wandersort.db.pre-upgrade.zst"
 
-// BeforeRestoreFileName is the database a restore replaced, kept beside it
-// so a restore run by mistake can itself be undone: rename it back over
-// .wandersort.db. One is kept; the next restore overwrites it.
+// BeforeRestoreFileName is the database a restore replaced; rename it back to
+// undo a restore. One is kept.
 const BeforeRestoreFileName = ".wandersort.db.before-restore"
 
 // ErrInUse means another connection — another program, or a sqlite browser —
 // has the database open, so it cannot be replaced safely.
 var ErrInUse = errors.New("the database is open in another program")
 
-// Backup writes a consistent, zstd-compressed copy of the database to dest via
-// VACUUM INTO. The copy is verified while still plain SQLite (a compressed file
-// cannot be checked) and only then compressed beside dest and renamed over it,
-// so a failure at any point leaves the previous backup intact. A compressed
-// stream never holds the same bytes as the live database (zstd magic vs the
-// SQLite header), and in practice not the same size.
+// Backup writes a consistent compressed copy to dest via VACUUM INTO. The copy
+// is verified while still plain SQLite, then compressed and renamed over dest,
+// so a failure leaves the previous backup intact.
 func (d *DB) Backup(ctx context.Context, dest string) error {
 	// Writes still queued in the async writer belong to the state being
 	// backed up; without this the backup could miss the last edits.
@@ -69,10 +57,8 @@ func (d *DB) Backup(ctx context.Context, dest string) error {
 	if err := compressFile(plain, tmp); err != nil {
 		return err
 	}
-	// compressFile synced the new file's bytes; this makes the rename itself
-	// durable. Without both, a power cut could leave an empty or partial file
-	// under the backup's name — replacing the good one exactly when it is
-	// needed.
+	// with the file synced, this makes the rename durable; otherwise a power
+	// cut could leave an empty file under the backup's name
 	if err := os.Rename(tmp, dest); err != nil {
 		return fmt.Errorf("replace backup: %w", err)
 	}
@@ -174,15 +160,10 @@ func checkBackup(ctx context.Context, b *sql.DB) error {
 	return nil
 }
 
-// Restore replaces the database at live with the backup at backup, which is
-// left in place so a second restore is possible. Nothing is touched unless
-// the backup checks out and no other connection has the live database open
-// (ErrInUse otherwise); the caller holds the output lock, which keeps other
-// wandersort processes out, and this keeps everything else out.
-//
-// It never swaps files: SQLite's online backup writes the pages through its
-// own rollback journal, so a crash mid-restore rolls back to the old database
-// on the next open, and there is no -wal file to get wrong.
+// Restore replaces the database at live with backup (kept in place). Nothing
+// is touched unless the backup checks out and no other connection has live
+// open (ErrInUse). Pages go through SQLite's online backup and rollback
+// journal, never a file swap, so a crash rolls back to the old database.
 func Restore(ctx context.Context, backup, live string) error {
 	if _, err := os.Stat(backup); err != nil {
 		return fmt.Errorf("no backup: %w", err)
@@ -216,9 +197,8 @@ func Restore(ctx context.Context, backup, live string) error {
 	}
 	defer c.Close()
 
-	// Leaving WAL needs every other connection gone, even an idle one, and
-	// EXCLUSIVE keeps the lock that took until this connection closes, so no
-	// one can open the database mid-restore either.
+	// leaving WAL needs every other connection gone, and EXCLUSIVE keeps
+	// that lock until this connection closes
 	if _, err := c.ExecContext(ctx, `PRAGMA locking_mode=EXCLUSIVE`); err != nil {
 		return fmt.Errorf("lock database: %w", err)
 	}
@@ -259,13 +239,9 @@ func Restore(ctx context.Context, backup, live string) error {
 	return nil
 }
 
-// keepBeforeRestore copies the live database aside before a restore
-// overwrites it. A byte copy first: it works even when the database is too
-// damaged for SQLite to read, which is when restores happen. The caller holds
-// the exclusive lock in rollback-journal mode, so the main file is the whole,
-// consistent database. Windows forbids reading SQLite's locked byte range
-// (databases past 1 GiB), so VACUUM INTO on the locked connection is the
-// fallback.
+// keepBeforeRestore copies the live database aside before a restore: a byte
+// copy (works on a database too damaged for SQLite), falling back to VACUUM
+// INTO where Windows forbids reading SQLite's locked byte range (past 1 GiB).
 func keepBeforeRestore(ctx context.Context, c *sql.Conn, live string) error {
 	dest := filepath.Join(filepath.Dir(live), BeforeRestoreFileName)
 	if err := os.Remove(dest); err != nil && !errors.Is(err, fs.ErrNotExist) {

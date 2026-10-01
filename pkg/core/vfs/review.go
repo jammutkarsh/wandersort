@@ -1,15 +1,7 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
-// review.go is the reconcile core behind `wandersort organise`: exposes the
-// pending plan as a directory tree, applies edits back onto folder_nodes and
-// virtual_fs_entries, and remembers the names the reviewer typed. Nodes match
-// by their folder_nodes id, never by tree diff.
+// Review core: the pending plan as a folder tree, edits applied back onto
+// folder_nodes and virtual_fs_entries. Nodes match by folder_nodes id.
 
 import (
 	"context"
@@ -32,14 +24,11 @@ import (
 // id, unsafe name, colliding rename).
 var ErrInvalidTree = errors.New("invalid review tree")
 
-// ErrNoProposal means there is nothing to review: no scan has proposed
-// anything yet, or a rescan replaced the proposal mid-review. The CLI maps it
-// to a "run scan first" hint.
+// ErrNoProposal means there is nothing to review: nothing proposed yet, or a
+// rescan replaced the proposal mid-review.
 var ErrNoProposal = errors.New("no proposal to review")
 
-// Node is one directory in the proposed hierarchy, as the review TUI edits
-// it. ID is its folder_nodes id — reconcile matches on it. Name is the
-// editable folder name.
+// Node is one folder in the proposed hierarchy. ID is its folder_nodes id.
 type Node struct {
 	ID        int64    `json:"id"`
 	Name      string   `json:"name"`
@@ -50,9 +39,8 @@ type Node struct {
 	// can re-query the resolver for ranked rename alternatives.
 	Lat *float64 `json:"lat,omitempty"`
 	Lon *float64 `json:"lon,omitempty"`
-	// IDs of nodes a review-time merge folded into this one — gone from the
-	// tree, but their files and subfolders still point at them, so Confirm
-	// must move those here too.
+	// IDs of nodes a review merge folded into this one; Confirm moves their
+	// files and subfolders here.
 	MergedIDs []int64 `json:"mergedIds,omitempty"`
 	// What the folder holds, as stored; the edits in edit.go transform it and
 	// Confirm writes it back.
@@ -62,9 +50,8 @@ type Node struct {
 	Level string `json:"level,omitempty"`
 }
 
-// ErrFixedFolder refuses an edit that would rename or remove a year or month
-// folder (spec D26): they are always there, and new files find them by name,
-// so a renamed month gets a second, freshly-planned twin next to it.
+// ErrFixedFolder refuses renaming or removing a year or month folder: new
+// files find them by name, so a renamed month would get a twin.
 var ErrFixedFolder = errors.New("year and month folders are fixed — new files find them by name")
 
 // Fixed reports whether n is a year or month folder, which the review can't
@@ -75,10 +62,8 @@ func (n Node) Fixed() bool {
 
 const maxSamples = 3
 
-// BuildTree reads the still-reviewable entries (executed/failed rows are past
-// reviewing) and returns the proposed directory tree, folders only, for the
-// whole library. An empty result means no proposal exists — the caller
-// decides if that's a 404.
+// BuildTree returns the proposed folder tree for the still-reviewable entries
+// of the whole library. Empty means no proposal.
 func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 	var rows []struct {
 		NodeID       int64    `db:"node_id"`
@@ -87,8 +72,7 @@ func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 		GPSLat       *float64 `db:"exif_gps_latitude"`
 		GPSLon       *float64 `db:"exif_gps_longitude"`
 	}
-	// orphaned sidecars have nothing to review — one flat junk folder, not a
-	// decision — so they never enter the tree at all
+	// orphaned sidecars never enter the tree
 	if err := database.SQL.SelectContext(ctx, &rows,
 		`SELECT vfe.node_id, vfe.source_path, vfe.location_node_id,
 		        fm.exif_gps_latitude, fm.exif_gps_longitude
@@ -143,8 +127,7 @@ func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 				t.Samples = append(t.Samples, r.SourcePath)
 			}
 		}
-		// GPS attaches to the folder the location level made, not a guessed
-		// depth — a guessed depth moved with Rules order
+		// GPS attaches to the folder the location level made
 		if r.LocationNode == nil || r.GPSLat == nil || r.GPSLon == nil {
 			continue
 		}
@@ -172,9 +155,8 @@ func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {
 	return finalize(root.children), nil
 }
 
-// FilesUnder returns the source paths of every file proposed under nodeID
-// (that folder or any below it), in a stable order — used by the review
-// TUI's preview to stage more than the handful of Samples a Node carries.
+// FilesUnder returns the source paths of every file proposed under nodeID, in
+// a stable order (for the review preview).
 func FilesUnder(ctx context.Context, nodeID int64, database *db.DB) ([]string, error) {
 	var paths []string
 	if err := database.SQL.SelectContext(ctx, &paths, `
@@ -192,13 +174,8 @@ func FilesUnder(ctx context.Context, nodeID int64, database *db.DB) ([]string, e
 	return paths, nil
 }
 
-// Labels returns every folder name the reviewer has typed in an earlier
-// review, for this review's rename completions to offer back. The read side of
-// what Confirm writes — one package understands the table, rather than the
-// writer living here and the reader in the TUI.
-//
-// A failure is not one: it costs the reviewer their "used before" completions,
-// never the review itself, so it warns and returns nothing.
+// Labels returns every folder name typed in an earlier review, for rename
+// completions. A failure only warns and returns nothing.
 func Labels(ctx context.Context, database *db.DB, log logger.Logger) []string {
 	if database == nil {
 		return nil
@@ -214,9 +191,8 @@ func Labels(ctx context.Context, database *db.DB, log logger.Logger) []string {
 	return labels
 }
 
-// Confirm applies the (possibly edited) tree back onto the plan's folders
-// and entries, and remembers every name the reviewer typed in user_labels, so
-// the next review's rename completions offer it. The write is synchronous: a nil return means committed.
+// Confirm applies the edited tree onto the plan's folders and entries, and
+// records typed names in user_labels. Synchronous: nil means committed.
 func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
 	if err := database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
 		return confirm(ctx, tx, roots)
@@ -277,16 +253,13 @@ func confirm(ctx context.Context, tx *sqlx.Tx, roots []Node) error {
 	}
 	dirs := map[int64]string{}
 
-	// Collapsing dirs can land two files on the same basename; buildTargets'
-	// uniqueness guarantee only held for its own layout, so re-establish it:
-	// unmoved rows and placed files claim their path first, moved rows take
-	// the next _N — one number per capture group (assignSuffix), so an edit
-	// and its photo keep matching names.
+	// Moved folders can land two files on one name: unmoved rows and placed
+	// files keep theirs, moved rows take the next _N, one per capture group.
 	//
-	// ponytail: groups are rebuilt from source dir + captureStem, with no
-	// time window, and numbers go out in row order, not capture time (D25).
-	// Both are stable run to run; a pair split across folders only stays
-	// matched when both folders move. Persist the pair key if that bites.
+	// ponytail: groups are rebuilt from source dir + captureStem (no time
+	// window) and numbered in row order, not capture time. Stable, but a pair
+	// split across folders stays matched only when both move. Persist the
+	// pair key if that bites.
 	placed, err := placedPaths(ctx, tx)
 	if err != nil {
 		return err
@@ -353,10 +326,8 @@ type treeEdits struct {
 	learned    []string
 }
 
-// readTree validates roots against folders and turns it into treeEdits. Two
-// folders the reviewer gave the same name under one parent are one folder on
-// disk, so the later one folds into the first — a deliberate merge, not an
-// error.
+// readTree validates roots against folders and turns them into treeEdits. Two
+// siblings given the same name merge into the first.
 func readTree(roots []Node, folders map[int64]folderRow) (treeEdits, error) {
 	e := treeEdits{placeOf: map[int64]folderKey{}, bounds: map[int64]Bounds{}, mergedInto: map[int64]int64{}}
 	seen := map[folderKey]int64{}
@@ -376,9 +347,8 @@ func readTree(roots []Node, folders map[int64]folderRow) (treeEdits, error) {
 					return fmt.Errorf("%w: unknown node id %d", ErrInvalidTree, id)
 				}
 			}
-			// compare against the stored name: a merge moves a node under a new
-			// parent without renaming it, and the name it kept is the
-			// pipeline's own, not something worth completing later
+			// a moved-but-unrenamed folder keeps the planner's name; only
+			// typed names are remembered
 			if name != folders[n.ID].Name {
 				learned[name] = true
 			}
@@ -448,13 +418,9 @@ func (e treeEdits) survivor(id int64) int64 {
 	return id
 }
 
-// apply writes the edits: a folded-away folder's files and subfolders move
-// onto the folder it was folded into, every folder in the tree takes the
-// parent, name and bounds the reviewer's edits left it with (computed by the
-// rules in edit.go, stored here as they come), and folders left empty are
-// deleted.
-// Folds go first, so a subfolder the tree places explicitly ends up where
-// the tree says.
+// apply writes the edits: folded folders' files and subfolders move to their
+// survivor first, then every folder takes its edited parent, name and bounds,
+// then empty folders are deleted.
 func (e treeEdits) apply(ctx context.Context, tx *sqlx.Tx) error {
 	for _, m := range slices.Sorted(maps.Keys(e.mergedInto)) {
 		into := e.mergedInto[m]

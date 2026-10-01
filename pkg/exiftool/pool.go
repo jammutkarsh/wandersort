@@ -1,15 +1,10 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package exiftool
 
 import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 )
@@ -18,12 +13,17 @@ import (
 // at a time to match your goroutine concurrency.
 type Pool struct {
 	path    string
+	timeout time.Duration
 	workers chan *Extractor
 }
 
 // NewPool starts size exiftool workers and returns a pool handing them out
 // one at a time. On any start failure, workers that did start are closed.
 func NewPool(exiftoolPath string, size int) (*Pool, error) {
+	return newPool(exiftoolPath, size, extractTimeout)
+}
+
+func newPool(exiftoolPath string, size int, timeout time.Duration) (*Pool, error) {
 	started := make([]*Extractor, size)
 	errs := make([]error, size)
 	var wg sync.WaitGroup
@@ -31,7 +31,7 @@ func NewPool(exiftoolPath string, size int) (*Pool, error) {
 		// concurrent start bounds the wait by the slowest process (exiftool
 		// is a Perl script with real startup cost), not the sum of all N
 		wg.Go(func() {
-			started[i], errs[i] = New(exiftoolPath)
+			started[i], errs[i] = newExtractor(exiftoolPath, timeout)
 		})
 	}
 	wg.Wait()
@@ -54,18 +54,16 @@ func NewPool(exiftoolPath string, size int) (*Pool, error) {
 		}
 		return nil, firstErr
 	}
-	return &Pool{path: exiftoolPath, workers: workers}, nil
+	return &Pool{path: exiftoolPath, timeout: timeout, workers: workers}, nil
 }
 
-// Extract borrows an idle worker, runs the extraction, and returns the
-// worker to the pool. Blocks if all workers are busy. A worker that died on
-// an earlier file is replaced first: handing it out again would fail every
-// later file with ErrProcess, one after another, for the rest of the scan.
+// Extract borrows an idle worker (replacing a dead one first), extracts, and
+// returns it. Blocks while all are busy.
 func (p *Pool) Extract(ctx context.Context, path string) (classifier.CommonMetadata, error) {
 	select {
 	case e := <-p.workers:
 		if e.Dead() {
-			fresh, err := New(p.path)
+			fresh, err := newExtractor(p.path, p.timeout)
 			if err != nil {
 				p.workers <- e // keep the pool its size; the next caller retries
 				return classifier.CommonMetadata{}, fmt.Errorf("%w: restarting worker: %w", ErrProcess, err)
@@ -80,9 +78,8 @@ func (p *Pool) Extract(ctx context.Context, path string) (classifier.CommonMetad
 	}
 }
 
-// Close shuts down every worker concurrently (not one at a time, which
-// turned "done" into a slow tail of cmd.Wait() calls). Call once, after all
-// in-flight Extract() calls have returned.
+// Close shuts down every worker concurrently. Call once, after all Extract
+// calls have returned.
 func (p *Pool) Close() error {
 	close(p.workers)
 	var wg sync.WaitGroup

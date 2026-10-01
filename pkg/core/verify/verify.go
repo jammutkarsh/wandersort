@@ -1,24 +1,6 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
-// Package verify answers the one question nothing else in WanderSort ever
-// asks again: is what the database recorded still true on disk?
-//
-// Every placed file's content hash is stored at scan time and checked once,
-// while the copy is being written. After that the bytes are never read again,
-// so bitrot, a bad sector, a sync client rewriting a file, or a backup tool
-// truncating one are all invisible — and execute's duplicate cleanup discards
-// the database's knowledge of every other copy of that file on the strength
-// of a `placed` flag alone. This package is what makes the stored hash worth
-// storing: a library-wide re-check of the files, and an integrity check of
-// the database holding the plan that names them.
-//
-// Deliberately sequential, like execute and for the same reason: nothing has
-// measured this yet, so there is nothing to size a worker pool against. A
-// full verify is bound by reading every byte in the library.
+// Package verify checks that what the database recorded is still true on disk:
+// every placed file (exists, size, and with Full its hash) and the database's
+// own integrity. Sequential, like execute.
 package verify
 
 import (
@@ -48,11 +30,8 @@ const (
 
 // Options controls one Run.
 type Options struct {
-	// Full re-reads every placed file and compares its bytes against the hash
-	// the scan stored. Without it a file is checked for being there and being
-	// the right size, which catches a deletion or a truncation for the cost of
-	// a stat — the two failures a user is most likely to have caused
-	// themselves — but not a changed byte.
+	// Full re-reads every placed file and compares its hash. Without it, only
+	// existence and size are checked (one stat per file).
 	Full bool
 	// OnProgress reports after each file is checked.
 	OnProgress func(path string, done, total int)
@@ -75,18 +54,14 @@ type Report struct {
 	// Problems is every file that is still there but not what was recorded,
 	// in the order they were checked.
 	Problems []Problem
-	// Forgotten is every placed file that is gone from the library, by its
-	// library-relative path. Its records are deleted: the library no longer
-	// holds it, so nothing should claim it does, and a copy still at a source
-	// is planned again by the next add instead of being skipped as placed.
+	// Forgotten is every placed file gone from the library (library-relative
+	// paths). Its records are deleted, so a copy at a source is planned again.
 	Forgotten []string
 	// Database is SQLite's own verdict on the file holding the plan: "ok", or
 	// the first thing it found wrong.
 	Database string
-	// Strays are leftover .copy-* temp files: a crash during a transfer, at
-	// full file size, in the user's own folders. Reported, never deleted —
-	// removing files is execute's job and a verify that deletes is a verify
-	// nobody runs twice.
+	// Strays are leftover .copy-* temp files from a crashed transfer. Reported,
+	// never deleted.
 	Strays []string
 }
 
@@ -96,23 +71,11 @@ func (r Report) Sound() bool {
 	return len(r.Problems) == 0 && len(r.Strays) == 0 && r.Database == "ok"
 }
 
-// Run checks every placed file against what the database recorded for it, and
-// the database against itself. The caller holds the output lock, the same
-// contract scan and execute have.
-//
-// A file that verifies has its VERIFY error row cleared, and one that fails
-// gets a fresh one: the errors table holds only live problems (spec D29), so
-// `wandersort admin report` ships exactly the failures that are still true.
-//
-// A file that is gone is not a problem to keep reporting but a fact to record:
-// its rows are deleted once the walk is done (Report.Forgotten), after a
-// backup of the database, so the next check does not list it again and a
-// copy at a source can be planned in again. A file that is there but wrong —
-// a different size, different bytes, unreadable — keeps its rows: that is
-// damage to look at, not a deletion to accept.
-//
-// Nothing is logged per file: the caller reports the files, grouped, and a
-// per-file warning line beside that list only said everything twice.
+// Run checks every placed file against its record and the database against
+// itself. The caller holds the output lock. A failing file gets a VERIFY error
+// row and a passing one has it cleared, so the errors table holds only live
+// problems. Gone files are forgotten after a backup; damaged ones keep their
+// rows. Nothing is logged per file: the caller reports them.
 func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, o Options) (Report, error) {
 	var rows []struct {
 		FileID int64  `db:"file_id"`
@@ -121,9 +84,8 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		Size   int64  `db:"file_size"`
 		Hash   string `db:"file_hash"`
 	}
-	// Placed rows only: an unplaced file still lives at its source, where the
-	// user may legitimately have changed it since, and the plan is a proposal
-	// about it rather than a record of it.
+	// placed rows only: an unplaced file lives at its source, where it may
+	// legitimately change
 	if err := database.SQL.SelectContext(ctx, &rows, `
 		SELECT fr.id AS file_id, fr.file_dir, fr.file_name, fr.file_size,
 			COALESCE(fm.file_hash, '') AS file_hash
@@ -139,8 +101,7 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		if ctx.Err() != nil {
 			return rep, ctx.Err()
 		}
-		// A placed row's dir and name are library-relative (spec D9/D10), so
-		// the library can be mounted anywhere and still be checkable.
+		// placed rows are library-relative
 		rel := wspath.FromLibrary(filepath.Join(r.Dir, r.Name))
 		abs := filepath.Join(outputDir, rel)
 
@@ -189,9 +150,8 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	return rep, nil
 }
 
-// checkFile decides whether one placed file is still what was recorded, and
-// returns its size for the report. Size is checked before the hash so a
-// truncated file is named for what it is, and so a quick pass costs one stat.
+// checkFile checks one placed file and returns its size. Size before hash, so a
+// truncation is named as such and a quick pass costs one stat.
 func checkFile(abs, rel string, want int64, hash string, full bool) (*Problem, int64) {
 	info, err := os.Stat(abs)
 	switch {
@@ -227,12 +187,9 @@ func checkFile(abs, rel string, want int64, hash string, full bool) (*Problem, i
 	return nil, info.Size()
 }
 
-// record keeps the errors table holding only what is still true: a failure
-// replaces the file's VERIFY row, a pass removes it. Batched through the
-// writer, not WriteSync: a synced transaction per file flushed the drive's
-// cache once per placed file — most of a 100k-file check's run time on a
-// hard disk — and a lost result only costs one re-check. Run flushes before
-// it reports.
+// record replaces or clears the file's VERIFY row, batched (a synced
+// transaction per file was most of a large check on a hard disk; a lost result
+// only costs a re-check). Run flushes before reporting.
 func record(database *db.DB, fileID int64, p *Problem) error {
 	var op db.DBOperation
 	if p == nil {
@@ -258,10 +215,8 @@ func record(database *db.DB, fileID int64, p *Problem) error {
 	return nil
 }
 
-// forget deletes the records of placed files that are gone from the library:
-// the registry row, and with it (ON DELETE CASCADE) the file's hash, plan and
-// error rows. The database is backed up first, as a reset is — forgetting is
-// the one thing a check writes that it cannot take back.
+// forget deletes gone files' registry rows (dependants cascade), after a
+// backup: it is the one irreversible thing a check writes.
 func forget(ctx context.Context, database *db.DB, outputDir string, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
@@ -274,9 +229,8 @@ func forget(ctx context.Context, database *db.DB, outputDir string, ids []int64)
 	})
 }
 
-// problemError turns a Problem back into an error carrying the sentinel its
-// kind was derived from, so RecordError buckets it the same way every other
-// stage's failures are bucketed rather than inventing a second table of kinds.
+// problemError turns a Problem back into an error with its sentinel, so
+// RecordError classifies it like any other failure.
 func problemError(p Problem) error {
 	base := errors.New(p.Detail)
 	switch p.Kind {
@@ -288,12 +242,9 @@ func problemError(p Problem) error {
 	return base
 }
 
-// checkDatabase asks SQLite whether the file holding the plan is sound. The
-// live database is otherwise never checked — only the backup is, as it is
-// written — so a corrupt page is found by whichever query happens to touch
-// it. integrity_check, not quick_check: this is the deliberate, slow look,
-// and quick_check skips exactly the index-against-table comparison that would
-// catch a plan pointing at folders that are not there.
+// checkDatabase runs integrity_check on the live database. Not quick_check: it
+// skips the index-against-table comparison that catches a plan pointing at
+// missing folders.
 func checkDatabase(ctx context.Context, database *db.DB) (string, error) {
 	var result string
 	if err := database.SQL.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&result); err != nil {
@@ -305,10 +256,7 @@ func checkDatabase(ctx context.Context, database *db.DB) (string, error) {
 // strayPrefix is the name atomicfile.Copy gives a copy in flight.
 const strayPrefix = ".copy-"
 
-// findStrays walks the library for temp files a crashed transfer left behind.
-// They are full-size copies of the user's photos sitting in the user's own
-// folders under a dotted name, and nothing else in WanderSort ever collects
-// them.
+// findStrays walks the library for temp files a crashed transfer left.
 func findStrays(outputDir string) ([]string, error) {
 	var strays []string
 	err := filepath.WalkDir(outputDir, func(p string, d fs.DirEntry, err error) error {

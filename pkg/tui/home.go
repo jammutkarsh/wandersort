@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package tui
 
 import (
@@ -20,9 +14,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
-// StartScanMsg asks the shell to scan Paths — enter on an empty input with at
-// least one folder collected. Force re-reads every already-scanned file from
-// disk instead of skipping unchanged ones (ctrl+g, confirmed).
+// StartScanMsg asks the shell to scan Paths. Force re-reads every file
+// already added.
 type StartScanMsg struct {
 	Paths []string
 	Force bool
@@ -31,9 +24,8 @@ type StartScanMsg struct {
 // OpenReviewMsg asks the shell to review the proposal already in the database.
 type OpenReviewMsg struct{}
 
-// HomeErrMsg hands the home screen something that failed on the shell's side
-// (an output directory locked by another process, an empty proposal) to render
-// above its footer. The app stays alive either way — nothing here is fatal.
+// HomeErrMsg is a shell-side failure for the home screen to show above its
+// footer. Never fatal.
 type HomeErrMsg struct{ Err error }
 
 // HomeConfig wires the home screen to the shell.
@@ -49,25 +41,20 @@ type HomeConfig struct {
 // the footer, so an unbounded list would push the folder list off screen.
 const maxHomeSuggestions = 5
 
-// HomeModel is the app's landing screen: a folder list built one path per
-// enter, with shell-style directory completion. One path per enter is what
-// keeps folders with spaces in them working — no quoting, no comma escaping.
+// HomeModel is the landing screen: a folder list built one path per enter (so
+// spaces need no quoting), with directory completion.
 type HomeModel struct {
 	cfg   HomeConfig
 	ti    textinput.Model
 	paths *path.Resolver
-	// added holds folders expanded — the scan needs real paths — and they are
-	// rendered back home-relative, the way they were typed and the way every
-	// completion offers them.
+	// added holds expanded paths, rendered home-relative
 	added      []string
 	sugg       []string
 	suggCursor int // ↑/↓-picked completion; -1 = none picked
 	err        error
 	w, h       int
 
-	// confirmForce is a full-screen y/n asking before a force re-scan — the
-	// modal owns the keyboard except ctrl+c, same as the review package's
-	// rebuild ask.
+	// confirmForce is the full-screen ask before a force re-scan
 	confirmForce bool
 }
 
@@ -135,9 +122,7 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case m.suggCursor > -1: // walking the completion list
 				m.suggCursor--
 			case len(m.sugg) == 0 && len(m.added) > 0:
-				// Only once the completions are out of the way: ↑ is the
-				// dropdown's key first. Straight into editing the folder just
-				// added — no separate select-then-enter step.
+				// only once completions are closed (↑ is theirs first)
 				return m, m.editLast()
 			}
 			return m, nil
@@ -169,9 +154,7 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// editLast pulls the most recently added folder back into the input to
-// correct it, rather than making the user retype a whole path to fix one
-// character.
+// editLast pulls the most recently added folder back into the input.
 func (m *HomeModel) editLast() tea.Cmd {
 	i := len(m.added) - 1
 	m.ti.SetValue(m.paths.RelativeToHome(m.added[i]))
@@ -221,11 +204,8 @@ func (m HomeModel) enter() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// fill writes the picked completion into the input. Suggestions come from the
-// local filesystem, so they're refreshed synchronously — no debounce needed.
-// Every suggestion is a directory (suggestDirs filters to dirs only), so a
-// trailing "/" always applies — it's what tells the reader tab landed inside
-// a real folder, and refresh() immediately lists what's below it.
+// fill writes the picked completion into the input with a trailing "/" (every
+// suggestion is a directory) and refreshes the list below it.
 func (m *HomeModel) fill(i int) {
 	m.ti.SetValue(m.sugg[i] + "/")
 	m.ti.CursorEnd()
@@ -242,9 +222,7 @@ func (m *HomeModel) refresh() {
 
 func (m HomeModel) View() string {
 	if m.confirmForce {
-		// "yes" is the default highlight — only its own key handling above
-		// drives this (enter/esc), not ConfirmModel's own Update; see the
-		// review package's rebuild ask for the same built-per-frame pattern.
+		// built per frame; this screen's own keys drive it
 		yes := true
 		cm := NewConfirmModel("Force re-scan?",
 			"Re-reads every already-scanned file from disk instead of skipping "+

@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package tui
 
 import (
@@ -46,11 +40,8 @@ func flattenCmd(cmd tea.Cmd) []tea.Msg {
 	return []tea.Msg{msg}
 }
 
-// sendKey feeds a keystroke through Update and, since Suggest now runs behind
-// a debounce (see suggestDebounce), also drives the resulting
-// suggestDebounceMsg/suggestResultMsg round-trip to completion so tests see
-// the same end state the old synchronous Suggest call used to produce
-// immediately.
+// sendKey feeds a keystroke through Update and drives the debounced Suggest
+// round-trip to completion.
 func sendKey(m FormModel, k tea.KeyMsg) FormModel {
 	next, cmd := m.Update(k)
 	m = next.(FormModel)
@@ -381,10 +372,8 @@ func TestForm(t *testing.T) {
 	}
 }
 
-// TestFormExitAskDiscardVsSave: esc raises the Save/Discard question instead
-// of saving straight away, and the two answers actually differ — a reported
-// risk with the old "esc == save" binding was leaving unintentionally
-// persisting whatever was typed.
+// TestFormExitAskDiscardVsSave: esc asks Save/Discard, and the two answers
+// differ.
 func TestFormExitAskDiscardVsSave(t *testing.T) {
 	newForm := func() (FormModel, *bool) {
 		saved := false

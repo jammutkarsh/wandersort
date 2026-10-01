@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package review
 
 import (
@@ -28,10 +22,9 @@ func (m *Model) undo() {
 	m.statusMsg, m.statusIsErr = "undid "+last.Op+left, false
 }
 
-// applyEdit hands one edit to the draft, which applies and journals it, then
-// reflows and reports. Returns the outcome and whether the edit landed, so a
-// caller with follow-up work (re-focusing the surviving node) knows whether to
-// do it. A refused edit, or one the journal couldn't record, changes nothing.
+// applyEdit hands one edit to the draft, then reflows and reports. Returns the
+// outcome and whether the edit landed; a refused or unjournalled edit changes
+// nothing.
 func (m *Model) applyEdit(e vfs.Edit, status func(vfs.Outcome) string) (vfs.Outcome, bool) {
 	out, err := m.draft.Apply(e)
 	m.reflow()
@@ -45,8 +38,7 @@ func (m *Model) applyEdit(e vfs.Edit, status func(vfs.Outcome) string) (vfs.Outc
 }
 
 // mergeSelection folds the selected folders into one node under their lowest
-// common ancestor. It only resolves the row selection into IDs — the draft
-// does the actual reshaping.
+// common ancestor.
 func (m *Model) mergeSelection() {
 	if !m.visualMode {
 		m.statusMsg, m.statusIsErr = "press V to select folders, then m to merge", true
@@ -59,9 +51,8 @@ func (m *Model) mergeSelection() {
 		m.statusMsg, m.statusIsErr = "select at least two folders at the same level to merge", true
 		return
 	}
-	// the row [V] was pressed on names the merged folder, whichever direction
-	// the selection was extended in — selectedRows normalizes to tree order,
-	// so the anchor has to be pulled back to the front here
+	// the row [V] was pressed on names the result, whichever way the range
+	// was extended, so move it to the front
 	ids := make([]int64, 0, len(sel))
 	ids = append(ids, anchorID)
 	for _, r := range sel {
@@ -77,9 +68,7 @@ func (m *Model) mergeSelection() {
 	}
 }
 
-// applyRename writes the name straight onto the node — there is no pending
-// rename layer, so nothing is left over to render as an arrow or to survive an
-// undo. An edit like any other, so [u] reverts it the same way.
+// applyRename writes the name onto the node as an edit, so [u] reverts it.
 func (m *Model) applyRename(name string) {
 	row := m.rows[m.cursor]
 	id, old := row.node.ID, row.node.Name
@@ -103,9 +92,8 @@ func (m *Model) selectedRows() []*reviewRow {
 	if lo > hi {
 		lo, hi = hi, lo
 	}
-	// anchor depth is the rule: deeper rows are the selected folders' own
-	// contents and ride along, shallower ones are scaffolding the range spanned
-	// to reach the next branch
+	// rows deeper than the anchor are its contents and ride along; shallower
+	// rows are scaffolding the range spans
 	depth := m.rows[m.visualAnchor].depth
 	var out []*reviewRow
 	for _, r := range m.rows[lo : hi+1] {

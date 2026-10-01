@@ -1,19 +1,6 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 // fetchtestdeps pre-downloads exiftool and the location database into a
-// gitignored local directory (test/deps by default) before `go test` runs,
-// so a test needing a real dependency (pkg/install/installtest) finds it
-// already on disk instead of triggering install.Coordinator's own download
-// mid test run, with no progress visible in test output. Run via
-// `make test-deps` (which `make test` depends on), not directly.
-//
-// It goes through install.Coordinator exactly as wandersort itself does —
-// same download, checksum verify, and decompression path — just with a
-// progress printer instead of a TUI bar.
+// gitignored directory (test/deps) through install.Coordinator, with visible
+// progress, so tests never download silently mid-run. Run via `make test-deps`.
 package main
 
 import (
@@ -39,15 +26,7 @@ func main() {
 	log := logger.New("info", true, nil)
 	dbPath := filepath.Join(dir, install.LocationDBFileName)
 
-	// Location first, and fully awaited, before exiftool even starts: a
-	// real bug in Coordinator.Start (unrelated to this tool, not fixed
-	// here) runs exiftool then location sequentially, and an exiftool
-	// failure closes locReady without ever attempting the location
-	// download and without setting locErr — Location() then silently
-	// returns (nil, nil) instead of an error. Fetching location.db to
-	// completion first, on its own Coordinator, sidesteps that: by the
-	// time exiftool's Coordinator (below) reaches its own location half,
-	// the file already exists and that half is an instant no-op.
+	// location first, on its own Coordinator: it is the one tests depend on
 	loc := install.New(install.Options{
 		LocationDBPath: dbPath,
 		Log:            log,
@@ -59,9 +38,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// No test needs the real exiftool binary today, so its failure is a
-	// warning, not a build-breaking error — location.db above is the one
-	// every fuzzy-search test actually depends on.
+	// no test needs the real exiftool binary, so its failure only warns
 	exif := install.New(install.Options{
 		ExecutablePath: filepath.Join(dir, "bin"),
 		LocationDBPath: dbPath,
@@ -76,8 +53,7 @@ func main() {
 	fmt.Println("test deps ready:", dir)
 }
 
-// printProgress renders a single, self-overwriting line per phase — the
-// thing that was missing when tests downloaded these silently.
+// printProgress renders one self-overwriting progress line per phase.
 func printProgress(phase string, done, total int64) {
 	if total <= 0 {
 		return

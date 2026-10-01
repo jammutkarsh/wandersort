@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import (
@@ -98,9 +92,8 @@ func TestPlanSavedPlacesDateOnlySuppressesLocationSegment(t *testing.T) {
 	}
 }
 
-// TestPlanSavedPlacesDateOnlyLiftsOnAMixedDay is the reported bug: the day held
-// a loose pile of home-town photos *and* a nested folder for everything else,
-// so it read as half-sorted. A day either nests its locations or it doesn't.
+// TestPlanSavedPlacesDateOnlyLiftsOnAMixedDay: a day either nests its locations
+// or it doesn't; no loose saved-place pile beside nested folders.
 func TestPlanSavedPlacesDateOnlyLiftsOnAMixedDay(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation}
@@ -120,10 +113,8 @@ func TestPlanSavedPlacesDateOnlyLiftsOnAMixedDay(t *testing.T) {
 	}
 }
 
-// TestPlanMergeKeepsOneFolderPerDay is the reported bug in its plainest form:
-// `01_02` sat next to a `02`, so the 2nd of the month was in two date folders
-// at once. A day belongs to exactly one, so a location's run has to break
-// where the rest of that day disagrees with it.
+// TestPlanMergeKeepsOneFolderPerDay: a day belongs to exactly one date folder,
+// so a location's run breaks where the rest of that day disagrees.
 func TestPlanMergeKeepsOneFolderPerDay(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation}
@@ -209,11 +200,10 @@ func TestPlanClusterStartAnchorsYearAndMonth(t *testing.T) {
 	}
 }
 
-// TestPlanBoundaryDayDoesNotCollideWithRealDay is the reported bug: Jan 01
-// files pulled into December by their cluster landed in "12_December/01",
-// which is where the library's real Dec 01 files already live. Merged, the
-// two days are one run across the year end (D27); unmerged, Jan 01 keeps a
-// month-qualified folder.
+// TestPlanBoundaryDayDoesNotCollideWithRealDay: Jan 01 files a cluster pulls
+// into December must not land in "12_December/01" with the real Dec 01 files.
+// Merged, the two days are one run across the year end; unmerged, Jan 01 gets
+// a month-qualified folder.
 func TestPlanBoundaryDayDoesNotCollideWithRealDay(t *testing.T) {
 	files := func() []masterFile {
 		return []masterFile{
@@ -270,7 +260,7 @@ func TestPlanUnknownLocationOnlyBesideLocatedSiblings(t *testing.T) {
 	cfg.Rules = []string{RuleDate, RuleLocation}
 	cfg.CollapseLevels = false
 	cfg.MergeSameLocationDays = false
-	// keep the GPS-less shots in their own cluster, so clusterAndSpill can't
+	// keep the GPS-less shots in their own cluster, so clustering can't
 	// hand them Goa before the location level is decided
 	cfg.ClusterGap = time.Minute
 
@@ -317,11 +307,9 @@ func TestPlanUnknownLocationMergesDaysLikeAnyOther(t *testing.T) {
 	}
 }
 
-// TestPlanSidecarFollowsScreenshot is the reported bug: IMG_0231.AAE landed in
-// a date folder while IMG_0231.PNG sat in Screenshots. The edit variant
-// IMG_E0231.JPG folds to the same capture stem but carries a DateTimeOriginal
-// 13s later, which the old exact-second agreement read as a conflict and threw
-// the whole group away.
+// TestPlanSidecarFollowsScreenshot: a screenshot's edit variant carries an
+// EXIF time seconds later; within the agreement window the group holds, so the
+// sidecar follows the screenshot into Screenshots.
 func TestPlanSidecarFollowsScreenshot(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation}
@@ -338,12 +326,9 @@ func TestPlanSidecarFollowsScreenshot(t *testing.T) {
 	}
 }
 
-// TestPlanLongClusterKeepsOwnMonth is the other half of the New Year rule: a
-// cluster grows for as long as shots keep landing inside the gap, so a holiday
-// shot every few hours is one unbroken cluster running for days. Filing its
-// January photos under the previous December — in the wrong Year tree, as
-// "Jan_05" — was a reported bug. Past maxFolderSpan every file keeps its own
-// month.
+// TestPlanLongClusterKeepsOwnMonth: a cluster spanning days (a trip) doesn't
+// pull later months' files into its start month. Past maxFolderSpan every file
+// keeps its own month.
 func TestPlanLongClusterKeepsOwnMonth(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation}
@@ -372,12 +357,8 @@ func TestPlanLongClusterKeepsOwnMonth(t *testing.T) {
 	}
 }
 
-// TestPlanCaptureGroupMemberTakesLeaderFolderTime pins what persist writes as
-// taken_at against the directory the same file was given. A sidecar has no
-// EXIF time and falls back to its file mtime, which can sit months from the
-// capture it belongs to; it still follows the group's directory, so without the
-// leader's folder time it surfaced in a review time slice showing one lone
-// folder out of another year (a reported bug).
+// TestPlanCaptureGroupMemberTakesLeaderFolderTime: a sidecar (file mtime only)
+// takes its group leader's folder time along with its directory.
 func TestPlanCaptureGroupMemberTakesLeaderFolderTime(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation}
@@ -425,11 +406,8 @@ func TestPlanCaptureGroupRejectsReusedCounter(t *testing.T) {
 	}
 }
 
-// TestPlanCaptureGroupRejectsDeviceMismatch is the reported bug: two different
-// phones reused the same filename counter on the same day (well within the
-// agreement window, e.g. after a phone upgrade), and the window check alone
-// wasn't enough to keep them apart — DeviceA's photo/edit and the reused
-// counter's stray sidecar must not be forced into one directory.
+// TestPlanCaptureGroupRejectsDeviceMismatch: two devices reusing one filename
+// counter on the same day are not one capture, even inside the time window.
 func TestPlanCaptureGroupRejectsDeviceMismatch(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Rules = []string{RuleDate, RuleLocation}
@@ -613,7 +591,7 @@ func derived(m *masterFile) string {
 }
 
 // TestPlanFanoutMatchesSequential pins the invariant the whole package now
-// leans on: deriveAll, applyNameCase and buildTargets' directory pass run on
+// leans on: deriveAll and assignTargetPaths' parallel passes run on
 // cfg.Workers goroutines, and none of that may change a single byte of the
 // proposal. Also runs the parallel build twice, so a nondeterministic pass
 // (map iteration leaking into a name) fails rather than flaking in the field.
@@ -662,7 +640,7 @@ func TestPlanFanoutMatchesSequential(t *testing.T) {
 
 // TestPlanDegenerateInputs covers the shapes the fan-out has no files to chew
 // on, plus cancellation: forEachMaster still starts its workers for an empty
-// slice, and buildTargets' directory pass can bail mid-way leaving holes in
+// slice, and assignTargetPaths' directory pass can bail mid-way leaving holes in
 // dirs, which Plan must report rather than hand on to persist.
 func TestPlanDegenerateInputs(t *testing.T) {
 	cfg := DefaultConfig()
@@ -746,8 +724,7 @@ func TestBuildTargetsFoldsNFDAndCase(t *testing.T) {
 }
 
 // Apple Photos pairs an .AAE edit with its photo by name, so each folder's pair
-// has to end up with the same suffix. The sidecars carry file dates unrelated
-// to their photos', which used to swap them across folders.
+// must get the same suffix, whatever the sidecars' file dates.
 func TestBuildTargetsKeepsSidecarSuffixWithItsPhoto(t *testing.T) {
 	mk := func(dir, name, hash, taken, mtime, media string) masterFile {
 		m := masterFile{FileDir: dir, FileName: name, FileHash: hash, MediaType: media, ModifiedAt: mtime}
@@ -822,9 +799,8 @@ func TestBuildTargetsAvoidsPlacedNames(t *testing.T) {
 	}
 }
 
-// pairFixture: /a holds a photo, /b a photo plus its edit, all landing in one
-// folder. Only /b's photo name collides; its edit's name doesn't, which is
-// exactly when a per-file suffix used to pair the edit with /a's photo.
+// pairFixture: /a holds a photo, /b a photo plus its edit, all in one folder.
+// Only /b's photo name collides; its edit's must still take the same suffix.
 func pairFixture() []masterFile {
 	return []masterFile{
 		{FileDir: "/a", FileName: "IMG_0001.HEIC", FileHash: "a", MediaType: classifier.MediaTypeImage, DBDateTaken: new("2024:07:04 12:00:00")},
@@ -917,7 +893,7 @@ func TestPairLiveVideosOwnPhotoOnly(t *testing.T) {
 }
 
 // A same-place run crossing a month or year end is one run, under its first
-// day's year and month (D27); another place on the crossing day breaks it.
+// day's year and month; another place on the crossing day breaks it.
 func TestPlanMergeRunAcrossMonth(t *testing.T) {
 	day := func(name, dto, loc string) masterFile {
 		return masterFile{FileDir: "/src", FileName: name + ".jpg", DBDateTaken: new(dto + " 10:00:00"), location: loc}

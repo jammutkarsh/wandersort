@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package logger
 
 import (
@@ -72,13 +66,8 @@ func (l *SlogAdapter) Error(msg string, attrs ...any) {
 // console; untagged Info/Debug lines go to the file log only.
 const UserKey = "userFacing"
 
-// sessionKey is the pipeline correlation id. Printed once at session start and
-// then dropped from console lines; the JSON file log keeps it on every record.
-const sessionKey = "sessionId"
-
-// consoleHiddenKeys are the TUI-only routing attrs and the correlation id
-// already printed at session start; the plain console hides them.
-var consoleHiddenKeys = []string{sessionKey, PhaseKey, EventKey, ElapsedKey}
+// consoleHiddenKeys are TUI-only routing attrs the plain console hides.
+var consoleHiddenKeys = []string{PhaseKey, EventKey, ElapsedKey}
 
 // PrettyHandler renders records as human-readable, coloured console lines. It
 // surfaces only user-facing lines (see UserKey) and warnings/errors.
@@ -104,9 +93,8 @@ func (h *PrettyHandler) Enabled(_ context.Context, level slog.Level) bool {
 func (h *PrettyHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *PrettyHandler) WithGroup(string) slog.Handler      { return h }
 
-// Handle renders one console line: a coloured level tag, the message, then the
-// remaining attrs as dimmed key=value pairs. Timestamp and source stay in the
-// JSON file log (see the `issue` command).
+// Handle renders one console line: coloured level tag, message, dimmed
+// key=value attrs. Timestamp and source go to the JSON file log only.
 func (h *PrettyHandler) Handle(_ context.Context, r slog.Record) error {
 	attrs := make(map[string]any, r.NumAttrs())
 	var userFacing bool

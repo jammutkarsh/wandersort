@@ -1,13 +1,5 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
-// Package report turns the errors table into what `wandersort admin report` ships: the
-// rows as named fields with their paths replaced, and a grouped summary — enough
-// to find the bug, and nothing about the person's photos. The database stores
-// everything; only this export is scrubbed.
+// Package report turns the errors table into what `wandersort admin report`
+// ships: rows with paths replaced, and a grouped summary.
 package report
 
 import (
@@ -27,9 +19,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
-// HomePlaceholder stands for the home directory in an export. The username is
-// the identifier; the folder structure below it is what makes a report
-// debuggable.
+// HomePlaceholder stands for the home directory in an export.
 const HomePlaceholder = "$HOME"
 
 // Placeholders --redact-paths puts where a path was.
@@ -48,9 +38,7 @@ type Options struct {
 	Home string
 	// Library is the output folder, named <library> when Redact is set.
 	Library string
-	// Redact replaces every path with <source>/<name>/<target>/<library>, for
-	// someone whose folder names are personal. Off by default: a report nobody
-	// can read helps nobody.
+	// Redact replaces every path with a placeholder (<source>, <name>, …).
 	Redact bool
 }
 
@@ -81,8 +69,7 @@ type Querier interface {
 }
 
 // Errors reads every live error row and returns the scrubbed rows plus one
-// summary line per group, most frequent first: `31 x READ/open/permission-denied
-// at metadata.go:412, .HEIC, removable`.
+// summary line per group, most frequent first.
 func Errors(ctx context.Context, q Querier, o Options) ([]Row, []string, error) {
 	rows, err := q.QueryContext(ctx, `
 		SELECT e.stage, e.op, e.kind, e.attempts, e.first_seen_at, e.last_seen_at, e.detail,
@@ -122,12 +109,8 @@ func Errors(ctx context.Context, q Querier, o Options) ([]Row, []string, error) 
 	return out, summarize(groups), nil
 }
 
-// volumeClass resolves and caches how the file's volume behaves under
-// concurrent reads, keyed by its uuid. Two rows answer Unknown without a
-// lookup rather than guessing: a file with no uuid (the same platform
-// machinery produces both, so if the uuid failed the class would too), and a
-// placed file, whose directory is library-relative from the moment it landed
-// and so names nothing on this machine.
+// volumeClass resolves and caches a volume's class by uuid. Rows with no uuid,
+// and placed files (library-relative dirs), answer Unknown without a lookup.
 func volumeClass(cache map[string]string, uuid, dir string) string {
 	if uuid == "" || !filepath.IsAbs(dir) {
 		return volume.ClassUnknown.String()
@@ -209,18 +192,13 @@ func walkStrings(v any, fn func(string) string) any {
 	return v
 }
 
-// pathToken is any absolute path left after the exact replacements, for
-// --redact-paths only: a directory nobody recorded (a failed mkdir's) has no
-// entry to match against. A path runs to the end of the string, a quote, a
-// newline or a colon that isn't part of it (Go's "op path: reason"), and
-// takes spaces with it: folder names with spaces are the personal ones, and
-// stopping at the first space left "Trip 2024/IMG_1.jpg" behind. Where that
-// guesses wrong it swallows too much, which is the side to be wrong on.
+// pathToken matches any absolute path left after exact replacement (for
+// --redact-paths). A path runs to a quote, newline or a "op path: reason" colon,
+// spaces included; over-matching is the safe side.
 var pathToken = regexp.MustCompile(`(^|[^A-Za-z0-9_.$>-])((?:[A-Za-z]:)?[\\/](?:[^"\n:]|:[^\s"\n])*)`)
 
-// ScrubHome replaces the home directory with $HOME everywhere in text, as a
-// whole path segment, including where JSON escaping doubled its backslashes
-// (a Windows home inside a JSON log line).
+// ScrubHome replaces the home directory with $HOME as a whole path segment,
+// including JSON-escaped backslashes.
 func ScrubHome(text, home string) string {
 	text = replaceHome(text, home)
 	if escaped := strings.ReplaceAll(home, `\`, `\\`); escaped != home {
@@ -261,7 +239,7 @@ func replaceHome(s, home string) string {
 }
 
 // replacePath replaces prefix with with wherever it stands as a whole path
-// segment: /Users/jam is replaced in /Users/jam/x, not in /Users/jamie/x.
+// segment: /home/al is replaced in /home/al/x, not in /home/alice/x.
 func replacePath(s, prefix, with string) string {
 	if prefix == "" {
 		return s

@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package review
 
 import (
@@ -41,10 +35,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// leave hands back to the shell. Nothing to save or discard: every edit is
-// already in the draft file, and stays there for the next review or for
-// `wandersort execute` to apply. quit says whether the key meant "done with
-// the app" or just "done here" — the shell decides what that costs.
+// leave hands back to the shell. Every edit is already in the draft. quit says
+// whether the key meant "done with the app".
 func (m Model) leave(quit bool) (tea.Model, tea.Cmd) {
 	return m, tui.Left(tui.Leave{Quit: quit})
 }

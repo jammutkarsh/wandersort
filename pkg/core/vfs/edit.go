@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import (
@@ -15,14 +9,10 @@ import (
 	"strings"
 )
 
-// This file holds the review tree's reshaping rules (merge/drop/flatten) as
-// plain []Node functions with no TUI knowledge, testable by stating a tree
-// and asserting the result. Each mutates in place — cloneTree first for undo.
+// Review tree edits (merge/drop/flatten) as plain []Node functions.
 
-// Constraint is one way a file can belong in a folder (spec D13): an AND of
-// levels. A nil level constrains nothing; an empty non-nil one matches
-// nothing. Usually one level is set, but a drop pushes the dropped folder's
-// constraint into its children, so one can carry several.
+// Constraint is one way a file can belong in a folder: an AND of levels. A nil
+// level constrains nothing; an empty non-nil one matches nothing.
 type Constraint struct {
 	Year  []int `json:"year,omitzero"`
 	Month []int `json:"month,omitzero"`
@@ -35,18 +25,13 @@ type Constraint struct {
 	Media       []string `json:"media,omitzero"`
 }
 
-// Bounds is what one folder holds: a file belongs if it satisfies any one of
-// its alternatives, and a folder's full range is its Bounds AND every
-// ancestor's. Alternatives keep a merge exact — Goa on the 3rd merged with
-// Manali on the 20th does not admit Goa on the 20th. No alternatives matches
-// nothing; one empty Constraint matches everything.
-//
-// Never mutated in place — every operation returns fresh slices — so trees
-// and their undo clones share Bounds freely.
+// Bounds is what one folder holds: a file belongs if it satisfies any one
+// alternative, and a folder's full range is its Bounds AND its ancestors'.
+// Alternatives keep a merge exact (<city A> on the 3rd + <city B> on the 20th
+// does not admit <city A> on the 20th). Never mutated in place.
 type Bounds []Constraint
 
-// Union holds every file either side holds — the merge rule (D14): the
-// alternatives side by side.
+// Union holds every file either side holds (the merge rule).
 func (b Bounds) Union(o Bounds) Bounds {
 	out := slices.Clone(b)
 	for _, c := range o {
@@ -55,8 +40,7 @@ func (b Bounds) Union(o Bounds) Bounds {
 	return out
 }
 
-// Intersect holds only the files both sides hold — the drop rule (D14): each
-// pair of alternatives intersected, the empty ones gone.
+// Intersect holds only the files both sides hold (the drop rule).
 func (b Bounds) Intersect(o Bounds) Bounds {
 	out := Bounds{}
 	for _, x := range b {
@@ -80,9 +64,8 @@ func (b Bounds) Matches(file Constraint) bool {
 	})
 }
 
-// with adds c, folding it into an alternative it differs from on one level
-// at most — an exact rewrite ({3, Goa} or {20, Goa} is {3 or 20, Goa}) that
-// keeps an ordinary folder at one alternative however many files it holds.
+// with adds c, folding it into an alternative it differs from on at most one
+// level, so an ordinary folder keeps one alternative.
 func (b Bounds) with(c Constraint) Bounds {
 	for i, a := range b {
 		if j, ok := a.join(c); ok {
@@ -198,11 +181,8 @@ func admits[T comparable](c, f []T) bool {
 	return true
 }
 
-// pushDown intersects every descendant of n with its ancestors up to n, so
-// each folder in n's subtree means on its own what it meant under them. A
-// merge calls it before moving a subtree under a looser parent: two day
-// folders' same-named Canon children stay "Canon on the 3rd" and "Canon on
-// the 20th" once both days are one folder.
+// pushDown intersects every descendant of n with its ancestors up to n, so a
+// subtree moved under a looser parent keeps its meaning.
 func pushDown(n *Node) {
 	for i := range n.Children {
 		c := &n.Children[i]
@@ -211,10 +191,7 @@ func pushDown(n *Node) {
 	}
 }
 
-// sortTree restores name order after a structural edit — BuildTree emits
-// sorted levels, but a splice (merge, drop, flatten) appends, and a folder
-// landing below its siblings instead of between them reads as "the edit
-// deleted it".
+// sortTree restores name order after a structural edit (splices append).
 func sortTree(nodes []Node) {
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 	for i := range nodes {
@@ -222,9 +199,7 @@ func sortTree(nodes []Node) {
 	}
 }
 
-// cloneTree deep-copies a node tree so a caller's undo snapshot is unaffected
-// by later in-place mutation. Trees are folders only, never files, so a clone
-// is cheap.
+// cloneTree deep-copies a node tree.
 func cloneTree(nodes []Node) []Node {
 	if nodes == nil {
 		return nil
@@ -382,11 +357,8 @@ func pruneEmptied(nodes []Node, leafIDs map[int64]bool) []Node {
 	return out
 }
 
-// parseDayRange reads a Date-level folder name back into the day(s) it spans
-// — "03" (a single day, dirFor's plain time.Format("02")) or "01_02"
-// (mergeSameLocationDays' merged run, "%02d_%02d"). Anything else, ok is
-// false: this is a narrow match on those two exact shapes, not a general
-// number parser.
+// parseDayRange reads a Date folder name ("03" or "01_02") back into its days;
+// ok is false for anything else.
 func parseDayRange(name string) (lo, hi int, ok bool) {
 	a, b, found := strings.Cut(name, "_")
 	if !found {
@@ -403,9 +375,7 @@ func parseDayRange(name string) (lo, hi int, ok bool) {
 	return lo, hi, true
 }
 
-// formatDayRange is mergeSameLocationDays' own format string, mirrored here
-// so a merged Date folder's name matches what the pipeline would have
-// proposed had it seen these days as one run to begin with.
+// formatDayRange matches the planner's day-merge folder name.
 func formatDayRange(lo, hi int) string {
 	if lo == hi {
 		return fmt.Sprintf("%02d", lo)
@@ -413,11 +383,8 @@ func formatDayRange(lo, hi int) string {
 	return fmt.Sprintf("%02d_%02d", lo, hi)
 }
 
-// combinedDayRange spans every pick's day range, if every pick is a plain
-// Date-level folder ("03", "01_02"). Anything that isn't day-shaped (a
-// location, a device, a folder the reviewer already renamed to something of
-// their own) bails the whole thing out: this only fires when the selection is
-// unambiguously a date merge.
+// combinedDayRange spans every pick's days when every pick is a plain Date
+// folder; anything else returns ok false.
 func combinedDayRange(picks []mergePick) (lo, hi int, ok bool) {
 	for i, p := range picks {
 		d1, d2, valid := parseDayRange(p.value.Name)
@@ -446,8 +413,7 @@ type mergePick struct {
 // ancestor. Returns the surviving node's ID, its name, and the
 // ancestor's name for the caller's status line.
 func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name, ancestorName string, err error) {
-	// Assumes no id in ids is an ancestor of another — the review TUI's
-	// same-depth-only selection already guarantees that.
+	// no id is an ancestor of another: the TUI selects one depth only
 	if len(ids) < 2 {
 		return tree, 0, "", "", fmt.Errorf("select at least two folders at the same level to merge")
 	}
@@ -477,9 +443,8 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 		return tree, 0, "", "", fmt.Errorf("internal error locating merge destination")
 	}
 
-	// each pick is lifted out from under the folders between it and the LCA,
-	// so it takes their bounds with it — "Canon under the 3rd" stays the 3rd —
-	// and its subtree takes its own, since the merged parent will be looser
+	// each pick takes the bounds of the folders between it and the LCA, and
+	// pushes its own into its subtree, since the merged parent is looser
 	for i := range picks {
 		chain := chainTo(tree, picks[i].id)
 		if len(chain) == len(shared) {
@@ -498,19 +463,15 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 	leafIDs := map[int64]bool{}
 	collectLeafIDs(tree, leafIDs)
 
-	// the first id's own name — already the reviewer's rename if they typed one,
-	// since a rename is written straight onto the node
+	// the first id's own name (already the reviewer's rename, if any)
 	target := picks[0].value.Name
 
-	// unless every pick is a plain Date folder — merging days proposes the day
-	// range they actually span, the same name the pipeline would have proposed
-	// had it seen them as one run from the start
+	// unless every pick is a plain Date folder: then the day range they span
 	if lo, hi, ok := combinedDayRange(picks); ok {
 		target = formatDayRange(lo, hi)
 	}
 
-	// absorb the rest; mergeInto collapses same-named children recursively, so
-	// three Goa days give one Goa holding one merged device folder
+	// absorb the rest; same-named children merge recursively
 	merged := picks[0].value
 	for _, p := range picks[1:] {
 		mergeInto(&merged, p.value)
@@ -530,22 +491,13 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 	return tree, merged.ID, target, lca.Name, nil
 }
 
-// dropNodes removes each node in ids, lifting its children onto its parent,
-// one group-by level shallower. Returns the dropped nodes' names, in order.
+// dropNodes removes each node in ids, lifting its children onto its parent.
+// Returns the dropped nodes' names, in order.
 //
-// ponytail: a drop (and a flatten below) does not survive a re-plan that runs
-// while some of its files are still untransferred — an execute stopped
-// partway, then a scan. A rename or a merge does: the folder is still there
-// holding the placed files, so route.go matches the leftovers into it by
-// bounds. A dropped folder is gone, so there is nothing to match, and the
-// re-plan proposes the level again for whatever has not moved yet: the
-// library ends up with `03/A.HEIC` beside `03/Apple-iPhone-15-Pro/B.HEIC`.
-// No file is lost and dropping again fixes it. The fix is to keep the user
-// out of that order rather than to teach the planner to remember a removed
-// folder: the app knows a copy did not finish and offers to finish it first
-// (issue 21). Recording the removal on the surviving folder's bounds would
-// also work and costs far more — don't reach for it unless the offer isn't
-// enough.
+// ponytail: a drop (or flatten) doesn't survive a re-plan while some of its
+// files are untransferred: the folder is gone, so the re-plan proposes the
+// level again for the leftovers. Dropping again fixes it; finishing the copy
+// first avoids it.
 func dropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err error) {
 	type drop struct {
 		parentID int64
@@ -578,8 +530,7 @@ func dropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err er
 			continue
 		}
 		removeChildByID(parent, d.node.ID)
-		// each lifted child keeps what the dropped folder constrained, so
-		// dropping `12` over `Panji` leaves a Panji that still means day 12
+		// each lifted child keeps what the dropped folder constrained
 		for _, c := range d.node.Children {
 			c.Bounds = c.Bounds.Intersect(d.node.Bounds)
 			parent.Children = append(parent.Children, c)
@@ -592,11 +543,9 @@ func dropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err er
 	return tree, names, nil
 }
 
-// flattenNodes collapses everything below each node in ids directly into it
-// (`2023/April/Indore/Apple iPhone 13` flattened at April becomes
-// `2023/April` holding all ten files). Returns the flattened nodes' names.
-// Carries dropNodes' ponytail caveat: a re-plan over the leftovers of a
-// stopped execute proposes the collapsed levels again.
+// flattenNodes collapses everything below each node in ids into it, so the
+// subtree's files sit directly in it. Returns the flattened nodes' names.
+// Same re-plan caveat as dropNodes.
 func flattenNodes(tree []Node, ids []int64) (newTree []Node, absorbed int, names []string, err error) {
 	var targets []int64
 	for _, id := range ids {

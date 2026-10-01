@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package tui
 
 import (
@@ -83,10 +77,7 @@ func (sl *StageList) SetWidth(w int) {
 	sl.sb.bar.Width = clamp(w-30, 20, 60)
 }
 
-// SetLabel updates a running stage's message in place, without touching its
-// state or start time — for a stage parked on something outside its own
-// progress (e.g. waiting on a background dependency download) that needs to
-// say why without resetting its elapsed clock the way a second Start would.
+// SetLabel updates a running stage's message without resetting its clock.
 func (sl *StageList) SetLabel(key, label string) {
 	if s := sl.get(key); s != nil && s.state == stateRunning {
 		s.label = label
@@ -139,9 +130,7 @@ func (sl *StageList) AddTail(line string) {
 	}
 }
 
-// FinishRemaining settles every unfinished stage once the pipeline returns:
-// failure reddens the running stage, success flips the rest to done (labelled
-// defaultLabel if a stage never reported, e.g. an already-cached dependency).
+// FinishRemaining settles every unfinished stage once the pipeline returns.
 func (sl *StageList) FinishRemaining(failed bool, defaultLabel string) {
 	for _, s := range sl.stages {
 		switch {
@@ -174,9 +163,7 @@ func (sl StageList) Summary() []string {
 	return out
 }
 
-// HeaderLines is how many rows the stage headers and bar occupy — the host
-// subtracts it (plus its own chrome) from the terminal height to budget the
-// tail window it passes to View.
+// HeaderLines is how many rows the stage headers and bar take.
 func (sl StageList) HeaderLines() int {
 	n := len(sl.stages)
 	for _, s := range sl.stages {
@@ -187,9 +174,8 @@ func (sl StageList) HeaderLines() int {
 	return n
 }
 
-// View renders the stack at the given width. tailBudget is how many stream
-// rows may render under the running stage — pass what's left of the terminal
-// so a tall window shows a long live tail.
+// View renders the stack; tailBudget is how many stream rows may show under
+// the running stage.
 func (sl StageList) View(width, tailBudget int) string {
 	var b strings.Builder
 	n := len(sl.stages)

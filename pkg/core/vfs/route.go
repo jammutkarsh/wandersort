@@ -1,21 +1,9 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
-// route.go places a new file through the folders placed files already sit in
-// (spec D15): walk from the root, descend into a folder only if a complete
-// match exists beneath it, and land in the deepest one. With no complete match
-// the file keeps the path the library's rules built for it, which reaches the
-// placed folders it does match by name — Delhi on 2 March next to a placed
-// `01_03/Goa Trip` lands in `02/Delhi` under the same month.
-//
-// It only picks the path. persist still gives the file a folder chain of its
-// own at that path (loadFolders never hands out a placed folder), so a review
-// rename can't rename where a placed file is recorded.
+// route places a new file in the deepest placed folder it matches completely
+// (descend only where a complete match exists below). With no match, the file
+// keeps its rule-built path. It only picks the path; persist still gives the
+// file its own folder chain.
 
 import (
 	"maps"
@@ -48,7 +36,7 @@ var specialLevels = map[string]levelBit{
 }
 
 // placedTree is the placed folders, indexed for route. Read-only once built,
-// so route runs on every buildTargets worker at once.
+// so route runs on every assignTargetPaths worker at once.
 type placedTree struct {
 	rows  map[int64]folderRow
 	kids  map[int64][]int64 // parent (0 = top) → children, in id order
@@ -132,9 +120,7 @@ func (t *placedTree) matches(r folderRow, file Constraint, want levelBit) (level
 }
 
 // statement is what m's planned path says about it: each level's value from
-// the first folder stating it, and which levels those are. A file shot outside
-// its folder's month states its own full date there (see fullDate), so the
-// September day of an August run states September, the day it was shot.
+// the first folder stating it, and which levels those are.
 func statement(m *masterFile) (Constraint, levelBit) {
 	var file Constraint
 	var want levelBit

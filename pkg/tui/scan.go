@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package tui
 
 import (
@@ -19,13 +13,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-// DepsErr marks a Pipeline failure that happened before any phase started —
-// downloading a dependency failed. There's no phase progress on screen worth
-// leaving up for this, and the raw error (a URL, a transport failure) reads
-// better as a plain line in the normal terminal than crammed into the
-// footer, so the scan screen quits immediately on it instead of rendering it
-// like an ordinary phase failure; the caller prints it once back outside the
-// TUI (see DepsFailure).
+// DepsErr marks a failure before any phase started (a dependency download).
+// The screen quits at once and the caller prints it (see DepsFailure).
 type DepsErr struct{ Err error }
 
 func (e *DepsErr) Error() string { return e.Err.Error() }
@@ -35,10 +24,8 @@ func (e *DepsErr) Unwrap() error { return e.Err }
 // events from the TUI logger's sink into the program via program.Send.
 type LogEventMsg struct{ Event logger.Event }
 
-// InstallProgressMsg carries dependency-download byte progress into the scan
-// screen. It comes straight from a callback (not the logger), so the per-byte
-// ticks never touch the file log. The downloads run in the background while
-// the pipeline works (workflow.Deps) — this is their only visibility.
+// InstallProgressMsg carries dependency-download byte progress, straight from a
+// callback so it never touches the file log.
 type InstallProgressMsg struct {
 	Phase string
 	Done  int64
@@ -62,17 +49,13 @@ type ScanConfig struct {
 	Pipeline func() error
 	// Cancel cancels the pipeline context on ctrl+c.
 	Cancel context.CancelFunc
-	// ReviewNext builds the review screen, switched into the moment it's ready.
-	// A scan is run in order to review it, and the shell keeps the session
-	// alive afterwards, so there's no "continue?" prompt in the way — nil (or
-	// an error) means no in-program review, and the screen just sits finished.
+	// ReviewNext builds the review screen, switched into as soon as it's ready.
+	// nil (or an error) leaves the finished scan on screen.
 	ReviewNext func() (Tab, error)
 }
 
-// ScanModel is the full-screen live scan view: a Docker-buildkit-style stack
-// of stage rows (StageList) with the files being processed streaming under the
-// running stage, milestone notes under the banner, and warnings pinned above
-// the footer.
+// ScanModel is the live scan view: a stage stack with files streaming under
+// the running stage, notes under the banner, warnings above the footer.
 type ScanModel struct {
 	cfg      ScanConfig
 	sl       StageList
@@ -80,10 +63,8 @@ type ScanModel struct {
 	warnings []string
 	w, h     int
 
-	// downloads are the background dependency fetches, one row each under the
-	// notes: a byte count while running, a dim ✓ once complete (a row that
-	// vanishes the moment it fills reads as a failure). Dependencies already on
-	// disk never report, so nothing renders for them.
+	// downloads are background dependency fetches, one row each; a finished
+	// row stays as a dim ✓
 	downloads []InstallProgressMsg
 
 	// cur is the stage key of the running phase, so a stream line's counts
@@ -98,48 +79,34 @@ type ScanModel struct {
 	loading    bool  // "Opening review…" — waiting on the prefetch below
 	reviewErr  error // building the review screen failed
 
-	// reviewModel/reviewFetching prefetch the review screen (vfs.BuildTree) as
-	// soon as the vfs phase flushes, so it's usually ready by the time the
-	// pipeline itself finishes and the scan switches straight into it.
+	// reviewModel/reviewFetching prefetch the review screen once the vfs phase
+	// flushes
 	reviewModel    Tab
 	reviewFetching bool
 }
 
-// DepsFailure reports a dependency-download failure (see DepsErr), if that's
-// why the pipeline ended — the caller prints it in the normal terminal once
-// the TUI has exited, rather than the screen showing it in its own footer.
+// DepsFailure reports a dependency-download failure, if that ended the run.
 func (m ScanModel) DepsFailure() error { return m.depsErr }
 
-// Cancelled reports whether the user's own ctrl+c is why the screen ended —
-// true once ctrl+c has been pressed on a still-running pipeline, regardless
-// of which stage was in flight (the pipeline itself, or the review prefetch
-// that follows it) or which error field the cancellation surfaced through.
-// The caller prints a short "cancelled" line in the normal terminal once the
-// TUI has exited — the reviewer asked to leave, so the screen quits straight
-// away instead of parking them on a failure footer they'd have to ctrl+c off.
+// Cancelled reports whether the user's ctrl+c ended the screen.
 func (m ScanModel) Cancelled() bool { return m.cancelling }
 
-// Running reports that the pipeline hasn't returned yet. The shell routes a
-// quit request here while it is, so the cancel guard gets a say no matter
-// which tab the user pressed it on.
+// Running reports that the pipeline hasn't returned yet.
 func (m ScanModel) Running() bool { return !m.done }
 
 // Busy is the container's word for Running: a pipeline in flight must not be
 // interrupted, replaced, or have its settings retargeted under it.
 func (m ScanModel) Busy() bool { return m.Running() }
 
-// Failed reports that the pipeline returned an error. The screen is the only
-// place that error is written, so a caller replacing this screen has to know
-// not to throw it away unread.
+// Failed reports that the pipeline returned an error; this screen is the only
+// place it is shown, so don't discard it unread.
 func (m ScanModel) Failed() bool { return m.failErr != nil }
 
 // Summary is each finished stage's one-line result, for the home screen's
 // history block once the session moves on from this scan.
 func (m ScanModel) Summary() []string { return m.sl.Summary() }
 
-// NewScanModel builds the scan screen. The three stages mirror the workflow
-// phases (keys match logger.PhaseKey: scan/metadata/vfs). Duplicates are
-// chosen inside vfs now, so there is no score stage to show.
+// NewScanModel builds the scan screen; stage keys match logger.PhaseKey.
 func NewScanModel(cfg ScanConfig) ScanModel {
 	sl := NewStageList(
 		nil,
@@ -207,9 +174,7 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sl.FinishRemaining(false, "done")
 		m.finished = true
-		// Straight into review, no prompt — go straight in, or park on
-		// "Opening review…" until the prefetch lands and the reviewReadyMsg
-		// case above switches for us.
+		// straight into review, or wait for the prefetch
 		if m.cfg.ReviewNext != nil && m.reviewErr == nil {
 			if m.reviewModel != nil {
 				return m, Switch(m.reviewModel)
@@ -230,9 +195,7 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.done {
 			return m, Left(Leave{Quit: true})
 		}
-		// Second press is the escape hatch: cancelling waits for the pipeline
-		// to unwind, and a phase that never does would otherwise leave the
-		// screen unquittable.
+		// second press quits even if the pipeline won't unwind
 		if m.cancelling {
 			return m, Left(Leave{Quit: true})
 		}
@@ -251,9 +214,8 @@ func (m ScanModel) fetchReview() tea.Cmd {
 }
 
 func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
-	// Phase transition — route to the matching stage row. The done message
-	// carries its own elapsed (logger.ElapsedKey); strip the duplicated
-	// " in <elapsed>" suffix so the time renders once, in the right column.
+	// phase transition: route to its stage row; strip " in <elapsed>" so the
+	// time shows once, in the right column
 	if p, ok := e.Attrs[logger.PhaseKey].(string); ok {
 		switch e.Attrs[logger.EventKey] {
 		case "start":
@@ -270,9 +232,7 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Stream — per-file feed line; the metadata phase also carries the running
-	// count, so the bar advances one file at a time instead of in throttled
-	// jumps.
+	// per-file feed line; metadata lines carry the running count
 	if e.Stream {
 		if f, ok := e.Attrs["file"].(string); ok {
 			m.sl.AddTail(f)
@@ -291,11 +251,7 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if e.UserFacing {
-		// install.Coordinator's "Waiting for the … download to finish…" lines
-		// (the only UserKey lines worded this way) belong on the stalled
-		// stage's own row, not buried in the notes scroll — a running stage
-		// with no bar yet (still parked on the download) otherwise looks
-		// hung instead of saying why.
+		// "Waiting for …" lines go on the stalled stage's own row
 		if m.cur != "" && strings.HasPrefix(e.Message, "Waiting for ") {
 			m.sl.SetLabel(m.cur, e.Message)
 			return m, nil
@@ -305,9 +261,7 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// progressCmd drives the running phase's bar from any event carrying
-// extracted + total counts; events without them are a no-op, as is a phase
-// with no bar (SetProgress ignores an unknown key).
+// progressCmd drives the running phase's bar from events carrying counts.
 func (m *ScanModel) progressCmd(e logger.Event) tea.Cmd {
 	total, ok := toInt(e.Attrs["total"])
 	if !ok || total <= 0 {
@@ -349,9 +303,7 @@ var downloadLabel = map[string]string{
 	"location": "Location database",
 }
 
-// viewDownloads renders one row per background dependency download, above the
-// notes: label + bytes while running, ✓ done after — the same treatment the
-// config wizard gives its download.
+// viewDownloads renders one row per background dependency download.
 func (m ScanModel) viewDownloads() string {
 	var b strings.Builder
 	for _, d := range m.downloads {
@@ -402,9 +354,8 @@ func (m ScanModel) viewNotes() string {
 	return b.String()
 }
 
-// maxFooterWarnings caps how many warnings render above the footer — a folder
-// full of unsupported files would otherwise push the whole screen off. The
-// rest are counted, and all of them are in the log file.
+// maxFooterWarnings caps warnings shown above the footer; the rest are counted
+// and all are in the log.
 const maxFooterWarnings = 4
 
 func (m ScanModel) footer() string {
@@ -441,9 +392,7 @@ func (m ScanModel) footer() string {
 		b.WriteString("\n")
 		b.WriteString(Footer(KeyHint("ctrl+c", "quit"), m.w))
 	case m.cancelling:
-		// Warn-once-then-act, same shape as the review screen's discard guard:
-		// the first ctrl+c cancels and says what that costs, the second gives
-		// up on the unwind and quits outright.
+		// first ctrl+c cancels, the second quits
 		b.WriteString(Attn.Render("⚠ Cancelling the scan — press ctrl+c again to quit now. " +
 			"Progress so far is saved; the next run resumes."))
 	default:

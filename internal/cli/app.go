@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -38,9 +32,8 @@ type app struct {
 	// outLock is the output-dir lock, taken with the database by openLibrary
 	// and released with it by closeDBs.
 	outLock *lock.Lock
-	// logFile is this process's log, shared by the startup logger and the
-	// shell's TUI logger. It stays in memory until openLibrary (or a warning)
-	// persists it, so a run that only explores the app leaves no file.
+	// logFile is this process's log, shared by the startup and TUI loggers.
+	// Buffered in memory until openLibrary (or a warning) persists it.
 	logFile *logger.File
 }
 
@@ -49,11 +42,9 @@ func Execute() error {
 	return a.newRootCmd().Execute()
 }
 
-// interruptible is the context a plain command that touches the library runs
-// under. The first ctrl+c (or SIGTERM) cancels it, so the work stops at its
-// next safe point and the deferred closes — writer flush, database, output
-// lock — still run. A second one gets the default behaviour back and ends
-// the process, for work that won't unwind.
+// interruptible is the context for plain commands that touch the library. The
+// first ctrl+c/SIGTERM cancels it so deferred closes still run; a second ends
+// the process.
 func interruptible() (context.Context, context.CancelFunc) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -74,9 +65,8 @@ func (a *app) newDeps(onProgress func(phase string, done, total int64)) *install
 	})
 }
 
-// workflowDeps gates each pipeline phase on its own dependency. Read through
-// closures, not method values: the TUI path builds the workflow before the
-// Coordinator exists, so a.Deps has to be resolved when a phase actually asks.
+// workflowDeps gates each pipeline phase on its own dependency. Closures, not
+// method values: a.Deps may not exist yet when the workflow is built.
 func (a *app) workflowDeps() workflow.Deps {
 	return workflow.Deps{
 		Exiftool: func() (string, error) {
@@ -88,10 +78,8 @@ func (a *app) workflowDeps() workflow.Deps {
 	}
 }
 
-// lockOutput takes the exclusive output-dir lock every command that touches
-// the database needs. A lock held by another process is the one error users
-// hit routinely, so it gets the full styled explanation rather than a wrapped
-// one-liner; pkg/lock reports the fact, this decides how it reads.
+// lockOutput takes the exclusive output-dir lock and styles the "already
+// running" error.
 func (a *app) lockOutput() (*lock.Lock, error) {
 	l, err := lock.AcquireOutput(filepath.Dir(a.Config.AppDBPath))
 	var running *lock.AlreadyRunningError
@@ -106,14 +94,10 @@ func (a *app) lockOutput() (*lock.Lock, error) {
 	return l, nil
 }
 
-// openLibrary opens the output folder as a library, once per session: check
-// it may be one, take the output lock, then open (or create) the database.
-// The order is the point — nothing is written into the folder before the
-// lock, and nothing but the lock before the database, so a refused folder is
-// never touched and a lost race (another process locked it first) creates no
-// file either: the lock file it tried to open is the winner's. Every command
-// and the shell open the library here, lazily, so a session that never scans
-// or reviews writes nothing outside the logs.
+// openLibrary opens the output folder as a library, once per session: check it
+// may be one, take the output lock, open the database, load its settings, then
+// remember it. In that order, a refused folder or a lost lock race writes
+// nothing into the folder.
 func (a *app) openLibrary(ctx context.Context) error {
 	if a.AppDB != nil {
 		return nil
@@ -133,11 +117,8 @@ func (a *app) openLibrary(ctx context.Context) error {
 		l.Unlock()
 		return fmt.Errorf("app db: %w", err)
 	}
-	// The folders this library gets are the ones it was organized under, not
-	// whatever another library is set to (spec D2). A library that has never
-	// been through the wizard has no row and keeps the defaults. Read before
-	// the handle is published: a session that carried on with a half-open
-	// library would find `a.AppDB` set and skip the retry.
+	// The library's own settings (defaults if never saved). Read before
+	// publishing the handle, so a failure leaves the library unopened.
 	settings, err := config.LoadSettings(ctx, appDB)
 	if err != nil {
 		appDB.Close()
@@ -146,18 +127,15 @@ func (a *app) openLibrary(ctx context.Context) error {
 	}
 	a.AppDB, a.outLock = appDB, l
 	a.Config.Settings = settings
-	// Only now is this folder known to really be a library, which is what
-	// makes it worth offering as a recent one next launch (spec D3).
+	// only a real library goes in the recent list
 	if err := a.Config.Remember(outputDir); err != nil {
 		a.Log.Warn("could not record this library as recently used", "error", err)
 	}
 	return nil
 }
 
-// saveSettings writes the settings the wizard collected into the library they
-// belong to, opening it first if this session hasn't yet — a config-first
-// session picks its output folder here, and nothing is written anywhere until
-// it does.
+// saveSettings writes the wizard's settings into their library, opening it
+// first if needed; a settings-first session picks its output folder here.
 func (a *app) saveSettings(ctx context.Context, outputDir string, s config.Settings) error {
 	if a.AppDB == nil {
 		a.Config.SetOutput(outputDir)
@@ -173,8 +151,7 @@ func (a *app) saveSettings(ctx context.Context, outputDir string, s config.Setti
 }
 
 func (a *app) closeDBs() {
-	// A failed Close can leave the WAL/SHM files locked (locking_mode=EXCLUSIVE),
-	// preventing the next scan from starting — always log the cause.
+	// a failed Close can leave WAL/SHM locked (locking_mode=EXCLUSIVE); log it
 	if a.AppDB != nil {
 		a.Log.Info("Closing databases")
 		if err := a.AppDB.Close(); err != nil {

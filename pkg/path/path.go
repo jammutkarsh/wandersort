@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package path
 
 import (
@@ -81,16 +75,8 @@ func (r *Resolver) RelativeToHome(path string) string {
 	return path
 }
 
-// SanitizeSegment makes a derived value safe to use as a single path segment
-// — a folder name, not a full path. The one place this decides what a
-// derived name is allowed to contain, so vfs (device/orientation/media/date
-// segments, renames) and location (the rename dropdown's folder value) apply
-// the same rule instead of two packages agreeing on it by convention.
-//
-// Safe means safe on every filesystem a library can sit on, not just this
-// machine's: photo drives are usually exFAT or NTFS, which refuse the
-// characters in unportable and the names in reserved, so a folder APFS would
-// accept still fails the copy there.
+// SanitizeSegment makes a derived value safe as one path segment on every
+// filesystem a library may sit on (exFAT and NTFS refuse more than APFS).
 func SanitizeSegment(seg string) string {
 	// commas are fine in a name a person is *choosing* (geocode results, a
 	// rename dropdown) — just not once picked, so strip them here.
@@ -111,12 +97,8 @@ func SanitizeSegment(seg string) string {
 	return unreserve(seg)
 }
 
-// SanitizeFileName makes a file's own name safe to create on any filesystem
-// a library can sit on — the same characters and reserved names as
-// SanitizeSegment, but a file name otherwise stays as the camera wrote it:
-// spaces, dots and case are kept, and only what a filesystem would refuse
-// changes. The stem is cut to leave room for the extension and a collision
-// suffix (_N), so the name still fits once one is added.
+// SanitizeFileName makes a file name safe on every library filesystem, keeping
+// spaces, dots and case, and leaves room for the extension and a _N suffix.
 func SanitizeFileName(name string) string {
 	name = strings.Map(func(r rune) rune {
 		if unportable(r) {
@@ -137,9 +119,8 @@ func SanitizeFileName(name string) string {
 }
 
 const (
-	// maxNameBytes is the longest name every supported filesystem takes:
-	// 255 bytes on ext4/APFS, 255 UTF-16 units on exFAT/NTFS, which any
-	// 255-byte UTF-8 name is within.
+	// maxNameBytes: 255 bytes (ext4/APFS) or 255 UTF-16 units (exFAT/NTFS),
+	// which any 255-byte UTF-8 name fits
 	maxNameBytes = 255
 	// suffixRoom is what a collision suffix may add to a file name: "_" and
 	// up to seven digits.
@@ -149,9 +130,7 @@ const (
 	maxExtBytes = 16
 )
 
-// unportable reports whether r is refused in a name by some filesystem a
-// library may live on: the separators, what exFAT and NTFS forbid, and
-// control characters.
+// unportable reports whether some library filesystem refuses r in a name.
 func unportable(r rune) bool {
 	switch r {
 	case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
@@ -200,9 +179,8 @@ func Overlaps(a, b string) bool {
 	return strings.HasPrefix(b, a+sep) || strings.HasPrefix(a, b+sep)
 }
 
-// ReduceRoots canonicalizes each path, validates it is a directory,
-// deduplicates, and prunes any path strictly nested under another.
-// Returns the minimal set of roots to scan.
+// ReduceRoots canonicalizes paths, checks they are directories, deduplicates,
+// and drops any nested under another.
 func ReduceRoots(r *Resolver, paths []string) ([]string, error) {
 	canonicalSet := make(map[string]struct{}, len(paths))
 
@@ -230,11 +208,8 @@ func ReduceRoots(r *Resolver, paths []string) ([]string, error) {
 	}
 	sort.Strings(canonicalPaths)
 
-	// Compared against every accepted root, not just the last: a lex sort does
-	// not keep a folder's descendants next to it — "/a b" sorts between "/a"
-	// and "/a/c", because a space sorts before the separator — so a
-	// last-only check kept "/a/c" and walked it twice. Roots are a handful,
-	// so the quadratic loop costs nothing.
+	// check every accepted root, not just the last: a lex sort puts "/a b"
+	// between "/a" and "/a/c"
 	effectivePaths := make([]string, 0, len(canonicalPaths))
 	for _, candidate := range canonicalPaths {
 		nested := false

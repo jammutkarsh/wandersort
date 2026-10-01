@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package migrations
 
 var schema003 = Migration{
@@ -17,11 +11,8 @@ var schema003 = Migration{
 	},
 }
 
-// library_settings holds the settings that shape this library's folders
-// (spec D2). One row: a library has one rule set, and it travels with the
-// library, so a second scan into the same folder organizes it the way the
-// first one did whatever another library is set to. No row at all means a
-// library that has never been through the wizard — the defaults in code.
+// library_settings holds the library's folder settings: one row, travelling
+// with the library. No row means defaults.
 const librarySettings = `
 CREATE TABLE IF NOT EXISTS library_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -38,11 +29,9 @@ CREATE TABLE IF NOT EXISTS library_settings (
 ) STRICT;
 `
 
-// folder_nodes is the plan's folder tree (spec D12): a folder keeps its id
-// when it is renamed or moved, so an edit can name it. A folder's path is its
-// ancestors' names joined. A folder no file uses any more is deleted outright:
-// AUTOINCREMENT never hands its id out again, so a stale reference can only
-// miss, never land on a different folder.
+// folder_nodes is the plan's folder tree: a folder keeps its id across renames
+// and moves; its path is its ancestors' names. AUTOINCREMENT never reuses an
+// id, so a stale reference can only miss.
 const folderNodes = `
 CREATE TABLE IF NOT EXISTS folder_nodes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,9 +40,9 @@ CREATE TABLE IF NOT EXISTS folder_nodes (
     -- the grouping level that made this folder: year, month, screenshots,
     -- fallback, orphan, or one of the rules levels (date, location, …)
     level TEXT NOT NULL,
-    -- what files this folder holds (spec D13), a JSON array of alternatives,
-    -- each an AND of levels: [{"date":[3],"location":["Goa"]},
-    -- {"date":[20],"location":["Manali"]}]. A file belongs if it matches any
+    -- what files this folder holds: a JSON array of alternatives, each an
+    -- AND of levels: [{"date":[3],"location":["<city A>"]},
+    -- {"date":[20],"location":["<city B>"]}]. A file belongs if it matches any
     -- alternative; [] matches nothing, [{}] everything. A folder's full range
     -- is its bounds AND its ancestors'. Read in Go only (vfs.Bounds); nothing
     -- queries inside it.
@@ -63,10 +52,9 @@ CREATE TABLE IF NOT EXISTS folder_nodes (
 CREATE INDEX IF NOT EXISTS idx_folder_nodes_parent ON folder_nodes(parent_id);
 `
 
-// virtual_fs_entries holds the planned destination for every master file in
-// the library. A row has no state of its own: it is not transferred yet while
-// its file is unplaced (file_registry.placed = 0) with no TRANSFER row in
-// errors, failed with one, and in the library once placed.
+// virtual_fs_entries holds every master file's planned destination. No state
+// column: pending while unplaced with no TRANSFER error, failed with one,
+// placed once file_registry.placed is set.
 const virtualFSEntries = `
 CREATE TABLE IF NOT EXISTS virtual_fs_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,11 +80,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_vfs_file ON virtual_fs_entries(file_id);
 CREATE INDEX IF NOT EXISTS idx_vfs_node ON virtual_fs_entries(node_id);
 `
 
-// user_labels remembers the folder names the reviewer typed. Written by the
-// review flow, read back as rename completions in later reviews.
-// SAVED_PLACE is a legacy kind: anchors are built in memory from
-// library_settings now, so nothing writes it any more — the CHECK still
-// allows it so rows written by older versions stay valid.
+// user_labels remembers folder names typed in review, for rename completion.
+// SAVED_PLACE is legacy: nothing writes it, the CHECK still allows old rows.
 const userLabels = `
 CREATE TABLE IF NOT EXISTS user_labels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

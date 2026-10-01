@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import "testing"
@@ -127,10 +121,8 @@ func TestDatePattern(t *testing.T) {
 	}
 }
 
-// dupe builds one candidate in a hash group. The election is a pure function
-// of the paths, so stating them is the whole setup — this used to need a
-// migrated SQLite database, a seeded registry, a metadata row per file and a
-// writer flush to assert the same rules.
+// dupe builds one candidate in a hash group; the election is a pure function of
+// the paths.
 func dupe(hash, dir, name string) masterFile {
 	return masterFile{FileHash: hash, FileDir: dir, FileName: name, absPath: dir + "/" + name}
 }

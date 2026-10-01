@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 // Package integration holds tests that run against the real, downloaded
 // location.db rather than fabricated fixtures — they assert against actual
 // geonames rows, discovered once by inspecting the shipped database (see
@@ -33,9 +27,7 @@ func TestCandidates(t *testing.T) {
 	}{
 		{
 			name: "widens search radius from tight to wide box",
-			// Point ~30km north of Shimla, deliberately placed where the ~10km box
-			// is empty but ~50km finds a match — the bug MaxDistSquared and the box
-			// delta disagreeing used to silently drop matches 15-40km out.
+			// a point where the ~10km box is empty but ~50km finds a match
 			lat: 31.10442 + 0.27, lon: 77.16662, radius: 0.09, limit: 5,
 			check: func(t *testing.T, cands []location.Candidate) {
 				if len(cands) != 0 {

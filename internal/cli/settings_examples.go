@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -28,8 +22,7 @@ func newSettingsExamples(rulesField *tui.Field, collapse, mergeDays, dateOnly *b
 	return &settingsExamples{rulesField, collapse, mergeDays, dateOnly, home}
 }
 
-// exampleDay is the fixed date every wizard example uses — 2024-08 gives a
-// real Year/Month pair without meaning anything beyond "a month ago".
+// exampleDay is the fixed date every wizard example uses.
 func exampleDay(d int) time.Time { return time.Date(2024, time.August, d, 12, 0, 0, 0, time.UTC) }
 
 // selectedRules returns every Rules option currently ticked, in canonical
@@ -44,8 +37,8 @@ func (e *settingsExamples) selectedRules() []string {
 	return out
 }
 
-// previewRules is lead (always shown) plus the collapsible levels the user
-// has ticked — each example demonstrates its own question, not the live Rules value.
+// previewRules is lead plus the ticked collapsible levels, so each example
+// shows its own question.
 func (e *settingsExamples) previewRules(lead ...string) []string {
 	rules := append([]string{}, lead...)
 	for _, r := range []string{vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia} {
@@ -108,9 +101,8 @@ func (e *settingsExamples) Collapse() string {
 	return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{day12, day13a, day13b})...)
 }
 
-// CollapseDescribe is what Collapse *means*, as the question's own
-// description — the example column is too narrow to hold a sentence without
-// truncating it.
+// CollapseDescribe is the Collapse question's description (the example column
+// is too narrow for prose).
 func (e *settingsExamples) CollapseDescribe() string {
 	d := "Drop a device/orientation/media folder that would hold every single " +
 		"file in the library — one value means the level says nothing."
@@ -161,11 +153,7 @@ func (e *settingsExamples) MergeDays() string {
 			MediaType: classifier.MediaTypeImage, FileName: file,
 		}
 	}
-	// The same three days either way — the setting itself decides whether
-	// they fold into one range or stay as three sibling branches under one
-	// month. The "yes" answer used to be a hand-written "02_04" handed
-	// straight to the renderer, which is not what the merge produces so much
-	// as a claim about it.
+	// the same three days either way; the setting decides whether they fold
 	return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{
 		trip(2, "IMG_1234.jpg"),
 		trip(3, "IMG_1250.jpg"),

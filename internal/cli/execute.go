@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -72,11 +66,9 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 		return err
 	}
 
-	// Copy never touches a source, so it never asks. Move is the one thing in
-	// this codebase that can delete the user's files — it asks unless the
-	// caller already said --yes (a dry run deletes nothing either way). Files
-	// that were never read are named in the question: they are not moved, and
-	// a source emptied of everything else looks done.
+	// Move is the only thing that can delete the user's files, so it asks
+	// unless --yes (or a dry run). Never-read files are named in the question:
+	// they are not moved, and a source emptied of the rest looks done.
 	if move && !dryRun && !yes {
 		detail := "Each source file is deleted once its copy at the output is verified complete — this cannot be undone."
 		if len(left) > 0 {
@@ -123,10 +115,8 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 // screen; the log has every one.
 const maxLeftBehindShown = 10
 
-// reportLeftBehind names the source files no transfer will bring in because
-// they were never read. Deferred, so it is the last thing a run prints,
-// whatever the run's own outcome — it is what to check before treating a
-// source as done.
+// reportLeftBehind names source files no transfer will bring in because they
+// were never read. Printed last, whatever the outcome.
 func (a *app) reportLeftBehind(left []string) {
 	if len(left) == 0 {
 		return

@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package scanner
 
 import (
@@ -46,18 +40,13 @@ func New(db *db.DB, log logger.Logger, workers int) *Scanner {
 	}
 }
 
-// Run orchestrates concurrent directory scans across all paths. force replaces
-// every touched file's row regardless of size/mtime, so a later phase reads it
-// from disk again instead of skipping it as unchanged.
-// It returns the total number of files discovered (new + previously seen) and
-// any first error encountered
+// Run scans all paths concurrently and returns how many files it found. force
+// replaces every touched row, so later phases re-read the files.
 func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, error) {
 	s.log.Info("Scanner Phase: Processing all paths", "pathCount", len(paths))
 
-	// Every row this run sees is stamped with scan; the sweep deletes the
-	// rows under a root still carrying an older number. One past the highest
-	// stored is newer than every row, and the output lock means no other scan
-	// can take the same number.
+	// every row seen is stamped with scan (one past the highest stored); the
+	// sweep deletes older stamps. A counter, never a clock: clocks step back.
 	var scan int64
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(last_seen_scan), 0) + 1 FROM file_registry`).Scan(&scan); err != nil {
@@ -116,9 +105,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 	workers.Wait()
 	close(results)
 
-	// Flush before sweeping: the upserts are queued, not written, so only a
-	// writer flush guarantees the sweep's own statement sees every
-	// last_seen_scan update
+	// flush the queued upserts so the sweep sees every last_seen_scan
 	s.db.Writer.Flush()
 
 	totalFiles := 0
@@ -171,10 +158,8 @@ func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, scan int
 	return count, gaps, walkErr
 }
 
-// walkGaps is what a walk could not see under its root: directories it could
-// not list, and files it could not stat. Their rows were not re-seen because
-// the walk was blind there, not because the files are gone, so the sweep must
-// leave them alone.
+// walkGaps is what a walk couldn't see: directories it couldn't list, files it
+// couldn't stat. Their rows aren't gone, so the sweep keeps them.
 type walkGaps struct {
 	dirs  []string    // source-path form
 	files [][2]string // (file_dir, file_name), source-path form
@@ -216,11 +201,9 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 			return nil
 		}
 
-		// A link to a file is not the file: its recorded size would be the
-		// link's, a check would call every such photo damaged, and a move
-		// could carry the link into the library and leave the photo behind.
-		// Directory links are never followed either (WalkDir doesn't); the
-		// folder a link points at is scanned as a root of its own.
+		// skip symlinked files: the recorded size would be the link's, and a
+		// move would carry the link, not the photo. (WalkDir never follows
+		// directory links either.)
 		if d.Type()&fs.ModeSymlink != 0 {
 			s.log.Warn("Skipping a link; add the folder it points to instead", "walkingPath", s.path.RelativeToHome(p))
 			return nil
@@ -273,9 +256,8 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 	return gaps, nil
 }
 
-// maxSweepGaps bounds how many unseen paths the sweep will spell out as
-// exclusions. Past it the walk was blind to too much of the tree for a
-// sweep to mean anything, and it is skipped until a cleaner walk.
+// maxSweepGaps bounds the exclusions a sweep spells out; past it the walk saw
+// too little and the sweep is skipped.
 const maxSweepGaps = 1000
 
 // sweptRoot is one cleanly walked root as the sweep needs it: its canonical
@@ -285,19 +267,16 @@ type sweptRoot struct {
 	seen         int
 }
 
-// sweep hard-deletes rows under root not re-seen by this scan (last_seen_scan
-// still older than scan), plan and metadata rows included. Only called for
-// roots whose walk finished cleanly, so a transient failure elsewhere heals
-// on the next clean scan instead of losing rows. No grace window: a placed
-// file's row was already repointed at a library-relative path by execute,
-// which is never under a scan root, so it is never a sweep candidate.
+// sweep hard-deletes rows under root this scan didn't see (older
+// last_seen_scan); metadata, plan and error rows cascade. Only for roots that
+// walked cleanly. Placed files have library-relative paths, never under a root.
 //
-// Rows are kept whenever the walk may simply not have been looking at them:
-//   - under gaps — a folder it could not list, a file it could not stat;
-//   - on another volume than the one now at root — a different card mounted
-//     at the same path (macOS mounts every unnamed card at /Volumes/NO NAME);
+// Rows are kept where the walk may not have been looking:
+//   - under gaps (unlistable folders, unstattable files);
+//   - on a different volume than the one now at root (another card mounted at
+//     the same path);
 //   - under a root that walked clean but empty while rows say it held files
-//     — an unmounted drive's mount point is an empty, readable folder.
+//     (an unmounted drive's mount point).
 func (s *Scanner) sweep(ctx context.Context, scan int64, r sweptRoot, gaps walkGaps) error {
 	root := r.root
 	if len(gaps.dirs)+len(gaps.files) > maxSweepGaps {
@@ -305,12 +284,9 @@ func (s *Scanner) sweep(ctx context.Context, scan int64, r sweptRoot, gaps walkG
 			logger.UserKey, true, "path", root, "unreadable", len(gaps.dirs)+len(gaps.files))
 		return nil
 	}
-	// Range match on (file_dir, file_name) avoids a full table scan and
-	// needs no LIKE escaping for roots containing % or _. file_dir is stored
-	// through path.ToSourcePath (separator only, never the bytes of a name),
-	// so root must be run through the same conversion to compare. Trim the
-	// trailing separator first, or the filesystem root's range becomes
-	// ["//", "/0"), which no file_dir ever falls into.
+	// range match on file_dir: seeks, and needs no LIKE escaping. Convert
+	// root the way file_dir is stored, and trim the trailing separator, or
+	// "/" becomes the range ["//", "/0") which matches nothing.
 	trimmed := strings.TrimSuffix(path.ToSourcePath(root), "/")
 	prefix := trimmed + "/"
 	prefixEnd := trimmed + string(rune('/'+1))
@@ -367,20 +343,15 @@ func (s *Scanner) sweep(ctx context.Context, scan int64, r sweptRoot, gaps walkG
 	return nil
 }
 
-// underDir matches a row in a directory or anywhere below it, given the
-// directory, the directory plus "/", and the directory plus the rune after
-// "/" — a range match, so it seeks and needs no LIKE escaping.
+// underDir matches a row in a directory or below it, as a range (dir, dir+"/",
+// dir+"0").
 const underDir = `(file_dir = ? OR (file_dir >= ? AND file_dir < ?))`
 
-// storeScan builds the DB callback consumed by BulkWriter.Write. It must do
-// nothing outside tx: a batch that fails replays every op in it, including
-// ones that already ran, so any other effect would happen twice — it once
-// carried a WaitGroup.Done() and panicked the scan with a negative counter.
+// storeScan builds the BulkWriter op for one discovered file. It must touch
+// nothing outside tx: a failed batch replays every op.
 func (s *Scanner) storeScan(file FileDiscovery, scan int64, force bool) db.DBOperation {
-	// A file whose size or mtime moved (or any file under force) is not the
-	// file that was read: its hash, tags and planned folder describe something
-	// else. Delete the row — metadata, plan and error rows cascade — and let
-	// the insert below make a fresh one. An unchanged file only gets seen.
+	// a changed file (size/mtime, or any under force) is a new file: delete
+	// the row (dependants cascade) and let the insert make a fresh one
 	const replaceChanged = `
 		DELETE FROM file_registry
 		WHERE file_dir = ? AND file_name = ?

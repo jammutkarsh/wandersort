@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package classifier
 
 import (
@@ -37,11 +31,11 @@ func NewFileClassifier() *FileClassifier {
 			".mov": true,
 		},
 		rawExtensions: map[string]bool{
-			".cr2": true, // Canon
-			".dng": true, // Adobe/Universal
+			".cr2": true,
+			".dng": true,
 		},
 		sidecarExtensions: map[string]bool{
-			".aae": true, // iPhone edit sidecar
+			".aae": true, // photo edit sidecar
 		},
 		ignoredFiles: map[string]bool{
 			".DS_Store":   true,
@@ -58,15 +52,9 @@ func NewFileClassifier() *FileClassifier {
 			"$RECYCLE.BIN":              true,
 			"System Volume Information": true,
 
-			// macOS writes these onto any volume it indexes, including the
-			// exFAT/NTFS externals a photo library usually lives on. Their
-			// contents are index shards (.shadow, .buckets, .offsets,
-			// .indexArrays, …), none of which is media, and there are enough of
-			// them to dominate the scan's warning output — 4,417 of 4,424
-			// "Unsupported file type" warnings on a 107k-file run came from
-			// .Spotlight-V100 alone. Skipping the directory skips the subtree.
-			// Note .Trash above is the home-directory one; .Trashes is the
-			// per-volume one an external drive carries, and is a different name.
+			// macOS index shards on every volume it indexes: never media, and
+			// they flood the unsupported-type warnings. (.Trashes is the
+			// per-volume trash; .Trash above is the home one.)
 			".Spotlight-V100":         true,
 			".fseventsd":              true,
 			".DocumentRevisions-V100": true,
@@ -84,16 +72,9 @@ func (fc *FileClassifier) ClassifyName(name string) (mediaType string, shouldPro
 		return MediaTypeUnknown, false, true
 	}
 
-	// AppleDouble sidecars: copying an APFS/HFS+ file to a filesystem with no
-	// native resource forks (exFAT, FAT32, NTFS, SMB) makes macOS write the
-	// fork and Finder metadata to a companion "._<name>" file. It carries the
-	// shadowed file's extension, so the media check below would otherwise admit
-	// it as a photo. They are also byte-identical to each other whenever the
-	// original had no resource fork, which collapses them into one enormous
-	// bogus duplicate group — 10,174 of them in a single group on a 107k-file
-	// run. Name is enough to identify them; the AppleDouble magic (0x00051607)
-	// would confirm it but costs an open+read per candidate, which is the
-	// expense this check exists to avoid.
+	// AppleDouble "._<name>" files: macOS writes them on exFAT/FAT/NTFS/SMB.
+	// They carry the shadowed file's extension and are often byte-identical,
+	// forming one huge bogus duplicate group. The name is enough to spot them.
 	if strings.HasPrefix(base, "._") {
 		return MediaTypeUnknown, false, true
 	}
@@ -114,11 +95,9 @@ func (fc *FileClassifier) ClassifyName(name string) (mediaType string, shouldPro
 	}
 }
 
-// libraryBundleSuffixes are folders another photo app owns. Their contents
-// look like media — originals, and thousands of JPEG thumbnails and previews
-// — but they are that app's database: planning its thumbnails files junk as
-// photos, and moving its originals out breaks the app's library for good.
-// Matched case-insensitively, since HFS+/APFS and exFAT ignore case.
+// libraryBundleSuffixes are folders another photo app owns: its thumbnails
+// look like media, and moving its originals out breaks that app's library.
+// Matched case-insensitively.
 var libraryBundleSuffixes = []string{
 	".photoslibrary",        // Apple Photos
 	".photolibrary",         // iPhoto
@@ -157,9 +136,8 @@ var (
 		`|^(whatsapp|telegram|signal)[\s_-]*(images?|videos?|media)$`)
 )
 
-// IsGenericDirName reports whether a single folder name — one path segment,
-// e.g. filepath.Base of a dir, never a full path — is a known or
-// pattern-matched low-signal name (DCIM, Backup, temp, etc).
+// IsGenericDirName reports whether one folder name (a single segment) is a
+// low-signal name (DCIM, Backup, temp, …).
 func IsGenericDirName(name string) bool {
 	seg := strings.ToLower(name)
 	return genericDirs[seg] || genericDirPattern.MatchString(seg)

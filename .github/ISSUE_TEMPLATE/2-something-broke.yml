@@ -1,6 +1,3 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
-# Copyright (c) 2026 Utkarsh Chourasia
-
 name: "💥 Something broke or crashed"
 description: WanderSort stopped, showed an error, or didn't do what you expected.
 title: "[Bug] "

@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 // https://gogoapps.io/blog/passing-loggers-in-go-golang-logging-best-practices/
 package logger
 
@@ -52,10 +46,9 @@ func New(logLevel string, console bool, file *File) Logger {
 	}
 }
 
-// NewTUI builds a Logger for full-screen mode: the console handler is off (its
-// writes would corrupt the alt-screen) and records flow to sink for the TUI to
-// render. The JSON file log still captures everything; pass the same File
-// the startup logger got, so one process keeps one log.
+// NewTUI builds a Logger for full-screen mode: no console handler (it would
+// corrupt the alt-screen); records go to sink and the file log. Pass the
+// startup logger's File so one process keeps one log.
 func NewTUI(logLevel string, file *File, sink Sink) Logger {
 	level := getSlogLevel(logLevel)
 	handlers := []slog.Handler{&teaHandler{sink: sink, minLevel: level}}
@@ -68,9 +61,8 @@ func NewTUI(logLevel string, file *File, sink Sink) Logger {
 	}
 }
 
-// fileHandler writes the JSON file log (debug level, with source) into file,
-// and persists file on the first warning: a run that went wrong is worth
-// keeping even if it never opened a library. Shared by New and NewTUI.
+// fileHandler writes the JSON file log (debug level, with source) and persists
+// it on the first warning.
 func fileHandler(file *File) slog.Handler {
 	return persistOnWarn{slog.NewJSONHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true}), file}
 }

@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package migrations
 
 import (
@@ -14,9 +8,8 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// sqlNowDefault is the SQL-side DEFAULT for timestamp columns. %f yields
-// millisecond precision; the literal zeros pad to the fixed-width 9-digit
-// fraction db.TimeLayout expects
+// sqlNowDefault is the SQL DEFAULT for timestamps: millisecond precision padded
+// to db.TimeLayout's 9-digit fraction.
 const sqlNowDefault = `(strftime('%Y-%m-%dT%H:%M:%f000000Z','now'))`
 
 // Migration describes a single schema migration step
@@ -30,9 +23,7 @@ type Migration struct {
 // never reorder or mutate existing entries
 var schemas = []Migration{schema001, schema002, schema003}
 
-// ErrNewerSchema means the database records a migration this build does not
-// know: it was opened by a newer WanderSort. Running against it would read
-// and write a schema this code was never written for.
+// ErrNewerSchema means a newer WanderSort wrote this database.
 var ErrNewerSchema = errors.New("the library was written by a newer version of WanderSort; update WanderSort to open it")
 
 // Pending reports how many migrations Run would apply, and how many are
@@ -86,11 +77,8 @@ func plan(db *sqlx.DB) ([]Migration, int, error) {
 	return todo, len(versions), nil
 }
 
-// Run applies, in version order, any migrations not yet recorded in the
-// schema_migrations table (created here on first run). Each version is
-// tracked individually, so a lower-numbered migration added later still runs.
-// A database recording a version this build doesn't know is refused
-// (ErrNewerSchema) before anything runs.
+// Run applies any migrations not yet recorded in schema_migrations, in version
+// order, each tracked individually. Refuses ErrNewerSchema first.
 func Run(db *sqlx.DB) (int, error) {
 	todo, _, err := plan(db)
 	if err != nil {

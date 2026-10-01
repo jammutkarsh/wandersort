@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 // External test package: it drives the Resolver against the real geonames
 // database through installtest, which imports this package back.
 package location_test

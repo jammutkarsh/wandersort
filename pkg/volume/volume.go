@@ -1,12 +1,5 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
-// Package volume resolves the storage-volume UUID for filesystem paths, so
-// files on external drives can be re-anchored when the drive remounts at a
-// different location (drive letters on Windows, /Volumes/<name> on macOS).
+// Package volume resolves volume UUIDs and storage classes for paths, so files
+// on external drives can be re-anchored when the drive remounts elsewhere.
 package volume
 
 import "sync"
@@ -22,9 +15,8 @@ func New() *Resolver {
 	return &Resolver{cache: map[string]string{}}
 }
 
-// ForPath returns the UUID of the volume containing path. Best-effort: an
-// unsupported platform or unresolvable volume yields "" rather than an error,
-// because volume identity is advisory metadata, never a scan precondition
+// ForPath returns the UUID of the volume containing path, or "" when it can't
+// be resolved.
 func (r *Resolver) ForPath(path string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()

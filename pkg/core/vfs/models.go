@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import (
@@ -42,12 +36,12 @@ type Config struct {
 	Fallback   string        // last-resort path segment when nothing can be derived
 	ClusterGap time.Duration // capture-time gap that starts a new event cluster
 	// Drops a device/orientation/media level with one library-wide value.
-	// Date/location never drop. See uninformativeLevels.
+	// Date/location never drop. See assignTargetPaths step 3.
 	CollapseLevels bool
 	// Groups saved-place photos by date only, no location folder. See resolveLocations.
 	SavedPlacesDateOnly bool
 	// Collapses consecutive same-location days into one range folder
-	// (Aug/02+03+04/Goa → Aug/02_04/Goa). See mergeSameLocationDays.
+	// (08/{02,03,04}/<city> → 08/02_04/<city>). See assignTargetPaths step 6.
 	MergeSameLocationDays bool
 	// Anchors are saved places resolved to GPS coordinates, built by Propose
 	// from the library's settings. Nil when no saved places are configured or
@@ -57,18 +51,17 @@ type Config struct {
 	// resolution — what the settings hold and what a save is compared against.
 	SavedPlaces []string
 	// Workers sizes the pool every per-master pass fans out over — deriveAll,
-	// resolveLocations, applyNameCase and buildTargets (see forEachMaster).
+	// resolveLocations and assignTargetPaths (see forEachMaster).
 	// 0 or 1 runs them inline.
 	Workers int
 	// Placed is the library-relative path of every file already placed, loaded
-	// by Run. buildTargets never hands one of these names to a new file.
+	// by Run. assignTargetPaths never hands one of these names to a new file.
 	Placed []string
 	// placedTree is the folders placed files sit in, loaded by Run; route
-	// sends a new file into one when it matches completely (spec D15).
+	// sends a new file into one it matches completely.
 	placedTree *placedTree
-	// placedTimes is every placed file's capture time, loaded by Run. The
-	// clustering reads them read-only (spec D16), so a new file continuing a
-	// placed cluster gets that cluster's folder month.
+	// placedTimes is every placed file's capture time, loaded by Run. They
+	// widen clusters but never join them.
 	placedTimes []time.Time
 }
 
@@ -84,18 +77,11 @@ func DefaultConfig() Config {
 }
 
 // RuleNone is the settings' `rules` sentinel for "no levels below
-// Year/Month". Not a level itself: ConfigFor is the only thing that
-// interprets it.
+// Year/Month"; only ConfigFor interprets it.
 const RuleNone = "none"
 
-// OrphanDir is the one flat folder every ungrouped .AAE sidecar lands in
-// instead of wherever its file mtime would otherwise place it. A sidecar
-// carries no EXIF and is meaningless without the photo it edits — useful only
-// for re-importing into Apple Photos, never for browsing — so a sidecar
-// captureDirs couldn't pair with a photo is junk to be held somewhere, not
-// filed. Bypasses Rules entirely, the same way a screenshot's Year/Month
-// short-circuit does. Excluded from BuildTree (nothing to review about junk)
-// and therefore never renamed or merged by the reviewer.
+// OrphanDir is the flat folder for sidecars captureDirs couldn't pair: without
+// their photo they are meaningless. Bypasses Rules and is hidden from review.
 const OrphanDir = "orphan"
 
 // ConfigFor is DefaultConfig with the user's settings applied — the one
@@ -111,8 +97,7 @@ func ConfigFor(appCfg *config.Configuration) Config {
 	cfg.Workers = appCfg.Workers
 	cfg.SavedPlaces = appCfg.SavedPlaces
 	switch {
-	// empty Rules keeps the defaults; RuleNone is interpreted only here, so
-	// every caller sees the sentinel resolved the same way
+	// RuleNone is interpreted only here
 	case len(appCfg.Rules) == 1 && appCfg.Rules[0] == RuleNone:
 		cfg.Rules = nil
 	case len(appCfg.Rules) > 0:
@@ -148,14 +133,11 @@ type masterFile struct {
 
 	absPath string
 	takenAt time.Time
-	// folderDate is the capture time the Year/Month folders come from: the
-	// *cluster's* start, so a trip running Dec 30 → Jan 2 lands in one month
-	// folder instead of being torn across two Year trees. Zero until
-	// clusterAndSpill runs — read it through folderTime, never directly.
+	// folderDate is the capture time the Year/Month folders come from (the
+	// cluster's start for a short cluster). Read through folderTime.
 	folderDate time.Time
-	// orderTime/orderHash are what buildTargets ranks a file by when names
-	// collide: its own capture time and hash, or its capture group's leader's
-	// (see captureDirs), so a sidecar keeps the same suffix as its photo.
+	// orderTime/orderHash rank a file when names collide: its own, or its
+	// capture group leader's, so a sidecar keeps its photo's suffix.
 	orderTime time.Time
 	orderHash string
 	// pairKey names the capture group this file shares one _N suffix with
@@ -171,11 +153,11 @@ type masterFile struct {
 	city         string
 	atSavedPlace bool // GPS at a confirmed saved-place place; suppresses the location level (SavedPlacesDateOnly)
 	// keepLocationFolder overrides that suppression for this file because its
-	// day holds files from somewhere else too. See unsuppressMixedSavedPlaces.
+	// day holds files from somewhere else too. See assignTargetPaths step 4.
 	keepLocationFolder bool
 	clusterID          string // set when the location decision came from cluster logic
 	eventSegment       string // dated segment for unresolved clusters, e.g. "03-05"
-	dayOverride        string // date-level range label from mergeSameLocationDays, e.g. "02_04"
+	dayOverride        string // date-level range label from assignTargetPaths step 6, e.g. "02_04"
 	targetPath         string
 	// the level that made each folder of targetPath's directory, one per
 	// segment — dirFor records it. The location entry is where the review
@@ -194,11 +176,8 @@ func (m *masterFile) locationDepth() int {
 	return slices.Index(m.dirLevels, RuleLocation)
 }
 
-// folderTime is the instant every dated folder decision is made from — the
-// cluster's start where there is one, the file's own capture time otherwise.
-// One accessor, so no caller has to remember the fallback (and none of them
-// can disagree about it: dirFor, locationParent, mergeSameLocationDays and
-// persist all have to land the file in the same month).
+// folderTime is the instant dated folder decisions use: folderDate when set,
+// else the capture time.
 func (m *masterFile) folderTime() time.Time {
 	if m.folderDate.IsZero() {
 		return m.takenAt

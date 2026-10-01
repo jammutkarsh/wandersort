@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package logger
 
 import (
@@ -16,22 +10,19 @@ import (
 // console — unlike UserKey milestones, which show everywhere.
 const StreamKey = "stream"
 
-// PhaseKey/EventKey tag a pipeline phase transition ("scan"/"hash"/…,
-// "start"/"done") so a TUI can route it without matching on message prose.
-// Both stripped from the plain console.
+// PhaseKey/EventKey tag a pipeline phase transition ("scan"/"metadata"/"vfs",
+// "start"/"done") for TUI routing. Hidden on the plain console.
 const (
 	PhaseKey = "phase"
 	EventKey = "event"
 )
 
-// ElapsedKey carries a phase's elapsed time on its "done" event, separate
-// from the message (which embeds it for the plain console). TUI right-aligns
-// it and strips the duplicate.
+// ElapsedKey carries a phase's elapsed time on its "done" event; the TUI
+// right-aligns it.
 const ElapsedKey = "elapsed"
 
-// Event is one log record delivered to a TUI Sink. UserFacing and Stream are
-// lifted out of the attrs (from UserKey/StreamKey) so the TUI can route the
-// record without re-inspecting them; Attrs holds everything else.
+// Event is one log record delivered to a TUI Sink, with UserFacing and Stream
+// lifted out of the attrs.
 type Event struct {
 	Level      slog.Level
 	Message    string
@@ -44,9 +35,8 @@ type Event struct {
 // for long (forward to a buffered channel / tea.Program.Send).
 type Sink func(Event)
 
-// teaHandler is the TUI fan-out handler: turns a record into an Event and
-// forwards only UserKey/StreamKey lines and warnings/errors (everything, if
-// debug level).
+// teaHandler turns records into Events, forwarding only UserKey/StreamKey lines
+// and warnings/errors (everything at debug level).
 type teaHandler struct {
 	sink     Sink
 	minLevel slog.Level

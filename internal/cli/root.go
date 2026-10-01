@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -59,10 +53,8 @@ wandersort check`,
 			return a.runRoot(cmd)
 		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// The settings that shape folders live in the library's own
-			// database and are read by openLibrary; the only thing decided
-			// here is which library that is — this flag, or the last one
-			// used (config.New).
+			// settings live in the library and are read by openLibrary; this
+			// only picks which library (this flag, else the last one used)
 			cfg, err := config.New()
 			if err != nil {
 				return err

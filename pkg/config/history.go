@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package config
 
 import (
@@ -15,15 +9,12 @@ import (
 
 const (
 	historyFileName = "libraries"
-	// maxHistory caps the remembered output folders (spec D3). A list nobody
-	// scrolls past the first few entries of doesn't need to grow forever.
+	// maxHistory caps the remembered output folders
 	maxHistory = 100
 )
 
-// History is the output folders this machine has opened, newest first.
-// Folders that no longer exist are dropped as it is read — a library on an
-// unplugged drive is not one to offer — so the list is only ever as long as
-// what is really there.
+// History is the output folders this machine has opened, newest first; ones
+// that no longer exist are dropped as it is read.
 func (cfg *Configuration) History() []string {
 	data, err := os.ReadFile(filepath.Join(cfg.appDir, historyFileName))
 	if err != nil {
@@ -48,9 +39,8 @@ func (cfg *Configuration) History() []string {
 	return out
 }
 
-// Remember puts dir at the front of the history, dropping the oldest entries
-// past maxHistory. Called when a library is opened, which is the only moment
-// a folder is known to really be one.
+// Remember puts dir at the front of the history (capped at maxHistory). Called
+// once a library is really opened.
 func (cfg *Configuration) Remember(dir string) error {
 	list := append([]string{dir}, cfg.History()...)
 	for i := 1; i < len(list); i++ {

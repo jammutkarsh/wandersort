@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package db
 
 import (
@@ -23,10 +17,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// TimeLayout is RFC3339 with fixed-width nanoseconds. Fixed width keeps
-// lexicographic string comparison in SQL consistent with time order; values
-// are always stored in UTC via FormatTime and shown in the user's local zone
-// only at display time
+// TimeLayout is RFC3339 with fixed-width nanoseconds, so string order in SQL is
+// time order. Stored in UTC; converted to local only for display.
 const TimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
 // FormatTime renders t in the canonical stored form: UTC, fixed-width nanos
@@ -66,16 +58,13 @@ func (d *DB) Close() error {
 	return d.SQL.Close()
 }
 
-// Checkpoint rebuilds planner stats and flushes the WAL into the main file.
-// Called after every workflow phase, keeping each phase's WAL small instead
-// of letting it grow across the whole run.
+// Checkpoint rebuilds planner stats and flushes the WAL; called after every
+// workflow phase.
 func (d *DB) Checkpoint() error {
 	if _, err := d.SQL.Exec("PRAGMA optimize"); err != nil {
 		return fmt.Errorf("pragma optimize: %w", err)
 	}
-	// WAL mode doesn't fold -wal/-shm back into the main file just because
-	// the connection closes — force a full checkpoint so a clean shutdown
-	// doesn't leave them behind.
+	// a clean shutdown must not leave -wal/-shm behind
 	if _, err := d.SQL.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 		return fmt.Errorf("wal checkpoint: %w", err)
 	}
@@ -94,9 +83,8 @@ func openAppDB(ctx context.Context, dbPath string, log logger.Logger) (*DB, erro
 		return nil, fmt.Errorf("unable to open database: %w", err)
 	}
 
-	// Pin the pool before the first query, not after the pragmas: every
-	// connection-scoped setting now rides in the DSN, and this makes sure
-	// there is only ever the one connection carrying them.
+	// pin the pool before the first query: one connection carries the DSN
+	// pragmas
 	sqlDB.SetMaxOpenConns(maxOpenConns)
 	sqlDB.SetMaxIdleConns(maxIdleConns)
 	sqlDB.SetConnMaxLifetime(connMaxLifetime)
@@ -107,9 +95,7 @@ func openAppDB(ctx context.Context, dbPath string, log logger.Logger) (*DB, erro
 		return nil, err
 	}
 
-	// What is left here is database-scoped: it is written into the file's own
-	// header once and every later connection reads it back, so it belongs in a
-	// statement rather than in the DSN.
+	// database-scoped settings, stored in the file header
 	pragmas := []string{
 		"PRAGMA page_size=32768",         //  32KB for better I/O efficiency
 		"PRAGMA journal_mode=WAL",        // Better concurrency and durability
@@ -134,9 +120,8 @@ func openAppDB(ctx context.Context, dbPath string, log logger.Logger) (*DB, erro
 
 	sqlxDB := sqlx.NewDb(sqlDB, "sqlite")
 
-	// A migration rewrites the user's only record of their library, so an
-	// existing library is backed up first, beside the regular backup (not
-	// over it). A fresh database has nothing to lose; a newer one is refused.
+	// back up an existing library before migrating it; a newer schema is
+	// refused
 	pending, applied, err := migrations.Pending(sqlxDB)
 	if err != nil {
 		sqlxDB.Close()
@@ -214,15 +199,10 @@ func (db *DB) QueryRowContext(ctx context.Context, query string, args ...any) *s
 	return db.SQL.QueryRowContext(ctx, query, args...)
 }
 
-// appDSN spells the library's connection-scoped settings into the DSN so the
-// driver applies them to *every* connection it opens, not just to whichever
-// one a startup statement happened to land on. These are per-connection
-// settings in SQLite: a replacement connection (a retired bad conn, a second
-// one opened before the pool was pinned) that missed them would run with
-// foreign keys OFF, which turns every cascading delete in this codebase — the
-// scanner's sweep, execute's duplicate cleanup, ResetAll — into an orphan-row
-// generator, silently. The driver applies _pragma entries in lexicographic
-// order, so nothing here may depend on running before anything else here.
+// appDSN puts the connection-scoped pragmas in the DSN so every connection
+// gets them. Without foreign_keys a replacement connection would silently
+// turn every ON DELETE CASCADE into orphan rows. The driver applies _pragma
+// entries in lexicographic order, so none may depend on another.
 func appDSN(dbPath string) string {
 	pragmas := []string{
 		"busy_timeout(5000)",  // wait 5s on a locked database before failing
@@ -230,22 +210,14 @@ func appDSN(dbPath string) string {
 		"foreign_keys(1)",     // every ON DELETE CASCADE in this codebase
 		"fullfsync(1)",        // darwin: flush the drive's own cache, not just the OS
 		"journal_size_limit(67108864)",
-		// Hold the file lock for the whole session: while wandersort has the
-		// library open, any other client — the sqlite3 CLI, a DB browser —
-		// gets "database is locked" instead of reading a half-written run or
-		// writing under the pipeline. Safe because the pool is one connection.
+		// hold the file lock all session: other clients get "database is
+		// locked". Safe because the pool is one connection.
 		"locking_mode(exclusive)",
-		// No memory-mapped reads. A library usually lives on an external or
-		// network drive; when it drops mid-read, read() returns an error
-		// SQLite handles, but a mapped page faults with SIGBUS and the
-		// process dies on the spot — mid-execute included. The syscalls
-		// mmap saves are not worth an uncontrolled crash.
+		// no mmap: a library on an external drive that drops mid-read SIGBUSes
+		// a mapped page, while read() returns an error SQLite handles
 		"mmap_size(0)",
-		// FULL, not NORMAL: under NORMAL, WAL mode does not fsync at commit, so
-		// a power loss drops an unbounded tail of *committed* transactions —
-		// including the rows saying a photo was copied into the library and its
-		// source may be deleted. Writes are batched (see BulkWriter), so the
-		// cost is a handful of fsyncs a second, not one per row.
+		// FULL, not NORMAL: in WAL mode NORMAL doesn't fsync at commit, so a
+		// power loss could drop committed "file is placed" rows
 		"synchronous(full)",
 		"temp_store(memory)", // temp tables and indices in RAM
 		"wal_autocheckpoint(2000)",
@@ -259,10 +231,8 @@ func appDSN(dbPath string) string {
 	return u.String()
 }
 
-// assertPragmas reads back the two settings whose silent absence would be a
-// correctness bug rather than a slowdown. A DSN typo, or a driver that stops
-// honouring _pragma, otherwise costs an invariant with no symptom until the
-// first orphaned row.
+// assertPragmas reads back the settings whose silent absence would be a
+// correctness bug (foreign_keys, synchronous).
 func assertPragmas(sqlDB *sql.DB) error {
 	var fk int
 	if err := sqlDB.QueryRow("PRAGMA foreign_keys").Scan(&fk); err != nil {
@@ -287,10 +257,8 @@ func appIDFromTag() int32 {
 	return int32(binary.BigEndian.Uint32([]byte(tag)))
 }
 
-// verifyAppID refuses to claim a sqlite file that already belongs to another
-// application: a non-empty database whose application_id isn't ours would
-// otherwise be silently stamped and migrated. A fresh or empty file passes and
-// is stamped by the pragma loop that follows
+// verifyAppID refuses a non-empty sqlite file whose application_id isn't
+// ours. A fresh file passes and is stamped.
 func verifyAppID(sqlDB *sql.DB, dbPath string, wantID int32) error {
 	var gotID int32
 	if err := sqlDB.QueryRow("PRAGMA application_id").Scan(&gotID); err != nil {

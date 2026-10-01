@@ -1,7 +1,3 @@
-> SPDX-License-Identifier: AGPL-3.0-or-later
->
-> Copyright (c) 2026 Utkarsh Chourasia
-
 [![CI](https://github.com/jammutkarsh/wandersort/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jammutkarsh/wandersort/actions/workflows/ci.yml)
 
 # WanderSort
@@ -14,7 +10,7 @@ No cloud uploads. No subscriptions. No AI deciding what's "relevant." Just your 
 
 ## The Problem
 
-You went to Goa six months ago. Shot a ton on your phone — some on a DSLR too. You want to make a reel. You remember the clip of that beach at golden hour, the slow-mo of waves crashing, the photo your friend edited and airdropped back.
+You went to the coast six months ago. Shot a ton on your phone — some on a DSLR too. You want to make a reel. You remember the clip of that beach at golden hour, the slow-mo of waves crashing, the photo your friend edited and airdropped back.
 
 Where is any of it?
 
@@ -26,7 +22,7 @@ The specifics make it worse:
 
 - **Phone dumps** — 3 copies of the same photo because you backed up twice and forgot.
 - **DSLR shoots** — RAW + JPG + sidecar files, all separated from each other.
-- **iPhone Live Photos** — the `.HEIC`, the `.MOV`, the `.AAE` edit file — scattered across 3 different folders.
+- **Live Photos** — the `.HEIC`, the `.MOV`, the `.AAE` edit file — scattered across 3 different folders.
 - **Edited variants** — `IMG_E3162.HEIC` sitting next to `IMG_3162.HEIC` with no way to know which is which.
 
 WanderSort's goal is simple: **you should never have to dig through that mess again.**
@@ -48,7 +44,7 @@ WanderSort is for people who care about where their files actually live.
 - **Digital hoarders** (respectfully) who have terabytes of memories and want to finally organise them — and *keep* them organised going forward.
 - **Home-lab and self-hosting folks** with a stack of HDDs/SSDs and a NAS, who want their media organised on their own hardware — not rented from a cloud.
 
-If you want a visual hierarchy — `2024/Goa/Day-2/sunset_01.heic` instead of `DCIM/100APPLE/IMG_4721.HEIC` — WanderSort is being built for you.
+If you want a visual hierarchy — `2024/08_August/02_04/<city>/sunset_01.heic` instead of `DCIM/100APPLE/IMG_4721.HEIC` — WanderSort is being built for you.
 
 ---
 
@@ -75,16 +71,18 @@ make install         installs to $GOPATH/bin/wandersort (requires Go 1.27.1 or a
 ### Usage
 
 ```bash
-# 1. Scan one or more directories. Runs in the foreground until it finishes.
-#    Dependencies (ExifTool + location database) install automatically on
-#    first run — no separate setup step required.
-wandersort scan --paths ~/Pictures,/Volumes/SD
+# Do everything on screen: settings, adding folders, correcting the plan.
+wandersort
 
-# 2. Review and confirm the proposed folder structure.
-wandersort review
+# Or step by step. Dependencies (ExifTool + location database) download
+# automatically on first use.
+wandersort add --paths ~/Pictures,/Volumes/SD   # plan where every file goes
+wandersort organise                              # correct the plan
+wandersort execute                               # copy the files in (--move to move)
+wandersort check                                 # later: verify the library
 ```
 
-> Want to change the defaults (output folder, folder rules, home/work towns)? Run `wandersort config` for a full-screen settings wizard. The settings are stored in the library itself, so each library keeps its own; `wandersort` opens the one you used last, and `--output-path` picks another.
+> Settings (output folder, folder rules, saved places) live in the library itself, so each library keeps its own. `wandersort` opens the one you used last; `--output-path` picks another.
 
 Run `wandersort --help`, or `wandersort <command> --help`, for the full command and flag reference.
 
@@ -92,7 +90,7 @@ Run `wandersort --help`, or `wandersort <command> --help`, for the full command 
 
 ## Architecture
 
-see [ARCHITECTURE.md](ARCHITECTURE.md).
+The codebase map is [CLAUDE.md](CLAUDE.md); coding rules are in [AGENTS.md](AGENTS.md).
 
 ---
 

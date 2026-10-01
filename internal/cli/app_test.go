@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -31,9 +25,8 @@ func testConfig(t *testing.T) *config.Configuration {
 	return cfg
 }
 
-// TestOpenLibraryLoadsThatLibrarysSettings is spec D2 end to end: the rules a
-// library was organized under come back with it, and opening it records it as
-// the most recently used one (D3).
+// TestOpenLibraryLoadsThatLibrarysSettings: a library's rules come back with it,
+// and opening it makes it the most recently used one.
 func TestOpenLibraryLoadsThatLibrarysSettings(t *testing.T) {
 	cfg := testConfig(t)
 	ctx := context.Background()

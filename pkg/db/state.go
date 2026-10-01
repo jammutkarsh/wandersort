@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package db
 
 import (
@@ -14,28 +8,20 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// Where a planned file stands. There is no status column: a file is placed
-// once file_registry.placed says so, failed while it has a TRANSFER row in
-// errors, and pending otherwise. The predicate and the transitions below are
-// the one spelling of that; every phase composes them rather than writing the
-// columns itself.
+// Where a planned file stands, with no status column: placed once
+// file_registry.placed is set, failed while it has a TRANSFER error, pending
+// otherwise. Phases use these helpers rather than writing the columns.
 
-// PendingTransfer is the SQL predicate for "this file has not been
-// transferred and did not fail to be": unplaced, no TRANSFER row in errors.
-// fileID is the file id expression of the caller's query (vfe.file_id, ...).
-// Its negation is the decided set — placed or failed — which a re-plan leaves
-// alone.
+// PendingTransfer is the SQL predicate for "unplaced, no TRANSFER error".
+// fileID is the caller's file id expression (vfe.file_id, ...).
 func PendingTransfer(fileID string) string {
 	return fmt.Sprintf(`(%[1]s IN (SELECT id FROM file_registry WHERE placed = 0)
 		AND %[1]s NOT IN (SELECT file_id FROM errors WHERE stage = '%[2]s'))`, fileID, StageTransfer)
 }
 
-// MarkPlaced records that a file is in the library at target, a
-// library-relative path (spec D9/D10): its plan row and its registry row both
-// point there from now on, so a database that travels with the library does
-// not depend on where it is mounted. It sets placed and clears the file's
-// error rows. Run it inside WriteSync: this is the one row whose absence the
-// user pays for in photos.
+// MarkPlaced records a file as in the library at target (library-relative, so
+// the database travels with the library), sets placed and clears its errors.
+// Run it inside WriteSync.
 func MarkPlaced(ctx context.Context, tx *sqlx.Tx, entryID, fileID int64, target string) error {
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE virtual_fs_entries SET source_path = ?, target_path = ? WHERE id = ?`,
@@ -57,10 +43,8 @@ func MarkFailed(ctx context.Context, tx *sqlx.Tx, fileID int64, op string, err e
 	return RecordError(ctx, tx, fileID, StageTransfer, op, err)
 }
 
-// Forget deletes files' records: the registry rows, and with them (ON DELETE
-// CASCADE) their hash, plan and error rows. Irreversible — the caller decides
-// the file is no longer worth knowing about, and backs up first if it cannot
-// be sure.
+// Forget deletes files' registry rows; hash, plan and error rows cascade.
+// Irreversible: back up first if unsure.
 func Forget(ctx context.Context, tx *sqlx.Tx, fileIDs []int64) error {
 	if len(fileIDs) == 0 {
 		return nil

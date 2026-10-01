@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -14,9 +8,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// setCustomHelp installs a help renderer modelled on git/gh/docker: a short
-// description, then USAGE, EXAMPLES, COMMANDS, FLAGS, ENVIRONMENT sections, and
-// a footer pointing to per-command help.
+// setCustomHelp installs a git/gh-style help renderer: description, then
+// USAGE, EXAMPLES, COMMANDS, FLAGS, ENVIRONMENT, and a footer.
 func setCustomHelp(cmd *cobra.Command) {
 	cmd.SetHelpFunc(func(c *cobra.Command, args []string) {
 		var b strings.Builder
@@ -41,9 +34,7 @@ func setCustomHelp(cmd *cobra.Command) {
 			var rows strings.Builder
 			for _, sub := range c.Commands() {
 				if sub.IsAvailableCommand() || sub.Name() == "help" {
-					// A group reads exactly like a leaf otherwise: same
-					// column, same one-line summary, nothing saying there is
-					// more behind it.
+					// mark groups so they don't read like leaf commands
 					name := sub.Name()
 					if sub.HasAvailableSubCommands() {
 						name += " …"

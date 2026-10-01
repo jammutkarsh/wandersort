@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package review
 
 import (
@@ -102,10 +96,8 @@ func TestReview(t *testing.T) {
 				t.Error("expected a non-nil Cmd")
 			}
 		}},
-		// TestPreviewDirDedupesParentAndLeafNode covers the actual reported bug:
-		// a folder with one child chain (e.g. .../08/Horizontal/Photos) and its leaf
-		// both cover the exact same underlying files — peeking either must resolve
-		// to the same preview dir so the same temp copy gets reused.
+		// a folder with one child chain and its leaf cover the same files, so
+		// both resolve to one preview dir
 		{"PreviewDirDedupesParentAndLeafNode", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
@@ -242,14 +234,8 @@ func TestReview(t *testing.T) {
 				t.Errorf("undo stack = %d deep, want 1 step recorded", len(m.draft.Edits()))
 			}
 		}},
-		// TestUndoAfterDayRangeMergeLeavesNoStrayRename covers the reported bug:
-		// merging Date folders wrote the combined range through row.newName (an
-		// ID-keyed pending-rename map), and MergeNodes keeps the survivor's
-		// original ID — so after [u] reverted the tree, the now-separate-again
-		// "03" row inherited "03_09" as a leftover pending rename it never asked
-		// for, rendering as a confusing "03 → 03_09" even though the merge had
-		// just been undone. The combine must be baked into the tree snapshot
-		// itself (Node.Name), not left in a side map undo doesn't know to clear.
+		// TestUndoAfterDayRangeMergeLeavesNoStrayRename: undoing a Date merge
+		// leaves no leftover "03 → 03_09" rename on the survivor.
 		{"UndoAfterDayRangeMergeLeavesNoStrayRename", func(t *testing.T) {
 			m := testModel(t, siblingTree(), nil)
 			m.visualAnchor, m.cursor, m.visualMode = 2, 3, true
@@ -269,14 +255,9 @@ func TestReview(t *testing.T) {
 				t.Errorf("after undo want 09 back as its own row under its proposed name, got %+v", r09)
 			}
 		}},
-		// TestMergeSurvivorIsTheAnchorNotTheTopmostRow covers the reported bug:
-		// V pressed on the lower row, then the cursor moved UP to extend the
-		// selection. selectedRows() normalizes lo/hi to tree order for iteration,
-		// but the anchor — not whichever row ends up topmost — must still name
-		// the merged folder. Uses non-date sibling names ("Goa"/"Mumbai") rather
-		// than siblingTree's "03"/"09": the day-range combine is order-independent
-		// (min/max), so it can't tell "anchor" apart from "topmost" — this needs a
-		// case the combine doesn't touch.
+		// TestMergeSurvivorIsTheAnchorNotTheTopmostRow: with the range extended
+		// upward from the anchor, the anchor still names the merged folder.
+		// Non-date names, since the day-range combine is order-independent.
 		{"MergeSurvivorIsTheAnchorNotTheTopmostRow", func(t *testing.T) {
 			tree := []vfs.Node{{ID: pid("2024"), Name: "2024", Children: []vfs.Node{
 				{ID: pid("2024/June"), Name: "June", Children: []vfs.Node{
@@ -565,10 +546,9 @@ func TestReview(t *testing.T) {
 				t.Error("ctrl+c with a clean tree should quit straight away")
 			}
 		}},
-		// TestStructuralEditKeepsEarlierRenames covers a silent data-loss bug: merge,
-		// delete and undo all rebuild the row list from the tree. A rename on a row
-		// the edit never touched has to survive that.
-		// Year and month folders are fixed (D26): [r] on one is refused with a
+		// TestStructuralEditKeepsEarlierRenames: merge, delete and undo rebuild
+		// the rows from the tree; a rename on an untouched row survives.
+		// Year and month folders are fixed: [r] on one is refused with a
 		// status line, and the tree is left as it was.
 		{"RenameRefusedOnYearAndMonth", func(t *testing.T) {
 			tree := siblingTree()
@@ -689,10 +669,8 @@ func TestReview(t *testing.T) {
 				t.Errorf("suggestions = %+v, want the pre-loaded label filtered in memory", rm.suggestions)
 			}
 		}},
-		// TestRenameArrowsPickASuggestion covers the reported bug: ↑/↓ and tab did
-		// nothing in the rename editor, so a listed place could only be retyped by
-		// hand. They now walk the list like the config wizard's completions —
-		// enter on an arrowed-onto row picks it, the next enter applies.
+		// TestRenameArrowsPickASuggestion: ↑/↓ walk the rename list, enter on a
+		// picked row fills it, the next enter applies.
 		{"RenameArrowsPickASuggestion", func(t *testing.T) {
 			m := testModel(t, sampleTree(), context.Background())
 			m.labels = []string{"Manali", "Mandi"}
@@ -726,9 +704,8 @@ func TestReview(t *testing.T) {
 				t.Errorf("node name = %q, want the rename written straight onto the node", got)
 			}
 		}},
-		// TestRenameUndoRestoresTheOldName covers the other half of the same report:
-		// a rename used to sit in a side field rendered as "old → new", which [u]
-		// did not clear. The rename is a tree edit like any other now.
+		// TestRenameUndoRestoresTheOldName: a rename is a tree edit, so [u]
+		// restores the old name.
 		{"RenameUndoRestoresTheOldName", func(t *testing.T) {
 			m := testModel(t, siblingTree(), context.Background())
 			m.cursor = 2 // the "03" day
@@ -1507,10 +1484,9 @@ func dayWithLocationsTree() []vfs.Node {
 	}}}
 }
 
-// TestDraft covers the edit journal from the review's side (spec D17/D18):
-// every edit lands in the draft file as it is made, reopening replays it,
-// leaving asks nothing, and [R] throws the file away without touching the
-// database.
+// TestDraft covers the edit journal from the review's side: every edit lands in
+// the draft file, reopening replays it, leaving asks nothing, and [R] throws
+// the file away without touching the database.
 func TestDraft(t *testing.T) {
 	key := func(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}} }
 

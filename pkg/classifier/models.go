@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package classifier
 
 import (
@@ -22,12 +16,8 @@ const (
 	MediaTypeUnknown = "UNKNOWN"
 )
 
-// CommonMetadata holds the tags the pipeline stores and reads, all strings; one
-// absent from a given type is "". Each earns its place: dimensions and
-// orientation for the orientation folder, coordinates for the place, make and
-// model for the device folder, the four capture times for the date, the
-// screenshot flag for Screenshots. Anything else exiftool reports is left
-// undecoded — add a field here only together with the column that stores it.
+// CommonMetadata holds the exiftool tags the pipeline stores, all strings ("" if
+// absent). Add a field only together with the column that stores it.
 type CommonMetadata struct {
 	ImageWidth  string `json:"ImageWidth"`
 	ImageHeight string `json:"ImageHeight"`
@@ -48,18 +38,13 @@ type CommonMetadata struct {
 	GPSLatitude  string `json:"GPSLatitude"`
 	GPSLongitude string `json:"GPSLongitude"`
 
-	// IsScreenshot reports the file was captured from a screen — a
-	// screenshot or a screen recording — rather than a camera. Absent from
-	// camera-taken media; see screenshotMarkers for what sets it.
+	// IsScreenshot reports a screen capture (screenshot or recording); see
+	// screenshotMarkers.
 	IsScreenshot bool
 }
 
-// screenshotMarkers maps an exiftool JSON tag name to the value(s) an OS/OEM
-// writes on it to mark a screen capture. Checked against the raw decoded
-// JSON, not CommonMetadata, so a new platform is one more table entry — no
-// new struct field. macOS/iOS write "Screenshot" to both Description and
-// UserComment; Samsung (One UI) writes "Screenshot" or "Screen recording"
-// (video) to SamsungCaptureInfo.
+// screenshotMarkers maps an exiftool tag to the values an OS writes on it to
+// mark a screen capture. A new platform is one more entry.
 var screenshotMarkers = map[string][]string{
 	"Description":        {"Screenshot"},
 	"UserComment":        {"Screenshot"},
@@ -84,10 +69,8 @@ func isScreenCapture(raw map[string]any) bool {
 // ftoa formats a float without a trailing exponent or ".0".
 func ftoa(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
-// numStr converts a decoded JSON value (string, number, or bool) to its string
-// form. This is what makes parsing tolerant: exiftool is inconsistent about
-// whether a given tag is emitted as a string or a number, and reading through
-// `any` accepts either instead of failing the whole decode.
+// numStr converts a decoded JSON value (string, number or bool) to a string:
+// exiftool is inconsistent about which it emits.
 func numStr(v any) string {
 	switch v := v.(type) {
 	case string:
@@ -99,10 +82,9 @@ func numStr(v any) string {
 	}
 }
 
-// ParseMetadata parses raw exiftool JSON for a file and returns the unified
-// CommonMetadata. It decodes into a generic map and reads only the keys it
-// needs, so a type mismatch on any single tag (a string where a number was
-// expected, or vice-versa) no longer drops all metadata for the file.
+// ParseMetadata parses one file's exiftool JSON into CommonMetadata. It decodes
+// into a map (exiftool's fields are open-ended and loosely typed) and reads
+// only the keys it needs, so one odd tag never drops the rest.
 func ParseMetadata(ext string, data []byte) (CommonMetadata, error) {
 	var raw map[string]any
 	// a tag's bytes are the camera's: tolerate what v1 tolerated

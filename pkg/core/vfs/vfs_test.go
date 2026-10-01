@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import (
@@ -262,13 +256,9 @@ func TestCollisionSuffix(t *testing.T) {
 	}
 }
 
-// TestSameStemDifferentEventsLandSeparately covers a real reported bug: an
-// earlier version force-grouped files sharing a filename stem (assuming
-// same stem = same Live Photo/RAW+JPG capture), but phone/camera filename
-// counters get reused across entirely unrelated shoots — especially old
-// iPhone photos. Two files with the same stem, same source dir, but
-// unrelated capture times must NOT be forced into one directory anymore;
-// each file's own derived time decides its directory independently.
+// TestSameStemDifferentEventsLandSeparately: filename counters get reused, so
+// two same-stem files in one dir with unrelated capture times are not forced
+// into one directory.
 func TestSameStemDifferentEventsLandSeparately(t *testing.T) {
 	h := newHarness(t)
 	a := h.addFile(t, "d/IMG_0042.HEIC", "IMAGE", metaWith("2019:03:01 10:00:00", 0, 0, 3024, 4032))
@@ -282,11 +272,8 @@ func TestSameStemDifferentEventsLandSeparately(t *testing.T) {
 	}
 }
 
-// TestSameStemSameCaptureStillCoLocatesByOwnAttributes covers the case that
-// used to need forced grouping (a real Live Photo pair, same moment, same
-// GPS): with Rules excluding media type, both members still land in the
-// same directory purely because their own derived location/date agree —
-// no stem-based special-casing required to get the intuitive result.
+// TestSameStemSameCaptureStillCoLocatesByOwnAttributes: a real Live Photo pair
+// lands together because its own derived date and location agree.
 func TestSameStemSameCaptureStillCoLocatesByOwnAttributes(t *testing.T) {
 	h := newHarness(t)
 	a := h.addFile(t, "d/IMG_0042.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 15.5439, 73.7553, 3024, 4032))
@@ -318,12 +305,8 @@ func TestSidecarWithNoOwnTimestampFallsBackToModTime(t *testing.T) {
 	}
 }
 
-// TestCaptureGroupSidecarCoLocatesWithPair covers the real reported bug:
-// an AAE sidecar has no EXIF of its own, so without grouping it would land
-// wherever its own file mtime falls (a different day than the HEIC it
-// belongs with — addFile gives every file the same fixed mtime, June 1,
-// while the HEIC pair's real capture date is June 3). With the capture
-// group, the sidecar inherits the pair's directory instead.
+// TestCaptureGroupSidecarCoLocatesWithPair: an AAE sidecar (no EXIF; addFile's
+// mtime is June 1, the pair's capture is June 3) takes its pair's directory.
 func TestCaptureGroupSidecarCoLocatesWithPair(t *testing.T) {
 	h := newHarness(t)
 	aae := h.addFile(t, "d/IMG_0042.AAE", "SIDECAR", classifier.CommonMetadata{})
@@ -340,7 +323,7 @@ func TestCaptureGroupSidecarCoLocatesWithPair(t *testing.T) {
 }
 
 // TestCaptureDirsForcesRawJpgTogetherAndKeepsRicherLocation is a direct unit
-// test of captureDirs, deliberately bypassing Run()/clusterAndSpill: the
+// test of captureDirs, deliberately bypassing Run()/clustering: the
 // full pipeline's time-gap spillover (cluster.go's majorityCity) already
 // fills in a same-moment file's missing location from a nearby member
 // regardless of filename, so an end-to-end RAW+JPG test would pass even with
@@ -441,12 +424,8 @@ func TestSavedPlacesDateOnly(t *testing.T) {
 	}
 }
 
-// TestSavedPlacesDateOnlyMixedDayNestsBothWays covers a GPS-less file
-// clustered with GPS-tagged home photos (an indoor shot with no fix, minutes
-// after ones that resolved to the home anchor). It used to leak a lone
-// location folder next to loose siblings; the day now nests both sides —
-// SavedPlacesDateOnly's suppression is for a day that is *only* everyday
-// shots, and this one isn't.
+// TestSavedPlacesDateOnlyMixedDayNestsBothWays: a GPS-less file clustered with
+// home-anchor photos makes the day mixed, so both sides nest.
 func TestSavedPlacesDateOnlyMixedDayNestsBothWays(t *testing.T) {
 	h := newHarness(t)
 	withGPS := h.addFile(t, "d/h1.HEIC", "IMAGE", metaWith("2024:12:01 10:00:00", 22.7196, 75.8577, 3024, 4032))
@@ -526,11 +505,8 @@ func TestMergeSameLocationDays(t *testing.T) {
 	}
 }
 
-// TestMergeSameLocationDaysFoldsSavedPlacesDateOnly covers the reported bug:
-// SavedPlacesDateOnly leaves atSavedPlace photos with no location at all, so
-// mergeSameLocationDays's location=="" exclusion used to skip them outright —
-// six consecutive home days rendered as six separate day folders instead of
-// one range, even though they're all the same place same as a trip is.
+// TestMergeSameLocationDaysFoldsSavedPlacesDateOnly: consecutive saved-place
+// days merge into one range like any other place.
 func TestMergeSameLocationDaysFoldsSavedPlacesDateOnly(t *testing.T) {
 	h := newHarness(t)
 	ids := make([]int64, 0, 6)
@@ -749,13 +725,9 @@ func TestLibraryScopeAcrossRuns(t *testing.T) {
 	}
 }
 
-// TestPlacedFileIsNeverReproposed covers the SD card case (spec D11, issue
-// 06/07): a placed file's DONE row is the plan from here on. A re-scanned
-// duplicate the scorer has already demoted (is_master = 0) must not revive a
-// proposal for it, and the placed file's own row must survive persist's
-// "no longer a live master" cleanup regardless of its own is_master flag —
-// loadMasters excludes it outright, and the delete treats placed = 1 the
-// same as is_master = 1 as a backstop.
+// TestPlacedFileIsNeverReproposed: a placed file's row is the plan from here
+// on; a re-scanned duplicate never revives a proposal for it, and the placed
+// row survives persist.
 func TestPlacedFileIsNeverReproposed(t *testing.T) {
 	h := newHarness(t)
 	placed := h.addFile(t, "library/2024/06_June/Goa/Photos/IMG_0001.HEIC", "IMAGE",

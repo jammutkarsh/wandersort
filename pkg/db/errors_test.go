@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package db_test
 
 import (
@@ -91,7 +85,7 @@ func TestRecordErrorReplacesPerStage(t *testing.T) {
 	}
 }
 
-// The detail is the object the ticket names: message, the chain walked to the
+// The detail is the stored object: message, the chain walked to the
 // bottom, frames from where the failure was seen, the errno when there is one.
 func TestRecordErrorDetail(t *testing.T) {
 	d := dbtest.New(t)

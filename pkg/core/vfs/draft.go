@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import (
@@ -23,12 +17,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
-// DraftFileName is the review's edit journal (spec D17), next to the database:
-// one JSON line per edit, appended and synced as the reviewer makes it. The
-// database only ever holds the plan as proposed; the draft is everything the
-// reviewer did to it since, so a crash mid-review loses nothing and edits
-// never bloat the database. Draft is the only reader and writer; ApplyDraft
-// writes it into the plan.
+// DraftFileName is the review's edit journal next to the database: one JSON
+// line per edit, synced as it is made. The database holds only the proposed
+// plan until ApplyDraft writes the edits in.
 const DraftFileName = ".wandersort.draft"
 
 // Edit ops, as written to the draft.
@@ -39,10 +30,8 @@ const (
 	OpFlatten = "flatten"
 )
 
-// Edit is one review edit. Rename names one Node (From is for the reader of
-// the file; replay only needs To). Merge, drop and flatten list Nodes — merge
-// anchor first, so the replay keeps the same survivor; drop and flatten every
-// folder of a [V] range, since the range is one edit and one [u].
+// Edit is one review edit. Rename names one Node (From is informational).
+// Merge, drop and flatten list Nodes; merge lists its survivor first.
 type Edit struct {
 	Seq   int     `json:"seq"`
 	Op    string  `json:"op"`
@@ -54,13 +43,9 @@ type Edit struct {
 
 func draftPath(outputDir string) string { return filepath.Join(outputDir, DraftFileName) }
 
-// readDraft returns the journalled edits in order; no file is no edits. A
-// torn last line (a crash mid-append) is dropped, and the file rewritten
-// without it: that edit never finished being recorded, and leaving the
-// fragment would glue the next append onto it — one broken line, the new
-// edit lost, and the one after that an error every later read hits. A bad
-// line anywhere else is an error — skipping it would replay the rest onto a
-// tree it was never made against.
+// readDraft returns the journalled edits in order; no file is no edits. A torn
+// last line (crash mid-append) is dropped and the file rewritten without it, so
+// the next append can't glue onto it. A bad line elsewhere is an error.
 func readDraft(outputDir string) ([]Edit, error) {
 	data, err := os.ReadFile(draftPath(outputDir))
 	if os.IsNotExist(err) {
@@ -90,8 +75,7 @@ func readDraft(outputDir string) ([]Edit, error) {
 		}
 		edits = append(edits, e)
 	}
-	// A whole last edit with no newline after it (a crash between the two)
-	// reads fine, but the next append would glue onto it just the same.
+	// a complete last edit missing its newline would also glue onto the next
 	if data[len(data)-1] != '\n' {
 		if err := writeDraft(outputDir, edits); err != nil {
 			return nil, err
@@ -118,8 +102,7 @@ func appendDraft(outputDir string, e Edit) error {
 	if err := errors.Join(w.Flush(), f.Sync(), f.Close()); err != nil {
 		return fmt.Errorf("write review draft: %w", err)
 	}
-	// The first edit creates the file, and a synced file whose folder entry
-	// never reached the disk is lost with it after a power cut.
+	// the first edit creates the file: sync its folder entry too
 	if os.IsNotExist(statErr) {
 		if err := atomicfile.SyncDir(outputDir); err != nil {
 			return fmt.Errorf("write review draft: %w", err)
@@ -128,9 +111,8 @@ func appendDraft(outputDir string, e Edit) error {
 	return nil
 }
 
-// writeDraft replaces the whole journal with edits — [u] drops the last line
-// this way. Written beside the file and renamed over it, so a crash leaves
-// either the old journal or the new one. No edits removes the file.
+// writeDraft replaces the journal atomically (temp file + rename). No edits
+// removes the file.
 func writeDraft(outputDir string, edits []Edit) error {
 	if len(edits) == 0 {
 		return RemoveDraft(outputDir)
@@ -163,9 +145,7 @@ func writeDraft(outputDir string, edits []Edit) error {
 	return nil
 }
 
-// RemoveDraft throws every unapplied edit away: [R] reset, a new proposal
-// (Propose — its folder IDs are not the ones the edits name), and ApplyDraft
-// once the edits are in the database.
+// RemoveDraft throws every unapplied edit away.
 func RemoveDraft(outputDir string) error {
 	if err := os.Remove(draftPath(outputDir)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove review draft: %w", err)
@@ -173,11 +153,9 @@ func RemoveDraft(outputDir string) error {
 	return nil
 }
 
-// Draft is the review's edit session over one proposal (spec D17): the tree
-// as proposed, the journal of edits on disk, and the tree those edits make.
-// Every edit — made on screen or replayed from the file — goes through one
-// dispatch (applyEdit), so the review and ApplyDraft can never disagree about
-// what an edit does or which edits are refused.
+// Draft is a review session over one proposal: the base tree, the journal on
+// disk, and base with the edits replayed. Live and replayed edits share one
+// dispatch (applyEdit), so they can't disagree.
 type Draft struct {
 	dir   string
 	base  []Node // the plan as the database holds it, never edited
@@ -188,9 +166,7 @@ type Draft struct {
 // ErrNothingToUndo is Undo on a draft with no edits left.
 var ErrNothingToUndo = errors.New("nothing left to undo")
 
-// OpenDraft reads the journal in outputDir and replays it onto base. base is
-// never edited: the draft works on its own copy, which is what lets Undo and
-// Reset go back to it.
+// OpenDraft reads the journal in outputDir and replays it onto a copy of base.
 func OpenDraft(outputDir string, base []Node) (*Draft, error) {
 	edits, err := readDraft(outputDir)
 	if err != nil {
@@ -214,10 +190,8 @@ type Outcome struct {
 	Absorbed int      // flatten: subfolders folded in
 }
 
-// Apply runs one edit and journals it, synced before it returns (Seq is set
-// here). A refused edit — a fixed folder, a merge of one — changes nothing and
-// returns why. A journal that can't be written undoes the edit too: the next
-// session would never hear of it.
+// Apply runs one edit and journals it (synced) before returning. A refused edit
+// changes nothing. A failed journal write undoes the edit.
 func (d *Draft) Apply(e Edit) (Outcome, error) {
 	tree, out, err := applyEdit(d.tree, e)
 	if err != nil {
@@ -233,9 +207,8 @@ func (d *Draft) Apply(e Edit) (Outcome, error) {
 	return out, nil
 }
 
-// Undo drops the last edit from the journal and rebuilds the tree from base
-// plus the edits left — the journal is the whole history, so there is no
-// snapshot stack beside it. Returns the edit undone.
+// Undo drops the last journalled edit and rebuilds the tree from base. Returns
+// the edit undone.
 func (d *Draft) Undo() (Edit, error) {
 	n := len(d.edits)
 	if n == 0 {
@@ -250,8 +223,7 @@ func (d *Draft) Undo() (Edit, error) {
 	return last, nil
 }
 
-// Reset throws every edit away and goes back to the plan as proposed. The
-// database is untouched — it never held the edits.
+// Reset throws every edit away and goes back to base.
 func (d *Draft) Reset() error {
 	if err := RemoveDraft(d.dir); err != nil {
 		return err
@@ -290,12 +262,9 @@ func applyEdit(tree []Node, e Edit) ([]Node, Outcome, error) {
 	return tree, Outcome{}, fmt.Errorf("unknown review edit %q", e.Op)
 }
 
-// replay applies edits to tree, in order, and returns the result. Idempotent:
-// an edit naming folders that no longer exist, or that no longer changes
-// anything, does nothing. That is what makes a crash between ApplyDraft's
-// commit and its RemoveDraft harmless — the applied tree comes back from the
-// database with the merged-away and dropped folders gone and the renames
-// already made, and the same journal replays onto it as a no-op.
+// replay applies edits to tree in order. Idempotent: an edit naming missing
+// folders or changing nothing is skipped, so a crash between ApplyDraft's
+// commit and its RemoveDraft replays as a no-op.
 func replay(tree []Node, edits []Edit) []Node {
 	for _, e := range edits {
 		// the anchor names a merge's result; without it this is a different merge
@@ -322,11 +291,8 @@ func present(tree []Node, ids []int64) []int64 {
 	return out
 }
 
-// ApplyDraft writes the review's edits into the plan (spec D18): replays the
-// draft over the stored tree, then Confirm applies it in one transaction,
-// then the draft goes. execute.Run calls it before a transfer — review itself
-// never writes the plan. A library with nothing left to review, or a draft
-// with no edits, only drops the draft.
+// ApplyDraft writes the review's edits into the plan in one transaction, then
+// removes the draft. Called by execute.Run before any transfer.
 func ApplyDraft(ctx context.Context, database *db.DB, outputDir string) error {
 	tree, err := BuildTree(ctx, database)
 	if err != nil {
@@ -345,10 +311,8 @@ func ApplyDraft(ctx context.Context, database *db.DB, outputDir string) error {
 	return RemoveDraft(outputDir)
 }
 
-// PreviewDraft runs read against the plan as ApplyDraft would leave it —
-// edits applied, draft still on disk — inside a transaction that is then
-// rolled back. It is how a dry run reports the paths a real run will use
-// without writing anything.
+// PreviewDraft runs read against the plan with the draft applied, inside a
+// transaction that is rolled back (dry runs).
 func PreviewDraft(ctx context.Context, database *db.DB, outputDir string, read func(context.Context, sqlx.QueryerContext) error) error {
 	tree, err := BuildTree(ctx, database)
 	if err != nil {

@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package tui
 
 import (
@@ -15,9 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// spinnerBar bundles the spinner + progress bar every stage-list screen
-// (scan, install) needs, plus the tea.Msg plumbing to drive them — shared so
-// neither screen hand-rolls the same setup and Update cases.
+// spinnerBar bundles the spinner and progress bar every stage-list screen uses.
 type spinnerBar struct {
 	spin spinner.Model
 	bar  progress.Model
@@ -59,10 +51,8 @@ func Banner(subtitle string) string {
 	return Box.Render(title)
 }
 
-// Footer renders a dim, width-wrapped key-help bar. Wrapping to the terminal
-// width (rather than a fixed line) is what keeps the bottom of a screen from
-// being pushed off on a narrow terminal — the caller measures its height with
-// lipgloss.Height and budgets the body accordingly.
+// Footer renders a dim key-help bar wrapped to width; callers measure its
+// height with lipgloss.Height.
 func Footer(help string, width int) string {
 	s := FaintTxt
 	if width > 0 {
@@ -71,22 +61,18 @@ func Footer(help string, width int) string {
 	return s.Render(help)
 }
 
-// Row lays out one full-width line: left content truncated to fit, right
-// suffix aligned to the terminal edge — the same shape every screen's rows
-// use (elapsed time on scan, file counts on review).
+// Row lays out one full-width line: left truncated to fit, right aligned to
+// the terminal edge.
 func Row(left, right string, width int) string { return row(left, right, width) }
 
-// KeyHint styles a "[key] action" hint pair for footers. All spaces inside the
-// pair are non-breaking, so a width-wrapped footer breaks between hints, never
-// through one — "c save & exit" wrapping after the "c" reads as a stray key.
+// KeyHint styles a "[key] action" pair with non-breaking spaces, so a wrapped
+// footer breaks between hints, never inside one.
 func KeyHint(key, action string) string {
 	return lipgloss.NewStyle().Foreground(Primary).Render(key) + " " +
 		FaintTxt.Render(strings.ReplaceAll(action, " ", " "))
 }
 
-// Screen frames a full-height view: body at the top, footer pinned to the
-// bottom of the terminal, so short content (a handful of stage rows) doesn't
-// leave the footer floating mid-screen with dead space below it.
+// Screen frames a full-height view with the footer pinned to the bottom row.
 func Screen(body, footer string, h int) string {
 	body = strings.TrimRight(body, "\n")
 	if h <= 0 { // before the first size msg — fall back to plain stacking

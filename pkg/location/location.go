@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package location
 
 import (
@@ -31,10 +25,8 @@ var ErrNoLocation = errors.New("locationResolver: location not found")
 // Exported: vfs.resolveLocations reuses it for the anchor-fold radius.
 const MaxDistSquared = 0.2025
 
-// gpsRoundingFactor rounds coordinates to 2 decimal places (≈ 1.1 km) for the
-// Lookup cache key only — the query itself runs on the real coordinates, so a
-// coarse grid costs no accuracy. It decides how often a walk around town pays
-// for a fresh query: an 11 m grid billed one every eleven metres.
+// gpsRoundingFactor rounds coordinates to 2 decimals (≈ 1.1 km) for Lookup's
+// cache key only; the query uses the real coordinates.
 const gpsRoundingFactor = 100
 
 // Bounding-box half-widths queryNearest tries in order: tight first, then wide.
@@ -51,19 +43,28 @@ type cacheKey struct {
 
 type Resolver struct {
 	db    *db.DB
-	cache sync.Map
+	cache *sync.Map // Lookup results; shared by WithAnchors views
 	log   logger.Logger
-	// anchors are saved places resolved to GPS coordinates, kept only so
-	// cityClaimed can qualify a candidate name against them. Nil until
-	// BuildAnchors is called, which is also what hands them to callers.
+	// anchors make Candidates/SearchByName qualify a name a saved place
+	// already claims. Set only through WithAnchors.
 	anchors []Anchor
 }
 
-// NewResolver wraps an already-open, already-verified location database.
-// Downloading and verifying that database is pkg/install's job (see
-// install.OpenLocationResolver) — this package only ever queries it.
+// NewResolver wraps an already-open, verified location database (pkg/install
+// downloads and verifies it).
 func NewResolver(locationDB *db.DB, log logger.Logger) *Resolver {
-	return &Resolver{db: locationDB, log: log}
+	return &Resolver{db: locationDB, cache: &sync.Map{}, log: log}
+}
+
+// WithAnchors returns a view of r whose name lists qualify the bare city
+// names these anchors claim. r itself is unchanged.
+func (r *Resolver) WithAnchors(anchors []Anchor) *Resolver {
+	if r == nil {
+		return nil
+	}
+	view := *r
+	view.anchors = anchors
+	return &view
 }
 
 // Lookup returns the name of the nearest populated place for the given
@@ -82,15 +83,11 @@ func (r *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error)
 		return "", ErrNoLocation
 	}
 
-	// query the real coordinates, not the rounded ones: the grid exists to share
-	// a cache entry, and naming the square's centre would move the query point
-	// up to half a cell away from where the photo was taken
+	// query the real coordinates; the grid only shares cache entries
 	city, err := r.queryNearest(ctx, lat, lon)
 	switch {
-	// remember that nothing is near this square too — a library shot far from
-	// any populated place would otherwise re-run both passes for every file.
-	// Only ErrNoLocation: a cancelled context or a failed query says nothing
-	// about the coordinates and must stay retryable.
+	// cache "nothing near" too, but only for ErrNoLocation: a cancelled or
+	// failed query must stay retryable
 	case errors.Is(err, ErrNoLocation):
 		r.cache.Store(key, "")
 		return "", err
@@ -116,22 +113,18 @@ func (r *Resolver) queryNearest(ctx context.Context, lat, lon float64) (string, 
 			continue
 		}
 		// DisplayName, not Name: an auto-named folder is qualified the same way
-		// the review picker and saved anchors are, so two Hyderabads stay apart
+		// the review picker and saved anchors are, so same-named cities stay apart
 		return cands[0].DisplayName, nil
 	}
 	return "", ErrNoLocation
 }
 
-// Candidate is one ranked reverse-geocode match. Which name to use depends on
-// who reads it: a folder named automatically gets DisplayName, a list a person
-// picks from shows FullName as the label (FullName doubles as that
-// suggestion name) and writes FolderName if picked — this package's job, not
-// a caller's: it already knows which qualifier a name needs, so it also
-// knows what's safe to put in a directory name.
+// Candidate is one ranked reverse-geocode match. Folders named automatically
+// use DisplayName; pick lists show FullName and write FolderName.
 type Candidate struct {
-	Name        string // plain city, no qualifier: "Springfield"
-	DisplayName string // smallest unique qualifier: "Springfield, Illinois"
-	FullName    string // spelled out, and what a picker shows as the suggestion: "Springfield, Illinois, United States"
+	Name        string // plain city, no qualifier: "<city>"
+	DisplayName string // smallest unique qualifier: "<city>, <state>"
+	FullName    string // spelled out, what a picker shows: "<city>, <state>, <country>"
 	FolderName  string // DisplayName, sanitized — what a picker writes if this is chosen
 	DistKM      float64
 	hasMarks    bool // the geonames entry carried diacritics stripDiacritics removed
@@ -142,8 +135,7 @@ type Candidate struct {
 const candidateFetchLimit = 32
 
 // searchOverfetchFactor over-fetches in SearchByName, whose qualifier and
-// duplicate filtering runs after the query — limiting in SQL could return a
-// page made entirely of rows that don't survive it.
+// dedup filters run after the query.
 const searchOverfetchFactor = 8
 
 // minFuzzyPrefix is the shortest typed prefix the fuzzy fallback runs for —
@@ -154,10 +146,8 @@ const minFuzzyPrefix = 2
 // doesn't pull tens of thousands of rows into Go for ranking.
 const fuzzyFetchLimit = 500
 
-// maxLevenshteinDist is the Levenshtein fallback's max edit distance for a
-// typo-tolerant match: ≤2 covers "katmandu"→"Kathmandu" (1) and
-// "kathmendo"→"Kathmandu" (2), while "mumbai"→"Mombasa" (4) is correctly
-// excluded.
+// maxLevenshteinDist is the fuzzy fallback's max edit distance: catches one- or
+// two-letter typos, excludes a different city four edits away.
 const maxLevenshteinDist = 2
 
 // candidateQuery is shared by Candidates and queryNearest.
@@ -183,11 +173,8 @@ type nameCounts struct {
 	inCountry map[string]int
 }
 
-// countNames answers those three questions for a handful of city names in one
-// indexed GROUP BY. It used to be three correlated subqueries embedded in the
-// row query, which ran them for every row fetched — 32 rows × 3 to disambiguate
-// the one name queryNearest keeps. Asking only for the names a caller actually
-// gets back took a Paris lookup from ~144ms to ~6ms.
+// countNames answers those three questions for a few city names in one indexed
+// GROUP BY, asked only for the rows a caller gets back.
 func (r *Resolver) countNames(ctx context.Context, cities []string) (map[string]nameCounts, error) {
 	want := make([]any, 0, len(cities))
 	seen := map[string]bool{}
@@ -222,9 +209,8 @@ func (r *Resolver) countNames(ctx context.Context, cities []string) (map[string]
 		if counts.inCountry == nil {
 			counts.inCountry = map[string]int{}
 		}
-		// every row carrying the name counts toward the total, but only a real
-		// country code is a country — matching COUNT(DISTINCT country_code),
-		// which ignores NULLs
+		// only a real country code counts as a country, like
+		// COUNT(DISTINCT country_code) ignoring NULLs
 		counts.total += n
 		if code != "" {
 			counts.countries++
@@ -235,9 +221,8 @@ func (r *Resolver) countNames(ctx context.Context, cities []string) (map[string]
 	return out, rows.Err()
 }
 
-// nocaseKey folds a city name the way SQLite's NOCASE collation does — ASCII
-// letters only. strings.ToLower would also fold "Ā" to "ā", merging two groups
-// the GROUP BY kept apart.
+// nocaseKey folds ASCII letters only, like SQLite's NOCASE, so it groups the
+// way the GROUP BY did.
 func nocaseKey(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r >= 'A' && r <= 'Z' {
@@ -247,9 +232,8 @@ func nocaseKey(s string) string {
 	}, s)
 }
 
-// geoRow is one geonames row as both queries scan it, before the names that
-// need library-wide counts are filled in. Ranking, filtering and limiting run
-// on this alone, so countNames is only ever asked about the survivors.
+// geoRow is one scanned geonames row; names needing counts are filled in after
+// ranking and limiting.
 type geoRow struct {
 	city, state, country, code        string
 	plain                             string // city with diacritics stripped
@@ -286,8 +270,7 @@ func (r *Resolver) fillNames(ctx context.Context, rows []geoRow) error {
 const kmPerDegree = 111.0
 
 // Candidates returns up to limit matches within deltaDegrees, nearest first,
-// but plain-spelled entries always ahead of diacritic ones. Used by the review
-// TUI to offer alternatives when Lookup's top pick is wrong.
+// plain spellings ahead of diacritic ones.
 func (r *Resolver) Candidates(ctx context.Context, lat, lon, deltaDegrees float64, limit int) ([]Candidate, error) {
 	rows, err := r.db.QueryContext(ctx, candidateQuery, lat, lon, deltaDegrees, candidateFetchLimit)
 	if err != nil {
@@ -343,12 +326,11 @@ func (r *Resolver) Candidates(ctx context.Context, lat, lon, deltaDegrees float6
 	return out, nil
 }
 
-// ResolveByName forward-geocodes a saved place name to coordinates. Exact
-// case-insensitive match first, then a diacritic-stripped pass: this package
-// only ever hands out stripped names, so "Banjār" is saved as "Banjar".
+// ResolveByName forward-geocodes a saved place name: exact case-insensitive
+// match first, then a diacritic-stripped pass.
 func (r *Resolver) ResolveByName(ctx context.Context, name string) (lat, lon float64, err error) {
-	// honour the qualifiers: matching the bare city alone would resolve
-	// "Hyderabad, India" to whichever row comes back first, the Pakistani one
+	// honour the qualifiers: the bare city alone would resolve to whichever
+	// same-named row comes back first
 	city, qualifiers := splitQualified(name)
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT COALESCE(state, ''), COALESCE(country, ''), latitude, longitude
@@ -401,9 +383,8 @@ func (r *Resolver) resolveStripped(ctx context.Context, name string, qualifiers 
 	return 0, 0, ErrNoLocation
 }
 
-// PlaceMatch is one geonames entry matching a typed prefix, with coordinates
-// so a caller needs no second lookup. The names mean what they do on
-// Candidate; ResolveByName resolves Name, DisplayName or FullName.
+// PlaceMatch is one geonames entry matching a typed prefix, with coordinates.
+// Names mean what they do on Candidate.
 type PlaceMatch struct {
 	Name        string
 	DisplayName string
@@ -463,7 +444,7 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 	}
 
 	// The exact prefix query found nothing — try a typo-tolerant match
-	// before giving up, so "katmandu" still finds "Kathmandu".
+	// before giving up, so a one-letter typo still finds the city.
 	if len(raw) == 0 && len(city) >= minFuzzyPrefix {
 		fuzzy, err := r.fuzzySearch(ctx, city, qualifiers, limit)
 		if err != nil {
@@ -489,10 +470,8 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 	return out, nil
 }
 
-// fuzzySearch is SearchByName's typo-tolerant fallback: a trigram match
-// against geonames_trigrams (the external DB's own pg_trgm-style index),
-// falling back to a Go-side Levenshtein scan when that table doesn't exist
-// yet — a location.db downloaded before the trigram index shipped.
+// fuzzySearch is SearchByName's typo-tolerant fallback: a trigram match, or a
+// Levenshtein scan when the database has no trigram table.
 func (r *Resolver) fuzzySearch(ctx context.Context, city string, qualifiers []string, limit int) ([]geoRow, error) {
 	rows, err := r.fuzzySearchTrigram(ctx, city, qualifiers, limit)
 	if err == nil {
@@ -504,13 +483,8 @@ func (r *Resolver) fuzzySearch(ctx context.Context, city string, qualifiers []st
 	return r.fuzzySearchLevenshtein(ctx, city, qualifiers, limit)
 }
 
-// fuzzySearchTrigram narrows to geonames_trigrams matches sharing at least
-// one 3-char window with city — the same idea pg_trgm uses to touch only
-// rows that could plausibly match, instead of scanning the whole table —
-// then ranks that pool by real edit distance (rankByDistance): trigram
-// overlap alone is a recall signal, not a precision one (a long garbage
-// string can share several trigrams with a short real city purely by
-// coincidence), so the edit-distance cutoff is still what decides a match.
+// fuzzySearchTrigram narrows to rows sharing a trigram with city, then ranks by
+// edit distance: trigram overlap is recall, the distance cutoff decides.
 func (r *Resolver) fuzzySearchTrigram(ctx context.Context, city string, qualifiers []string, limit int) ([]geoRow, error) {
 	grams := trigrams(city)
 	if len(grams) == 0 {
@@ -543,12 +517,8 @@ func (r *Resolver) fuzzySearchTrigram(ctx context.Context, city string, qualifie
 	return rankByDistance(cands, city, limit), nil
 }
 
-// fuzzySearchLevenshtein is the safety net from before the trigram index
-// existed: widen to the first 2 chars of city, then rank every hit by edit
-// distance. Broader and slower than the trigram query (no index to narrow
-// the scan), but needs nothing from the database beyond geonames_cities
-// itself, so it still works against a location.db downloaded before the
-// trigram table shipped.
+// fuzzySearchLevenshtein ranks every row sharing city's first 2 chars by edit
+// distance. Slower; for databases without geonames_trigrams.
 func (r *Resolver) fuzzySearchLevenshtein(ctx context.Context, city string, qualifiers []string, limit int) ([]geoRow, error) {
 	fuzzyPrefix := city[:min(2, len(city))]
 	rows, err := r.db.QueryContext(ctx,
@@ -590,9 +560,8 @@ func rankByDistance(cands []geoRow, city string, limit int) []geoRow {
 	return out
 }
 
-// scanFuzzyRows reads the common (city, lat, lon, state, country, code) shape
-// both fuzzy queries select, applying the same qualifier filter and
-// full-name dedup the exact-prefix query uses. limit == 0 means unbounded.
+// scanFuzzyRows reads both fuzzy queries' rows with the exact query's qualifier
+// filter and dedup. limit 0 means unbounded.
 func scanFuzzyRows(rows *sql.Rows, qualifiers []string, limit int) ([]geoRow, error) {
 	var out []geoRow
 	seen := map[string]bool{}
@@ -619,10 +588,8 @@ func scanFuzzyRows(rows *sql.Rows, qualifiers []string, limit int) ([]geoRow, er
 	return out, rows.Err()
 }
 
-// trigrams slides a 3-char window over city, lowercased/diacritic-stripped
-// and padded with a space on each side so the first and last characters
-// participate in at least one trigram — the same shape the external
-// locationDB build indexes into geonames_trigrams.
+// trigrams slides a 3-char window over city (lowercased, stripped, padded with a
+// space each side), matching how geonames_trigrams is built.
 func trigrams(city string) []string {
 	r := []rune(" " + strings.ToLower(stripDiacritics(city)) + " ")
 	if len(r) < 3 {
@@ -663,20 +630,12 @@ func levenshtein(a, b string) int {
 	return prev[len(b)]
 }
 
-// canonicalSearchLimit is how many rows Canonical looks through for an exact
-// match. Enough to reach past the near-duplicates a popular name attracts,
-// small enough that a rejection can name one alternative.
+// canonicalSearchLimit is how many rows Canonical scans for an exact match.
 const canonicalSearchLimit = 8
 
-// Canonical returns the spelling a typed place name must be stored as: the
-// geonames own form, qualified far enough to resolve back to exactly one row.
-// It is the write side of ResolveByName — this package decides both, so a name
-// saved by a picker is always one this package can find again.
-//
-// A name the database has never heard of comes back unchanged (a village
-// geonames is missing must not be undismissable), but a near-miss is an error
-// naming the closest alternative: silently saving "Hyderbad" would anchor the
-// library to whatever that eventually resolved to.
+// Canonical returns the spelling a typed place name must be stored as: geonames'
+// own form, qualified enough to resolve back to one row. An unknown name comes
+// back unchanged; a near-miss is an error naming the closest alternative.
 func (r *Resolver) Canonical(ctx context.Context, typed string) (string, error) {
 	typed = strings.TrimSpace(typed)
 	if typed == "" || r == nil {
@@ -692,9 +651,8 @@ func (r *Resolver) Canonical(ctx context.Context, typed string) (string, error) 
 	return "", fmt.Errorf("no exact match for %q (did you mean %s?)", typed, matches[0].FullName)
 }
 
-// SuggestNames lists place names for a picker to offer as prefix completions.
-// FullName, not the bare city: six identical "Springfield"s are unpickable,
-// and the qualified form is what Canonical saves and ResolveByName round-trips.
+// SuggestNames lists FullName completions for a prefix: the qualified form is
+// what Canonical saves and ResolveByName round-trips.
 func (r *Resolver) SuggestNames(ctx context.Context, prefix string, limit int) []string {
 	matches, err := r.SearchByName(ctx, prefix, limit)
 	if err != nil {
@@ -707,11 +665,9 @@ func (r *Resolver) SuggestNames(ctx context.Context, prefix string, limit int) [
 	return names
 }
 
-// exactMatch returns geonames' own spelling when one of matches is a
-// case-insensitive match for typed. The qualified forms are tried first: a
-// bare "Hyderabad" must still be stored qualified, or it resolves back to
-// whichever row the database happens to return first — which is how a home
-// town in India became one in Pakistan.
+// exactMatch returns geonames' spelling when a match equals typed (case-
+// insensitive). Qualified forms first, so a bare name is still stored
+// qualified and can't resolve to a same-named city elsewhere.
 func exactMatch(matches []PlaceMatch, typed string) (string, bool) {
 	typed = strings.TrimSpace(typed)
 	for _, m := range matches {
@@ -752,22 +708,15 @@ func (r *Resolver) cityClaimed(city string) bool {
 	return false
 }
 
-// disambiguate returns the smallest qualifier telling same-named cities apart.
-// When unique and no anchor claims the bare name, returns just the city.
-// On collision, appends the smallest distinguishing qualifier (state, then
-// country). sep is " - " for folder names, ", " for display.
-//
-// Hyderabad alone → "Hyderabad"
-// Hyderabad, India + Hyderabad, Pakistan with different states
-//
-//	→ "Hyderabad - Telangana", "Hyderabad - Sindh" (sep=" - ")
-//	→ "Hyderabad, Telangana", "Hyderabad, Sindh" (sep=", ")
+// disambiguate returns city plus the smallest qualifier that tells same-named
+// cities apart (state, then country), or just city when unique and no anchor
+// claims it. sep is " - " for folder names, ", " for display.
 func disambiguate(city, state, country string, nameCount, countryCount, inCountryCount int, anchorClaims bool, sep string) string {
 	if nameCount <= 1 && !anchorClaims {
 		return city
 	}
-	// state even when the name also occurs abroad — no other Springfield in
-	// Illinois exists to collide with, and a state is what a reader recognizes
+	// state even when the name also occurs abroad: nothing in that state
+	// collides, and a state is what a reader recognizes
 	if inCountryCount > 1 && state != "" {
 		return city + sep + stripDiacritics(state)
 	}
@@ -780,10 +729,8 @@ func disambiguate(city, state, country string, nameCount, countryCount, inCountr
 	return city
 }
 
-// fullName spells a place out for a person choosing from a list: city, state
-// and country, skipping the parts the geonames database doesn't have. Two same-named
-// cities are never ambiguous here, whatever the disambiguate ladder decided
-// was enough for a folder name.
+// fullName spells a place out (city, state, country, skipping missing parts)
+// for pick lists.
 func fullName(city, state, country string) string {
 	parts := []string{city}
 	for _, p := range []string{state, country} {
@@ -794,9 +741,7 @@ func fullName(city, state, country string) string {
 	return strings.Join(parts, ", ")
 }
 
-// splitQualified splits any of the three name forms into the city and the
-// qualifiers after it: "Hyderabad, Telangana, India" -> city plus two, each of
-// which must then match a row's state or country.
+// splitQualified splits "City, State, Country" into city and qualifiers.
 func splitQualified(name string) (city string, qualifiers []string) {
 	parts := strings.Split(strings.TrimSpace(name), ",")
 	city = strings.TrimSpace(parts[0])
@@ -808,9 +753,8 @@ func splitQualified(name string) (city string, qualifiers []string) {
 	return city, qualifiers
 }
 
-// matchesQualifiers reports whether a row's state/country account for every
-// qualifier in a picked name. No qualifiers matches anything, so a bare name
-// saved before qualifiers existed still resolves.
+// matchesQualifiers reports whether state/country account for every qualifier.
+// No qualifiers matches anything.
 func matchesQualifiers(state, country string, qualifiers []string) bool {
 	state, country = strings.ToLower(stripDiacritics(state)), strings.ToLower(stripDiacritics(country))
 	for _, q := range qualifiers {
@@ -822,8 +766,8 @@ func matchesQualifiers(state, country string, qualifiers []string) bool {
 	return true
 }
 
-// stripDiacritics normalizes a geonames name ("Banjār") to plain ASCII
-// ("Banjar") — combining marks read as typos in an unfamiliar script.
+// stripDiacritics removes combining marks from a geonames name ("ā" → "a"):
+// they read as typos in an unfamiliar script.
 func stripDiacritics(s string) string {
 	var b strings.Builder
 	for _, r := range norm.NFD.String(s) {
@@ -837,27 +781,15 @@ func stripDiacritics(s string) string {
 
 // Anchor is a saved place resolved to GPS coordinates.
 type Anchor struct {
-	Name       string // "Hyderabad, Telangana, India" (full, for ResolveByName)
-	FolderName string // "Hyderabad" or "Hyderabad - India" when another anchor shares the city
+	Name       string // "<city>, <state>, <country>" (full, for ResolveByName)
+	FolderName string // "<city>", or "<city> - <state>" when another anchor shares the city
 	Lat        float64
 	Lon        float64
 }
 
-// BuildAnchors resolves saved-place names to coordinates and returns them.
-// Names that fail to resolve are skipped with a warning. FolderName is
-// disambiguated when two anchors share the same city: the smallest qualifier
-// that tells them apart (state, then country) is appended.
-//
-// The set is also kept on the resolver, because Candidates needs it (via
-// cityClaimed) to decide how a nearby place is spelled. Callers that place
-// files take the returned slice rather than reading that field back — anchors
-// are a value the caller passes on, not state two packages share.
-//
-// It replaces any previous set rather than appending to it, so calling it twice
-// in one process (a second scan, a rebuilt proposal) doesn't leave every anchor
-// duplicated. The whole set is built locally and published in one assignment, so
-// a concurrent reader sees either the old anchors or the new ones, never an
-// empty window mid-rebuild.
+// BuildAnchors resolves saved-place names to coordinates, skipping (with a
+// warning) names that don't resolve. Two anchors sharing a city get the
+// smallest qualifier that tells them apart in FolderName.
 func (r *Resolver) BuildAnchors(ctx context.Context, savedPlaces []string) []Anchor {
 	if r == nil {
 		return nil
@@ -871,9 +803,7 @@ func (r *Resolver) BuildAnchors(ctx context.Context, savedPlaces []string) []Anc
 		}
 		anchors = append(anchors, Anchor{Name: name, Lat: lat, Lon: lon})
 	}
-	// disambiguate FolderName using the same logic as disambiguate():
-	// group anchors by bare city, compute collision counts per anchor, then
-	// qualify with state or country only when needed.
+	// qualify FolderName only where anchors share a city, as disambiguate does
 	type entry struct{ city, state, country string }
 	entries := make([]entry, len(anchors))
 	for i, a := range anchors {
@@ -904,6 +834,5 @@ func (r *Resolver) BuildAnchors(ctx context.Context, savedPlaces []string) []Anc
 		inCountryCount := cityCountries[e.city][e.country]
 		anchors[i].FolderName = disambiguate(e.city, e.state, e.country, nameCount, countryCount, inCountryCount, false, " - ")
 	}
-	r.anchors = anchors
 	return anchors
 }

@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import (
@@ -55,8 +49,7 @@ func TestDraftFile(t *testing.T) {
 	if got, err := readDraft(dir); err != nil || !reflect.DeepEqual(got, want[:2]) {
 		t.Fatalf("torn last line: %+v, %v; want %+v", got, err, want[:2])
 	}
-	// the next append after the crash must land on a line of its own, not
-	// glue onto the fragment — twice, since the second is where it used to fail
+	// the next appends after the crash must each land on a line of their own
 	for _, e := range []Edit{{Seq: 3, Op: OpDrop, Nodes: []int64{30}}, {Seq: 4, Op: OpFlatten, Nodes: []int64{8}}} {
 		if err := appendDraft(dir, e); err != nil {
 			t.Fatal(err)
@@ -94,10 +87,9 @@ func TestDraftFile(t *testing.T) {
 	}
 }
 
-// TestApplyDraft covers spec D17/D18 end to end: the draft reaches the
-// database only through ApplyDraft, which approves the plan and removes the
-// file; and a crash after the commit but before the removal replays onto the
-// applied tree as a no-op.
+// TestApplyDraft: the draft reaches the database only through ApplyDraft, which
+// removes the file; a crash after the commit but before the removal replays as
+// a no-op.
 func TestApplyDraft(t *testing.T) {
 	h := newHarness(t)
 	h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))

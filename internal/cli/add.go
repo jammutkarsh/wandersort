@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -17,13 +11,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-// waitForDeps blocks until both downloadable dependencies are ready, so no
-// pipeline phase starts until they are: dependencies used to download in the
-// background while the walk ran, and a failed download surfaced through
-// whichever phase happened to be running when it gave up — "pipeline
-// cancelled during metadata phase" for an ordinary network failure, not a
-// cancellation. Downloading first trades that overlap for a single, clear
-// failure before any file is touched.
+// waitForDeps blocks until both downloadable dependencies are ready, so a
+// failed download is one clear error before any file is touched.
 func waitForDeps(deps *install.Coordinator) error {
 	for _, d := range []struct {
 		name string
@@ -32,9 +21,7 @@ func waitForDeps(deps *install.Coordinator) error {
 		{"exiftool", func() error { _, err := deps.Exiftool(); return err }},
 		{"location database", func() error { _, err := deps.Location(); return err }},
 	} {
-		// The full technical error (URL, transport failure) already went to
-		// the log file via the retry warnings — the user just needs to know
-		// what to do next.
+		// the technical error is already in the log; say what to do next
 		if err := d.get(); err != nil {
 			return fmt.Errorf("failed to download the %s — retry the scan to download it again", d.name)
 		}
@@ -81,15 +68,12 @@ wandersort add -p ~/Pictures -o ~/wandersort-out`,
 		"Directories to add (repeatable, or comma-separated). Asked for on screen if omitted")
 	cmd.Flags().Bool(flagForce, false,
 		"Re-read every already-scanned file from disk instead of skipping unchanged ones")
-	// Deliberately not MarkFlagRequired: the Add tab's own folder input is the
-	// answer when it's missing, and refusing to open the app over a question it
-	// is about to ask makes `add` the one command that can't just be run.
+	// --paths isn't required: the Add tab asks for it when missing
 	return cmd
 }
 
-// runAdd opens the app on the Add tab — the same session a bare `wandersort`
-// gives, so ctrl+t still reaches the settings and the plan. Paths given on
-// the command line skip the folder question; without them the tab opens on it.
+// runAdd opens the shell on the Add tab; paths given on the command line skip
+// the folder question.
 func (a *app) runAdd(cmd *cobra.Command, paths []string, force bool) error {
 	if a.isTuiEnabled(cmd) {
 		return a.runShell(shellStart{tab: tabScan, paths: paths, force: force})
@@ -101,11 +85,8 @@ func (a *app) runAdd(cmd *cobra.Command, paths []string, force bool) error {
 	return a.runAddPlain(paths, force)
 }
 
-// runAddPlain is the non-TUI path: synchronous pipeline, progress via the
-// console logger's line output. Used with --plain or a non-terminal
-// stderr. Behaviour is unchanged from before the TUI existed. force is
-// --force's explicit consent to re-read every file already added — no
-// confirmation prompt needed.
+// runAddPlain is the non-TUI path (--plain or non-terminal stderr): runs the
+// pipeline synchronously with line output. force re-reads every file.
 func (a *app) runAddPlain(paths []string, force bool) error {
 	start := time.Now()
 	ctx, cancel := interruptible()
@@ -129,8 +110,7 @@ func (a *app) runAddPlain(paths []string, force bool) error {
 		return fmt.Errorf("scan: %w", err)
 	}
 
-	// No -o needed: the library just added to is the one the next launch
-	// opens on (config.New reads the history this run wrote).
+	// no -o needed: the next launch opens the library just used
 	a.Log.Info(fmt.Sprintf("Added in %s. Run 'wandersort organise' to correct the plan, then 'wandersort execute' to copy the files in.", time.Since(start).Round(time.Millisecond)),
 		logger.UserKey, true, "addedPaths", scanPaths)
 	return nil

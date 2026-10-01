@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package logger
 
 import (
@@ -99,7 +93,6 @@ func TestPrettyHandlerHidesRoutingKeysInNonVerboseMode(t *testing.T) {
 		slog.String(PhaseKey, "scan"),
 		slog.String(EventKey, "start"),
 		slog.String(ElapsedKey, "1s"),
-		slog.String(sessionKey, "abc123"),
 		slog.String("visible", "yes"),
 	)
 
@@ -109,7 +102,7 @@ func TestPrettyHandlerHidesRoutingKeysInNonVerboseMode(t *testing.T) {
 		}
 	})
 
-	for _, hidden := range []string{PhaseKey, EventKey, ElapsedKey, sessionKey} {
+	for _, hidden := range []string{PhaseKey, EventKey, ElapsedKey} {
 		if strings.Contains(out, hidden+"=") {
 			t.Errorf("hidden key %q leaked into console output: %q", hidden, out)
 		}

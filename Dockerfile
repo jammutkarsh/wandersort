@@ -1,6 +1,3 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
-# Copyright (c) 2026 Utkarsh Chourasia
-
 # syntax=docker/dockerfile:1
 FROM golang:1.26-alpine AS base
 

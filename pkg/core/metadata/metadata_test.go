@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package metadata
 
 import (
@@ -232,9 +226,7 @@ func TestExtractor(t *testing.T) {
 				t.Errorf("failed extraction should leave one hashed row with NULL exif columns, got %d", rows)
 			}
 		}},
-		// A closed writer stops every worker. The producer used to go on
-		// waiting to hand out the next file with nobody left to take it, and
-		// Run never returned
+		// a closed writer stops every worker, and Run must still return
 		{"RunReturnsWhenTheWriterCloses", func(t *testing.T) {
 			d := dbtest.New(t)
 			root := t.TempDir()

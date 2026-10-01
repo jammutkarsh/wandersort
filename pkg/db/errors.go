@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package db
 
 import (
@@ -21,10 +15,7 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// Stages of the errors table. Planning is library-wide, so it fails the run,
-// not a file — these are the three that can fail one file: reading it,
-// transferring it, and checking afterwards that it is still what was
-// recorded.
+// Stages of the errors table: the three that can fail one file.
 const (
 	StageRead     = "READ"
 	StageTransfer = "TRANSFER"
@@ -66,9 +57,8 @@ type stackError struct {
 func (e *stackError) Error() string { return e.err.Error() }
 func (e *stackError) Unwrap() error { return e.err }
 
-// WithStack attaches the caller's stack to err. Go errors carry none, and a
-// failure is usually recorded from the BulkWriter's goroutine, so the frames
-// have to be taken where the failure is seen, before the write is enqueued.
+// WithStack attaches the caller's stack to err. Take it where the failure is
+// seen, before a write is queued on the BulkWriter's goroutine.
 func WithStack(err error) error {
 	if err == nil {
 		return nil
@@ -97,9 +87,7 @@ func callers(skip int) []Frame {
 	}
 }
 
-// modulePath is the directory name the repository is checked out under, and so
-// where a frame's file path turns relative: the build machine's directories
-// name nobody worth knowing about.
+// modulePath is where a frame's file path turns repo-relative.
 const modulePath = "wandersort/"
 
 // moduleRelative shortens a frame's file to its path inside the module. Files
@@ -157,9 +145,8 @@ func errorKind(err error, panicked bool) string {
 	return KindOther
 }
 
-// describe builds the stored detail of err: the message, the chain walked to
-// the bottom (joined errors are one layer, their text), the frames and, when
-// present, the errno.
+// describe builds the stored detail of err: message, unwrapped chain, frames
+// and errno.
 func describe(err error) (detail ErrorDetail, panicked bool) {
 	detail = ErrorDetail{Message: err.Error(), Chain: []chainLink{}}
 	for cur := err; cur != nil; cur = errors.Unwrap(cur) {
@@ -188,11 +175,9 @@ func describe(err error) (detail ErrorDetail, panicked bool) {
 	return detail, panicked
 }
 
-// RecordError stores err as file fileID's failure for stage, replacing an
-// earlier one and counting the attempt. op is the step that failed. Frames
-// come from WithStack/PanicError when err carries them, else from here, which
-// is only meaningful when the caller is the failing code itself (a
-// synchronous transaction, not a queued write).
+// RecordError stores err as fileID's failure for stage (replacing an earlier
+// one, counting attempts). Frames come from WithStack/PanicError when present,
+// else from here.
 func RecordError(ctx context.Context, tx *sqlx.Tx, fileID int64, stage, op string, err error) error {
 	detail, panicked := describe(err)
 	// An error names a file, and a Linux file name need not be UTF-8: store

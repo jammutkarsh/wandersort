@@ -1,7 +1,3 @@
-> SPDX-License-Identifier: AGPL-3.0-or-later
->
-> Copyright (c) 2026 Utkarsh Chourasia
-
 # Contributing Guidelines
 
 Thank you for your interest in contributing to this project! To ensure a smooth and efficient workflow, please follow the guidelines below.

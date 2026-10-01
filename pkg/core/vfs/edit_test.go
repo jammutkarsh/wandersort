@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import (
@@ -364,7 +358,7 @@ func boundsTree() []Node {
 	}}}
 }
 
-// Each review edit transforms the folders' bounds (spec D14).
+// Each review edit transforms the folders' bounds.
 func TestEditsTransformBounds(t *testing.T) {
 	march := Constraint{Year: []int{2024}, Month: []int{3}}
 	with := func(c Constraint, f func(*Constraint)) Constraint { f(&c); return c }
@@ -526,8 +520,8 @@ func TestMergeNodesRejectsAncestor(t *testing.T) {
 	}
 }
 
-// Year and month folders are fixed (D26): no merge or drop of either, no
-// flatten of a year. Flattening a month keeps the month, so it stays.
+// Year and month folders are fixed: no merge or drop of either, no flatten of a
+// year. Flattening a month keeps the month.
 func TestEditsRefuseFixedFolders(t *testing.T) {
 	tree := func() []Node {
 		return []Node{{ID: pid("2024"), Name: "2024", Level: LevelYear, Children: []Node{

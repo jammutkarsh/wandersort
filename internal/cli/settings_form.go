@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -22,12 +16,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
-// buildSettingsForm builds the wizard's fields (seeded with the library's
-// current settings) and a save closure that writes them back to it.
-//
-// The output folder is asked for only while there is still a choice: once the
-// library is open the database and the lock are on it, and a library's folder
-// never moves (spec D5).
+// buildSettingsForm builds the wizard's fields, seeded with the library's
+// settings, and a save closure that writes them back. The output folder is
+// asked only while no library is open: a library's folder never moves.
 func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
 	out := a.Config.OutputDir()
 	groupBy := append([]string{}, a.Config.Rules...)
@@ -45,8 +36,8 @@ func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.
 		}
 	}
 
-	// Rejects a typo (close candidates exist) but waves through an unknown name
-	// or a geonames database that never opened — a broken dependency can't trap this field.
+	// rejects a typo (close candidates exist) but accepts an unknown name, or
+	// any name when the geonames database failed to open
 	townValidator := func(s string) error {
 		if strings.TrimSpace(s) == "" {
 			return nil // blank = skip
@@ -82,10 +73,8 @@ func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.
 	paths := path.New()
 	homeDir := paths.HomeDir
 
-	// The libraries this machine has opened come first: picking one again is
-	// far more common than starting a third (spec D3). Then locations under
-	// folders that exist on this machine — ~/Pictures is a macOS/Windows
-	// convention; a Linux box without it won't offer it.
+	// recently used libraries first, then common locations whose parent
+	// exists on this machine
 	var outSuggestions []string
 	for _, dir := range a.Config.History() {
 		outSuggestions = append(outSuggestions, paths.RelativeToHome(dir))
@@ -129,8 +118,7 @@ func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.
 	rulesField.Example = ex.Rules
 
 	fields := []*tui.Field{rulesField}
-	// Asked first, and only while the answer can still change anything: an
-	// open library already has its database and lock on one folder.
+	// asked first, and only while no library is open
 	if a.AppDB == nil {
 		fields = append([]*tui.Field{{
 			Kind:        tui.FieldInput,
@@ -190,10 +178,8 @@ func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.
 		},
 	)
 
-	// save runs after the form completes. It reads the bound vars this form
-	// wrote and writes them to the library they belong to — opening (or
-	// creating) it here if the output path above is how this session picked
-	// one, so quitting before the save writes nothing anywhere.
+	// save writes the answers to their library, opening (or creating) it if
+	// the output path was asked here; quitting before save writes nothing
 	save := func() error {
 		if strings.TrimSpace(work) == "" {
 			work = home // blank work = same as home

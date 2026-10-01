@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 //go:build windows
 
 package volume
@@ -15,19 +9,13 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// classForPath is unimplemented on Windows: the seek-penalty query is
-// DeviceIoControl(IOCTL_STORAGE_QUERY_PROPERTY) with
-// StorageDeviceSeekPenaltyProperty, whose structs are not in x/sys and would
-// have to be declared here. CI runs ubuntu-latest only, so there is no machine
-// to test that on — and ClassUnknown's conservative read budget is the right
-// behaviour for an untested platform anyway.
+// classForPath is unimplemented on Windows (the IOCTL_STORAGE_QUERY_PROPERTY
+// structs aren't in x/sys and there's no test machine); ClassUnknown's
+// conservative budget fits.
 func classForPath(string) (Class, error) { return ClassUnknown, nil }
 
-// uuidForPath resolves the Windows volume GUID for path: GetVolumePathName
-// finds the mount point (drive letter or mounted folder — both can change
-// between sessions), and GetVolumeNameForVolumeMountPoint returns the stable
-// volume GUID path `\\?\Volume{...}\`. The GUID inside the braces is returned
-// so the value matches the UUID shape of the other platforms.
+// uuidForPath returns the GUID of path's volume (GetVolumePathName, then
+// GetVolumeNameForVolumeMountPoint), matching other platforms' UUID shape.
 func uuidForPath(path string) (string, error) {
 	pathW, err := windows.UTF16PtrFromString(path)
 	if err != nil {

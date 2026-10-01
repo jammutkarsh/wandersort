@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -30,29 +24,19 @@ later reviews.`,
 		Example: `# Correct the plan interactively
 wandersort organise`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// An alt-screen review in a pipe was never usable; say so instead
-			// of drawing one into a file.
+			// an alt-screen review can't draw into a pipe
 			if !a.isTuiEnabled(cmd) {
 				return fmt.Errorf("organise needs an interactive terminal — 'wandersort execute' copies the plan as proposed")
 			}
-			// Opens the app on the Organise tab — the same session a bare
-			// `wandersort` gives, so a reviewer who finds the folders wrong can
-			// fix the settings and come back without relaunching. The shell
-			// opens the lock, the database and the tree itself, and reports a
-			// library with nothing to review on screen rather than refusing to
-			// start: there is a scan tab one ctrl+t away.
+			// the shell on the Organise tab, so settings stay one ctrl+t away
 			return a.runShell(shellStart{tab: tabReview})
 		},
 	}
 }
 
-// rebuildTree re-proposes the whole hierarchy from the settings as they stand
-// right now and returns the new tree — called when a wizard save changes
-// something, which is the only way the settings can move under a plan now
-// that they live in the library's own database (see shell.settingsSaved).
-//
-// Every row not yet transferred is re-proposed, so a re-plan really does
-// replan everything; a file already placed or failed keeps its row.
+// rebuildTree re-proposes the whole hierarchy under the current settings
+// (after a wizard save) and returns the new tree. Placed and failed rows keep
+// theirs.
 func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
 	resolver, err := a.Deps.Location()
 	if err != nil {
@@ -65,21 +49,16 @@ func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
 	return vfs.BuildTree(ctx, a.AppDB)
 }
 
-// newReviewScreen builds the review screen over the current proposal, reusing
-// the scan's already-open DB and Deps — no lock/DB re-init needed. The plan
-// it finds always matches the current settings: a save re-plans on the spot
-// (shell.settingsSaved), so there is nothing stale to check for here.
-//
-// An empty tree means every master is already placed by an earlier execute —
-// a fully organized library, not a plan to rebuild.
+// newReviewScreen builds the review over the current proposal using the open
+// DB. An empty tree means everything is already placed.
 func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
-	// Doesn't block: a.Deps was started by the scan and vfs already ran, so
-	// the location download has resolved by now. Autocomplete just degrades
-	// gracefully without a resolver if it somehow hasn't.
+	// vfs already waited for the location download; without a resolver,
+	// rename completion is just disabled
 	resolver, err := a.Deps.Location()
 	if err != nil {
 		a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
 	}
+	resolver = resolver.WithAnchors(resolver.BuildAnchors(ctx, a.Config.SavedPlaces))
 	outputDir := a.Config.OutputDir()
 	tree, err := vfs.BuildTree(ctx, a.AppDB)
 	if err != nil {

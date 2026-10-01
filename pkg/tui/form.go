@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package tui
 
 import (
@@ -18,10 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// suggestDebounce is how long a keystroke waits before Suggest actually runs
-// — Suggest hits the geonames DB, so firing it on every keystroke serializes
-// a query per character. Debouncing to one query per pause is the standard
-// autocomplete pattern.
+// suggestDebounce delays Suggest (a geonames query) until typing pauses.
 const suggestDebounce = 50 * time.Millisecond
 
 // suggestDebounceMsg fires after a pause in typing; stale if a later
@@ -62,14 +53,10 @@ type Field struct {
 	// Subs are a FieldGroup's fields, answered in order on one screen. Any kind
 	// is allowed — a group is a screen, not an input list.
 	Subs []*Field
-	// Describe overrides Description when the explanation depends on the answer
-	// under the cursor ("those three folders said nothing — dropped"). Prose
-	// belongs here rather than inside Example: the example column is narrow and
-	// truncates, the description block wraps to the body width.
+	// Describe overrides Description when the explanation depends on the
+	// option under the cursor. Prose goes here, not in Example (which truncates).
 	Describe func() string
-	// Example renders what the option under the cursor would produce, in its own
-	// block above the footer. The description explains the question; the example
-	// demonstrates the one answer being considered.
+	// Example renders what the option under the cursor would produce.
 	Example func() string
 	// Await holds the field while it returns a non-empty string: the text shows
 	// under the title and enter refuses to advance.
@@ -82,9 +69,8 @@ type Field struct {
 	Error     string
 }
 
-// DownloadMsg reports progress of a download running behind the form (the
-// location database, fetched while the user answers the fields above the
-// town step). A dependency already on disk never reports, so nothing renders.
+// DownloadMsg reports a background download's progress (the location
+// database). An already-present dependency never reports.
 type DownloadMsg struct {
 	Label       string
 	Done, Total int64
@@ -110,9 +96,8 @@ type FormModel struct {
 	dlMsg  DownloadMsg
 	dlSeen bool // a DownloadMsg arrived; nothing renders before the first one
 
-	// quitReq marks the key that ended the form as "I am done with the app",
-	// not "I am done here" — ctrl+c, as opposed to esc or a finished save.
-	// It rides out on Leave; what it costs is the container's decision.
+	// quitReq marks the ending key as "done with the app" (ctrl+c) rather than
+	// "done here"; it rides out on Leave
 	quitReq bool
 
 	// askExit is [esc]'s question — save what's been entered, or throw it
@@ -124,9 +109,8 @@ type FormModel struct {
 // Busy is never true for a form: it holds the keyboard, not a pipeline.
 func (m FormModel) Busy() bool { return false }
 
-// finish hands control back to the container, carrying why it ended. It does
-// not quit: the container owns the program, and a screen that ends it takes
-// every other tab with it — a scan still running underneath included.
+// finish hands control back to the container with why the form ended. It never
+// quits the program.
 func (m FormModel) finish() (tea.Model, tea.Cmd) {
 	return m, Left(Leave{Quit: m.quitReq, Aborted: m.aborted, Err: m.err})
 }
@@ -212,10 +196,8 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.aborted, m.quitReq = true, true
 			return m.finish()
 		case "esc":
-			// Unlike "c", esc is never a character someone would type into a
-			// field, so it works the same whether an input is focused or not.
-			// It doesn't save straight away — leaving is worth one question,
-			// not an assumed "yes".
+			// esc works whether or not an input is focused, and asks before
+			// leaving
 			m.askExit, m.exitChoice = true, true
 			return m, nil
 		case "enter":
@@ -224,9 +206,8 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.fillSuggestion(m.suggCursor)
 				return m, nil
 			}
-			// exactly one completion left: enter means that one, no arrowing
-			// needed. The != guard lets the next enter advance instead of
-			// re-filling the same value forever.
+			// one completion left: enter takes it (the != guard lets the next
+			// enter advance)
 			if m.inputFocused() && len(m.sugg) == 1 && m.sugg[0] != m.ti.Value() {
 				m.fillSuggestion(0)
 				return m, nil
@@ -255,9 +236,8 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Handle field-specific keys. active() (not Fields[Current]) so a
-		// confirm or multiselect nested in a FieldGroup answers the same way as
-		// a top-level one.
+		// active(), not Fields[Current], so fields nested in a FieldGroup
+		// answer the same keys
 		if field := m.active(); field != nil {
 			switch field.Kind {
 			case FieldMultiSelect:
@@ -307,9 +287,8 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case DownloadMsg:
-		// Finished carries no Label and is also the only message when the
-		// dependency was already on disk: keep the label from the byte reports,
-		// and stay hidden entirely if there never were any.
+		// Finished has no Label and is the only message for an already-present
+		// dependency: keep the earlier label, or stay hidden
 		if msg.Finished {
 			if m.dlSeen {
 				m.dlMsg.Finished = true
@@ -375,11 +354,8 @@ func (m *FormModel) refreshSuggestions() {
 	}
 }
 
-// View renders the whole form as a top-down stack, same visual language as the
-// scan screen's StageList: answered fields collapse to one ` => Title  value`
-// row, the current field expands in place with its description and control,
-// fields still to come sit dimmed below. The stack itself is the progress
-// indicator — no step counter needed.
+// View renders the form as a top-down stack: answered fields collapse to one
+// row, the current field expands, later fields are dimmed.
 func (m FormModel) View() string {
 	if m.askExit {
 		return m.exitAskView()
@@ -423,9 +399,9 @@ const (
 	examplePanelMinTermW = 100
 )
 
-// sidePanel reports whether the example renders as a right-hand column. The
-// answer depends only on the terminal width and whether any field has an
-// example — not on the active field — so the layout never jumps between steps.
+// sidePanel reports whether the example renders as a right-hand column. Depends
+// only on terminal width and whether any field has an example, so the layout
+// is stable across steps.
 func (m FormModel) sidePanel() bool {
 	if m.w < examplePanelMinTermW {
 		return false
@@ -443,9 +419,7 @@ func (m FormModel) sidePanel() bool {
 	return false
 }
 
-// bodyW is the width the field stack renders at: capped at formBodyMaxW when
-// the side panel is showing — every column past the cap belongs to the
-// example, which is the thing that was getting truncated.
+// bodyW is the field stack's width, capped when the side panel shows.
 func (m FormModel) bodyW() int {
 	if m.sidePanel() {
 		return min(formBodyMaxW, m.w-examplePanelMinW-2)
@@ -459,8 +433,7 @@ func (m FormModel) panelW() int {
 }
 
 // examplePanel renders the active field's example in a bordered box for the
-// right column — an empty box-less column when the field has no example, so
-// the fields don't re-wrap between steps.
+// right column (an empty column when it has none, so fields don't re-wrap).
 func (m FormModel) examplePanel() string {
 	var ex string
 	if f := m.active(); f != nil && f.Example != nil {
@@ -479,9 +452,8 @@ func (m FormModel) examplePanel() string {
 	return Box.Width(m.panelW() - 2).Render(b.String())
 }
 
-// downloadRow renders the background download above the footer — a labelled
-// bar while running, a dim done line after — which is the whole reason the
-// form doesn't need a separate install screen.
+// downloadRow renders the background download above the footer: a labelled bar
+// while running, a dim done line after.
 func (m FormModel) downloadRow() string {
 	if !m.dlSeen { // nothing reported yet — an already-installed dependency stays silent
 		return ""
@@ -498,10 +470,8 @@ func (m FormModel) downloadRow() string {
 	return row(left, "", m.w) + "\n"
 }
 
-// exampleBlock renders the active field's example — what the option under the
-// cursor actually produces — pinned above the footer, the same place the scan
-// screen puts its warnings. Kept out of Describe so the description explains
-// the question once, not every option's outcome at once.
+// exampleBlock renders the active field's example above the footer (narrow
+// terminals).
 func (m FormModel) exampleBlock() string {
 	f := m.active()
 	if f == nil || f.Example == nil {
@@ -522,8 +492,7 @@ func (m FormModel) exampleBlock() string {
 }
 
 // awaitReason reports why the current step can't be answered yet ("" = it can).
-// A group's Await holds the whole step, not just the sub-field under the
-// cursor — its members are one screen and one question.
+// A group's Await holds the whole step.
 func (m FormModel) awaitReason() string {
 	if m.Current >= len(m.Fields) {
 		return ""
@@ -592,10 +561,8 @@ func (m FormModel) summaryValue(f *Field) string {
 	return "" // FieldNote
 }
 
-// descriptionBlock renders a field's explanation under its title, indented and
-// **word-wrapped to the body width** — never truncated. Hard line breaks in the
-// text are re-flowed: the body narrows when the example column is showing, so a
-// description wrapped for a full-width terminal would otherwise lose its tail.
+// descriptionBlock renders a field's explanation word-wrapped to the body width,
+// re-flowing hard line breaks.
 func (m FormModel) descriptionBlock(f *Field, indent int) string {
 	d := f.Description
 	if f.Describe != nil {
@@ -634,9 +601,8 @@ func (m FormModel) expandedField(f *Field, i int) string {
 	return b.String()
 }
 
-// subView renders one member of a FieldGroup: the focused one gets its full
-// control and description, the rest collapse to a `Title: answer` line. Each
-// sub is numbered within its group, same as the top-level step list.
+// subView renders one FieldGroup member: full control when focused, else a
+// `Title: answer` line.
 func (m FormModel) subView(sub *Field, idx int, focused bool) string {
 	num := fmt.Sprintf("%d) ", idx+1)
 	if !focused {
@@ -676,9 +642,8 @@ func (m FormModel) controlView(f *Field, label string) string {
 	return b.String()
 }
 
-// optionRow renders one pickable option as `marker label`. Options are
-// navigated with ↑/↓ (and space/y/n to pick), never numbered — the numbers on
-// screen are step ordinals, not pickable keys.
+// optionRow renders one option as `marker label`. Options are picked with
+// ↑/↓ and space/y/n; on-screen numbers are step ordinals.
 func optionRow(label string, on, cursor bool) string {
 	marker := FaintTxt.Render("○ ")
 	if on {
@@ -735,9 +700,8 @@ func (m FormModel) suggWindow() (start, end int) {
 	return suggWindow(len(m.sugg), m.suggCursor, maxFormSuggestions)
 }
 
-// suggWindow returns the [start, end) slice of a completion list to render — a
-// rows-tall window scrolled to keep cursor visible, so a list longer than the
-// window is reachable by ↑/↓ instead of being silently truncated.
+// suggWindow returns the [start, end) slice of a completion list to render,
+// scrolled to keep cursor visible.
 func suggWindow(n, cursor, rows int) (start, end int) {
 	if n <= rows {
 		return 0, n
@@ -833,9 +797,7 @@ func (m FormModel) moveNext() (tea.Model, tea.Cmd) {
 	return m, textinput.Blink
 }
 
-// exitAskView is [esc]'s question, drawn as the same full-screen dialog
-// ConfirmModel renders everywhere else — with its buttons relabelled, since
-// "Save"/"Discard" says what leaving actually does, unlike a bare yes/no.
+// exitAskView is [esc]'s Save/Discard question, drawn as a ConfirmModel.
 func (m FormModel) exitAskView() string {
 	choice := m.exitChoice
 	c := NewConfirmModel("Save your changes?",
@@ -845,10 +807,8 @@ func (m FormModel) exitAskView() string {
 	return sized.View()
 }
 
-// answerExitAsk drives the [esc] modal: the same keys ConfirmModel answers,
-// since that is what it is drawn as (see exitAskView). ctrl+c still falls
-// through to a plain discard — the modal is a considered choice, not another
-// wall to escape from.
+// answerExitAsk drives the [esc] modal with ConfirmModel's keys; ctrl+c
+// discards.
 func (m FormModel) answerExitAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "ctrl+c":
@@ -876,9 +836,8 @@ func (m FormModel) answerExitAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// saveAndExit commits the active input and submits the form right away,
-// without requiring every step to be visited — the escape hatch for a user
-// who opened the wizard just to change one setting.
+// saveAndExit commits the active input and submits the form without visiting
+// every step.
 func (m FormModel) saveAndExit() (tea.Model, tea.Cmd) {
 	if m.awaitReason() != "" { // a held step (background download) still blocks, same as moveNext
 		return m, nil
@@ -928,13 +887,10 @@ type ConfirmModel struct {
 	Title       string
 	Description string
 	Value       *bool
-	// YesLabel/NoLabel override the button text — "yes"/"no" by default.
-	// A caller whose choice isn't literally yes/no (e.g. Save vs Discard)
-	// sets these instead of drawing its own modal.
+	// YesLabel/NoLabel override the "yes"/"no" button text.
 	YesLabel, NoLabel string
-	// Keys overrides the footer's key hints — "y / n" by default. A caller
-	// that doesn't drive this modal with y/n (only its own View() is used;
-	// see the force re-scan and review exit dialogs) sets this instead.
+	// Keys overrides the footer's "y / n" hints, for callers that drive the
+	// modal with other keys.
 	Keys    string
 	w, h    int
 	aborted bool

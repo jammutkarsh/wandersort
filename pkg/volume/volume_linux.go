@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 //go:build linux
 
 package volume
@@ -27,9 +21,8 @@ func Space(path string) (free, total uint64, err error) {
 	return st.Bavail * uint64(st.Bsize), st.Blocks * uint64(st.Bsize), nil
 }
 
-// uuidForPath resolves the block device backing path's longest mount-point
-// prefix from /proc/self/mounts, then matches that device against the
-// /dev/disk/by-uuid symlink table
+// uuidForPath finds path's longest mount-point prefix in /proc/self/mounts and
+// matches its device against /dev/disk/by-uuid.
 func uuidForPath(path string) (string, error) {
 	device, _, err := deviceForPath(path)
 	if err != nil {
@@ -97,10 +90,8 @@ func classForPath(path string) (Class, error) {
 		return ClassUnknown, nil // tmpfs, overlay, anything not a block device
 	}
 
-	// A whole disk has its own queue/; a partition does not, so a failed read
-	// is the signal to retry on the disk the partition belongs to. Asking
-	// sysfs beats pattern-matching the name — /dev/loop0 and /dev/sda1 look
-	// alike to a stripping rule and are not alike at all
+	// a partition has no queue/, so a failed read means retry on its disk;
+	// asking sysfs beats guessing from the name (loop0 vs sda1)
 	rotational, err := sysfsFlag(name, "queue/rotational")
 	if err != nil {
 		base := blockBase(name)
@@ -133,10 +124,8 @@ func sysfsFlag(base, attr string) (bool, error) {
 	return strings.TrimSpace(string(data)) == "1", nil
 }
 
-// blockBase strips a partition suffix to the whole-disk name sysfs is keyed
-// by: sda1 -> sda, nvme0n1p2 -> nvme0n1, mmcblk0p1 -> mmcblk0. Only called
-// once the name has already failed to be a whole disk, so a name that ends in
-// no partition at all ("") means "stop guessing"
+// blockBase strips a partition suffix: sda1 → sda, nvme0n1p2 → nvme0n1,
+// mmcblk0p1 → mmcblk0. "" means no partition suffix.
 func blockBase(name string) string {
 	// device-mapper (LVM, LUKS) numbers whole devices, not partitions, so
 	// stripping the digits would name something that does not exist

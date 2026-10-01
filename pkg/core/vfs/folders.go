@@ -1,14 +1,7 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
-// folders.go is the plan's persisted folder tree (folder_nodes, spec D12): a
-// folder keeps its id through renames and moves, and a file's folder path is
-// its folder's ancestors' names joined.
+// The plan's persisted folder tree (folder_nodes): a folder keeps its id
+// through renames and moves; a file's folder path is its ancestors' names.
 
 import (
 	"context"
@@ -89,16 +82,13 @@ type folderIndex struct {
 	chains map[string][]int64
 }
 
-// loadFolders indexes the folders a new proposal may reuse, so a folder that
-// is planned again keeps its id. Folders holding a placed file, or above one,
-// are left out: a review rename of a folder the proposal shares would also
-// rename where the placed file is recorded, and placed files never move. A
-// new file routed into a placed folder (route.go) gets a twin at the same
-// path instead, which is the same folder on disk.
+// loadFolders indexes the folders a new proposal may reuse, so a re-planned
+// folder keeps its id. Folders holding (or above) a placed file are excluded:
+// renaming one would rename where the placed file is recorded. A new file
+// routed into a placed folder gets a same-path twin instead.
 //
-// ponytail: each transfer into a twin leaves one more placed folder at that
-// path in folder_nodes. route takes the oldest, so it is only rows; fold
-// same-path placed folders together after execute if the count ever matters.
+// ponytail: each transfer into a twin adds one more placed folder at that path.
+// route takes the oldest; fold same-path placed folders if the count matters.
 func loadFolders(ctx context.Context, tx *sqlx.Tx) (*folderIndex, error) {
 	var rows []folderRow
 	if err := tx.SelectContext(ctx, &rows, placedFoldersCTE+`
@@ -117,10 +107,8 @@ func loadFolders(ctx context.Context, tx *sqlx.Tx) (*folderIndex, error) {
 	return f, nil
 }
 
-// placedFoldersCTE names every folder holding a placed file, or above one, as
-// placed_folders. A failed transfer's folder counts too: its row keeps the
-// target_path it failed at, so a review rename of a folder it shared would
-// leave that path pointing somewhere the folder no longer is.
+// placedFoldersCTE names every folder holding (or above) a placed file, or a
+// failed transfer's file, as placed_folders.
 var placedFoldersCTE = `
 	WITH RECURSIVE placed_folders(id) AS (
 		SELECT vfe.node_id FROM virtual_fs_entries vfe
@@ -131,13 +119,9 @@ var placedFoldersCTE = `
 		WHERE fn.parent_id IS NOT NULL
 	)`
 
-// splitPlacedFolders moves every still-reviewable entry whose folder chain
-// passes through a folder holding a placed file (or above one) onto a
-// same-path chain of its own, and returns old id → new id for every folder it
-// split. A copy stopped partway leaves approved files beside or under the
-// copied ones; without the split, a review rename of a shared folder would
-// rename where the copied files are recorded, while on disk they stay put.
-// The same rule loadFolders applies to a new plan.
+// splitPlacedFolders moves every reviewable entry whose folder chain touches a
+// placed folder onto a same-path chain of its own, and returns old id → new id
+// per split folder. Same rule as loadFolders.
 func splitPlacedFolders(ctx context.Context, tx *sqlx.Tx) (map[int64]int64, error) {
 	var entries []struct {
 		ID           int64  `db:"id"`

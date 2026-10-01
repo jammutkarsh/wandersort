@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -161,7 +155,6 @@ func TestShellModel(t *testing.T) {
 				t.Fatalf("ctrl+t past config with no proposal = tab %d, want scan", m.tab)
 			}
 
-			m.reviewReady = true
 			m.screens[tabReview] = &probe{name: "review"}
 			m.tab = tabSettings
 			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
@@ -181,7 +174,7 @@ func TestShellModel(t *testing.T) {
 			if m.tab != tabSettings {
 				t.Errorf("switched away from the wizard to tab %d", m.tab)
 			}
-			if !m.reviewReady {
+			if !m.reviewReady() {
 				t.Error("the review should be marked ready")
 			}
 			if v := ansi.Strip(m.tabBar()); !strings.Contains(v, "ready") {
@@ -189,7 +182,7 @@ func TestShellModel(t *testing.T) {
 			}
 
 			// Same message with the scan tab active does switch.
-			m.tab, m.reviewReady = tabScan, false
+			m.tab = tabScan
 			next, _ = m.Update(tui.SwitchMsg{Next: &probe{name: "review"}})
 			if got := next.(shellModel).tab; got != tabReview {
 				t.Errorf("with the scan on screen the review should open, got tab %d", got)
@@ -199,7 +192,7 @@ func TestShellModel(t *testing.T) {
 		// session continues with a fresh folder input.
 		{"FinishedReviewReturnsHomeInsteadOfQuitting", func(t *testing.T) {
 			m := testShell(t)
-			m.screens[tabReview], m.reviewReady = &probe{name: "review"}, true
+			m.screens[tabReview] = &probe{name: "review"}
 			m.tab = tabReview
 
 			next, cmd := m.Update(tui.Leave{})
@@ -209,17 +202,14 @@ func TestShellModel(t *testing.T) {
 					t.Fatal("a finished review must not quit the app")
 				}
 			}
-			if m.tab != tabScan || m.reviewReady {
-				t.Fatalf("want the scan tab with the stale review dropped, got tab=%d ready=%v", m.tab, m.reviewReady)
+			if m.tab != tabScan || m.reviewReady() {
+				t.Fatalf("want the scan tab with the stale review dropped, got tab=%d ready=%v", m.tab, m.reviewReady())
 			}
 			if _, ok := m.screens[tabScan].(tui.HomeModel); !ok {
 				t.Errorf("the scan tab should hold a fresh home screen, got %T", m.screens[tabScan])
 			}
 		}},
-		// The reported bug: after one scan the tab kept showing that finished
-		// run forever, so adding a second folder meant quitting the app —
-		// exactly what the unified shell exists to avoid. Coming back to the
-		// tab means "scan something else".
+		// coming back to a finished scan's tab means "scan something else"
 		{"ReturningToTheScanTabOffersAnotherScan", func(t *testing.T) {
 			m := testShell(t)
 			m.screens[tabSettings] = &probe{name: "config"}
@@ -268,10 +258,8 @@ func TestShellModel(t *testing.T) {
 				t.Errorf("want the lock failure on screen:\n%s", v)
 			}
 		}},
-		// The reported bug: a proposal from an earlier run is reachable, but
-		// the tab was gated on a screen the *scan* prefetches, so relaunching
-		// and cycling only ever said "waiting for scan". The same gate locked
-		// the user out after saving, when the prefetched screen is dropped.
+		// a plan on disk makes the review tab reachable without a prefetched
+		// screen, after relaunch and after a save
 		{"ReviewIsReachableFromAProposalOnDisk", func(t *testing.T) {
 			m := testShell(t)
 			if m.canReview() {
@@ -364,9 +352,7 @@ func TestShellModel(t *testing.T) {
 				t.Error("the finished form should be dropped, so the next visit re-seeds from disk")
 			}
 		}},
-		// The reported bug: ctrl+c anywhere is a quit request, and being
-		// dropped back on the folder input instead is not quitting. The
-		// standalone `config`/`review` commands both end the process on it.
+		// ctrl+c anywhere quits the app
 		{"CtrlCQuitsFromEveryTab", func(t *testing.T) {
 			// The screen says whether leaving means the session or just the
 			// screen; the container acts on that one message rather than
@@ -382,7 +368,7 @@ func TestShellModel(t *testing.T) {
 			})
 			t.Run("review", func(t *testing.T) {
 				m := testShell(t)
-				m.screens[tabReview], m.reviewReady = &probe{name: "review"}, true
+				m.screens[tabReview] = &probe{name: "review"}
 				m.tab = tabReview
 
 				_, cmd := m.Update(tui.Leave{Quit: true})
@@ -390,7 +376,7 @@ func TestShellModel(t *testing.T) {
 			})
 			t.Run("leaving without asking to quit goes home", func(t *testing.T) {
 				m := testShell(t)
-				m.screens[tabReview], m.reviewReady = &probe{name: "review"}, true
+				m.screens[tabReview] = &probe{name: "review"}
 				m.tab = tabReview
 
 				// esc out of the review is "done here", not "done with the
@@ -415,7 +401,7 @@ func TestShellModel(t *testing.T) {
 				if withEdit {
 					seedDraft(t, filepath.Dir(m.a.Config.AppDBPath), vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: 1, To: "x"})
 				}
-				m.screens[tabReview], m.reviewReady = &probe{name: "review"}, true
+				m.screens[tabReview] = &probe{name: "review"}
 				m.tab = tabReview
 				next, _ := m.Update(tui.Leave{})
 				return ansi.Strip(next.(shellModel).View())
@@ -439,10 +425,7 @@ func TestShellModel(t *testing.T) {
 				t.Errorf("exitStatus() = %v, want a cancellation", err)
 			}
 		}},
-		// The reported bug: `wandersort scan` (and config, and review) hosted
-		// one screen with no tab bar, so ctrl+t did nothing and a subcommand
-		// was a strictly smaller app than a bare `wandersort`. Each one is now
-		// the same session opened on its own tab, which is this routing.
+		// every subcommand is the same shell opened on its own tab
 		{"SubcommandStartsOpenTheirOwnTab", func(t *testing.T) {
 			for _, tc := range []struct {
 				name  string
@@ -562,7 +545,7 @@ func TestConfigSavedReplansOnlyOnAChange(t *testing.T) {
 			m := testShell(t)
 			m.a.Config.Settings = tc.after
 			open := &probe{name: "review"}
-			m.screens[tabReview], m.reviewReady = open, true
+			m.screens[tabReview] = open
 
 			// The Cmd is deliberately not run: it re-plans against the open
 			// library, which this shell has no Deps or database for. Dropping
@@ -576,10 +559,10 @@ func TestConfigSavedReplansOnlyOnAChange(t *testing.T) {
 				// The drop happens in settingsSaved itself, not inside the Cmd:
 				// a ctrl+t before the re-plan finishes must not find a screen
 				// built over folder IDs that no longer exist.
-				if m.screens[tabReview] != nil || m.reviewReady {
+				if m.screens[tabReview] != nil {
 					t.Error("the stale review screen must be dropped before the re-plan runs")
 				}
-			} else if m.screens[tabReview] != open || !m.reviewReady {
+			} else if m.screens[tabReview] != open {
 				t.Error("a save that changed nothing must not drop the open review")
 			}
 		})

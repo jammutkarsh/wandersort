@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package vfs
 
 import (
@@ -18,7 +12,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 )
 
-// coordinates the geocoder names "Panjim, India" and "New Delhi"
+// two GPS fixtures the geocoder resolves to two different cities
 var (
 	panji = [2]float64{15.4909, 73.8278}
 	delhi = [2]float64{28.6139, 77.2090}
@@ -110,7 +104,7 @@ func TestRouteIntoPlacedFolder(t *testing.T) {
 	}
 }
 
-// A dropped day folder can come back for new data (spec D15).
+// A dropped day folder can come back for new data.
 func TestRouteAfterDrop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -137,7 +131,7 @@ func TestRouteAfterDrop(t *testing.T) {
 }
 
 // Rules changed between batches (location off): the placed file stays, the
-// new one follows the new rules (spec D6).
+// new one follows the new rules.
 func TestRouteAfterRulesChange(t *testing.T) {
 	h := newHarness(t)
 	const placedPath = "2024/03_March/02/New-Delhi/IMG_0001.HEIC"
@@ -158,7 +152,7 @@ func TestRouteAfterRulesChange(t *testing.T) {
 }
 
 // A photo just after midnight continuing a placed New Year's Eve lands in
-// December with it (spec D16).
+// December with it.
 func TestRouteContinuesPlacedCluster(t *testing.T) {
 	h := newHarness(t)
 	h.placeFile(t, metaWith("2024:12:31 23:50:00", 0, 0, 3024, 4032), "2024/12_December/31/IMG_0001.HEIC",
@@ -226,7 +220,7 @@ func TestRouteSpecialFolders(t *testing.T) {
 }
 
 // A placed trip crossing a month or year end takes a later batch's files for
-// its own days and place only (D27).
+// its own days and place only.
 func TestRouteIntoCrossingTrip(t *testing.T) {
 	date := func(y, m int, days ...int) Constraint {
 		return Constraint{Year: []int{y}, Month: []int{m}, Date: days}

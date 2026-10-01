@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package location
 
 import (
@@ -14,13 +8,10 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
-// Suggestion is one completion offered while a folder is being renamed.
-// Label and Value come from different fields on purpose: browsing a list of
-// candidates and deciding what a folder should be called are different
-// questions. Conflating them either strips the context that tells six
-// Springfields apart, or over-qualifies a name nothing collides with.
+// Suggestion is one rename completion: Label for the list, Value for the
+// folder name.
 type Suggestion struct {
-	Label  string // shown to the user, e.g. "Springfield, Illinois, United States"
+	Label  string // shown to the user, e.g. "<city>, <state>, <country>"
 	Value  string // written as the folder name if picked — already sanitized
 	Detail string // right-hand hint, e.g. "~12km" or "used before"
 }
@@ -30,9 +21,8 @@ type SuggestQuery struct {
 	// Prefix is what has been typed so far. Empty offers Nearby only — the
 	// other two sources have nothing to match on.
 	Prefix string
-	// Nearby are places around the folder's own GPS, from Candidates. The
-	// caller fetches them because it decides when the search radius changes;
-	// they are filtered here per keystroke without touching the database.
+	// Nearby are places around the folder's GPS, from Candidates; the caller
+	// fetches them because it owns the search radius
 	Nearby []Candidate
 	// Prior are names the user has typed before, offered as "used before".
 	Prior []string
@@ -48,16 +38,8 @@ const DefaultSuggestLimit = 8
 // prefix search runs; below it every query matches half the table.
 const minPrefixSearch = 2
 
-// Suggest ranks rename completions from three sources: places near the folder,
-// names the user has used before, then a prefix search of the geonames
-// database. Ranked in that order because the nearest sources are the most
-// likely answers, and deduplicated on the folder name — two entries writing
-// the same directory are not a choice.
-//
-// This package owns the ranking because it owns the names: it already computes
-// which qualifier a place needs (DisplayName), how it reads in a list
-// (FullName), and what is safe to write to disk (FolderName). A caller
-// assembling those itself has to re-derive all three rules.
+// Suggest ranks rename completions: nearby places, then names used before,
+// then a geonames prefix search, deduplicated on folder name.
 func (r *Resolver) Suggest(ctx context.Context, q SuggestQuery) []Suggestion {
 	limit := q.Limit
 	if limit <= 0 {

@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package verify
 
 import (
@@ -145,9 +139,8 @@ func TestVerifyFindsATruncatedFile(t *testing.T) {
 	}
 }
 
-// The errors table holds only live problems (spec D29), so a file that fails
-// and is then put right must stop being reported — by anything reading that
-// table, `wandersort admin report` included.
+// The errors table holds only live problems: a file that fails and is then put
+// right stops being reported.
 func TestVerifyClearsAProblemOnceItIsFixed(t *testing.T) {
 	d, out := dbtest.New(t), t.TempDir()
 	abs := seedPlaced(t, d, out, 1, "2024/A.jpg", "hello")

@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -161,9 +155,8 @@ func TestConfig(t *testing.T) {
 				t.Errorf("the save must create the library it writes to: %v", err)
 			}
 		}},
-		// Once the library is open its folder is fixed (spec D5): the wizard
-		// stops asking, so a visit to the settings can't retarget a session
-		// whose database and lock are already somewhere else.
+		// once the library is open its folder is fixed, so the wizard stops
+		// asking for it
 		{"OutputPathAskedOnlyBeforeTheLibraryIsOpen", func(t *testing.T) {
 			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
 			fields, _ := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })

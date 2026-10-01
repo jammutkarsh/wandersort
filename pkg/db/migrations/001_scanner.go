@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package migrations
 
 var schema001 = Migration{
@@ -52,7 +46,7 @@ CREATE TABLE IF NOT EXISTS file_registry (
     -- replaced on every scan and settings change, this flag never is. The
     -- vfs phase treats a placed file as the permanent master of its hash:
     -- its whole hash group is dropped from the proposal, and its own plan
-    -- row is never re-proposed or deleted (spec D10/D11)
+    -- row is never re-proposed or deleted
     placed INTEGER NOT NULL DEFAULT 0,
 
     CHECK (media_type IN ('IMAGE', 'VIDEO', 'SIDECAR', 'RAW', 'UNKNOWN'))
@@ -61,11 +55,8 @@ CREATE TABLE IF NOT EXISTS file_registry (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_registry_dir_name ON file_registry(file_dir, file_name);
 `
 
-// errors holds the one failure a stage can have for a file, and only while it
-// is true: the row goes the moment the read or transfer works, or the file's
-// own row does (a changed file, --force, a sweep — all cascade). One row per
-// (file, stage), replaced when it fails again. The file's path, size, type and
-// volume are one join away, so nothing about the file is copied here.
+// errors holds a file's current failure per stage, only while it is true: the
+// row goes when the step succeeds or the file's row is deleted (cascade).
 const errorsTable = `
 CREATE TABLE IF NOT EXISTS errors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

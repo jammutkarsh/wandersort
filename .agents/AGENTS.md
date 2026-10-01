@@ -1,137 +1,73 @@
-> SPDX-License-Identifier: AGPL-3.0-or-later
->
-> Copyright (c) 2026 Utkarsh Chourasia
-
 # Agent Coding Guidelines
 
-This document outlines the standard coding patterns, style, and rules that AI agents must follow when contributing to this codebase.
+## 1. Naming & Documentation
 
-## 1. Testing Strategy
+- Self-Descriptive Names: Use clear, unambiguous identifiers for variables, functions, structs, and interfaces (e.g., `isStripeWebhookVerified`).
+- Crisp Function Docs: Limit docstrings to 1 line explaining intent or critical invariants. Omit comments that restate what the code already says.
+- Targeted Inline Comments: Use inline comments strictly for domain edge cases, formulas, or non-obvious workarounds.
 
-- **Algorithm-focused Tests**: Unit tests must focus on algorithmic correctness, edge cases, concurrency constraints, memory limits, etc.
-  - *Example:* Testing `walkRoot()` for correct traversal of a directory tree, including edge cases like symlinks, permission errors, and empty directories.
-- **Skip Trivial Data Flows**: Avoid testing simple data parsing or standard read/write flows unless it contains complex business logic.
-  - *Example:* Avoid writing tests for a simple HTTP handler that directly calls a database abstraction and returns JSON without any conditional logic.
-- **Table-driven Tests**: Use [TableDrivenTestsarrays](https://go.dev/wiki/TableDrivenTests) to group related test cases of similar types into a single test function. Avoid creating multiple separate single-case test functions for similar logic.
-  - *Example:*
+## 2. Control Flow & State Design (Raft Principles)
 
-    ```go
-    func TestClassifyName(t *testing.T) {
-        tests := []struct {
-            name     string
-            input    string
-            expected string
-        }{
-            {"valid name", "john", "person"},
-        }
-        for _, tt := range tests {
-            t.Run(tt.name, func(t *testing.T) { /* test logic */ })
-        }
-    }
-    ```
+- State Space Reduction: Minimize special-case handling and edge-case branching. Design systems with fewer possible states so fewer checks are required.
+- Guard Clauses / Early Returns: Handle errors and preconditions at the top; avoid deep nested `if/else` structures.
+- Unidirectional Data Flow: Establish a single source of truth and a linear data path rather than multi-way reconciliation.
+- Randomization over Complex State: Use randomized backoffs or timeouts instead of intricate negotiation or retry state machines where suitable.
 
-- **Use Test Helpers**: Extract repetitive test setups into helper functions and use `t.Helper()` to ensure test failure line numbers remain accurate.
-  - *Example:*
+## 3. Architecture & Code Structure
 
-    ```go
-    func setupTestDB(t *testing.T) *sql.DB {
-        t.Helper()
-        // setup and return db
-    }
-    ```
+- Top-to-Bottom Flow over Deep Call Chains: Avoid multi-tier indirection where function A calls function B which calls function C (each carrying its own complexity). Prefer cohesive, readable functions that read top-to-bottom even if they run longer.
+- Pragmatic Duplication: Prefer a little duplication over premature abstractions, deep call stacks, or micro-functions that fragment the mental model.
+- Clean Boundary Separation: Keep entry points (`cmd/`) strictly for setup, dependency wiring, and graceful shutdown. Delegate all actual domain and business logic to its respective domain package.
+- Strict Type Schemas: Use concrete structs, interfaces, and types. Never pass generic dynamic objects (`any`/`map[string]any`) that require multi-file tracing to inspect shapes.
+- Colocated Tests: Place unit tests directly alongside implementation files to provide an immediate, self-contained verification loop.
+- Zero Dead Code: Keep files clean of commented-out legacy code, unused imports, or redundant boilerplate.
 
-## 2. Documentation and Comments
+## 4. State & Invariants
 
-- **Concise Language**: Code comments must be minimal, concise, and straightforward. Get straight to the point.
-  - *Example:*
-    `// Good: Computes the user's age in days.`
-    `// Bad: This function takes a user object and calculates their age by subtracting...`
-- **Technical Jargon**: Use relevant common technical jargon to minimize word count. Do not explain standard computer science terms (e.g., "hash function").
-  - *Example:* Say "Computes the SHA-256 hash" instead of explaining what a hash function is.
-- **References**: Add references or documentation links for uncommon terms which cannot be found on Wikipedia.
-  - *Example:* `// Uses the Aho-Corasick algorithm (https://en.wikipedia.org/wiki/Aho-Corasick_algorithm).`
-- **Public vs. Private Functions**:
-  - **Public functions** require a docstring explaining what the function does, its parameters, and its return value. This rule only applies to functions performing complex computations; simple helpers (e.g., parsing a string to a positive int) do not need this.
-    - **Constructors** *(an exception)*: Constructors like `New()` functions do not need a docstring because their purpose is obvious from context.
-  - **Private functions** need a simple comment above the definition explaining their purpose. Private functions with self-documenting names and straightforward logic (< 5 lines) may omit comments.
-  - *Example:*
+- Make Invalid States Unrepresentable: Encode invariants in types and APIs rather than relying on scattered runtime checks.
+- Centralize State Mutation: Give important state a clear owner and a small, explicit set of mutation points.
+- Single Authoritative Representation: Avoid multiple independent representations of the same fact; derive secondary state where practical.
+- Prefer Monotonic State: Where the domain permits, important state should move in one direction; make reversals explicit.
 
-    ```go
-    // CalculateTrajectory computes the optimal path for the given mass and initial velocity.
-    // It returns the coordinates and any error encountered during calculation.
-    func CalculateTrajectory(mass, vel float64) ([]Coord, error) { ... }
+## 5. Dependencies & Side Effects
 
-    // No docstring needed for simple helper
-    func parsePositiveInt(s string) int { ... }
-    ```
+- Separate Decisions from Effects: Keep validation, calculations, and state-transition decisions separate from I/O and other side effects.
+- Explicit Dependencies: Prefer explicit parameters and dependency injection over hidden globals, implicit initialization, or service locators.
 
-- **API Documentation**: API handlers and endpoints must include Swagger doc-based comments (e.g., `// @Summary`, `// @Description`) so that Swagger documentation can be automatically generated via the CLI.
-  - *Example:*
+## 6. Correctness & Testability
 
-    ```go
-    // HandleReset godoc
-    // @Summary Reset all application data
-    // @Description Deletes all scan sessions, file registry entries, content groups and group members in a single transaction. Irreversible.
-    // @Tags Admin
-    // @Produce json
-    // @Success 200 {object} ResetResponse
-    // @Router /internal/v1/admin/reset [post]
-    func (h *Handler) HandleReset(c *gin.Context) { ... }
-    ```
+- Make Invariants Executable: Enforce important assumptions through types, validation, assertions, or tests rather than comments alone.
+- Preserve Error Causality: Wrap errors with useful context while retaining their original cause.
+- Deterministic by Default: Isolate unavoidable nondeterminism such as time, randomness, scheduling, and network behavior.
 
-## 3. Naming Conventions
+## 7. Lifecycle & Ownership
 
-- **English-like Semantics**: Package and function names should combine to read like an English phrase.
-  - *Example:* `location.Resolver()` is preferred as it clearly states "location resolver". Avoid `loc.GetRes()`.
-- **Avoid Abbreviations**: Do not use abbreviations or acronyms in function or struct names unless they are commonly understood.
-  - *Example:* Prefer `hashFile()` over `hf()`.
-- **Descriptive Variables**: Variables and constants must have descriptive names that clarify their intent. Single-letter variables are only acceptable for common loop indices (`i`, `j`, `k`) or standard conventions (`err` for errors, `ctx` for context).
-  - *Example:* `maxRetries` instead of `m`.
-- **Generic Function Names**: Keep function names generic enough to allow underlying implementations to change.
-  - *Example:* Use `hashFile()` instead of `BLAKE3Hash()`. Caller of `hashFile()` should not need to know the underlying hashing algorithm.
+- Explicit Ownership: Every resource, goroutine, lock, transaction, timer, and subscription should have an obvious owner and lifecycle.
+- Minimize Temporal Coupling: Avoid APIs that require callers to perform undocumented sequences of operations.
 
-## 4. Code Structure & Best Practices
+## 8. WanderSort specifics
 
-- **No Magic Values**: Avoid hardcoded numbers or string literals in the logic. Define them as constants with descriptive names and docstrings explaining *why* the value was chosen. This applies to configuration values, thresholds, status strings, and environment variable names. It does not apply to error message strings, SQL DDL in migrations, or standard format specifiers.
-  - *Example:*
+- Entry point is `internal/cli` (wiring and rendering only); domain logic lives in its `pkg/` package.
+- `any`/`map[string]any` only where the data is genuinely open-ended: exiftool JSON, log attrs.
+- File states change only through `pkg/db/state.go`.
+- No package-level vars as test seams; put the dependency on `Options` or a constructor.
+- Bounded worker pools only; no fire-and-forget goroutines.
+- No history in comments or docs ("used to", "was a bug", issue/spec ids). Git holds history.
+- No personal or real-world example values (devices, cities, people, paths) in comments or docs; use placeholders like `<city>`, `<device>`.
+- No license headers in source files; the license lives only in `LICENSE`.
 
-    ```go
-    // DefaultTimeout is chosen based on the p99 response time of downstream services.
-    const DefaultTimeout = 500 * time.Millisecond
-    ```
+## 9. Go conventions
 
-- **Error Wrapping**: Always wrap errors with context using `fmt.Errorf("description: %w", err)` to preserve the original error trace and add debugging context.
-  - *Example:* `fmt.Errorf("failed to read config file: %w", err)`
-- **Context Propagation**: Pass `context.Context` as the first argument to functions performing network I/O, database operations, or long-running tasks where cancellation/timeout is meaningful. Functions wrapping local filesystem operations (`os.Stat`, `filepath.Abs`, `filepath.EvalSymlinks`) do not require `ctx` — Go cannot cancel in-flight syscalls.
-  - *Example:* `func fetchUser(ctx context.Context, id int) (*User, error)`
-- **Bounded Concurrency**: Use bounded worker pools rather than unbounded goroutines to prevent resource exhaustion (e.g., spinning up a fixed number of workers based on `workerCount`). Avoid fire-and-forget goroutines that can lead to unbounded resource usage.
-  - *Example:*
+- Wrap errors with `fmt.Errorf("context: %w", err)`.
+- `ctx` first for DB, network and long-running work; not for plain local syscalls.
+- Upserts (`INSERT … ON CONFLICT`) over select-then-insert.
+- Log through `pkg/logger`, never stdlib `log`. Log keys are camelCase.
+- Named constants for thresholds and magic values.
 
-    ```go
-    sem := make(chan struct{}, 10) // pool of 10 workers
-    for _, item := range items {
-        sem <- struct{}{}
-        go func(item Item) {
-            defer func() { <-sem }()
-            process(item)
-        }(item)
-    }
-    ```
+## 10. Tests
 
-- **Dependency Injection**: Pass dependencies (like loggers, database connections, and path resolvers) through constructors rather than relying on global state or singletons.
-  - *Example:* `func NewService(db *sql.DB, logger *zap.Logger) *Service`
-- **Logging**: Use the application's custom logging library (e.g., `h.log.Info()`) instead of the standard library `log` package.
-  - *Example:* `h.log.Info("user logged in", "userID", id)` (Avoid `log.Printf()`)
-- **Database & Concurrency**: Avoid `SELECT`-then-`INSERT` patterns that can cause race conditions. Instead, rely on atomic operations like `INSERT ... ON CONFLICT DO UPDATE` (upserts).
-  - *Example:* `INSERT INTO users (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = $2;`
-
-### 4.1 Pipeline Component Conventions
-
-- **Session ID Propagation**: Every function in a pipeline component (`scanner`, `hasher`, and any future phase) that performs work must receive `sessionID uuid.UUID` as a parameter, immediately after `ctx`. This ensures every log line emitted during a session is traceable. Do not add `sessionID` or `ctx` to functions that don't already use them and have no reason to — passing unused parameters is noise.
-  - *Example:* `func (s *Scanner) walkRoot(ctx context.Context, sessionID uuid.UUID, path string, output chan<- FileDiscovery) error`
-- **Log Key Format**: All structured log key-value pairs use camelCase. The session identifier key is always `"sessionId"`, never `"session_id"`.
-  - *Example:* `s.log.Info("scanning path", "sessionId", sessionID, "path", path)`
-- **Logs as Notification**: Pipeline progress is surfaced exclusively through structured logs keyed by `sessionId`. There is no separate pub/sub status channel. Any downstream system that wants to track session progress reads the log stream filtered by `sessionId`.
+- Test business logic only: algorithms, branches, data-loss and ordering paths. No tests for trivial data flows, getters or one-line wrappers.
+- Table-driven for cases of one shape; helpers call `t.Helper()`.
 
 Respond terse like smart caveman. All technical substance stay. Only fluff die.
 

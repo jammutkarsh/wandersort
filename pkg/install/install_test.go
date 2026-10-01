@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package install
 
 import (
@@ -108,12 +102,8 @@ func TestDownloadVerifiesChecksum(t *testing.T) {
 	}
 }
 
-// TestDownloadRetriesOnTransportFailure covers the reported bug: switching
-// networks mid-download drops the connection without a proper HTTP response,
-// and the download must retry rather than fail (or hang) permanently.
-// Hijacking and closing the connection with no response written is what a
-// dropped connection looks like to the client — a transport error, not a bad
-// status code, so it must not hit the nonRetryable path.
+// TestDownloadRetriesOnTransportFailure: a dropped connection (no response) is a
+// transport error, so the download retries rather than failing or hanging.
 func TestDownloadRetriesOnTransportFailure(t *testing.T) {
 	body := []byte("wandersort dependency payload")
 	var attempts atomic.Int32

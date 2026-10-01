@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package install
 
 import (
@@ -52,9 +46,8 @@ type releaseMetaFile struct {
 	SHA256 string `json:"sha256"`
 }
 
-// fetchReleaseMeta downloads and parses the checksum manifest for the
-// mirrored archives — the only trusted source for expected file names and
-// hashes, so a compromised R2 bucket can't just swap an archive out silently
+// fetchReleaseMeta downloads the mirrored archives' checksum manifest, the only
+// trusted source of expected names and hashes.
 func fetchReleaseMeta(ctx context.Context) (releaseMeta, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, filesBaseURL+"/"+releaseMetaFileName, nil)
 	if err != nil {
@@ -87,9 +80,8 @@ func exiftoolBin() string {
 	return "exiftool"
 }
 
-// setupExiftool checks $PATH and WanderSort's own install directory; if the
-// found version is below the requirement, downloads a bundled copy into
-// binDir. onProgress (may be nil) reports download bytes for a TUI bar.
+// setupExiftool uses exiftool from $PATH or binDir when new enough, else
+// downloads it into binDir. onProgress may be nil.
 func setupExiftool(ctx context.Context, log logger.Logger, binDir string, onProgress func(done, total int64)) (string, error) {
 	if path, err := findExiftool(log, binDir); err == nil {
 		return path, nil
@@ -166,10 +158,7 @@ func downloadAndExtractExiftool(ctx context.Context, binDir string, log logger.L
 	}
 
 	if _, err := os.Stat(archiveName); err != nil {
-		// UserKey lives on the InstallProgressMsg row (viewDownloads) alone —
-		// it already shows "downloading -> ✓ done" in place; a matching log
-		// line here would just be the same fact printed a second time, as a
-		// note that can never update once written.
+		// the progress row already shows this; no log line
 		if err := downloadFile(ctx, log, archiveName, url, fileMeta.SHA256, onProgress); err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
@@ -188,14 +177,8 @@ func downloadAndExtractExiftool(ctx context.Context, binDir string, log logger.L
 	return nil
 }
 
-// extractTarZst extracts a tar.zst produced by publish-r2.yml directly into
-// destDir. CI already normalizes every platform's upstream archive to this
-// layout (contents flat at the root, launcher pre-renamed), so extraction
-// needs no per-platform unwrapping or renaming step. zstd, not gzip — the
-// location database (pkg/install/location_setup.go) ships zstd too, both
-// through the shared openZstd (install.go), so the two downloadable
-// dependencies share one compression format and one decoder call instead of
-// each carrying their own.
+// extractTarZst extracts a CI-normalized tar.zst (flat layout, launcher
+// renamed) into destDir.
 func extractTarZst(tzstPath, destDir string) error {
 	zr, closeZr, err := openZstd(tzstPath)
 	if err != nil {

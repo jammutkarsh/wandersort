@@ -1,6 +1,3 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
-# Copyright (c) 2026 Utkarsh Chourasia
-
 name: "📷 A file wasn't recognized or sorted right"
 description: WanderSort skipped one of your photos/videos, or put it in the wrong group.
 title: "[File type] "

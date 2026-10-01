@@ -1,16 +1,9 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package tui
 
 import "strings"
 
 // Guides returns the box-drawing prefix ("│  ├─ ") for each row of a
-// depth-ordered tree, so a screen renders a hierarchy without re-deriving
-// which rows are last children.
+// depth-ordered tree.
 func Guides(depths []int) []string {
 	// A row is a last child when no later row has the same depth before one
 	// of smaller depth appears — rows deeper than it are its own descendants

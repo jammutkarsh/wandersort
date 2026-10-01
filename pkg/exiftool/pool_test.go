@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package exiftool
 
 import (
@@ -86,11 +80,7 @@ func TestExtractRejectsLineBreaksInPath(t *testing.T) {
 }
 
 func TestExtractTimeoutKillsWorker(t *testing.T) {
-	old := extractTimeout
-	extractTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { extractTimeout = old })
-
-	e, err := New(hangingExiftool(t))
+	e, err := newExtractor(hangingExiftool(t), 200*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,11 +114,7 @@ func TestExtractCancelKillsWorker(t *testing.T) {
 }
 
 func TestPoolReplacesDeadWorker(t *testing.T) {
-	old := extractTimeout
-	extractTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { extractTimeout = old })
-
-	p, err := NewPool(hangingExiftool(t), 1)
+	p, err := newPool(hangingExiftool(t), 1, 100*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}

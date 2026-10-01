@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package review
 
 import (
@@ -52,9 +46,7 @@ func (m Model) header() string {
 			tui.FaintTxt.Render(fmt.Sprintf("%d folders  %d files", len(m.rows), files)), m.width)
 }
 
-// rowView renders one tree line: guide + name, file count right-aligned. The
-// name shown is the node's own — a rename is written straight onto it, so
-// there is no "old → new" or "suggested" state to render.
+// rowView renders one tree line: guide + name, file count right-aligned.
 func (m Model) rowView(i int, inRange bool) string {
 	r := m.rows[i]
 
@@ -72,9 +64,8 @@ func (m Model) rowView(i int, inRange bool) string {
 	return tui.Row(cursor+tui.FaintTxt.Render(r.guide)+r.node.Name, tui.FaintTxt.Render(count), m.width)
 }
 
-// footer is everything below the tree: the rename prompt, a spinner, or the
-// status line plus key help. Height varies with width, so visibleRows measures
-// it rather than assuming one line.
+// footer is everything below the tree: rename prompt, spinner, or status line
+// plus key help. visibleRows measures its height.
 func (m Model) footer() string {
 	var b strings.Builder
 	switch {
@@ -131,9 +122,7 @@ func (m Model) footer() string {
 	return b.String()
 }
 
-// keyHelp is the key bar, styled like every other screen's (key in the brand
-// colour, action dim) and ordered by how a review actually goes: move, name,
-// reshape, leave.
+// keyHelp is the key bar, ordered move, name, reshape, leave.
 func (m Model) keyHelp() string {
 	hints := []string{
 		tui.KeyHint("↑↓", "move"),

@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package db
 
 import (
@@ -76,18 +70,10 @@ func (bw *BulkWriter) Write(op DBOperation) bool {
 	return true
 }
 
-// WriteSync runs op in a transaction of its own, after everything already
-// enqueued, and returns the transaction's outcome: nil means committed. Use
-// it for writes whose outcome must be reported (a review save, a file
-// recorded as placed), as opposed to pipeline writes where Write's
-// fire-and-forget batching is the point.
-//
-// It does not go through the batch. A batch that fails replays its ops one
-// by one, so an op run inside it could report success from a transaction
-// that was then rolled back — and whether the replay happens at all depends
-// on every other op in the batch. There is one connection, so a transaction
-// of its own costs no contention; holding the read lock keeps Close from
-// shutting the database under it.
+// WriteSync runs op in its own transaction, after everything already queued,
+// and returns its outcome (nil = committed). Use it when the outcome must be
+// reported. It never joins a batch: a batch replays failed ops, so an op in
+// one could report success from a rolled-back transaction.
 func (bw *BulkWriter) WriteSync(op DBOperation) error {
 	bw.Flush()
 	bw.mu.RLock()
@@ -107,9 +93,7 @@ func (bw *BulkWriter) WriteSync(op DBOperation) error {
 	return tx.Commit()
 }
 
-// DryRun runs op in a transaction of its own and always rolls it back: a
-// read of what the database would hold after op, with nothing written. Same
-// ordering and lock as WriteSync.
+// DryRun runs op in its own transaction and always rolls it back.
 func (bw *BulkWriter) DryRun(op DBOperation) error {
 	bw.Flush()
 	bw.mu.RLock()
@@ -197,10 +181,8 @@ func (bw *BulkWriter) start() {
 				flush()
 			}
 		case req := <-bw.flushReqs:
-			// Drain everything already enqueued before reporting the flush
-			// done: ops sent before Flush() was called are guaranteed to be
-			// in the channel buffer, but select order is random, so this
-			// request may have been picked before those ops were received
+			// drain what was queued before Flush: select order is random, so
+			// this request may arrive before them
 		drain:
 			for {
 				select {
@@ -221,18 +203,10 @@ func (bw *BulkWriter) start() {
 	}
 }
 
-// executeBatch runs all operations in a single transaction, falling back to
-// executeIndividually on any failure so one bad op costs only itself.
-//
-// The fallback re-invokes every op, including ones that already ran in the
-// rolled-back batch, so an op must have no effect beyond its transaction —
-// anything it does outside tx happens once per attempt. Ops that need a
-// reported outcome go through WriteSync, which never replays.
-//
-// No deadline: an op here is a durable write already accepted from a phase,
-// and aborting it partway only turns a slow disk into lost rows. SQLite's own
-// busy_timeout bounds lock waits, and the one connection has nothing else to
-// wait on.
+// executeBatch runs all ops in one transaction, replaying them one by one on
+// failure so a bad op costs only itself. An op must touch nothing outside its
+// tx (it may run twice). No deadline: aborting a durable write only loses rows;
+// busy_timeout bounds lock waits.
 func (bw *BulkWriter) executeBatch(batch []DBOperation) error {
 	ctx := context.Background()
 

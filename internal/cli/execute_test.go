@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package cli
 
 import (
@@ -29,9 +23,8 @@ func execCmd(t *testing.T) *cobra.Command {
 	return cmd
 }
 
-// TestRunExecuteAppliesDraft covers spec D18 from the command's side: the
-// review's draft reaches the plan only here, the file lands under the renamed
-// folder, and the draft is gone afterwards.
+// TestRunExecuteAppliesDraft: the review draft reaches the plan only here, the
+// file lands under the renamed folder, and the draft is gone afterwards.
 func TestRunExecuteAppliesDraft(t *testing.T) {
 	cfg := testConfig(t)
 	dir := t.TempDir()

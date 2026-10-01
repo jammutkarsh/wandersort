@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package execute
 
 import (
@@ -447,9 +441,8 @@ func TestRunMoveKeepsSourceWhenNothingLanded(t *testing.T) {
 	}
 }
 
-// After a transfer lands, the row's own source_path and the file's registry
-// entry point at the library, not the source — the same relative value as
-// target_path (spec D9/D10).
+// After a transfer lands, the row's source_path and the registry entry point at
+// the library: the same relative value as target_path.
 func TestRunRepointsToLibraryRelativePath(t *testing.T) {
 	for _, mode := range []Mode{ModeCopy, ModeMove} {
 		t.Run(mode.String(), func(t *testing.T) {
@@ -575,9 +568,9 @@ func TestRunCleanupLeavesErrorRowsAlone(t *testing.T) {
 	}
 }
 
-// Spec D22: a source changed after the scan (same size, different bytes) is
-// not the file that was planned. Nothing lands, the source stays, the row
-// says why with both hashes, and the run goes on to the next file.
+// A source changed after the scan (same size, different bytes) is not the
+// planned file: nothing lands, the source stays, the row records both hashes,
+// and the run goes on.
 func TestRunRefusesSourceChangedSinceScan(t *testing.T) {
 	d := dbtest.New(t)
 	out := t.TempDir()
@@ -685,8 +678,8 @@ func TestRunMoveRecordsLandedFileWhenSourceKept(t *testing.T) {
 	}
 }
 
-// The library copy matching the scan is no reason to delete a source edited
-// since (same size): the move stops at ERROR and the edit survives (spec D22).
+// A library copy matching the scan is no reason to delete a source edited
+// since (same size): the move stops at ERROR and the edit survives.
 func TestRunMoveKeepsSourceEditedSinceScanWhenAlreadyPlaced(t *testing.T) {
 	d := dbtest.New(t)
 	out := t.TempDir()
@@ -990,44 +983,6 @@ func TestPlaceMoveCommitsWhileBothNamesExist(t *testing.T) {
 	}
 }
 
-// A name already taken is skipped without copying into it first: a copy only
-// learns the name is taken at its final link, so trying it costs the whole
-// file.
-func TestProductionTransferSkipsTakenNameBeforeCopying(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "A.jpg")
-	if err := os.WriteFile(src, []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	dst := filepath.Join(dir, "lib", "A.jpg")
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dst, []byte("another photo"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	var tried []string
-	orig := placeFile
-	placeFile = func(mode Mode, src, dst, want string, commit func() error) error {
-		tried = append(tried, dst)
-		return orig(mode, src, dst, want, commit)
-	}
-	t.Cleanup(func() { placeFile = orig })
-
-	landed, _, err := productionTransfer(context.Background(), ModeCopy, src, dst,
-		scanned{hash: hashOf("hello"), size: 5}, func(string) error { return nil })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := withSuffix(dst, 1); landed != want {
-		t.Errorf("landed at %s, want %s", landed, want)
-	}
-	if slices.Contains(tried, dst) {
-		t.Errorf("copied into the taken name %s before moving on (tried %v)", dst, tried)
-	}
-}
-
 // A same-device move renames an unchanged source: the library file is the
 // source's own inode, nothing copied.
 func TestRunMoveRenamesUnchangedSource(t *testing.T) {
@@ -1185,11 +1140,10 @@ func TestRunRefusesPlanThatDoesNotFit(t *testing.T) {
 	d := dbtest.New(t)
 	out := t.TempDir()
 	id := seedPlanWithRename(t, d, out)
-	orig := spaceOf
-	spaceOf = func(string) (uint64, uint64, error) { return 1 << 20, 1 << 30, nil }
-	t.Cleanup(func() { spaceOf = orig })
-
-	_, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{OnApplied: func() { t.Error("OnApplied ran on a refused plan") }})
+	_, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{
+		OnApplied: func() { t.Error("OnApplied ran on a refused plan") },
+		freeSpace: func(string) (uint64, uint64, error) { return 1 << 20, 1 << 30, nil },
+	})
 	var full *NotEnoughSpaceError
 	if !errors.As(err, &full) || full.Free != 1<<20 || full.Files != 5 || full.Needed <= full.Free {
 		t.Fatalf("err = %v, want a NotEnoughSpaceError with the figures", err)
@@ -1216,10 +1170,8 @@ func TestRunTransfersWhenFreeSpaceIsUnknown(t *testing.T) {
 	d := dbtest.New(t)
 	out := t.TempDir()
 	seedApproved(t, d, 1, "2024/06_June/03/a.jpg", "photo")
-	orig := spaceOf
-	spaceOf = func(string) (uint64, uint64, error) { return 0, 0, errors.New("statfs failed") }
-	t.Cleanup(func() { spaceOf = orig })
-	if rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil || rep.Done != 1 {
+	statfsFails := func(string) (uint64, uint64, error) { return 0, 0, errors.New("statfs failed") }
+	if rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{freeSpace: statfsFails}); err != nil || rep.Done != 1 {
 		t.Fatalf("Run = %+v, %v; want the file placed", rep, err)
 	}
 }

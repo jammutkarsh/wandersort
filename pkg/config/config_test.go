@@ -1,9 +1,3 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package config
 
 import (
@@ -64,8 +58,7 @@ func TestSettings(t *testing.T) {
 	}
 }
 
-// TestSettingsAreThisLibrarys is the point of the whole ticket: two libraries
-// keep their own rules (spec D2).
+// TestSettingsAreThisLibrarys: two libraries keep their own rules.
 func TestSettingsAreThisLibrarys(t *testing.T) {
 	ctx := context.Background()
 	a, b := dbtest.New(t), dbtest.New(t)

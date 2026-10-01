@@ -1,18 +1,11 @@
-// Copyright (c) 2026 Utkarsh Chourasia
-//
-// This file is part of WanderSort.
-//
-// SPDX-License-Identifier: AGPL-3.0-or-later
-
 package review
 
 import (
 	"github.com/jammutkarsh/wandersort/pkg/location"
 )
 
-// geoCandidateFetch over-fetches nearby places: pkg/location filters the list
-// in memory as the reviewer types, so one fetch has to cover every prefix they
-// might type.
+// geoCandidateFetch over-fetches nearby places: the list is filtered in memory
+// per keystroke, so one fetch must cover every prefix.
 const geoCandidateFetch = 64
 
 // loadGeoCandidates caches nearby places for the current row. Called by [r] and
@@ -35,9 +28,7 @@ func (m *Model) fillSuggestion(i int) {
 	m.refreshSuggestions()
 }
 
-// refreshSuggestions repopulates the rename dropdown. Ranking, deduplication
-// and folder-safe naming all belong to pkg/location — it owns what a place is
-// called, in a list and on disk.
+// refreshSuggestions repopulates the rename dropdown via location.Suggest.
 func (m *Model) refreshSuggestions() {
 	m.suggestions = m.resolver.Suggest(m.ctx, location.SuggestQuery{
 		Prefix: m.input,
