@@ -76,6 +76,7 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	}
 	defer a.closeDBs()
 
+	a.Log.Info("wandersort copy · library "+wspath.New().RelativeToHome(outputDir), logger.UserKey, true)
 	left, err := execute.LeftBehind(ctx, a.AppDB)
 	if err != nil {
 		return err
