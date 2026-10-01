@@ -580,7 +580,7 @@ func TestTakenAtPrefersCreationDateOverCreateDateForVideo(t *testing.T) {
 	creationDate := "2024:06:03 14:00:00+05:30" // same real instant, offset-aware
 	masters := []masterFile{{DBCreateDate: &createDate, DBCreationDate: &creationDate}}
 
-	deriveAll(context.Background(), masters, 0)
+	deriveAll(context.Background(), masters, DefaultConfig())
 
 	want := time.Date(2024, time.June, 3, 14, 0, 0, 0, time.UTC)
 	if !masters[0].takenAt.Equal(want) {

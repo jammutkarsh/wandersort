@@ -23,7 +23,7 @@ import (
 // Plan sets every master's targetPath. It touches no database and no files:
 // derive facts, resolve locations, then assignTargetPaths.
 func Plan(ctx context.Context, masters []masterFile, cfg Config, geo *location.Resolver, log logger.Logger) error {
-	deriveAll(ctx, masters, cfg.Workers)
+	deriveAll(ctx, masters, cfg)
 	resolveLocations(ctx, masters, cfg, geo, log)
 	assignTargetPaths(ctx, masters, cfg)
 	if ctx.Err() != nil { // don't leave a half-built proposal for persist to write
@@ -440,9 +440,9 @@ func forEachMaster(ctx context.Context, masters []masterFile, workers int, fn fu
 
 // deriveAll fills each master's derived fields from the stored metadata;
 // files on disk are never read again.
-func deriveAll(ctx context.Context, masters []masterFile, workers int) {
-	forEachMaster(ctx, masters, workers, func(_ int, m *masterFile) {
-		m.takenAt = m.captureTime()
+func deriveAll(ctx context.Context, masters []masterFile, cfg Config) {
+	forEachMaster(ctx, masters, cfg.Workers, func(_ int, m *masterFile) {
+		m.takenAt = m.captureTime(cfg.Zone)
 		if m.DBWidth != nil {
 			m.width = *m.DBWidth
 		}
@@ -466,9 +466,18 @@ func deriveAll(ctx context.Context, masters []masterFile, workers int) {
 // captureTime is when m was shot, from the metadata persisted during hashing.
 // CreationDate (iOS video) carries a timezone offset; applying it as-is would
 // shift the video away from same-moment photos, which are all naive local
-// wall-clock, so stripOffset drops the offset first.
-func (m *masterFile) captureTime() time.Time {
-	return firstTime(deref(m.DBDateTaken), stripOffset(deref(m.DBCreationDate)), deref(m.DBCreateDate), deref(m.DBMediaCreateDate), m.ModifiedAt)
+// wall-clock, so stripOffset drops the offset first. The file date is a UTC
+// instant, so it is read as zone's wall-clock to match.
+func (m *masterFile) captureTime(zone *time.Location) time.Time {
+	if t := firstTime(deref(m.DBDateTaken), stripOffset(deref(m.DBCreationDate)), deref(m.DBCreateDate), deref(m.DBMediaCreateDate)); !t.IsZero() {
+		return t
+	}
+	t, ok := parseTimeLoose(m.ModifiedAt)
+	if !ok {
+		return time.Time{}
+	}
+	t = t.In(zone)
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
 }
 
 // resolveLocations reverse-geocodes every GPS-tagged master, then folds a
