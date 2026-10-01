@@ -23,7 +23,7 @@ func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.
 	out := a.Config.OutputDir()
 	groupBy := append([]string{}, a.Config.Rules...)
 	if len(groupBy) == 0 {
-		groupBy = []string{vfs.RuleDate, vfs.RuleLocation} // sensible default
+		groupBy = vfs.DefaultConfig().Rules
 	}
 	collapse := a.Config.CollapseLevels
 	mergeDays := a.Config.MergeSameLocationDays
