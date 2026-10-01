@@ -216,12 +216,12 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 		}
 
 		// Classify file and apply ignore rules in one pass
-		mediaType, shouldProcess, shouldIgnore := s.classifier.ClassifyName(d.Name())
-		switch {
-		case shouldIgnore:
+		mediaType := s.classifier.ClassifyName(d.Name())
+		switch mediaType {
+		case classifier.MediaTypeIgnored:
 			s.log.Warn("Ignoring file", "inputPath", absRoot, "walkingPath", s.path.RelativeToHome(p))
 			return nil
-		case !shouldProcess:
+		case classifier.MediaTypeUnknown:
 			s.log.Warn("Unsupported file type", "walkingPath", s.path.RelativeToHome(p))
 			return nil
 		}

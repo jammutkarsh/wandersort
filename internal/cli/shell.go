@@ -80,6 +80,12 @@ type reviewOpenMsg struct {
 	err   error
 }
 
+// downloadLabels names each install phase for the progress rows.
+var downloadLabels = map[string]string{
+	install.PhaseExiftool: "exiftool",
+	install.PhaseLocation: "Location database",
+}
+
 // runShell is the one full-screen program hosting scan, settings and review.
 // start says which tab it opens on.
 func (a *app) runShell(start shellStart) error {
@@ -102,11 +108,12 @@ func (a *app) runShell(start shellStart) error {
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
 	// started once for the whole session; every scan reuses it
 	a.Deps = a.newDeps(func(phase string, done, total int64) {
-		prog.Send(tui.InstallProgressMsg{Phase: phase, Done: done, Total: total})
+		label := downloadLabels[phase]
+		prog.Send(tui.InstallProgressMsg{Phase: phase, Label: label, Done: done, Total: total})
 		// the settings wizard gets the location download as its own progress
 		// row
 		if phase == install.PhaseLocation {
-			prog.Send(tui.DownloadMsg{Label: "Location database", Done: done, Total: total})
+			prog.Send(tui.DownloadMsg{Label: label, Done: done, Total: total})
 		}
 	})
 	a.Deps.Start(ctx)
@@ -310,11 +317,9 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 // at once and drops any stashed review screen (its folder IDs are gone). The
 // settings tab is unreachable during a scan, so no workflow is retargeted.
 func (m *shellModel) settingsSaved(before config.Settings) tea.Cmd {
-	// ponytail: the save receipt goes to the home screen's error line, so it
-	// is lost if a scan screen is showing. Give HomeModel a note line if that
-	// matters.
-	note := "Settings saved in " + m.a.Config.OutputDir()
-	cmd := m.forward(tabScan, tui.HomeErrMsg{Err: errors.New(note)})
+	// ponytail: only the home screen shows the receipt, so it is lost if a
+	// finished scan screen still holds the tab
+	cmd := m.forward(tabScan, tui.HomeNoteMsg{Text: "Settings saved in " + m.a.Config.OutputDir()})
 
 	if m.a.Config.Settings.Equal(before) {
 		return cmd // a visit that changed nothing throws no plan away

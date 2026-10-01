@@ -57,9 +57,9 @@ type Report struct {
 	// Forgotten is every placed file gone from the library (library-relative
 	// paths). Its records are deleted, so a copy at a source is planned again.
 	Forgotten []string
-	// Database is SQLite's own verdict on the file holding the plan: "ok", or
-	// the first thing it found wrong.
-	Database string
+	// DatabaseDamage is SQLite's first finding against the file holding the
+	// plan; "" when integrity_check found nothing wrong.
+	DatabaseDamage string
 	// Strays are leftover .copy-* temp files from a crashed transfer. Reported,
 	// never deleted.
 	Strays []string
@@ -68,7 +68,7 @@ type Report struct {
 // Sound reports whether the library is entirely as recorded — forgotten files
 // included, since their records now say they are gone.
 func (r Report) Sound() bool {
-	return len(r.Problems) == 0 && len(r.Strays) == 0 && r.Database == "ok"
+	return len(r.Problems) == 0 && len(r.Strays) == 0 && r.DatabaseDamage == ""
 }
 
 // Run checks every placed file against its record and the database against
@@ -95,7 +95,7 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	}
 
 	start := time.Now()
-	rep := Report{Database: "not checked"}
+	var rep Report
 	var gone []int64
 	for i, r := range rows {
 		if ctx.Err() != nil {
@@ -139,7 +139,7 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	}
 
 	var err error
-	if rep.Database, err = checkDatabase(ctx, database); err != nil {
+	if rep.DatabaseDamage, err = checkDatabase(ctx, database); err != nil {
 		return rep, err
 	}
 	if rep.Strays, err = findStrays(outputDir); err != nil {
@@ -242,13 +242,16 @@ func problemError(p Problem) error {
 	return base
 }
 
-// checkDatabase runs integrity_check on the live database. Not quick_check: it
-// skips the index-against-table comparison that catches a plan pointing at
-// missing folders.
+// checkDatabase runs integrity_check on the live database and returns its first
+// finding, "" when sound. Not quick_check: it skips the index-against-table
+// comparison that catches a plan pointing at missing folders.
 func checkDatabase(ctx context.Context, database *db.DB) (string, error) {
 	var result string
 	if err := database.SQL.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&result); err != nil {
 		return "", fmt.Errorf("check database integrity: %w", err)
+	}
+	if result == "ok" { // SQLite's own word for "no problems"
+		return "", nil
 	}
 	return result, nil
 }
@@ -286,7 +289,7 @@ func summary(rep Report, o Options, elapsed time.Duration) string {
 	if len(rep.Problems) > 0 {
 		msg += fmt.Sprintf(" — %d do not match", len(rep.Problems))
 	}
-	if rep.Database != "ok" {
+	if rep.DatabaseDamage != "" {
 		msg += " — the database itself is damaged"
 	}
 	return msg

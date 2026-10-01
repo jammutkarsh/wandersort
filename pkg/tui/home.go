@@ -28,6 +28,10 @@ type OpenReviewMsg struct{}
 // footer. Never fatal.
 type HomeErrMsg struct{ Err error }
 
+// HomeNoteMsg is a shell-side success for the home screen to confirm above its
+// footer, such as a settings save.
+type HomeNoteMsg struct{ Text string }
+
 // HomeConfig wires the home screen to the shell.
 type HomeConfig struct {
 	// Suggest completes a typed path; nil disables the dropdown.
@@ -52,6 +56,7 @@ type HomeModel struct {
 	sugg       []string
 	suggCursor int // ↑/↓-picked completion; -1 = none picked
 	err        error
+	note       string // a success line; cleared by an error
 	w, h       int
 
 	// confirmForce is the full-screen ask before a force re-scan
@@ -82,7 +87,10 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 		return m, nil
 	case HomeErrMsg:
-		m.err = msg.Err
+		m.err, m.note = msg.Err, ""
+		return m, nil
+	case HomeNoteMsg:
+		m.note, m.err = msg.Text, nil
 		return m, nil
 	case tea.KeyMsg:
 		if m.confirmForce {
@@ -278,6 +286,10 @@ func (m HomeModel) View() string {
 
 func (m HomeModel) footer() string {
 	var b strings.Builder
+	if m.note != "" {
+		b.WriteString(row(OK.Render("✓ ")+DimText.Render(m.note), "", m.w))
+		b.WriteString("\n")
+	}
 	if m.err != nil {
 		b.WriteString(row(Attn.Render("⚠ "+m.err.Error()), "", m.w))
 		b.WriteString("\n")

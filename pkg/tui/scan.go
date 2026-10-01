@@ -27,7 +27,8 @@ type LogEventMsg struct{ Event logger.Event }
 // InstallProgressMsg carries dependency-download byte progress, straight from a
 // callback so it never touches the file log.
 type InstallProgressMsg struct {
-	Phase string
+	Phase string // identifies the download; rows update by it
+	Label string // what the row says
 	Done  int64
 	Total int64
 }
@@ -71,27 +72,44 @@ type ScanModel struct {
 	// drive that phase's own bar — the stream carries no PhaseKey of its own
 	cur string
 
-	done       bool  // pipeline returned (success or fail)
-	failErr    error // non-nil = pipeline failed
-	depsErr    error // non-nil = a dependency download failed; see DepsErr
-	cancelling bool  // ctrl+c pressed, waiting for the pipeline to unwind
-	finished   bool  // succeeded; waiting to switch into the review
-	loading    bool  // "Opening review…" — waiting on the prefetch below
-	reviewErr  error // building the review screen failed
+	state scanState
+	err   error // why the run failed, or which dependency failed to download
 
-	// reviewModel prefetches the review screen once the vfs phase
-	// flushes
-	reviewModel Tab
+	// review is prefetched once the vfs phase flushes; reviewErr is why it
+	// could not be built
+	review    Tab
+	reviewErr error
 }
 
+// scanState is where a scan run is.
+type scanState int
+
+const (
+	scanRunning    scanState = iota
+	scanCancelling           // ctrl+c pressed, waiting for the pipeline to unwind
+	scanCancelled            // the pipeline unwound after a ctrl+c
+	scanDepsFailed           // a dependency download failed before any phase
+	scanFailed               // the pipeline returned an error
+	scanFinished             // succeeded: showing or waiting for the review
+)
+
 // DepsFailure reports a dependency-download failure, if that ended the run.
-func (m ScanModel) DepsFailure() error { return m.depsErr }
+func (m ScanModel) DepsFailure() error {
+	if m.state == scanDepsFailed {
+		return m.err
+	}
+	return nil
+}
 
 // Cancelled reports whether the user's ctrl+c ended the screen.
-func (m ScanModel) Cancelled() bool { return m.cancelling }
+func (m ScanModel) Cancelled() bool {
+	return m.state == scanCancelling || m.state == scanCancelled
+}
 
 // Running reports that the pipeline hasn't returned yet.
-func (m ScanModel) Running() bool { return !m.done }
+func (m ScanModel) Running() bool {
+	return m.state == scanRunning || m.state == scanCancelling
+}
 
 // Busy is the container's word for Running: a pipeline in flight must not be
 // interrupted, replaced, or have its settings retargeted under it.
@@ -99,7 +117,7 @@ func (m ScanModel) Busy() bool { return m.Running() }
 
 // Failed reports that the pipeline returned an error; this screen is the only
 // place it is shown, so don't discard it unread.
-func (m ScanModel) Failed() bool { return m.failErr != nil }
+func (m ScanModel) Failed() bool { return m.state == scanFailed }
 
 // Summary is each finished stage's one-line result, for the home screen's
 // history block once the session moves on from this scan.
@@ -142,42 +160,33 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.downloads = append(m.downloads, msg)
 		return m, nil
 	case reviewReadyMsg:
-		if msg.err != nil {
-			m.reviewErr = msg.err
-			m.loading = false
-			if m.cancelling {
-				return m, Left(Leave{Quit: true})
-			}
-			return m, nil
-		}
-		m.reviewModel = msg.model
-		if m.loading { // "y" already pressed, waiting on this
-			m.loading = false
-			return m, Switch(m.reviewModel)
+		m.review, m.reviewErr = msg.model, msg.err
+		switch {
+		case m.state == scanCancelling && m.reviewErr != nil:
+			return m, Left(Leave{Quit: true})
+		case m.state == scanFinished && m.review != nil:
+			return m, Switch(m.review) // the run was waiting on this
 		}
 		return m, nil
 	case scanDoneMsg:
-		m.done = true
 		if msg.err != nil {
 			if de, ok := errors.AsType[*DepsErr](msg.err); ok {
-				m.depsErr = de.Err
-				return m, Left(Leave{Quit: true, Err: de.Err})
-			}
-			m.failErr = msg.err
-			m.sl.FinishRemaining(true, "")
-			if m.cancelling {
+				m.state, m.err = scanDepsFailed, de.Err
 				return m, Left(Leave{Quit: true})
 			}
+			m.sl.FinishRemaining(true, "")
+			if m.state == scanCancelling {
+				m.state = scanCancelled
+				return m, Left(Leave{Quit: true})
+			}
+			m.state, m.err = scanFailed, msg.err
 			return m, nil
 		}
 		m.sl.FinishRemaining(false, "done")
-		m.finished = true
+		m.state = scanFinished
 		// straight into review, or wait for the prefetch
-		if m.cfg.ReviewNext != nil && m.reviewErr == nil {
-			if m.reviewModel != nil {
-				return m, Switch(m.reviewModel)
-			}
-			m.loading = true
+		if m.review != nil {
+			return m, Switch(m.review)
 		}
 		return m, nil
 	}
@@ -190,14 +199,12 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cfg.Cancel != nil {
 			m.cfg.Cancel()
 		}
-		if m.done {
+		// after the run, or on a second press, quit even if the pipeline
+		// won't unwind
+		if m.state != scanRunning {
 			return m, Left(Leave{Quit: true})
 		}
-		// second press quits even if the pipeline won't unwind
-		if m.cancelling {
-			return m, Left(Leave{Quit: true})
-		}
-		m.cancelling = true
+		m.state = scanCancelling
 		return m, nil
 	}
 	return m, nil
@@ -293,21 +300,11 @@ func (m ScanModel) View() string {
 	return Screen(body, footer, m.h)
 }
 
-// downloadLabel names a dependency phase for humans; the phase keys come from
-// App.progressFor.
-var downloadLabel = map[string]string{
-	"exiftool": "exiftool",
-	"location": "Location database",
-}
-
 // viewDownloads renders one row per background dependency download.
 func (m ScanModel) viewDownloads() string {
 	var b strings.Builder
 	for _, d := range m.downloads {
-		label := downloadLabel[d.Phase]
-		if label == "" {
-			label = d.Phase
-		}
+		label := d.Label
 		var left string
 		if d.Total > 0 && d.Done >= d.Total {
 			left = " " + OK.Render("✓ ") + DimText.Render(label+" · done")
@@ -368,27 +365,26 @@ func (m ScanModel) footer() string {
 		b.WriteString("\n")
 	}
 	switch {
-	case m.failErr != nil:
+	case m.state == scanFailed:
 		b.WriteString(Bad.Render("Scan failed: "))
-		b.WriteString(Text.Render(m.failErr.Error()))
+		b.WriteString(Text.Render(m.err.Error()))
 		b.WriteString("\n")
 		b.WriteString(Footer(KeyHint("ctrl+c", "quit"), m.w))
-	case m.reviewErr != nil:
+	case m.state == scanFinished && m.reviewErr != nil:
 		b.WriteString(Bad.Render("Could not open review: "))
 		b.WriteString(Text.Render(m.reviewErr.Error()))
 		b.WriteString("\n")
 		b.WriteString(Footer(KeyHint("ctrl+c", "quit"), m.w))
-	case m.loading:
+	case m.state == scanFinished && m.cfg.ReviewNext != nil:
 		b.WriteString(OK.Render("✓ Scan complete."))
 		b.WriteString("  ")
 		b.WriteString(DimText.Render("Opening review…"))
-	case m.finished:
-		// Only reachable with no ReviewNext wired — every real caller has one,
-		// so this is the finished screen sitting with nothing to switch into.
+	case m.state == scanFinished:
+		// no ReviewNext wired: nothing to switch into
 		b.WriteString(OK.Render("✓ Scan complete."))
 		b.WriteString("\n")
 		b.WriteString(Footer(KeyHint("ctrl+c", "quit"), m.w))
-	case m.cancelling:
+	case m.state == scanCancelling:
 		// first ctrl+c cancels, the second quits
 		b.WriteString(Attn.Render("⚠ Cancelling the scan — press ctrl+c again to quit now. " +
 			"Progress so far is saved; the next run resumes."))

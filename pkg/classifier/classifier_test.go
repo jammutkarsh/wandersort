@@ -12,73 +12,69 @@ func TestClassifyName(t *testing.T) {
 	fc := NewFileClassifier()
 
 	tests := []struct {
-		path          string
-		wantType      string
-		wantProcessed bool
-		wantIgnored   bool
+		path     string
+		wantType string
 	}{
 		// Images
-		{"photo.jpg", MediaTypeImage, true, false},
-		{"photo.JPEG", MediaTypeImage, true, false},
-		{"photo.png", MediaTypeImage, true, false},
-		{"photo.bmp", MediaTypeImage, true, false},
-		{"photo.heic", MediaTypeImage, true, false},
-		{"photo.HEIC", MediaTypeImage, true, false},
-		{"photo.webp", MediaTypeImage, true, false},
+		{"photo.jpg", MediaTypeImage},
+		{"photo.JPEG", MediaTypeImage},
+		{"photo.png", MediaTypeImage},
+		{"photo.bmp", MediaTypeImage},
+		{"photo.heic", MediaTypeImage},
+		{"photo.HEIC", MediaTypeImage},
+		{"photo.webp", MediaTypeImage},
 
 		// Videos
-		{"video.mp4", MediaTypeVideo, true, false},
-		{"video.MP4", MediaTypeVideo, true, false},
-		{"video.mov", MediaTypeVideo, true, false},
-		{"video.MOV", MediaTypeVideo, true, false},
+		{"video.mp4", MediaTypeVideo},
+		{"video.MP4", MediaTypeVideo},
+		{"video.mov", MediaTypeVideo},
+		{"video.MOV", MediaTypeVideo},
 
 		// RAW
-		{"raw.cr2", MediaTypeRaw, true, false},
-		{"raw.CR2", MediaTypeRaw, true, false},
-		{"raw.dng", MediaTypeRaw, true, false},
-		{"raw.DNG", MediaTypeRaw, true, false},
+		{"raw.cr2", MediaTypeRaw},
+		{"raw.CR2", MediaTypeRaw},
+		{"raw.dng", MediaTypeRaw},
+		{"raw.DNG", MediaTypeRaw},
 
 		// Sidecar
-		{"sidecar.aae", MediaTypeSidecar, true, false},
-		{"sidecar.AAE", MediaTypeSidecar, true, false},
+		{"sidecar.aae", MediaTypeSidecar},
+		{"sidecar.AAE", MediaTypeSidecar},
 
 		// Ignored
-		{".DS_Store", MediaTypeUnknown, false, true},
-		{"Thumbs.db", MediaTypeUnknown, false, true},
-		{"/Volumes/Backups/Pictures/.DS_Store", MediaTypeUnknown, false, true},
+		{".DS_Store", MediaTypeIgnored},
+		{"Thumbs.db", MediaTypeIgnored},
+		{"/Volumes/Backups/Pictures/.DS_Store", MediaTypeIgnored},
 
 		// AppleDouble sidecars: they carry the shadowed file's extension, so
 		// every one of these would classify as real media without the prefix rule
-		{"._IMG_20180106_211920.jpg", MediaTypeUnknown, false, true},
-		{"._photo.HEIC", MediaTypeUnknown, false, true},
-		{"._raw.cr2", MediaTypeUnknown, false, true},
-		{"._clip.mov", MediaTypeUnknown, false, true},
-		{"._sidecar.aae", MediaTypeUnknown, false, true},
-		{"/Volumes/Backups/Family/._IMG_0001.jpg", MediaTypeUnknown, false, true},
-		{"._", MediaTypeUnknown, false, true},
+		{"._IMG_20180106_211920.jpg", MediaTypeIgnored},
+		{"._photo.HEIC", MediaTypeIgnored},
+		{"._raw.cr2", MediaTypeIgnored},
+		{"._clip.mov", MediaTypeIgnored},
+		{"._sidecar.aae", MediaTypeIgnored},
+		{"/Volumes/Backups/Family/._IMG_0001.jpg", MediaTypeIgnored},
+		{"._", MediaTypeIgnored},
 		// a leading dot alone is not AppleDouble, and a "._" anywhere but the
 		// start is an ordinary filename
-		{".hidden.jpg", MediaTypeImage, true, false},
-		{"my._photo.jpg", MediaTypeImage, true, false},
+		{".hidden.jpg", MediaTypeImage},
+		{"my._photo.jpg", MediaTypeImage},
 
 		// Unsupported
-		{"readme.txt", MediaTypeUnknown, false, false},
-		{"script.py", MediaTypeUnknown, false, false},
-		{"Makefile", MediaTypeUnknown, false, false},
-		{"archive.zip", MediaTypeUnknown, false, false},
-		{"", MediaTypeUnknown, false, false},
+		{"readme.txt", MediaTypeUnknown},
+		{"script.py", MediaTypeUnknown},
+		{"Makefile", MediaTypeUnknown},
+		{"archive.zip", MediaTypeUnknown},
+		{"", MediaTypeUnknown},
 
 		// Path with directory components
-		{"/home/user/Photos/2023/IMG_001.jpg", MediaTypeImage, true, false},
-		{"~/Pictures/vacation.HEIC", MediaTypeImage, true, false},
+		{"/home/user/Photos/2023/IMG_001.jpg", MediaTypeImage},
+		{"~/Pictures/vacation.HEIC", MediaTypeImage},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			mediaType, processed, ignored := fc.ClassifyName(tt.path)
-			if mediaType != tt.wantType || processed != tt.wantProcessed || ignored != tt.wantIgnored {
-				t.Errorf("ClassifyName(%q) = (%q, %v, %v), want (%q, %v, %v)",
-					tt.path, mediaType, processed, ignored, tt.wantType, tt.wantProcessed, tt.wantIgnored)
+			if got := fc.ClassifyName(tt.path); got != tt.wantType {
+				t.Errorf("ClassifyName(%q) = %q, want %q", tt.path, got, tt.wantType)
 			}
 		})
 	}

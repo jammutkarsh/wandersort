@@ -64,34 +64,36 @@ func NewFileClassifier() *FileClassifier {
 	}
 }
 
-// ClassifyName combines ignore and media checks so callers make one decision.
-func (fc *FileClassifier) ClassifyName(name string) (mediaType string, shouldProcess bool, shouldIgnore bool) {
+// ClassifyName returns a file name's media type: one of the MediaType*
+// constants, MediaTypeIgnored for clutter and MediaTypeUnknown for anything
+// else. Only a real media type is processed.
+func (fc *FileClassifier) ClassifyName(name string) string {
 	base := filepath.Base(name)
 
 	if fc.ignoredFiles[base] {
-		return MediaTypeUnknown, false, true
+		return MediaTypeIgnored
 	}
 
 	// AppleDouble "._<name>" files: macOS writes them on exFAT/FAT/NTFS/SMB.
 	// They carry the shadowed file's extension and are often byte-identical,
 	// forming one huge bogus duplicate group. The name is enough to spot them.
 	if strings.HasPrefix(base, "._") {
-		return MediaTypeUnknown, false, true
+		return MediaTypeIgnored
 	}
 
 	ext := strings.ToLower(filepath.Ext(name))
 
 	switch {
 	case fc.imageExtensions[ext]:
-		return MediaTypeImage, true, false
+		return MediaTypeImage
 	case fc.videoExtensions[ext]:
-		return MediaTypeVideo, true, false
+		return MediaTypeVideo
 	case fc.rawExtensions[ext]:
-		return MediaTypeRaw, true, false
+		return MediaTypeRaw
 	case fc.sidecarExtensions[ext]:
-		return MediaTypeSidecar, true, false
+		return MediaTypeSidecar
 	default:
-		return MediaTypeUnknown, false, false
+		return MediaTypeUnknown
 	}
 }
 

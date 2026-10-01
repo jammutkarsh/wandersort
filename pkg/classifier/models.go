@@ -13,7 +13,8 @@ const (
 	MediaTypeVideo   = "VIDEO"
 	MediaTypeSidecar = "SIDECAR"
 	MediaTypeRaw     = "RAW"
-	MediaTypeUnknown = "UNKNOWN"
+	MediaTypeUnknown = "UNKNOWN" // not a media file WanderSort reads
+	MediaTypeIgnored = "IGNORED" // OS or app clutter (.DS_Store, AppleDouble files), skipped
 )
 
 // CommonMetadata holds the exiftool tags the pipeline stores, all strings ("" if

@@ -57,8 +57,8 @@ func TestVerifyPassesOnAnIntactLibrary(t *testing.T) {
 	if rep.Checked != 2 || rep.Bytes != int64(len("hello")+len("world!")) {
 		t.Errorf("report = %+v, want 2 files checked", rep)
 	}
-	if rep.Database != "ok" {
-		t.Errorf("database = %q, want ok", rep.Database)
+	if rep.DatabaseDamage != "" {
+		t.Errorf("database damage = %q, want none", rep.DatabaseDamage)
 	}
 }
 

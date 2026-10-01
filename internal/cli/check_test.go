@@ -30,7 +30,7 @@ func TestGroupProblems(t *testing.T) {
 // Files that are gone are forgotten, which leaves the records true: the check
 // lists them but does not fail.
 func TestReportVerifyForgottenOnlyIsNotAFailure(t *testing.T) {
-	rep := verify.Report{Checked: 3, Database: "ok", Forgotten: []string{"orphan/a.AAE"}}
+	rep := verify.Report{Checked: 3, Forgotten: []string{"orphan/a.AAE"}}
 	if err := reportVerify(rep, false); err != nil {
 		t.Errorf("reportVerify = %v, want nil", err)
 	}

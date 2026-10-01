@@ -97,9 +97,9 @@ func reportVerify(rep verify.Report, full bool) error {
 			}
 		}
 	}
-	if rep.Database != "ok" {
+	if rep.DatabaseDamage != "" {
 		fmt.Fprintf(os.Stderr, "%s the database holding your folder structure is damaged: %s\n",
-			tui.Attn.Render("✗"), rep.Database)
+			tui.Attn.Render("✗"), rep.DatabaseDamage)
 		fmt.Fprintln(os.Stderr, "    'wandersort admin db --restore' restores it from the backup taken before the last transfer.")
 	}
 	if len(rep.Strays) > 0 {
