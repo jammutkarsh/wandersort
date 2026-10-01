@@ -287,7 +287,7 @@ func confirm(ctx context.Context, tx *sqlx.Tx, roots []Node) error {
 			taken[nameKey(e.TargetPath)] = true
 			continue
 		}
-		key := path.Dir(e.SourcePath) + "|" + captureStem(path.Base(e.SourcePath))
+		key := captureKey(path.Dir(e.SourcePath), path.Base(e.SourcePath))
 		if groups[key] == nil {
 			keys = append(keys, key)
 		}

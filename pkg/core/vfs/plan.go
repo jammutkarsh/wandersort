@@ -600,7 +600,7 @@ func pairLiveVideos(masters []masterFile) {
 		if masters[i].MediaType == classifier.MediaTypeVideo || masters[i].MediaType == classifier.MediaTypeSidecar {
 			continue
 		}
-		key := masters[i].FileDir + "|" + captureStem(masters[i].FileName)
+		key := captureKey(masters[i].FileDir, masters[i].FileName)
 		photos[key] = append(photos[key], i)
 	}
 	for i := range masters {
@@ -610,7 +610,7 @@ func pairLiveVideos(masters []masterFile) {
 		}
 		var best *masterFile
 		var bestGap time.Duration
-		for _, j := range photos[v.FileDir+"|"+captureStem(v.FileName)] {
+		for _, j := range photos[captureKey(v.FileDir, v.FileName)] {
 			p := &masters[j]
 			gap := v.takenAt.Sub(p.takenAt).Abs()
 			if gap > liveVideoWindow || (v.device != "" && p.device != "" && v.device != p.device) {
@@ -652,6 +652,10 @@ const captureAgreementWindow = 5 * time.Minute
 // shutter press.
 const liveVideoWindow = time.Second
 
+// captureKey groups files that are one capture: same source folder, same
+// captureStem. Shared by the planner and Confirm so both group alike.
+func captureKey(dir, name string) string { return dir + "|" + captureStem(name) }
+
 // captureStem normalizes a filename to the key used to group same-capture
 // files: strip the extension, then fold a known variant prefix.
 func captureStem(filename string) string {
@@ -683,7 +687,7 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 			continue
 		}
 		// candidate key: same source directory + same captureStem
-		key := masters[i].FileDir + "|" + captureStem(masters[i].FileName)
+		key := captureKey(masters[i].FileDir, masters[i].FileName)
 		g := groups[key]
 		if g == nil {
 			g = &group{}
