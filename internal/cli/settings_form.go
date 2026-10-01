@@ -20,7 +20,9 @@ import (
 // settings, and a save closure that writes them back. The output folder is
 // asked only while no library is open: a library's folder never moves.
 func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
-	out := a.Config.OutputDir()
+	paths := path.New()
+	// prefilled with the last library, or the default one
+	out := paths.RelativeToHome(a.Config.OutputDir())
 	groupBy := append([]string{}, a.Config.Rules...)
 	if len(groupBy) == 0 {
 		groupBy = vfs.DefaultConfig().Rules
@@ -69,7 +71,6 @@ func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.
 		}
 	}
 
-	paths := path.New()
 	homeDir := paths.HomeDir
 
 	// recently used libraries first, then common locations whose parent

@@ -198,7 +198,15 @@ func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case depsDoneMsg:
 		if msg.err == nil {
 			m.gate = nil
-			return m, tea.Batch(m.place(tabScan, m.screens[tabScan]), m.startCmd())
+			cmds := []tea.Cmd{m.place(tabScan, m.screens[tabScan]), m.startCmd()}
+			// the last run's library opens straight away, so nothing asks for it
+			if m.a.AppDB == nil && m.a.libraryExists() {
+				if err := m.a.openLibrary(m.ctx); err != nil {
+					cmds = append(cmds, m.forward(tabScan, tui.HomeErrMsg{Err: err}))
+				}
+				m.refresh()
+			}
+			return m, tea.Batch(cmds...)
 		}
 		m.depsErr = msg.err
 		failed := tui.DepsFailedMsg{Phase: install.PhaseLocation, Reason: msg.err.Error(), Tries: install.MaxTries}
