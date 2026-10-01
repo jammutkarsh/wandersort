@@ -1,7 +1,3 @@
-> SPDX-License-Identifier: AGPL-3.0-or-later
->
-> Copyright (c) 2026 Utkarsh Chourasia
-
 # Accepted risks
 
 Findings from code audits that were looked at and accepted on purpose. An
@@ -49,8 +45,8 @@ with the database.
 ## Duplicates are hashed again on every `add`
 
 After `execute`, the duplicate cleanup forgets every other copy of a placed
-file (spec D10). A card imported again is therefore re-read in full on every
+file. A card imported again is therefore re-read in full on every
 `add`, found to be duplicates, and forgotten again.
 
 **Accepted because:** it costs time, never data, and keeping rows for files
-that are not in the library goes against D10.
+that are not in the library contradicts "only what is in the library matters".
