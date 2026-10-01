@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,6 +36,9 @@ const (
 	FieldConfirm
 	FieldMultiSelect
 	FieldGroup
+	// FieldSelect picks one of Options into Value; options are numbered and a
+	// digit picks one.
+	FieldSelect
 )
 
 // maxFormSuggestions caps the completion list under an input — it renders
@@ -47,8 +51,11 @@ type Field struct {
 	Description string
 	Value       *string         // for Input
 	BoolValue   *bool           // for Confirm
-	Options     []string        // for MultiSelect
+	Options     []string        // for MultiSelect and Select
 	Selected    map[string]bool // for MultiSelect
+	// Skip leaves the step out while it reports true (a follow-up question
+	// whose answer doesn't matter yet).
+	Skip func() bool
 	// Subs are a FieldGroup's fields, answered in order on one screen. Any kind
 	// is allowed — a group is a screen, not an input list.
 	Subs []*Field
@@ -84,6 +91,14 @@ type FormModel struct {
 	// "done here"; it rides out on Leave
 	quitReq bool
 
+	// Heading names the form above its steps, with a step count beside it.
+	Heading string
+	// Then, when set, is what the form returns instead of Leave once it ends,
+	// for a host screen that keeps going afterwards.
+	Then func(Leave) tea.Cmd
+
+	showKeys bool // the ? overlay is up
+
 	// askExit is [esc]'s question — save what's been entered, or throw it
 	// away — raised instead of assuming "save" the moment someone wants out.
 	askExit    bool
@@ -96,7 +111,33 @@ func (m FormModel) Busy() bool { return false }
 // finish hands control back to the container with why the form ended. It never
 // quits the program.
 func (m FormModel) finish() (tea.Model, tea.Cmd) {
-	return m, Left(Leave{Quit: m.quitReq, Aborted: m.aborted, Err: m.err})
+	l := Leave{Quit: m.quitReq, Aborted: m.aborted, Err: m.err}
+	if m.Then != nil {
+		return m, m.Then(l)
+	}
+	return m, Left(l)
+}
+
+// formKeys is every form key, behind ?.
+var formKeys = []KeyGroup{
+	{"Answering", []KeyLine{
+		{"↑ ↓", "move between choices"},
+		{"1-9", "pick a numbered choice"},
+		{"space", "tick or untick"},
+		{"y n", "answer yes or no"},
+		{"tab", "complete what's typed"},
+	}},
+	{"Moving", []KeyLine{
+		{"enter", "next step"},
+		{"shift+tab", "previous step"},
+		{"esc", "save or discard, then leave"},
+		{"ctrl+c", "leave without saving"},
+	}},
+}
+
+// skipped reports whether step i is left out right now.
+func (m FormModel) skipped(i int) bool {
+	return i < len(m.Fields) && m.Fields[i].Skip != nil && m.Fields[i].Skip()
 }
 
 func NewFormModel(fields []*Field, onSubmit func() error) FormModel {
@@ -140,6 +181,10 @@ func (m *FormModel) seedInput() {
 	m.suggCursor = -1
 	m.suggGen++ // invalidate any debounce/query still in flight for the field just left
 	f := m.active()
+	if f != nil && f.Kind == FieldSelect && f.Value != nil {
+		m.multiCursor = max(slices.Index(f.Options, *f.Value), 0)
+		*f.Value = f.Options[m.multiCursor]
+	}
 	if f == nil || f.Kind != FieldInput {
 		return
 	}
@@ -173,6 +218,14 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// including a FieldConfirm's own "y"/"n", would otherwise race it.
 		if m.askExit {
 			return m.answerExitAsk(msg)
+		}
+		if m.showKeys {
+			m.showKeys = false
+			return m, nil
+		}
+		if msg.String() == "?" && (!m.inputFocused() || m.ti.Value() == "") {
+			m.showKeys = true
+			return m, nil
 		}
 		switch msg.String() {
 		case "ctrl+c":
@@ -223,6 +276,22 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// answer the same keys
 		if field := m.active(); field != nil {
 			switch field.Kind {
+			case FieldSelect:
+				key := msg.String()
+				switch {
+				case key == "up":
+					m.multiCursor = max(m.multiCursor-1, 0)
+				case key == "down":
+					m.multiCursor = min(m.multiCursor+1, len(field.Options)-1)
+				case len(key) == 1 && key[0] >= '1' && int(key[0]-'0') <= len(field.Options):
+					m.multiCursor = int(key[0] - '1')
+				default:
+					return m, nil
+				}
+				if field.Value != nil {
+					*field.Value = field.Options[m.multiCursor]
+				}
+				return m, nil
 			case FieldMultiSelect:
 				switch msg.String() {
 				case "up":
@@ -330,14 +399,27 @@ func (m FormModel) View() string {
 	if m.askExit {
 		return m.exitAskView()
 	}
-	rows := make([]string, 0, len(m.Fields))
+	rows := make([]string, 0, len(m.Fields)+2)
+	step, steps := 0, 0
 	for i, f := range m.Fields {
+		if m.skipped(i) {
+			continue
+		}
 		switch {
 		case i == m.Current:
-			rows = append(rows, m.expandedField(f, i))
+			step = steps + 1
+			rows = append(rows, m.expandedField(f, steps))
 		default:
-			rows = append(rows, m.collapsedRow(f, i, i < m.Current))
+			rows = append(rows, m.collapsedRow(f, steps, i < m.Current))
 		}
+		steps++
+	}
+	if m.Heading != "" {
+		count := ""
+		if steps > 1 {
+			count = fmt.Sprintf("step %d of %d", step, steps)
+		}
+		rows = append([]string{row(Text.Bold(true).Render(m.Heading), FaintTxt.Render(count), m.bodyW()), ""}, rows...)
 	}
 	fields := strings.Join(rows, "\n")
 
@@ -357,7 +439,11 @@ func (m FormModel) View() string {
 			body = strings.Join(lines[len(lines)-(m.h-lipgloss.Height(footer)-1):], "\n")
 		}
 	}
-	return Screen(body, footer, m.h)
+	view := Screen(body, footer, m.h)
+	if m.showKeys {
+		return KeyHelp(view, formKeys, m.w, m.h)
+	}
+	return view
 }
 
 // formBodyMaxW caps the field stack's width when the side panel is showing.
@@ -460,7 +546,7 @@ func (m FormModel) collapsedRow(f *Field, i int, done bool) string {
 // summaryValue is the collapsed one-line answer for a completed field.
 func (m FormModel) summaryValue(f *Field) string {
 	switch f.Kind {
-	case FieldInput:
+	case FieldInput, FieldSelect:
 		if f.Value == nil || strings.TrimSpace(*f.Value) == "" {
 			return "—"
 		}
@@ -565,6 +651,16 @@ func (m FormModel) controlView(f *Field, label string) string {
 			b.WriteString("\n")
 			b.WriteString(optionRow(opt, f.Selected[opt], i == m.multiCursor))
 		}
+	case FieldSelect:
+		for i, opt := range f.Options {
+			num := fmt.Sprintf("%d) ", i+1)
+			b.WriteString("\n")
+			if i == m.multiCursor {
+				b.WriteString("    " + Title.Render("❯ "+num) + Text.Bold(true).Render(opt))
+				continue
+			}
+			b.WriteString("      " + DimText.Render(num) + Text.Render(opt))
+		}
 	}
 	return b.String()
 }
@@ -648,31 +744,22 @@ func (m FormModel) renderFooter() string {
 	}
 	var hints []string
 	switch field.Kind {
+	case FieldSelect:
+		hints = []string{KeyHint(fmt.Sprintf("1-%d", len(field.Options)), "choose")}
 	case FieldMultiSelect:
-		hints = []string{
-			KeyHint("↑↓", "navigate"),
-			KeyHint("space", "toggle"),
-			KeyHint("enter", "next"),
-			KeyHint("shift+tab", "back"),
-		}
+		hints = []string{KeyHint("space", "on/off")}
 	case FieldConfirm:
-		hints = []string{
-			KeyHint("y/n", "answer"),
-			KeyHint("enter", "next"),
-			KeyHint("shift+tab", "back"),
-		}
+		hints = []string{KeyHint("y/n", "answer")}
 	default:
-		hints = []string{
-			KeyHint("enter", "next"),
-			KeyHint("shift+tab", "back"),
-		}
 		if len(m.sugg) > 0 {
-			hints = append([]string{KeyHint("↑↓", "pick"), KeyHint("tab", "complete")}, hints...)
+			hints = []string{KeyHint("tab", "complete")}
 		}
 	}
-	// ctrl+c aborts without writing anything — the wizard's only exit that
-	// isn't a save, and one nothing on screen said out loud until now.
-	hints = append(hints, KeyHint("esc", "exit config"), KeyHint("ctrl+c", "discard & exit config"))
+	hints = append(hints, KeyHint("enter", "next"))
+	if m.Current > 0 || m.subIdx > 0 {
+		hints = append(hints, KeyHint("shift+tab", "back"))
+	}
+	hints = append(hints, KeyHint("esc", "done"), MoreKeys())
 	return Footer(strings.Join(hints, "   "), m.w)
 }
 
@@ -699,6 +786,9 @@ func (m FormModel) moveNext() (tea.Model, tea.Cmd) {
 	}
 
 	m.Current++
+	for m.skipped(m.Current) {
+		m.Current++
+	}
 	m.subIdx = 0
 	m.multiCursor = 0
 	if m.Current >= len(m.Fields) {
@@ -785,8 +875,12 @@ func (m FormModel) movePrev() (tea.Model, tea.Cmd) {
 		m.seedInput()
 		return m, textinput.Blink
 	}
-	if m.Current > 0 {
-		m.Current--
+	prev := m.Current - 1
+	for prev >= 0 && m.skipped(prev) {
+		prev--
+	}
+	if prev >= 0 {
+		m.Current = prev
 		m.multiCursor = 0
 		m.subIdx = 0
 		// Backing into a group lands on its last sub-input.

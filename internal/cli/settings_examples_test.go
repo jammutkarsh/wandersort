@@ -5,25 +5,11 @@ import (
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
-	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
 func newTestExamples(t *testing.T, selected []string, collapse, mergeDays, dateOnly bool, home string) *settingsExamples {
 	t.Helper()
-	rulesField := &tui.Field{
-		Options:  []string{vfs.RuleDate, vfs.RuleLocation, vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia},
-		Selected: toMap(selected),
-	}
-	return newSettingsExamples(rulesField, &collapse, &mergeDays, &dateOnly, &home)
-}
-
-func TestSelectedRules(t *testing.T) {
-	e := newTestExamples(t, []string{vfs.RuleDate, vfs.RuleDevice}, false, false, false, "")
-	got := e.selectedRules()
-	want := []string{vfs.RuleDate, vfs.RuleDevice}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Errorf("selectedRules() = %v, want %v (in canonical Options order)", got, want)
-	}
+	return newSettingsExamples(func() []string { return selected }, &collapse, &mergeDays, &dateOnly, &home)
 }
 
 func TestPreviewRulesOnlyAddsCollapsibleLevels(t *testing.T) {

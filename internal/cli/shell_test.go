@@ -324,8 +324,8 @@ func TestShellModel(t *testing.T) {
 			if m.tab != tabSettings || m.screens[tabSettings] == nil {
 				t.Fatalf("ctrl+t should build and open the wizard, got tab=%d screen=%v", m.tab, m.screens[tabSettings])
 			}
-			if v := ansi.Strip(m.View()); !strings.Contains(v, "Output path") {
-				t.Errorf("the wizard should be on screen:\n%s", v)
+			if v := ansi.Strip(m.View()); !strings.Contains(v, "Set up your library") || !strings.Contains(v, "Where should your library go?") {
+				t.Errorf("the setup should be on screen:\n%s", v)
 			}
 		}},
 		// A saved wizard hands the tab back instead of taking the program (and

@@ -280,6 +280,12 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tui.OpenCopyMsg:
 		return m, m.openCopy()
 
+	case tui.SettingsSavedMsg:
+		// a row of the settings list saved: re-plan if it changed anything
+		cmd := m.settingsSaved(m.settingsBefore)
+		m.settingsBefore = m.a.Config.Settings
+		return m, cmd
+
 	case tui.CopyFinishedMsg:
 		// files moved into the library: the counts changed and a kept review
 		// would show folders that are now placed
@@ -689,10 +695,15 @@ func (a *app) newSettingsScreen(ctx context.Context) (tui.Tab, error) {
 			return nil, err
 		}
 	}
-	fields, save := a.buildSettingsForm(ctx, func() (*location.Resolver, error) {
-		return a.Deps.LocationNow()
-	})
-	return tui.NewFormModel(fields, save), nil
+	geonames := func() (*location.Resolver, error) { return a.Deps.LocationNow() }
+	if a.AppDB != nil {
+		return tui.NewSettingsModel(a.settingsRows(ctx, geonames),
+			"A change re-plans the files not yet copied. Copied files don't move."), nil
+	}
+	fields, save := a.buildSettingsForm(ctx, geonames)
+	form := tui.NewFormModel(fields, save)
+	form.Heading = "Set up your library"
+	return form, nil
 }
 
 // runRoot is bare `wandersort`: the shell, or help with --plain or a piped

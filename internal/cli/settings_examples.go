@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -11,38 +12,29 @@ import (
 
 // settingsExamples renders the wizard's live tree previews and their paired description text.
 type settingsExamples struct {
-	rulesField *tui.Field
-	collapse   *bool
-	mergeDays  *bool
-	dateOnly   *bool
-	home       *string
+	rules     func() []string // the folder levels the answers so far stand for
+	collapse  *bool
+	mergeDays *bool
+	dateOnly  *bool
+	home      *string
 }
 
-func newSettingsExamples(rulesField *tui.Field, collapse, mergeDays, dateOnly *bool, home *string) *settingsExamples {
-	return &settingsExamples{rulesField, collapse, mergeDays, dateOnly, home}
+func newSettingsExamples(rules func() []string, collapse, mergeDays, dateOnly *bool, home *string) *settingsExamples {
+	return &settingsExamples{rules, collapse, mergeDays, dateOnly, home}
 }
 
 // exampleDay is the fixed date every wizard example uses.
 func exampleDay(d int) time.Time { return time.Date(2024, time.August, d, 12, 0, 0, 0, time.UTC) }
 
-// selectedRules returns every Rules option currently ticked, in canonical
-// order — what the Rules field's own example demonstrates.
-func (e *settingsExamples) selectedRules() []string {
-	var out []string
-	for _, r := range e.rulesField.Options {
-		if e.rulesField.Selected[r] {
-			out = append(out, r)
-		}
-	}
-	return out
-}
+// has reports whether the answers so far include folder level rule.
+func (e *settingsExamples) has(rule string) bool { return slices.Contains(e.rules(), rule) }
 
 // previewRules is lead plus the ticked collapsible levels, so each example
 // shows its own question.
 func (e *settingsExamples) previewRules(lead ...string) []string {
 	rules := append([]string{}, lead...)
 	for _, r := range []string{vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia} {
-		if e.rulesField.Selected[r] {
+		if e.has(r) {
 			rules = append(rules, r)
 		}
 	}
@@ -62,7 +54,7 @@ func (e *settingsExamples) homeTown() string {
 // Rules is the Rules field's own example.
 func (e *settingsExamples) Rules() string {
 	cfg := vfs.DefaultConfig()
-	cfg.Rules = e.selectedRules()
+	cfg.Rules = e.rules()
 	cfg.CollapseLevels = false // always show every level, to demonstrate the order itself
 	sample := vfs.Sample{
 		TakenAt: exampleDay(2), Location: "Goa", Device: "iPhone 13",
@@ -75,10 +67,10 @@ func (e *settingsExamples) Rules() string {
 func (e *settingsExamples) Collapse() string {
 	cfg := vfs.DefaultConfig()
 	var lead []string
-	if e.rulesField.Selected[vfs.RuleDate] {
+	if e.has(vfs.RuleDate) {
 		lead = append(lead, vfs.RuleDate)
 	}
-	if e.rulesField.Selected[vfs.RuleLocation] {
+	if e.has(vfs.RuleLocation) {
 		lead = append(lead, vfs.RuleLocation)
 	}
 	cfg.Rules = append(lead, vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia)

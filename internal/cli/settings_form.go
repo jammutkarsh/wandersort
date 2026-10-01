@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
@@ -16,189 +17,329 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
-// buildSettingsForm builds the wizard's fields, seeded with the library's
-// settings, and a save closure that writes them back. The output folder is
-// asked only while no library is open: a library's folder never moves.
-func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
-	paths := path.New()
-	// prefilled with the last library, or the default one
-	out := paths.RelativeToHome(a.Config.OutputDir())
-	groupBy := append([]string{}, a.Config.Rules...)
-	if len(groupBy) == 0 {
-		groupBy = vfs.DefaultConfig().Rules
-	}
-	collapse := a.Config.CollapseLevels
-	mergeDays := a.Config.MergeSameLocationDays
-	spDateOnly := a.Config.SavedPlacesDateOnly
-	home, work := a.Config.HomeTown, a.Config.WorkTown
+// layoutPresets are the ready-made folder layouts; any other rule list is
+// Custom.
+var layoutPresets = []struct {
+	name  string
+	rules []string
+}{
+	{"Year › Month › Day › Place", []string{vfs.RuleDate, vfs.RuleLocation}},
+	{"Year › Month › Place", []string{vfs.RuleLocation}},
+	{"Year › Month › Day", []string{vfs.RuleDate}},
+	{"Year › Month", []string{vfs.RuleNone}},
+}
 
-	// rejects a typo (close candidates exist) but accepts an unknown name, or
-	// any name when the geonames database failed to open
-	townValidator := func(s string) error {
-		if strings.TrimSpace(s) == "" {
-			return nil // blank = skip
-		}
-		resolver, err := geonames()
-		if err != nil {
-			if errors.Is(err, install.ErrPending) {
-				return err
+// customLayout is the layout choice that opens the full rule list.
+const customLayout = "Custom…"
+
+// recommended marks the default layout in the list.
+const recommended = "  (recommended)"
+
+// layoutChoice is the layout option that stands for rules: a preset's name,
+// or customLayout. No rules at all is the default, the first preset.
+func layoutChoice(rules []string) string {
+	if len(rules) == 0 {
+		return layoutPresets[0].name + recommended
+	}
+	for i, p := range layoutPresets {
+		if slices.Equal(p.rules, rules) {
+			if i == 0 {
+				return p.name + recommended
 			}
-			return nil
-		}
-		_, err = resolver.Canonical(ctx, s)
-		return err
-	}
-
-	// same rule at save time: the geonames spelling when it can give one,
-	// else what was typed — dropping a town the user already had is data loss
-	canonicalTownOrTyped := func(typed string) string {
-		typed = strings.TrimSpace(typed)
-		if typed == "" {
-			return ""
-		}
-		resolver, err := geonames()
-		if err != nil {
-			return typed // pending or broken geonames — never drop what was typed
-		}
-		name, err := resolver.Canonical(ctx, typed)
-		switch {
-		case err == nil:
-			return name
-		case errors.Is(err, location.ErrNotExact):
-			return "" // a near-miss the validator would have rejected
-		default:
-			return typed // lookup failed: never drop what was typed
+			return p.name
 		}
 	}
+	return customLayout
+}
 
-	homeDir := paths.HomeDir
+// layoutLabel is how the settings list shows a rule list.
+func layoutLabel(rules []string) string {
+	if c := layoutChoice(rules); c != customLayout {
+		return strings.TrimSuffix(c, recommended)
+	}
+	return "Custom: " + layoutName(rules, " › ")
+}
 
-	// recently used libraries first, then common locations whose parent
-	// exists on this machine
-	var outSuggestions []string
-	for _, dir := range a.Config.History() {
-		outSuggestions = append(outSuggestions, paths.RelativeToHome(dir))
+// settingsForm is one edit of a library's settings: a working copy, the
+// fields that change it, and the save that writes it. Built fresh per edit, so
+// leaving without saving leaves nothing behind.
+type settingsForm struct {
+	a        *app
+	ctx      context.Context
+	geonames func() (*location.Resolver, error)
+	paths    *path.Resolver
+
+	out                           string
+	layout                        string
+	rulesField                    *tui.Field
+	collapse, dateOnly, mergeDays bool
+	home, work                    string
+	ex                            *settingsExamples
+}
+
+func (a *app) newSettingsForm(ctx context.Context, geonames func() (*location.Resolver, error)) *settingsForm {
+	s := a.Config.Settings
+	paths := path.New()
+	f := &settingsForm{
+		a: a, ctx: ctx, geonames: geonames, paths: paths,
+		// prefilled with the last library, or the default one
+		out:      paths.RelativeToHome(a.Config.OutputDir()),
+		layout:   layoutChoice(s.Rules),
+		collapse: s.CollapseLevels, dateOnly: s.SavedPlacesDateOnly, mergeDays: s.MergeSameLocationDays,
+		home: s.HomeTown, work: s.WorkTown,
+	}
+	custom := s.Rules
+	if len(custom) == 0 || slices.Equal(custom, []string{vfs.RuleNone}) {
+		custom = vfs.DefaultConfig().Rules
+	}
+	f.rulesField = &tui.Field{
+		Kind:     tui.FieldMultiSelect,
+		Title:    "Which folders, in order?",
+		Options:  []string{vfs.RuleDate, vfs.RuleLocation, vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia},
+		Selected: toMap(custom),
+		Description: "Folder levels below Year and Month. date = day, location = place, " +
+			"device = camera, orientation = portrait or landscape, media = photo or video.",
+		Skip: func() bool { return f.layout != customLayout },
+	}
+	f.ex = newSettingsExamples(f.rules, &f.collapse, &f.mergeDays, &f.dateOnly, &f.home)
+	f.rulesField.Example = f.ex.Rules
+	return f
+}
+
+// rules is the folder levels the form's answers stand for.
+func (f *settingsForm) rules() []string {
+	for _, p := range layoutPresets {
+		if strings.TrimSuffix(f.layout, recommended) == p.name {
+			return p.rules
+		}
+	}
+	var out []string
+	for _, opt := range f.rulesField.Options {
+		if f.rulesField.Selected[opt] {
+			out = append(out, opt)
+		}
+	}
+	if len(out) == 0 {
+		return []string{vfs.RuleNone}
+	}
+	return out
+}
+
+func (f *settingsForm) libraryField() *tui.Field {
+	homeDir := f.paths.HomeDir
+	// recently used libraries first, then common locations whose parent exists
+	var suggestions []string
+	for _, dir := range f.a.Config.History() {
+		suggestions = append(suggestions, f.paths.RelativeToHome(dir))
 	}
 	for _, c := range []string{
 		filepath.Join(homeDir, "Pictures", "WanderSort"),
-		filepath.Join(homeDir, "WandersortLibrary"),
+		filepath.Join(homeDir, config.DefaultLibrary),
 	} {
 		if st, err := os.Stat(filepath.Dir(c)); err == nil && st.IsDir() {
-			outSuggestions = append(outSuggestions, paths.RelativeToHome(c))
+			suggestions = append(suggestions, f.paths.RelativeToHome(c))
 		}
 	}
-	// suggestOut is the shared directory completion plus this field's own
-	// seed suggestions for an empty input.
-	suggestOut := func(typed string) []string {
-		if strings.TrimSpace(typed) == "" {
-			return outSuggestions
+	return &tui.Field{
+		Kind:        tui.FieldInput,
+		Title:       "Where should your library go?",
+		Description: "An empty folder, or one WanderSort has organised before.",
+		Value:       &f.out,
+		Suggest: func(typed string) []string {
+			if strings.TrimSpace(typed) == "" {
+				return suggestions
+			}
+			return suggestDirs(f.paths, typed)
+		},
+		Validator: func(s string) error {
+			return config.CheckLibrary(f.paths.ExpandPath(strings.TrimSpace(s)))
+		},
+	}
+}
+
+func (f *settingsForm) layoutFields() []*tui.Field {
+	options := make([]string, 0, len(layoutPresets)+1)
+	for i, p := range layoutPresets {
+		name := p.name
+		if i == 0 {
+			name += recommended
 		}
-		return suggestDirs(paths, typed)
+		options = append(options, name)
 	}
+	options = append(options, customLayout)
+	return []*tui.Field{{
+		Kind:        tui.FieldSelect,
+		Title:       "How should folders be laid out?",
+		Description: "You can change this later. Files already copied stay where they are.",
+		Options:     options,
+		Value:       &f.layout,
+		Example:     f.ex.Rules,
+	}, f.rulesField}
+}
 
-	suggestTown := func(typed string) []string {
-		typed = strings.TrimSpace(typed)
-		resolver, err := geonames()
-		if len(typed) < 2 || err != nil {
-			return nil
-		}
-		return resolver.SuggestNames(ctx, typed, 6)
+// townField is a town input that completes from the place names and saves
+// their spelling.
+func (f *settingsForm) townField(title, description string, value *string) *tui.Field {
+	return &tui.Field{
+		Kind: tui.FieldInput, Title: title, Description: description,
+		Placeholder: "a town, or enter to skip",
+		Value:       value,
+		Validator:   f.validateTown,
+		Suggest: func(typed string) []string {
+			typed = strings.TrimSpace(typed)
+			resolver, err := f.geonames()
+			if len(typed) < 2 || err != nil {
+				return nil
+			}
+			return resolver.SuggestNames(f.ctx, typed, 6)
+		},
 	}
+}
 
-	rulesField := &tui.Field{
-		Kind:     tui.FieldMultiSelect,
-		Title:    "Rules",
-		Options:  []string{vfs.RuleDate, vfs.RuleLocation, vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia},
-		Selected: toMap(groupBy),
-		Description: "Folder levels below Year/Month, in nesting order.\n" +
-			"  date = day    location = city    device = camera\n" +
-			"  orientation = portrait/landscape    media = photo/video",
-	}
-	ex := newSettingsExamples(rulesField, &collapse, &mergeDays, &spDateOnly, &home)
-	rulesField.Example = ex.Rules
+func (f *settingsForm) homeField() *tui.Field {
+	return f.townField("Where's home?",
+		"Everyday photos from home get a date folder, without the town's name on every day. Optional.", &f.home)
+}
 
-	fields := []*tui.Field{rulesField}
-	// asked first, and only while no library is open
-	if a.AppDB == nil {
-		fields = append([]*tui.Field{{
-			Kind:        tui.FieldInput,
-			Title:       "Output path",
-			Description: "Where the organized library goes: an empty folder, or one WanderSort already organized. ~ is fine.",
-			Value:       &out,
-			Placeholder: filepath.Join(homeDir, config.DefaultLibrary),
-			Suggest:     suggestOut,
-			Validator: func(s string) error {
-				return config.CheckLibrary(paths.ExpandPath(strings.TrimSpace(s)))
+func (f *settingsForm) workField() *tui.Field {
+	return f.townField("Where's work?",
+		"Treated like home. Leave it empty if it's the same town.", &f.work)
+}
+
+func (f *settingsForm) fineTuning() *tui.Field {
+	return &tui.Field{
+		Kind:  tui.FieldGroup,
+		Title: "Fine-tuning",
+		Subs: []*tui.Field{
+			{
+				Kind: tui.FieldConfirm, Title: "Skip folders that would all be the same?",
+				Describe: f.ex.CollapseDescribe, BoolValue: &f.collapse, Example: f.ex.Collapse,
 			},
-		}}, fields...)
-	}
-	fields = append(fields,
-		&tui.Field{
-			Kind:        tui.FieldGroup,
-			Title:       "Saved places",
-			Description: "The everyday places you shoot from, and how their photos are foldered.",
-			Subs: []*tui.Field{
-				{
-					Kind: tui.FieldInput, Title: "Home town", Placeholder: "e.g. Delhi (blank to skip)",
-					Value: &home, Validator: townValidator, Suggest: suggestTown,
-				},
-				{
-					Kind: tui.FieldInput, Title: "Work town", Placeholder: "blank = same as home",
-					Value: &work, Validator: townValidator, Suggest: suggestTown,
-				},
-				{
-					Kind:      tui.FieldConfirm,
-					Title:     "Collapse uninformative levels?",
-					Describe:  ex.CollapseDescribe,
-					BoolValue: &collapse,
-					Example:   ex.Collapse,
-				},
-				{
-					Kind:      tui.FieldConfirm,
-					Title:     "Group saved-place photos by date only?",
-					Describe:  ex.DateOnlyDescribe,
-					BoolValue: &spDateOnly,
-					Example:   ex.DateOnly,
-				},
-				{
-					Kind:      tui.FieldConfirm,
-					Title:     "Merge consecutive same-location days?",
-					Describe:  ex.MergeDaysDescribe,
-					BoolValue: &mergeDays,
-					Example:   ex.MergeDays,
-				},
+			{
+				Kind: tui.FieldConfirm, Title: "Date only for home and work?",
+				Describe: f.ex.DateOnlyDescribe, BoolValue: &f.dateOnly, Example: f.ex.DateOnly,
+			},
+			{
+				Kind: tui.FieldConfirm, Title: "Merge back-to-back days in one place?",
+				Describe: f.ex.MergeDaysDescribe, BoolValue: &f.mergeDays, Example: f.ex.MergeDays,
 			},
 		},
-	)
+	}
+}
 
-	// save writes the answers to their library, opening (or creating) it if
-	// the output path was asked here; quitting before save writes nothing
-	save := func() error {
-		if strings.TrimSpace(work) == "" {
-			work = home // blank work = same as home
-		}
-		// Collect multiselect choices from the map, in canonical option order.
-		var selectedRules []string
-		for _, opt := range rulesField.Options {
-			if rulesField.Selected[opt] {
-				selectedRules = append(selectedRules, opt)
-			}
-		}
-		s := config.Settings{
-			Rules:                 selectedRules,
-			CollapseLevels:        collapse,
-			SavedPlacesDateOnly:   spDateOnly,
-			MergeSameLocationDays: mergeDays,
-			// Canonicalize towns to the exact geonames spelling before saving.
-			HomeTown: canonicalTownOrTyped(home),
-			WorkTown: canonicalTownOrTyped(work),
-		}
-		if err := a.saveSettings(ctx, paths.ExpandPath(strings.TrimSpace(out)), s); err != nil {
-			return fmt.Errorf("save settings: %w", err)
+// validateTown rejects a typo (close candidates exist) but accepts an unknown
+// name, or any name when the place names failed to open.
+func (f *settingsForm) validateTown(s string) error {
+	if strings.TrimSpace(s) == "" {
+		return nil // blank = skip
+	}
+	resolver, err := f.geonames()
+	if err != nil {
+		if errors.Is(err, install.ErrPending) {
+			return err
 		}
 		return nil
 	}
-	return fields, save
+	_, err = resolver.Canonical(f.ctx, s)
+	return err
+}
+
+// canonicalTown is the place names' spelling when they can give one, else
+// what was typed: dropping a town the user already had is data loss.
+func (f *settingsForm) canonicalTown(typed string) string {
+	typed = strings.TrimSpace(typed)
+	if typed == "" {
+		return ""
+	}
+	resolver, err := f.geonames()
+	if err != nil {
+		return typed
+	}
+	name, err := resolver.Canonical(f.ctx, typed)
+	switch {
+	case err == nil:
+		return name
+	case errors.Is(err, location.ErrNotExact):
+		return "" // a near-miss the validator would have rejected
+	default:
+		return typed
+	}
+}
+
+// save writes the answers to their library, opening (or creating) it if this
+// form asked where it goes; quitting before save writes nothing.
+func (f *settingsForm) save() error {
+	work := f.work
+	if strings.TrimSpace(work) == "" {
+		work = f.home // blank work = same as home
+	}
+	s := config.Settings{
+		Rules:                 f.rules(),
+		CollapseLevels:        f.collapse,
+		SavedPlacesDateOnly:   f.dateOnly,
+		MergeSameLocationDays: f.mergeDays,
+		HomeTown:              f.canonicalTown(f.home),
+		WorkTown:              f.canonicalTown(work),
+	}
+	if err := f.a.saveSettings(f.ctx, f.paths.ExpandPath(strings.TrimSpace(f.out)), s); err != nil {
+		return fmt.Errorf("save settings: %w", err)
+	}
+	return nil
+}
+
+// buildSettingsForm is the first-run setup: where the library goes (only
+// while none is open, since an open library's folder never moves), the
+// layout, and home. The save creates the library.
+func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
+	f := a.newSettingsForm(ctx, geonames)
+	var fields []*tui.Field
+	if a.AppDB == nil {
+		fields = append(fields, f.libraryField())
+	}
+	fields = append(fields, f.layoutFields()...)
+	fields = append(fields, f.homeField())
+	return fields, f.save
+}
+
+// settingsRows is an open library's settings, one row each; each edit starts
+// from the settings as saved.
+func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resolver, error)) func() []tui.SettingRow {
+	edit := func(fields func(*settingsForm) []*tui.Field) func() ([]*tui.Field, func() error) {
+		return func() ([]*tui.Field, func() error) {
+			f := a.newSettingsForm(ctx, geonames)
+			return fields(f), f.save
+		}
+	}
+	return func() []tui.SettingRow {
+		s := a.Config.Settings
+		orNotSet := func(v string) string {
+			if v == "" {
+				return "not set"
+			}
+			return v
+		}
+		on := 0
+		for _, b := range []bool{s.CollapseLevels, s.SavedPlacesDateOnly, s.MergeSameLocationDays} {
+			if b {
+				on++
+			}
+		}
+		tuning := fmt.Sprintf("%d of 3 on", on)
+		if on == 3 {
+			tuning = "all on"
+		}
+		work := s.WorkTown
+		if work == s.HomeTown {
+			work = ""
+		}
+		return []tui.SettingRow{
+			{Label: "Library folder", Value: path.New().RelativeToHome(a.Config.OutputDir())},
+			{Label: "Folder layout", Value: layoutLabel(s.Rules), Edit: edit((*settingsForm).layoutFields)},
+			{Label: "Home", Value: orNotSet(s.HomeTown), Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.homeField()} })},
+			{Label: "Work", Value: orNotSet(work), Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.workField()} })},
+			{Label: "Fine-tuning", Value: tuning, Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.fineTuning()} })},
+		}
+	}
 }
 
 // ruleNames is how each folder level reads in a layout.
