@@ -70,66 +70,55 @@ func New(opts Options) *Coordinator {
 // Start installs exiftool then the location database in the background.
 // Only the first Start or StartLocationOnly call does anything.
 func (c *Coordinator) Start(ctx context.Context) {
-	c.started.Do(func() { c.start(ctx) })
-}
-
-func (c *Coordinator) start(ctx context.Context) {
-	c.running.Store(true)
-	go func() {
-		l, err := c.acquireLock(ctx)
-		if err != nil {
-			c.exifErr, c.locErr = err, err
-			close(c.exifReady)
-			close(c.locReady)
-			return
-		}
-		defer l.Unlock()
-
-		// exiftool first: it's the small download the earlier exif phase
-		// waits on; the location DB has the whole pipeline to hide behind.
-		c.exifPath, c.exifErr = setupExiftool(ctx, c.opts.Log, c.opts.ExecutablePath, c.progressFor(PhaseExiftool))
-		if c.exifErr != nil {
-			c.exifErr = fmt.Errorf("exiftool: %w", c.exifErr)
-		}
-		close(c.exifReady)
-		if c.exifErr != nil {
-			c.locErr = fmt.Errorf("location database not installed: %w", c.exifErr)
-			close(c.locReady)
-			return
-		}
-
-		c.resolver, c.locationDB, c.locErr = OpenLocationResolver(ctx, c.opts.Log, c.opts.LocationDBPath, c.progressFor(PhaseLocation))
-		close(c.locReady)
-	}()
+	c.started.Do(func() { c.install(ctx, true, nil) })
 }
 
 // StartLocationOnly installs just the location database. onReady, if not nil,
 // runs once it resolves.
 func (c *Coordinator) StartLocationOnly(ctx context.Context, onReady func(error)) {
-	c.started.Do(func() { c.startLocationOnly(ctx, onReady) })
+	c.started.Do(func() { c.install(ctx, false, onReady) })
 }
 
-func (c *Coordinator) startLocationOnly(ctx context.Context, onReady func(error)) {
+// install takes the install lock, then sets up exiftool (if asked) and the
+// location database in the background. exiftool goes first: it is the small
+// download the earlier metadata phase waits on. Each ready channel closes
+// exactly once, whatever fails.
+func (c *Coordinator) install(ctx context.Context, withExiftool bool, onReady func(error)) {
 	c.running.Store(true)
-	c.exifErr = errExiftoolNotInstalled
-	close(c.exifReady)
+	if !withExiftool {
+		c.exifErr = errExiftoolNotInstalled
+		close(c.exifReady)
+	}
 	go func() {
+		defer func() {
+			close(c.locReady)
+			if onReady != nil {
+				onReady(c.locErr)
+			}
+		}()
 		l, err := c.acquireLock(ctx)
 		if err != nil {
 			c.locErr = err
-			close(c.locReady)
-			if onReady != nil {
-				onReady(err)
+			if withExiftool {
+				c.exifErr = err
+				close(c.exifReady)
 			}
 			return
 		}
 		defer l.Unlock()
 
-		c.resolver, c.locationDB, c.locErr = OpenLocationResolver(ctx, c.opts.Log, c.opts.LocationDBPath, c.progressFor(PhaseLocation))
-		close(c.locReady)
-		if onReady != nil {
-			onReady(c.locErr)
+		if withExiftool {
+			c.exifPath, c.exifErr = setupExiftool(ctx, c.opts.Log, c.opts.ExecutablePath, c.progressFor(PhaseExiftool))
+			if c.exifErr != nil {
+				c.exifErr = fmt.Errorf("exiftool: %w", c.exifErr)
+			}
+			close(c.exifReady)
+			if c.exifErr != nil {
+				c.locErr = fmt.Errorf("location database not installed: %w", c.exifErr)
+				return
+			}
 		}
+		c.resolver, c.locationDB, c.locErr = OpenLocationResolver(ctx, c.opts.Log, c.opts.LocationDBPath, c.progressFor(PhaseLocation))
 	}()
 }
 
