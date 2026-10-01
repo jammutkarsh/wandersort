@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -65,7 +66,9 @@ func (l *File) persist() {
 	}
 	if old := Recent(l.dir, 0); len(old) >= keepLogs {
 		for _, p := range old[keepLogs-1:] {
-			_ = os.Remove(p) // best-effort: a file still open on Windows stays until a later run
+			// best-effort: a file still open on Windows stays until a later run
+			_ = os.Remove(p)
+			_ = os.Remove(strings.TrimSuffix(p, ".log") + PageExt) // its failure page, if any
 		}
 	}
 	name := time.Now().Format("2006-01-02T15-04-05") + "_" + strconv.Itoa(os.Getpid()) + ".log"
@@ -97,6 +100,21 @@ func (l *File) Path() string {
 		return ""
 	}
 	return l.f.Name()
+}
+
+// PageExt is the extension of a page written beside a run's log under the
+// same name (Page).
+const PageExt = ".html"
+
+// Page is where a page about this run goes: beside its log, same name, .html.
+// Keeps the log, since a run that writes a page is one worth keeping; "" if
+// file logging is off.
+func (l *File) Page() string {
+	l.Persist()
+	if p := l.Path(); p != "" {
+		return strings.TrimSuffix(p, ".log") + PageExt
+	}
+	return ""
 }
 
 // Recent returns up to n log files in dir, newest first; n <= 0 means all.

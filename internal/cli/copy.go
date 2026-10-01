@@ -11,7 +11,9 @@ import (
 
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
+	"github.com/jammutkarsh/wandersort/pkg/logger"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
+	"github.com/jammutkarsh/wandersort/pkg/report"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -94,15 +96,40 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	if err != nil {
 		return err
 	}
+	if !dryRun && (rep.Failed > 0 || len(left) > 0) {
+		res.Report = a.saveFailurePage(ctx)
+	}
 	switch {
 	case rep.Failed > 0:
-		return withCode(exitPartial, fmt.Errorf("%d of %d files were not copied — see the log for why", rep.Failed, rep.Done+rep.Failed))
+		return withCode(exitPartial, fmt.Errorf("%d of %d files were not copied — the report lists each one and why", rep.Failed, rep.Done+rep.Failed))
 	case len(left) > 0:
-		return withCode(exitPartial, fmt.Errorf("%d source files could not be read, so they are not in the library", len(left)))
+		return withCode(exitPartial, fmt.Errorf("%s not be read, so not in the library", countFiles(len(left), "source file could", "source files could")))
 	case rep.Done == 0:
 		fmt.Fprintln(os.Stderr, "Nothing left to copy — run 'wandersort add' to plan more files.")
 	}
 	return nil
+}
+
+// saveFailurePage writes the page listing every file not in the library,
+// beside this run's log, and returns its path; "" if it could not be written
+// (the log still has every file).
+func (a *app) saveFailurePage(ctx context.Context) string {
+	page := a.logFile.Page()
+	if page == "" {
+		return ""
+	}
+	failures, err := report.Failures(ctx, a.AppDB.SQL)
+	if err == nil {
+		err = report.SaveHTML(page, failures, report.PageInfo{
+			Library: a.Config.OutputDir(), When: time.Now(), LogPath: a.logFile.Path(),
+		})
+	}
+	if err != nil {
+		a.Log.Warn("could not write the failure report", "error", err)
+		return ""
+	}
+	a.Log.Info("Report: "+page, logger.UserKey, true)
+	return page
 }
 
 // maxLeftBehindShown bounds how many never-read files copy names on

@@ -151,7 +151,15 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 	res.Unreadable = len(left)
 	a.Log.Info("next: wandersort organise to correct the plan, or wandersort copy to copy it in", logger.UserKey, true)
 	if len(left) > 0 {
-		return withCode(exitPartial, fmt.Errorf("%d files could not be read; the next add tries them again", len(left)))
+		return withCode(exitPartial, fmt.Errorf("%s not be read; the next add tries again", countFiles(len(left), "file could", "files could")))
 	}
 	return nil
+}
+
+// countFiles puts n in front of the singular or plural phrase.
+func countFiles(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
