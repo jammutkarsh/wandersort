@@ -50,7 +50,7 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 | `exiftool` | Runs the installed exiftool (`-stay_open` pool) |
 | `classifier` | Extension → media type, ignored dirs, exiftool JSON → `CommonMetadata` |
 | `path` | Segment/file-name sanitizing, `ToLibrary` (NFC) vs `ToSourcePath` (bytes kept), root reduction |
-| `atomicfile` | Durable copy, no-replace rename, `RenameCommit`, synced `MkdirAll` |
+| `atomicfile` | Durable copy, no-replace rename, synced `MkdirAll` |
 | `volume` | Volume UUID, storage class, free space |
 | `logger` | slog fan-out: console (only `UserKey` lines + warnings), JSON file log, TUI events |
 | `lock` | OS advisory locks (output dir, installs) |
@@ -64,7 +64,7 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 - Placed files are never re-proposed or moved; folders holding them are never reused by a new plan.
 - Year and Month folders are fixed in review (`vfs.ErrFixedFolder`).
 - One day lives in exactly one date folder.
-- `placed` and registry deletes go only through `pkg/db/state.go`. `MarkPlaced` runs in `WriteSync`.
+- A row means a file that exists. Records end only through `DB.Forget` (sweep, `check`, duplicate cleanup alike: no backup, no limit). `placed` changes only in `pkg/db/state.go`.
 - Execute only copies: no code path deletes or modifies a source file.
 - Connection pragmas live in the DSN (`appDSN`); `synchronous=FULL`, `mmap_size=0`, foreign keys asserted.
 - Every write goes through `db.Writer` (`Write` batched, `WriteSync` when the outcome matters); `DB.SQL` is for reads. `Flush` returns writes lost since the last flush.
