@@ -28,16 +28,6 @@ func (s *stubScreen) View() string { return s.view }
 
 func (s *stubScreen) Busy() bool { return false }
 
-// switchTarget returns the model a cmd switches to, or nil.
-func switchTarget(cmd tea.Cmd) tea.Model {
-	for _, msg := range flattenCmd(cmd) {
-		if sm, ok := msg.(SwitchMsg); ok {
-			return sm.Next
-		}
-	}
-	return nil
-}
-
 func TestScanModel(t *testing.T) {
 	reviewNext := func() (Tab, error) { return &stubScreen{view: "review"}, nil }
 
@@ -45,35 +35,64 @@ func TestScanModel(t *testing.T) {
 		name string
 		fn   func(t *testing.T)
 	}{
-		// A scan is run in order to review it, so finishing switches straight
-		// into the prefetched review — no prompt in the way.
-		{"SwitchesToReviewWithoutAsking", func(t *testing.T) {
+		// A finished plan asks what's next; the prefetched review is handed to
+		// the shell to keep, not opened over the question.
+		{"PlanReadyAsksWhatNext", func(t *testing.T) {
 			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
 			prefetched := &stubScreen{view: "review"}
 
-			next, _ := m.Update(reviewReadyMsg{model: prefetched})
-			_, cmd := next.(ScanModel).Update(scanDoneMsg{})
-			if got := switchTarget(cmd); got != tea.Model(prefetched) {
-				t.Fatalf("finishing should switch to the prefetched review, got %v", got)
+			next, cmd := m.Update(reviewReadyMsg{model: prefetched})
+			for _, msg := range flattenCmd(cmd) {
+				if sm, ok := msg.(SwitchMsg); !ok || sm.Next != Tab(prefetched) || sm.Open {
+					t.Errorf("the prefetch should be handed over unopened, got %#v", msg)
+				}
+			}
+			next, cmd = next.(ScanModel).Update(scanDoneMsg{})
+			if cmd != nil {
+				t.Errorf("finishing must not leave or switch by itself, got %v", flattenCmd(cmd))
+			}
+			if v := ansi.Strip(next.View()); !strings.Contains(v, "Plan ready") || !strings.Contains(v, "1) Look over the folders") {
+				t.Errorf("want the plan-ready choice:\n%s", v)
 			}
 		}},
-		// The prefetch hasn't landed yet: park on "Opening review…" and switch
-		// when it does, rather than dropping back to a prompt.
-		{"WaitsForTheStillRunningPrefetch", func(t *testing.T) {
-			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
-
-			next, cmd := m.Update(scanDoneMsg{})
-			if switchTarget(cmd) != nil {
-				t.Fatal("nothing to switch to yet")
+		{"ChoicesDoWhatTheySay", func(t *testing.T) {
+			done := func() ScanModel {
+				m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
+				next, _ := m.Update(reviewReadyMsg{model: &stubScreen{}})
+				next, _ = next.(ScanModel).Update(scanDoneMsg{})
+				return next.(ScanModel)
 			}
-			m = next.(ScanModel)
-			if v := ansi.Strip(m.View()); !strings.Contains(v, "Opening review…") {
-				t.Errorf("want the loading footer while the prefetch runs:\n%s", v)
+			pick := func(m ScanModel, key string) []tea.Msg {
+				next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+				_, cmd := next.(ScanModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+				return flattenCmd(cmd)
+			}
+			if msgs := pick(done(), "1"); len(msgs) != 1 || msgs[0] != (OpenReviewMsg{}) {
+				t.Errorf("1 = %v, want OpenReviewMsg", msgs)
+			}
+			if msgs := pick(done(), "2"); len(msgs) != 1 || msgs[0] != (OpenCopyMsg{}) {
+				t.Errorf("2 = %v, want OpenCopyMsg", msgs)
+			}
+			if msgs := pick(done(), "3"); len(msgs) != 1 || msgs[0] != (Leave{}) {
+				t.Errorf("3 = %v, want a plain Leave (back to the folder input)", msgs)
+			}
+		}},
+		// Picking the folders before the prefetch lands opens them when it does.
+		{"PickBeforePrefetchOpensOnArrival", func(t *testing.T) {
+			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
+			next, _ := m.Update(scanDoneMsg{})
+			next, cmd := next.(ScanModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if cmd != nil {
+				t.Fatalf("nothing to open yet, got %v", flattenCmd(cmd))
+			}
+			if v := ansi.Strip(next.View()); !strings.Contains(v, "opening…") {
+				t.Errorf("want the pick shown as opening:\n%s", v)
 			}
 			landed := &stubScreen{view: "review"}
-			_, cmd = m.Update(reviewReadyMsg{model: landed})
-			if got := switchTarget(cmd); got != tea.Model(landed) {
-				t.Errorf("the arriving review should switch straight in, got %v", got)
+			_, cmd = next.(ScanModel).Update(reviewReadyMsg{model: landed})
+			msgs := flattenCmd(cmd)
+			if len(msgs) != 1 || msgs[0] != (SwitchMsg{Next: landed, Open: true}) {
+				t.Errorf("arrival should hand over and open, got %#v", msgs)
 			}
 		}},
 		// Warn-once-then-act: the first ctrl+c cancels and says what that
@@ -91,7 +110,7 @@ func TestScanModel(t *testing.T) {
 			if cancelled != 1 || !m.Cancelled() {
 				t.Fatalf("first ctrl+c should cancel the pipeline: calls=%d cancelled=%v", cancelled, m.Cancelled())
 			}
-			if v := ansi.Strip(m.View()); !strings.Contains(v, "press ctrl+c again to quit") {
+			if v := ansi.Strip(m.View()); !strings.Contains(v, "press ctrl+c again to quit now") {
 				t.Errorf("want the warning above the footer:\n%s", v)
 			}
 

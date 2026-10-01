@@ -9,9 +9,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// StageList is the Docker-buildkit-style step stack shared by every pipeline
-// screen: ` => [i/N] Name` rows, elapsed time right-aligned, the running
-// stage nesting a progress bar and live item tail under it.
+// StageList is the step stack shared by every pipeline screen: one row per
+// stage (○ pending, ● running, ✓ done, ✗ failed), elapsed time right-aligned,
+// the running stage carrying its bar and the item it is on.
 type StageList struct {
 	stages    []*Stage
 	idx       map[string]int
@@ -32,7 +32,7 @@ type Stage struct {
 	dur   string // frozen elapsed once done/failed
 	cur   int
 	total int
-	tail  []string
+	tail  string // the item being worked on
 }
 
 type stageState int
@@ -44,10 +44,6 @@ const (
 	stateFail
 )
 
-// tailKeep bounds each stage's stream buffer; the view only shows a window of
-// it, sized to the terminal.
-const tailKeep = 400
-
 // NewStageList builds the component. fmtCounts formats the cur/total pair next
 // to a running bar (files for scan, bytes for downloads); nil means "cur/total".
 func NewStageList(fmtCounts func(cur, total int) string, stages ...*Stage) StageList {
@@ -56,7 +52,7 @@ func NewStageList(fmtCounts func(cur, total int) string, stages ...*Stage) Stage
 		idx[s.Key] = i
 	}
 	if fmtCounts == nil {
-		fmtCounts = func(cur, total int) string { return fmt.Sprintf("%d/%d", cur, total) }
+		fmtCounts = func(cur, total int) string { return Count(cur) + " / " + Count(total) }
 	}
 	return StageList{stages: stages, idx: idx, sb: newSpinnerBar(), fmtCounts: fmtCounts}
 }
@@ -74,7 +70,7 @@ func (sl *StageList) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (sl *StageList) SetWidth(w int) {
-	sl.sb.bar.Width = clamp(w-30, 20, 60)
+	sl.sb.bar.Width = clamp(w-56, 16, 40)
 }
 
 // SetLabel updates a running stage's message without resetting its clock.
@@ -98,7 +94,7 @@ func (sl *StageList) Done(key, summary, elapsed string) {
 	if s := sl.get(key); s != nil {
 		s.state = stateDone
 		s.label = summary
-		s.tail = nil
+		s.tail = ""
 		s.dur = elapsed
 		if s.dur == "" {
 			s.dur = liveElapsed(s.start)
@@ -116,18 +112,46 @@ func (sl *StageList) SetProgress(key string, cur, total int) tea.Cmd {
 	return sl.sb.bar.SetPercent(float64(cur) / float64(total))
 }
 
-// AddTail appends one stream line (a file being processed) under the running
-// stage.
+// AddTail names the item (a file) the running stage is on.
 func (sl *StageList) AddTail(line string) {
 	for _, s := range sl.stages {
 		if s.state == stateRunning {
-			s.tail = append(s.tail, line)
-			if len(s.tail) > tailKeep {
-				s.tail = s.tail[len(s.tail)-tailKeep:]
-			}
+			s.tail = line
 			return
 		}
 	}
+}
+
+// etaAfter is how long a stage runs before its time left is worth guessing.
+const etaAfter = 3 * time.Second
+
+// Remaining guesses the running stage's time left from its bar's rate so far;
+// 0 when there is nothing to go on yet.
+func (sl StageList) Remaining(key string) time.Duration {
+	s := sl.get(key)
+	if s == nil || s.state != stateRunning || s.cur <= 0 || s.total <= s.cur {
+		return 0
+	}
+	spent := time.Since(s.start)
+	if spent < etaAfter {
+		return 0
+	}
+	return time.Duration(float64(spent) * float64(s.total-s.cur) / float64(s.cur))
+}
+
+// TimeLeft says a Remaining duration the way a person would.
+func TimeLeft(d time.Duration) string {
+	switch {
+	case d <= 0:
+		return ""
+	case d < time.Minute:
+		return "Less than a minute left"
+	case d < 2*time.Minute:
+		return "About a minute left"
+	case d < time.Hour:
+		return fmt.Sprintf("About %d minutes left", int(d.Round(time.Minute)/time.Minute))
+	}
+	return fmt.Sprintf("About %.1f hours left", d.Hours())
 }
 
 // FinishRemaining settles every unfinished stage once the pipeline returns.
@@ -137,10 +161,10 @@ func (sl *StageList) FinishRemaining(failed bool, defaultLabel string) {
 		case failed && s.state == stateRunning:
 			s.state = stateFail
 			s.dur = liveElapsed(s.start)
-			s.tail = nil
+			s.tail = ""
 		case !failed && s.state != stateDone:
 			s.state = stateDone
-			s.tail = nil
+			s.tail = ""
 			if s.label == "" {
 				s.label = defaultLabel
 			}
@@ -163,66 +187,38 @@ func (sl StageList) Summary() []string {
 	return out
 }
 
-// HeaderLines is how many rows the stage headers and bar take.
-func (sl StageList) HeaderLines() int {
-	n := len(sl.stages)
+// View renders the stack.
+func (sl StageList) View(width int) string {
+	nameW := 0
 	for _, s := range sl.stages {
-		if s.state == stateRunning && s.HasBar && s.total > 0 {
-			n++
-		}
+		nameW = max(nameW, ansi.StringWidth(s.Name))
 	}
-	return n
-}
-
-// View renders the stack; tailBudget is how many stream rows may show under
-// the running stage.
-func (sl StageList) View(width, tailBudget int) string {
-	var b strings.Builder
-	n := len(sl.stages)
-	for i, s := range sl.stages {
-		head := fmt.Sprintf("[%d/%d] %-14s", i+1, n, s.Name)
+	under := strings.Repeat(" ", nameW+6) // lines under a stage start below its label
+	var rows []string
+	for _, s := range sl.stages {
+		name := s.Name + strings.Repeat(" ", nameW-ansi.StringWidth(s.Name))
 		switch s.state {
 		case statePending:
-			b.WriteString(row(FaintTxt.Render(" => "+head), "", width))
+			rows = append(rows, row("  "+FaintTxt.Render("○ "+name), "", width))
 		case stateRunning:
-			left := Title.Render(" => ") + Text.Bold(true).Render(head) + " " +
-				sl.sb.spin.View() + " " + DimText.Render(s.label)
-			b.WriteString(row(left, FaintTxt.Render(liveElapsed(s.start)), width))
+			left := "  " + sl.sb.spin.View() + Text.Bold(true).Render(name) + "  "
 			if s.HasBar && s.total > 0 {
-				b.WriteString("\n")
-				b.WriteString(row(Title.Render(" => => ")+sl.sb.bar.View()+" "+
-					FaintTxt.Render(sl.fmtCounts(s.cur, s.total)), "", width))
+				left += sl.sb.bar.View() + "  " + FaintTxt.Render(sl.fmtCounts(s.cur, s.total))
+			} else {
+				left += DimText.Render(s.label)
 			}
-			b.WriteString(sl.viewTail(s, width, tailBudget))
+			rows = append(rows, row(left, FaintTxt.Render(liveElapsed(s.start)), width))
+			if s.tail != "" {
+				rows = append(rows, row(under+FaintTxt.Render(s.tail), "", width))
+			}
 		case stateDone:
-			left := OK.Render(" => ") + Text.Render(head) + "   " + DimText.Render(s.label)
-			b.WriteString(row(left, FaintTxt.Render(s.dur), width))
+			rows = append(rows, row("  "+OK.Render("✓")+" "+Text.Render(nonEmpty(s.label, s.Name)), FaintTxt.Render(s.dur), width))
 		case stateFail:
-			left := Bad.Render(" => ") + Text.Render(head) + "   " + Bad.Render(nonEmpty(s.label, "failed"))
-			b.WriteString(row(left, FaintTxt.Render(s.dur), width))
-		}
-		if i < n-1 {
-			b.WriteString("\n")
+			rows = append(rows, row("  "+Bad.Render("✗")+" "+Text.Render(name)+"  "+Bad.Render(nonEmpty(s.label, "failed")),
+				FaintTxt.Render(s.dur), width))
 		}
 	}
-	return b.String()
-}
-
-func (sl StageList) viewTail(s *Stage, width, budget int) string {
-	if budget <= 0 || len(s.tail) == 0 {
-		return ""
-	}
-	tail := s.tail
-	if len(tail) > budget {
-		tail = tail[len(tail)-budget:]
-	}
-	var b strings.Builder
-	mark := FaintTxt.Render(" => => ")
-	for _, l := range tail {
-		b.WriteString("\n")
-		b.WriteString(row(mark+DimText.Render(l), "", width))
-	}
-	return b.String()
+	return strings.Join(rows, "\n")
 }
 
 func (sl *StageList) get(key string) *Stage {
@@ -262,4 +258,20 @@ func nonEmpty(s, fallback string) string {
 		return fallback
 	}
 	return s
+}
+
+// Count writes n with thousands separators: 15,481.
+func Count(n int) string {
+	digits := fmt.Sprint(n)
+	if n < 0 {
+		return "-" + Count(-n)
+	}
+	var b strings.Builder
+	for i, d := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(d)
+	}
+	return b.String()
 }

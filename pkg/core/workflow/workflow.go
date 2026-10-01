@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -252,10 +253,18 @@ func (wf *Workflow) run(ctx context.Context, phase workflowPhase) (int, error) {
 	return count, nil
 }
 
-// files counts files in a sentence: "1 file", "3 files".
+// files counts files in a sentence: "1 file", "15,481 files".
 func files(n int) string {
 	if n == 1 {
 		return "1 file"
 	}
-	return fmt.Sprintf("%d files", n)
+	digits := strconv.Itoa(n)
+	var b strings.Builder
+	for i, d := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(d)
+	}
+	return b.String() + " files"
 }

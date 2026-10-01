@@ -265,6 +265,10 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, msgCmd(scanReadyMsg{paths: msg.Paths, force: msg.Force, err: err})
 
 	case tui.OpenReviewMsg:
+		if m.reviewReady() {
+			m.tab = tabReview
+			return m, nil
+		}
 		return m, m.openReview()
 
 	case openSettingsMsg:
@@ -419,11 +423,10 @@ func (m shellModel) handleSwitch(msg tui.SwitchMsg) (tea.Model, tea.Cmd) {
 	if msg.Next == nil {
 		return m, nil // a screen leaving says so with tui.Leave, not with this
 	}
-	// open it only if the user is watching the scan, never out of a form; the
-	// tab bar says it's ready otherwise
+	// kept, and the tab bar marks it; opened only when the user picked it
 	m.refresh() // the scan that produced it is done
 	cmd := m.place(tabReview, msg.Next)
-	if m.tab == tabScan {
+	if msg.Open {
 		m.tab = tabReview
 	}
 	return m, cmd
@@ -605,6 +608,7 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 	ctx, cancel := context.WithCancel(session)
 	wf := workflow.NewWorkflow(a.AppDB, a.Log, a.Config, a.workflowDeps())
 	return tui.NewScanModel(tui.ScanConfig{
+		Paths: paths,
 		Pipeline: func() error {
 			if !a.work.start() {
 				return context.Canceled

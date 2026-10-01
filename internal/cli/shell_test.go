@@ -181,11 +181,19 @@ func TestShellModel(t *testing.T) {
 				t.Errorf("tab bar should mark the ready review: %q", v)
 			}
 
-			// Same message with the scan tab active does switch.
+			// A plain handover never moves the user; one they picked does.
 			m.tab = tabScan
 			next, _ = m.Update(tui.SwitchMsg{Next: &probe{name: "review"}})
+			if got := next.(shellModel).tab; got != tabScan {
+				t.Errorf("a handover moved the user to tab %d", got)
+			}
+			next, _ = m.Update(tui.SwitchMsg{Next: &probe{name: "review"}, Open: true})
 			if got := next.(shellModel).tab; got != tabReview {
-				t.Errorf("with the scan on screen the review should open, got tab %d", got)
+				t.Errorf("a picked review should open, got tab %d", got)
+			}
+			next, _ = m.Update(tui.OpenReviewMsg{})
+			if got := next.(shellModel).tab; got != tabReview {
+				t.Errorf("OpenReviewMsg with a kept review should open it, got tab %d", got)
 			}
 		}},
 		// Unlike tui.Shell, a nil Next is not "quit": one plan is settled, the

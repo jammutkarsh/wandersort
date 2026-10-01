@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -20,32 +20,40 @@ type LogEventMsg struct{ Event logger.Event }
 type scanDoneMsg struct{ err error }
 
 // reviewReadyMsg reports ReviewNext (BuildTree + DB work) finished off the UI
-// goroutine — see the "y" case in handleKey for why this can't run inline.
+// goroutine.
 type reviewReadyMsg struct {
 	model Tab
 	err   error
 }
 
+// OpenCopyMsg asks the shell for the Copy tab.
+type OpenCopyMsg struct{}
+
 // ScanConfig wires the scan screen to the pipeline.
 type ScanConfig struct {
+	// Paths are the folders being planned, for the heading.
+	Paths []string
 	// Pipeline runs the scan (RunScan) and blocks until it finishes. Its
 	// user-facing/stream log lines must reach the screen via LogEventMsg.
 	Pipeline func() error
 	// Cancel cancels the pipeline context on ctrl+c.
 	Cancel context.CancelFunc
-	// ReviewNext builds the review screen, switched into as soon as it's ready.
-	// nil (or an error) leaves the finished scan on screen.
+	// ReviewNext builds the review screen once the plan is written; it is
+	// handed to the shell, and opened when the user picks it.
 	ReviewNext func() (Tab, error)
 }
 
-// ScanModel is the live scan view: a stage stack with files streaming under
-// the running stage, notes under the banner, warnings above the footer.
+// ScanModel plans folders: a stage per pipeline phase while it runs, then
+// what to do next.
 type ScanModel struct {
-	cfg      ScanConfig
-	sl       StageList
-	notes    []string
-	warnings []string
-	w, h     int
+	cfg  ScanConfig
+	sl   StageList
+	w, h int
+
+	// warnings are the user-facing ones, shown once the run ends; logWarnings
+	// counts the rest, which only the log has in full
+	warnings    []string
+	logWarnings int
 
 	// cur is the stage key of the running phase, so a stream line's counts
 	// drive that phase's own bar — the stream carries no PhaseKey of its own
@@ -55,9 +63,13 @@ type ScanModel struct {
 	err   error // why the run failed
 
 	// review is prefetched once the vfs phase flushes; reviewErr is why it
-	// could not be built
-	review    Tab
-	reviewErr error
+	// could not be built; wantReview is a pick of choice 1 waiting on it
+	review     Tab
+	reviewErr  error
+	wantReview bool
+
+	choice   int
+	showKeys bool
 }
 
 // scanState is where a scan run is.
@@ -68,8 +80,28 @@ const (
 	scanCancelling           // ctrl+c pressed, waiting for the pipeline to unwind
 	scanCancelled            // the pipeline unwound after a ctrl+c
 	scanFailed               // the pipeline returned an error
-	scanFinished             // succeeded: showing or waiting for the review
+	scanFinished             // succeeded: asking what next
 )
+
+// planChoices is what the finished screen offers, in order.
+var planChoices = []struct{ label, detail string }{
+	{"Look over the folders", "rename, merge or flatten before anything is copied"},
+	{"Copy as planned", ""},
+	{"Add more folders", ""},
+}
+
+// scanKeys is the plan screen's full key list, behind ?.
+var scanKeys = []KeyGroup{
+	{"While planning", []KeyLine{
+		{"ctrl+t", "next tab; planning keeps going"},
+		{"ctrl+c", "stop; the next run carries on"},
+	}},
+	{"When the plan is ready", []KeyLine{
+		{"1-3", "choose what's next"},
+		{"↑↓", "move between choices"},
+		{"enter", "go"},
+	}},
+}
 
 // Cancelled reports whether the user's ctrl+c ended the screen.
 func (m ScanModel) Cancelled() bool {
@@ -97,9 +129,9 @@ func (m ScanModel) Summary() []string { return m.sl.Summary() }
 func NewScanModel(cfg ScanConfig) ScanModel {
 	sl := NewStageList(
 		nil,
-		&Stage{Key: "scan", Name: "Scan"},
-		&Stage{Key: "metadata", Name: "Metadata", HasBar: true},
-		&Stage{Key: "vfs", Name: "Organize"},
+		&Stage{Key: "scan", Name: "Find"},
+		&Stage{Key: "metadata", Name: "Read", HasBar: true},
+		&Stage{Key: "vfs", Name: "Plan"},
 	)
 	return ScanModel{cfg: cfg, sl: sl}
 }
@@ -125,10 +157,13 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case m.state == scanCancelling && m.reviewErr != nil:
 			return m, Left(Leave{Quit: true})
-		case m.state == scanFinished && m.review != nil:
-			return m, Switch(m.review) // the run was waiting on this
+		case m.review == nil:
+			return m, nil
+		case m.wantReview:
+			review := m.review
+			return m, func() tea.Msg { return SwitchMsg{Next: review, Open: true} }
 		}
-		return m, nil
+		return m, Switch(m.review) // the shell keeps it and marks the tab
 	case scanDoneMsg:
 		if msg.err != nil {
 			m.sl.FinishRemaining(true, "")
@@ -141,16 +176,18 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sl.FinishRemaining(false, "done")
 		m.state = scanFinished
-		// straight into review, or wait for the prefetch
-		if m.review != nil {
-			return m, Switch(m.review)
-		}
 		return m, nil
 	}
 	return m, m.sl.Update(msg)
 }
 
+func openReview() tea.Msg { return OpenReviewMsg{} }
+
 func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.showKeys {
+		m.showKeys = false
+		return m, nil
+	}
 	switch k.String() {
 	case "ctrl+c":
 		if m.cfg.Cancel != nil {
@@ -163,8 +200,39 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.state = scanCancelling
 		return m, nil
+	case "?":
+		m.showKeys = true
+		return m, nil
+	}
+	if m.state != scanFinished {
+		return m, nil
+	}
+	switch k.String() {
+	case "up":
+		m.choice = max(m.choice-1, 0)
+	case "down":
+		m.choice = min(m.choice+1, len(planChoices)-1)
+	case "1", "2", "3":
+		m.choice = int(k.Runes[0] - '1')
+	case "enter":
+		return m.choose()
 	}
 	return m, nil
+}
+
+// choose acts on the picked choice.
+func (m ScanModel) choose() (tea.Model, tea.Cmd) {
+	switch m.choice {
+	case 0:
+		if m.review == nil && m.reviewErr == nil && m.cfg.ReviewNext != nil {
+			m.wantReview = true // opens as soon as the prefetch lands
+			return m, nil
+		}
+		return m, openReview
+	case 1:
+		return m, func() tea.Msg { return OpenCopyMsg{} }
+	}
+	return m, Left(Leave{})
 }
 
 // fetchReview runs ReviewNext (vfs.BuildTree + DB read) off the UI goroutine.
@@ -208,11 +276,11 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 	}
 
 	if e.Level >= slog.LevelWarn {
-		m.warnings = append(m.warnings, warningLine(e))
-		return m, nil
-	}
-	if e.UserFacing {
-		m.notes = append(m.notes, e.Message)
+		if e.UserFacing {
+			m.warnings = append(m.warnings, e.Message)
+		} else {
+			m.logWarnings++
+		}
 	}
 	return m, nil
 }
@@ -230,98 +298,94 @@ func (m *ScanModel) progressCmd(e logger.Event) tea.Cmd {
 	return m.sl.SetProgress(m.cur, cur, total)
 }
 
-// warningLine renders a warning with the path it's about — "Unsupported file
-// type" alone is useless without knowing which file.
-func warningLine(e logger.Event) string {
-	for _, k := range []string{"walkingPath", "file", "path", "error"} {
-		if v, ok := e.Attrs[k].(string); ok && v != "" {
-			return e.Message + "  " + v
-		}
-	}
-	return e.Message
-}
-
 func (m ScanModel) View() string {
-	top := "\n" + m.viewNotes() + "\n"
-	footer := m.footer()
-
-	// The running stage's file tail gets every terminal row the chrome doesn't
-	// use, so a tall window shows a long live stream instead of dead space.
-	used := lipgloss.Height(top) + m.sl.HeaderLines() + lipgloss.Height(footer) + 2
-	body := top + m.sl.View(m.w, max(m.h-used, 3))
-	return Screen(body, footer, m.h)
-}
-
-func humanBytes(n int64) string {
-	switch {
-	case n >= 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
-	case n >= 1<<10:
-		return fmt.Sprintf("%.0f KB", float64(n)/(1<<10))
-	default:
-		return fmt.Sprintf("%d B", n)
-	}
-}
-
-// viewNotes renders the last few milestone lines (session start, resolved
-// config) dimmed under the banner.
-func (m ScanModel) viewNotes() string {
-	notes := m.notes
-	if len(notes) > 3 {
-		notes = notes[len(notes)-3:]
-	}
 	var b strings.Builder
-	for _, n := range notes {
-		b.WriteString(row(FaintTxt.Render(" # ")+DimText.Render(n), "", m.w))
+	b.WriteString("\n")
+	b.WriteString(row("  "+m.heading(), "", m.w) + "\n\n")
+	b.WriteString(m.sl.View(m.w) + "\n\n")
+
+	switch m.state {
+	case scanRunning:
+		left := TimeLeft(m.sl.Remaining(m.cur))
+		if left != "" {
+			left += ". "
+		}
+		b.WriteString(row("  "+DimText.Render(left+"You can switch tabs; this keeps going."), "", m.w) + "\n")
+	case scanCancelling:
+		b.WriteString(row("  "+Attn.Render("⚠ Stopping — press ctrl+c again to quit now. The next run carries on from here."), "", m.w) + "\n")
+	case scanFailed:
+		b.WriteString(row("  "+Bad.Render("Planning failed: ")+Text.Render(m.err.Error()), "", m.w) + "\n")
+	case scanFinished:
+		b.WriteString(m.finishedView())
+	}
+
+	view := Screen(b.String(), m.footer(), m.h)
+	if m.showKeys {
+		return KeyHelp(view, scanKeys, m.w, m.h)
+	}
+	return view
+}
+
+func (m ScanModel) heading() string {
+	switch m.state {
+	case scanFinished:
+		return Text.Bold(true).Render("Plan ready")
+	case scanFailed:
+		return Bad.Render("Planning stopped")
+	}
+	names := make([]string, len(m.cfg.Paths))
+	for i, p := range m.cfg.Paths {
+		names[i] = filepath.Base(p)
+	}
+	folders := "folders"
+	if len(names) == 1 {
+		folders = "folder"
+	}
+	return Text.Bold(true).Render(fmt.Sprintf("Planning %d %s", len(names), folders)) + "  " +
+		DimText.Render(strings.Join(names, ", "))
+}
+
+// finishedView is the warnings the run gathered, then the numbered choice.
+func (m ScanModel) finishedView() string {
+	var b strings.Builder
+	for _, w := range m.warnings {
+		b.WriteString(row("  "+Attn.Render("⚠ "+w), "", m.w) + "\n")
+	}
+	if len(m.warnings) == 0 && m.logWarnings > 0 {
+		b.WriteString(row("  "+Attn.Render(fmt.Sprintf("⚠ %d warnings — see the log", m.logWarnings)), "", m.w) + "\n")
+	}
+	if m.reviewErr != nil {
+		b.WriteString(row("  "+Bad.Render("Couldn't open the folders: ")+Text.Render(m.reviewErr.Error()), "", m.w) + "\n")
+	}
+	if b.Len() > 0 {
 		b.WriteString("\n")
+	}
+	for i, c := range planChoices {
+		label := c.label
+		if i == 0 && m.wantReview {
+			label += "  " + DimText.Render("opening…")
+		}
+		if i == m.choice {
+			line := Title.Render(fmt.Sprintf("❯ %d) ", i+1)) + Text.Bold(true).Render(label)
+			if c.detail != "" {
+				line += "  " + DimText.Render(c.detail)
+			}
+			b.WriteString(row("  "+line, "", m.w) + "\n")
+			continue
+		}
+		b.WriteString(row("    "+DimText.Render(fmt.Sprintf("%d) ", i+1))+Text.Render(label), "", m.w) + "\n")
 	}
 	return b.String()
 }
-
-// maxFooterWarnings caps warnings shown above the footer; the rest are counted
-// and all are in the log.
-const maxFooterWarnings = 4
 
 func (m ScanModel) footer() string {
-	var b strings.Builder
-	warns := m.warnings
-	if len(warns) > maxFooterWarnings {
-		b.WriteString(FaintTxt.Render(fmt.Sprintf("… %d earlier warnings (see log file)", len(warns)-maxFooterWarnings)))
-		b.WriteString("\n")
-		warns = warns[len(warns)-maxFooterWarnings:]
+	switch m.state {
+	case scanFinished:
+		return Footer(KeyHint("1-3", "choose")+"   "+KeyHint("enter", "go")+"   "+MoreKeys(), m.w)
+	case scanRunning:
+		return Footer(KeyHint("ctrl+t", "switch tab")+"   "+KeyHint("ctrl+c", "stop")+"   "+MoreKeys(), m.w)
 	}
-	for _, w := range warns {
-		b.WriteString(row(Attn.Render("⚠ "+w), "", m.w))
-		b.WriteString("\n")
-	}
-	switch {
-	case m.state == scanFailed:
-		b.WriteString(Bad.Render("Scan failed: "))
-		b.WriteString(Text.Render(m.err.Error()))
-		b.WriteString("\n")
-		b.WriteString(Footer(KeyHint("ctrl+c", "quit"), m.w))
-	case m.state == scanFinished && m.reviewErr != nil:
-		b.WriteString(Bad.Render("Could not open review: "))
-		b.WriteString(Text.Render(m.reviewErr.Error()))
-		b.WriteString("\n")
-		b.WriteString(Footer(KeyHint("ctrl+c", "quit"), m.w))
-	case m.state == scanFinished && m.cfg.ReviewNext != nil:
-		b.WriteString(OK.Render("✓ Scan complete."))
-		b.WriteString("  ")
-		b.WriteString(DimText.Render("Opening review…"))
-	case m.state == scanFinished:
-		// no ReviewNext wired: nothing to switch into
-		b.WriteString(OK.Render("✓ Scan complete."))
-		b.WriteString("\n")
-		b.WriteString(Footer(KeyHint("ctrl+c", "quit"), m.w))
-	case m.state == scanCancelling:
-		// first ctrl+c cancels, the second quits
-		b.WriteString(Attn.Render("⚠ Cancelling the scan — press ctrl+c again to quit now. " +
-			"Progress so far is saved; the next run resumes."))
-	default:
-		b.WriteString(Footer(KeyHint("ctrl+c", "cancel"), m.w))
-	}
-	return b.String()
+	return Footer(KeyHint("ctrl+t", "switch tab")+"   "+KeyHint("ctrl+c", "quit"), m.w)
 }
 
 // --- small helpers ---

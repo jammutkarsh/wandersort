@@ -28,7 +28,7 @@ func TestStageList(t *testing.T) {
 			sl.AddTail("some/deeply/nested/dir/IMG_0001.HEIC")
 
 			const width = 60
-			for _, line := range strings.Split(sl.View(width, 5), "\n") {
+			for _, line := range strings.Split(sl.View(width), "\n") {
 				if w := ansi.StringWidth(line); w > width {
 					t.Errorf("row wider than terminal: %d > %d: %q", w, width, line)
 				}
@@ -41,7 +41,7 @@ func TestStageList(t *testing.T) {
 			sl.AddTail("b.jpg")
 			sl.Done("scan", "Scanned 2 files", "1.2s")
 
-			out := sl.View(80, 10)
+			out := sl.View(80)
 			if strings.Contains(out, "a.jpg") {
 				t.Errorf("done stage should collapse its tail, got:\n%s", out)
 			}
@@ -49,18 +49,15 @@ func TestStageList(t *testing.T) {
 				t.Errorf("done row missing summary or elapsed:\n%s", out)
 			}
 		}},
-		{"StageListTailWindow", func(t *testing.T) {
+		{"StageListShowsOnlyTheCurrentItem", func(t *testing.T) {
 			sl := newTestList()
 			sl.Start("scan", "Scanning")
 			for _, f := range []string{"1.jpg", "2.jpg", "3.jpg", "4.jpg"} {
 				sl.AddTail(f)
 			}
-			out := sl.View(80, 2)
-			if strings.Contains(out, "2.jpg") || !strings.Contains(out, "4.jpg") {
-				t.Errorf("tail window should show only the last 2 lines:\n%s", out)
-			}
-			if sl.HeaderLines() != 2 {
-				t.Errorf("HeaderLines = %d, want 2", sl.HeaderLines())
+			out := sl.View(80)
+			if strings.Contains(out, "3.jpg") || !strings.Contains(out, "4.jpg") {
+				t.Errorf("only the item being worked on should show:\n%s", out)
 			}
 		}},
 		{"StageListFinishRemaining", func(t *testing.T) {
