@@ -143,7 +143,7 @@ func downloadAndExtractExiftool(ctx context.Context, binDir string, log logger.L
 	archiveName := filepath.Join(binDir, fileMeta.Name)
 	url := filesBaseURL + "/" + fileMeta.Name
 
-	log.Info("downloading exiftool", "dir", path.New().RelativeToHome(binDir), "url", url, "os", runtime.GOOS)
+	log.Info("Downloading exiftool (first run only)…", logger.UserKey, true, "dir", path.New().RelativeToHome(binDir), "url", url, "os", runtime.GOOS)
 
 	// Reuse a cached archive only if its checksum still matches — a mismatch
 	// means either corruption or tampering, so re-download either way

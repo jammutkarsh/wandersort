@@ -76,7 +76,7 @@ func NewWorkflow(db *db.DB, log logger.Logger, cfg *config.Configuration, deps D
 	if len(vfsCfg.Rules) > 0 {
 		rules = strings.Join(vfsCfg.Rules, ", ")
 	}
-	log.Info("Pipeline configured", logger.UserKey, true,
+	log.Info("Pipeline configured",
 		"workers", cfg.Workers,
 		"output", filepath.Dir(cfg.AppDBPath),
 		"rules", "Year/Month/"+rules)
@@ -92,35 +92,44 @@ func NewWorkflow(db *db.DB, log logger.Logger, cfg *config.Configuration, deps D
 	}
 }
 
+// Result is what one scan did: the roots walked and each phase's count.
+type Result struct {
+	Roots   []string
+	Found   int // files the walk saw
+	Read    int // files hashed and read this run
+	Planned int // files the plan proposes a place for
+}
+
 // RunScan canonicalizes and prunes nested roots, then runs the pipeline
-// synchronously. Returns the roots walked; a stopped run's error wraps
-// context.Canceled. force re-reads every file even if unchanged.
-func (wf *Workflow) RunScan(ctx context.Context, paths []string, force bool) ([]string, error) {
+// synchronously. A stopped run's error wraps context.Canceled. force re-reads
+// every file even if unchanged.
+func (wf *Workflow) RunScan(ctx context.Context, paths []string, force bool) (Result, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return Result{}, err
 	}
 
 	roots, err := path.ReduceRoots(wf.path, paths)
 	if err != nil {
 		wf.log.Warn("Invalid scan roots", "error", err)
-		return nil, err
+		return Result{}, err
 	}
 	if err := wf.checkOverlap(roots); err != nil {
-		return nil, err
+		return Result{}, err
 	}
 
 	storedPaths := make([]string, 0, len(roots))
 	for _, p := range roots {
 		storedPaths = append(storedPaths, wf.path.RelativeToHome(p))
 	}
-	wf.log.Info("Starting scan", logger.UserKey, true, "paths", storedPaths)
+	wf.log.Info("Starting scan", "paths", storedPaths)
 
-	if err := wf.runPhases(ctx, roots, force); err != nil {
+	res := Result{Roots: roots}
+	if err := wf.runPhases(ctx, &res, force); err != nil {
 		wf.log.Error("Pipeline finished", "error", err)
-		return roots, err
+		return res, err
 	}
 	wf.log.Info("Pipeline finished")
-	return roots, nil
+	return res, nil
 }
 
 // checkOverlap refuses any root that is the library, holds it, or sits in it.
@@ -140,10 +149,17 @@ func (wf *Workflow) checkOverlap(roots []string) error {
 }
 
 // runPhases runs the phases in order and stops at the first that fails.
-func (wf *Workflow) runPhases(ctx context.Context, paths []string, force bool) error {
+func (wf *Workflow) runPhases(ctx context.Context, res *Result, force bool) error {
 	wf.log.Info("Workflow started", "phases", "scanning → reading → organizing")
-	for _, phase := range wf.workflowPhases(paths, force) {
-		if _, err := wf.run(ctx, phase); err != nil {
+	counts := map[workflowPhaseKind]*int{
+		workflowPhaseScan:     &res.Found,
+		workflowPhaseMetadata: &res.Read,
+		workflowPhaseVFS:      &res.Planned,
+	}
+	for _, phase := range wf.workflowPhases(res.Roots, force) {
+		n, err := wf.run(ctx, phase)
+		*counts[phase.kind] = n
+		if err != nil {
 			return err
 		}
 	}
@@ -163,11 +179,11 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 	return []workflowPhase{
 		{
 			kind:     workflowPhaseScan,
-			starting: "Scanning your files…",
+			starting: "Finding your files…",
 			run: func(ctx context.Context) (int, error) {
 				return wf.scanner.Run(ctx, paths, force)
 			},
-			summary: func(count int) string { return fmt.Sprintf("Scanned %d files", count) },
+			summary: func(count int) string { return "Found " + files(count) },
 		},
 		{
 			kind:     workflowPhaseMetadata,
@@ -185,11 +201,11 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 				}
 				return extractor.Run(ctx)
 			},
-			summary: func(count int) string { return fmt.Sprintf("Read %d files", count) },
+			summary: func(count int) string { return "Read " + files(count) },
 		},
 		{
 			kind:     workflowPhaseVFS,
-			starting: "Proposing an organized folder structure…",
+			starting: "Planning folders…",
 			run: func(ctx context.Context) (int, error) {
 				resolver, err := wf.deps.Location(ctx)
 				if err != nil {
@@ -197,7 +213,7 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 				}
 				return vfs.Propose(ctx, wf.db, resolver, wf.appCfg, wf.log)
 			},
-			summary: func(count int) string { return fmt.Sprintf("Proposed destinations for %d files", count) },
+			summary: func(count int) string { return "Planned " + files(count) },
 		},
 	}
 }
@@ -234,4 +250,12 @@ func (wf *Workflow) run(ctx context.Context, phase workflowPhase) (int, error) {
 		logger.ElapsedKey, elapsed.Round(time.Millisecond).String())
 
 	return count, nil
+}
+
+// files counts files in a sentence: "1 file", "3 files".
+func files(n int) string {
+	if n == 1 {
+		return "1 file"
+	}
+	return fmt.Sprintf("%d files", n)
 }

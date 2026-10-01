@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jammutkarsh/wandersort/pkg/config"
@@ -36,6 +37,10 @@ type app struct {
 	// logFile is this process's log, shared by the startup and TUI loggers.
 	// Buffered in memory until openLibrary (or a warning) persists it.
 	logFile *logger.File
+
+	// jsonOut is --json: plain output, plus one result object on stdout;
+	// jsonPrinted makes sure it is only one
+	jsonOut, jsonPrinted bool
 	// work is background work on the library; shutdown waits for it before
 	// closing the database.
 	work workGroup
@@ -72,7 +77,9 @@ func (g *workGroup) closeAndWait() {
 
 func Execute() error {
 	a := &app{}
-	return a.newRootCmd().Execute()
+	err := a.newRootCmd().Execute()
+	// a failure before the command printed its own result still gets one
+	return a.emitJSON(&jsonOutcome{}, time.Time{}, err)
 }
 
 // interruptible is the context for plain commands that touch the library. The
@@ -119,9 +126,9 @@ func (a *app) lockOutput() (*lock.Lock, error) {
 	l, err := lock.AcquireOutput(filepath.Dir(a.Config.AppDBPath))
 	var running *lock.AlreadyRunningError
 	if errors.As(err, &running) {
-		return nil, fmt.Errorf("%s", tui.Bad.Render(fmt.Sprintf("Another wandersort process is already running (PID %d).", running.PID))+"\n\n"+
+		return nil, withCode(exitBusy, fmt.Errorf("%s", tui.Bad.Render(fmt.Sprintf("Another wandersort process is already running (PID %d).", running.PID))+"\n\n"+
 			tui.FaintTxt.Render("Only one scan or review can use the same output directory at a time.")+"\n"+
-			tui.FaintTxt.Render("Stop the other process, then try again."))
+			tui.FaintTxt.Render("Stop the other process, then try again.")))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("acquire lock: %w", err)
@@ -205,7 +212,7 @@ func (a *app) closeDBs() {
 }
 
 func (a *app) isTuiEnabled(cmd *cobra.Command) bool {
-	if plain, _ := cmd.Flags().GetBool(flagPlain); plain {
+	if plain, _ := cmd.Flags().GetBool(flagPlain); plain || a.jsonOut {
 		return false
 	}
 	return term.IsTerminal(int(os.Stderr.Fd()))

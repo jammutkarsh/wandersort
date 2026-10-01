@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -35,12 +36,28 @@ wandersort execute --dry-run`,
 	}
 
 	cmd.Flags().Bool(flagDryRun, false, "Report what would be transferred, and where, without touching anything")
+	cmd.Flags().Bool(flagJSON, false, "Print one JSON result on stdout at the end (implies --plain)")
 	return cmd
+}
+
+// copyResult is the copy command's --json result.
+type copyResult struct {
+	jsonOutcome
+	Copied  int    `json:"copied"`
+	Failed  int    `json:"failed"`
+	NotRead int    `json:"notRead"`
+	Bytes   int64  `json:"bytes"`
+	Report  string `json:"report,omitempty"`
 }
 
 func (a *app) runExecute(cmd *cobra.Command) error {
 	dryRun, _ := cmd.Flags().GetBool(flagDryRun)
+	start := time.Now()
+	var res copyResult
+	return a.emitJSON(&res, start, a.copyPlain(dryRun, &res))
+}
 
+func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	if !a.libraryExists() {
 		return fmt.Errorf("no database found — run 'wandersort add' first")
 	}
@@ -58,6 +75,7 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	res.NotRead = len(left)
 	defer a.reportLeftBehind(left)
 
 	rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{
@@ -72,17 +90,18 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 		// every file not yet reached is still pending; nothing is half-placed
 		return fmt.Errorf("stopped after %d files — run 'wandersort execute' again to carry on from there", rep.Done)
 	}
+	res.Copied, res.Failed, res.Bytes = rep.Done, rep.Failed, rep.Bytes
 	if err != nil {
 		return err
 	}
-	if rep.Done == 0 && rep.Failed == 0 {
-		fmt.Fprintln(os.Stderr, "Nothing left to transfer — run 'wandersort add' to plan more files.")
-		return nil
+	switch {
+	case rep.Failed > 0:
+		return withCode(exitPartial, fmt.Errorf("%d of %d files were not copied — see the log for why", rep.Failed, rep.Done+rep.Failed))
+	case len(left) > 0:
+		return withCode(exitPartial, fmt.Errorf("%d source files could not be read, so they are not in the library", len(left)))
+	case rep.Done == 0:
+		fmt.Fprintln(os.Stderr, "Nothing left to copy — run 'wandersort add' to plan more files.")
 	}
-	if rep.Failed > 0 {
-		return fmt.Errorf("%d file(s) failed to transfer — see the log for why", rep.Failed)
-	}
-	fmt.Fprintln(os.Stderr, tui.OK.Render(fmt.Sprintf("Done: %d files.", rep.Done)))
 	return nil
 }
 

@@ -243,19 +243,19 @@ func (c *Coordinator) progressFor(phase string) func(done, total int64) {
 // returns it — the blocking getters wait instead.
 var ErrPending = errors.New("dependency is still downloading")
 
-// Exiftool blocks until the binary is ready, logging "Waiting for …" only if
-// it actually has to wait.
+// Exiftool blocks until the install is done (or ctx ends) and returns the
+// binary's path.
 func (c *Coordinator) Exiftool(ctx context.Context) (string, error) {
-	if err := c.awaitLog(ctx, c.exifReady, "Waiting for the exiftool download to finish…"); err != nil {
+	if err := await(ctx, c.exifReady); err != nil {
 		return "", err
 	}
 	return c.exifPath, c.exifErr
 }
 
-// Location blocks until the location resolver is ready, with the same
-// "say so only if it actually blocks" behaviour as Exiftool.
+// Location blocks until the install is done (or ctx ends) and returns the
+// location resolver.
 func (c *Coordinator) Location(ctx context.Context) (*location.Resolver, error) {
-	if err := c.awaitLog(ctx, c.locReady, "Waiting for the location database download to finish…"); err != nil {
+	if err := await(ctx, c.locReady); err != nil {
 		return nil, err
 	}
 	return c.resolver, c.locErr
@@ -285,15 +285,8 @@ func (c *Coordinator) Close() error {
 	return c.locationDB.Close()
 }
 
-// awaitLog waits on ch, logging why only if it isn't already closed, and gives
-// up when ctx is done.
-func (c *Coordinator) awaitLog(ctx context.Context, ch <-chan struct{}, why string) error {
-	select {
-	case <-ch:
-		return nil
-	default:
-	}
-	c.opts.Log.Info(why, logger.UserKey, true)
+// await waits for ch to close, giving up when ctx is done.
+func await(ctx context.Context, ch <-chan struct{}) error {
 	select {
 	case <-ch:
 		return nil

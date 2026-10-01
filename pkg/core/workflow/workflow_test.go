@@ -75,9 +75,9 @@ func TestRunScanReturnsContextCanceledWithoutRunning(t *testing.T) {
 	cancel()
 	wf, _ := newTestWorkflow(t)
 
-	roots, err := wf.RunScan(ctx, []string{"/some/path"}, false)
-	if roots != nil {
-		t.Errorf("roots: got %v, want nil", roots)
+	res, err := wf.RunScan(ctx, []string{"/some/path"}, false)
+	if res.Roots != nil {
+		t.Errorf("roots: got %v, want nil", res.Roots)
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err: got %v, want context.Canceled", err)
@@ -162,9 +162,9 @@ func TestPhaseSummaryFormatting(t *testing.T) {
 	phases := wf.workflowPhases([]string{"/root"}, false)
 
 	want := map[workflowPhaseKind]string{
-		workflowPhaseScan:     "Scanned 3 files",
+		workflowPhaseScan:     "Found 3 files",
 		workflowPhaseMetadata: "Read 3 files",
-		workflowPhaseVFS:      "Proposed destinations for 3 files",
+		workflowPhaseVFS:      "Planned 3 files",
 	}
 	for _, p := range phases {
 		got := p.summary(3)

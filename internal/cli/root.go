@@ -18,6 +18,7 @@ const (
 	flagReset      = "reset"
 	flagDryRun     = "dry-run"
 	flagFull       = "full"
+	flagJSON       = "json"
 )
 
 func (a *app) newRootCmd() *cobra.Command {
@@ -60,6 +61,7 @@ wandersort check`,
 				cfg.SetOutput(path.New().ExpandPath(out))
 			}
 			a.Config = cfg
+			a.jsonOut, _ = cmd.Flags().GetBool(flagJSON)
 			// Build the logger after the output folder is settled, so the
 			// startup line can name it.
 			a.logFile = logger.NewFile(a.Config.LogDir)
@@ -72,6 +74,8 @@ wandersort check`,
 
 	rootCmd.PersistentFlags().StringP(flagOutputPath, "o", "", "Library folder: empty, or one WanderSort already organized")
 	rootCmd.PersistentFlags().Bool(flagPlain, false, "Disable the full-screen TUI; use plain line logging")
+
+	rootCmd.SetFlagErrorFunc(usageError)
 
 	rootCmd.AddCommand(a.newAddCmd())
 	rootCmd.AddCommand(a.newOrganiseCmd())

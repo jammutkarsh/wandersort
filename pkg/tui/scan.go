@@ -212,11 +212,6 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if e.UserFacing {
-		// "Waiting for …" lines go on the stalled stage's own row
-		if m.cur != "" && strings.HasPrefix(e.Message, "Waiting for ") {
-			m.sl.SetLabel(m.cur, e.Message)
-			return m, nil
-		}
 		m.notes = append(m.notes, e.Message)
 	}
 	return m, nil

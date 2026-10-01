@@ -200,3 +200,23 @@ func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.
 	}
 	return fields, save
 }
+
+// ruleNames is how each folder level reads in a layout.
+var ruleNames = map[string]string{
+	vfs.RuleDate:        "Day",
+	vfs.RuleLocation:    "Place",
+	vfs.RuleDevice:      "Camera",
+	vfs.RuleOrientation: "Orientation",
+	vfs.RuleMedia:       "Photo/Video",
+}
+
+// layoutName spells a library's folder levels, Year and Month first.
+func layoutName(rules []string, sep string) string {
+	parts := []string{"Year", "Month"}
+	for _, r := range rules {
+		if n, ok := ruleNames[r]; ok {
+			parts = append(parts, n)
+		}
+	}
+	return strings.Join(parts, sep)
+}
