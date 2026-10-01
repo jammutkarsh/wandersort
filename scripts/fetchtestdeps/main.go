@@ -27,27 +27,19 @@ func main() {
 	log := logger.New(nil)
 	dbPath := filepath.Join(dir, config.LocationDBFileName)
 
-	// location first, on its own Coordinator: it is the one tests depend on
-	loc := install.New(install.Options{
-		LocationDBPath: dbPath,
-		Log:            log,
-		OnProgress:     printProgress,
-	})
-	loc.StartLocationOnly(ctx, nil)
-	if _, err := loc.Location(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "fetchtestdeps: location db:", err)
-		os.Exit(1)
-	}
-
-	// no test needs the real exiftool binary, so its failure only warns
-	exif := install.New(install.Options{
+	deps := install.New(install.Options{
 		ExecutablePath: filepath.Join(dir, "bin"),
 		LocationDBPath: dbPath,
 		Log:            log,
 		OnProgress:     printProgress,
 	})
-	exif.Start(ctx)
-	if _, err := exif.Exiftool(ctx); err != nil {
+	deps.Start(ctx)
+	if _, err := deps.Location(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "fetchtestdeps: location db:", err)
+		os.Exit(1)
+	}
+	// no test needs the real exiftool binary, so its failure only warns
+	if _, err := deps.Exiftool(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "fetchtestdeps: exiftool (non-fatal, no test needs it yet):", err)
 	}
 
@@ -55,13 +47,13 @@ func main() {
 }
 
 // printProgress renders one self-overwriting progress line per phase.
-func printProgress(phase string, done, total int64) {
-	if total <= 0 {
+func printProgress(p install.Progress) {
+	if p.Total <= 0 {
 		return
 	}
-	pct := float64(done) / float64(total) * 100
-	fmt.Printf("\r%-10s %6.1f%%  (%d/%d bytes)", phase, pct, done, total)
-	if done >= total {
+	pct := float64(p.Done) / float64(p.Total) * 100
+	fmt.Printf("\r%-10s %6.1f%%  (%d/%d bytes)", p.Phase, pct, p.Done, p.Total)
+	if p.Done >= p.Total {
 		fmt.Println()
 	}
 }

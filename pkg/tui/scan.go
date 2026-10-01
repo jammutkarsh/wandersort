@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,25 +12,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-// DepsErr marks a failure before any phase started (a dependency download).
-// The screen quits at once and the caller prints it (see DepsFailure).
-type DepsErr struct{ Err error }
-
-func (e *DepsErr) Error() string { return e.Err.Error() }
-func (e *DepsErr) Unwrap() error { return e.Err }
-
 // LogEventMsg carries one logger.Event into the TUI. The scan command forwards
 // events from the TUI logger's sink into the program via program.Send.
 type LogEventMsg struct{ Event logger.Event }
-
-// InstallProgressMsg carries dependency-download byte progress, straight from a
-// callback so it never touches the file log.
-type InstallProgressMsg struct {
-	Phase string // identifies the download; rows update by it
-	Label string // what the row says
-	Done  int64
-	Total int64
-}
 
 // scanDoneMsg reports the pipeline goroutine returned.
 type scanDoneMsg struct{ err error }
@@ -64,16 +47,12 @@ type ScanModel struct {
 	warnings []string
 	w, h     int
 
-	// downloads are background dependency fetches, one row each; a finished
-	// row stays as a dim ✓
-	downloads []InstallProgressMsg
-
 	// cur is the stage key of the running phase, so a stream line's counts
 	// drive that phase's own bar — the stream carries no PhaseKey of its own
 	cur string
 
 	state scanState
-	err   error // why the run failed, or which dependency failed to download
+	err   error // why the run failed
 
 	// review is prefetched once the vfs phase flushes; reviewErr is why it
 	// could not be built
@@ -88,18 +67,9 @@ const (
 	scanRunning    scanState = iota
 	scanCancelling           // ctrl+c pressed, waiting for the pipeline to unwind
 	scanCancelled            // the pipeline unwound after a ctrl+c
-	scanDepsFailed           // a dependency download failed before any phase
 	scanFailed               // the pipeline returned an error
 	scanFinished             // succeeded: showing or waiting for the review
 )
-
-// DepsFailure reports a dependency-download failure, if that ended the run.
-func (m ScanModel) DepsFailure() error {
-	if m.state == scanDepsFailed {
-		return m.err
-	}
-	return nil
-}
 
 // Cancelled reports whether the user's ctrl+c ended the screen.
 func (m ScanModel) Cancelled() bool {
@@ -150,15 +120,6 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	case LogEventMsg:
 		return m.handleEvent(msg.Event)
-	case InstallProgressMsg:
-		for i, d := range m.downloads {
-			if d.Phase == msg.Phase {
-				m.downloads[i] = msg
-				return m, nil
-			}
-		}
-		m.downloads = append(m.downloads, msg)
-		return m, nil
 	case reviewReadyMsg:
 		m.review, m.reviewErr = msg.model, msg.err
 		switch {
@@ -170,10 +131,6 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case scanDoneMsg:
 		if msg.err != nil {
-			if de, ok := errors.AsType[*DepsErr](msg.err); ok {
-				m.state, m.err = scanDepsFailed, de.Err
-				return m, Left(Leave{Quit: true})
-			}
 			m.sl.FinishRemaining(true, "")
 			if m.state == scanCancelling {
 				m.state = scanCancelled
@@ -290,7 +247,7 @@ func warningLine(e logger.Event) string {
 }
 
 func (m ScanModel) View() string {
-	top := Banner("scan") + "\n" + m.viewDownloads() + m.viewNotes() + "\n"
+	top := Banner("scan") + "\n" + m.viewNotes() + "\n"
 	footer := m.footer()
 
 	// The running stage's file tail gets every terminal row the chrome doesn't
@@ -298,28 +255,6 @@ func (m ScanModel) View() string {
 	used := lipgloss.Height(top) + m.sl.HeaderLines() + lipgloss.Height(footer) + 2
 	body := top + m.sl.View(m.w, max(m.h-used, 3))
 	return Screen(body, footer, m.h)
-}
-
-// viewDownloads renders one row per background dependency download.
-func (m ScanModel) viewDownloads() string {
-	var b strings.Builder
-	for _, d := range m.downloads {
-		label := d.Label
-		var left string
-		if d.Total > 0 && d.Done >= d.Total {
-			left = " " + OK.Render("✓ ") + DimText.Render(label+" · done")
-		} else {
-			pct := 0.0
-			if d.Total > 0 {
-				pct = float64(d.Done) / float64(d.Total)
-			}
-			left = FaintTxt.Render(" ⬇ ") + DimText.Render(label) + "  " +
-				DimText.Render(fmt.Sprintf("%s / %s  %3.0f%%", humanBytes(d.Done), humanBytes(d.Total), pct*100))
-		}
-		b.WriteString(row(left, "", m.w))
-		b.WriteString("\n")
-	}
-	return b.String()
 }
 
 func humanBytes(n int64) string {

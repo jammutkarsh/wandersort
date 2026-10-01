@@ -159,7 +159,7 @@ func downloadAndExtractExiftool(ctx context.Context, binDir string, log logger.L
 
 	if _, err := os.Stat(archiveName); err != nil {
 		// the progress row already shows this; no log line
-		if err := downloadFile(ctx, log, archiveName, url, fileMeta.SHA256, onProgress); err != nil {
+		if err := downloadFile(ctx, archiveName, url, fileMeta.SHA256, onProgress); err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
 		log.Info("exiftool downloaded")

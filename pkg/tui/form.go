@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -57,24 +56,13 @@ type Field struct {
 	// option under the cursor. Prose goes here, not in Example (which truncates).
 	Describe func() string
 	// Example renders what the option under the cursor would produce.
-	Example func() string
-	// Await holds the field while it returns a non-empty string: the text shows
-	// under the title and enter refuses to advance.
-	Await       func() string
+	Example     func() string
 	Placeholder string
 	// Suggest returns completions for the typed text. Called per keystroke, so
 	// keep it fast. ↑/↓ pick, tab/enter fill.
 	Suggest   func(typed string) []string
 	Validator func(string) error
 	Error     string
-}
-
-// DownloadMsg reports a background download's progress (the location
-// database). An already-present dependency never reports.
-type DownloadMsg struct {
-	Label       string
-	Done, Total int64
-	Finished    bool
 }
 
 // FormModel is a multi-step form navigator using bubbletea.
@@ -91,10 +79,6 @@ type FormModel struct {
 	sugg        []string // live completions for the current input field
 	suggCursor  int      // ↑/↓-picked suggestion; -1 = none picked
 	suggGen     int      // bumped per keystroke; invalidates in-flight debounce/query
-
-	dl     progress.Model // background-download bar, drawn under the banner
-	dlMsg  DownloadMsg
-	dlSeen bool // a DownloadMsg arrived; nothing renders before the first one
 
 	// quitReq marks the ending key as "done with the app" (ctrl+c) rather than
 	// "done here"; it rides out on Leave
@@ -123,7 +107,6 @@ func NewFormModel(fields []*Field, onSubmit func() error) FormModel {
 		ti:         ti,
 		onSubmit:   onSubmit,
 		suggCursor: -1,
-		dl:         progress.New(progress.WithDefaultGradient(), progress.WithoutPercentage()),
 	}
 	m.seedInput()
 	return m
@@ -286,18 +269,6 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case DownloadMsg:
-		// Finished has no Label and is the only message for an already-present
-		// dependency: keep the earlier label, or stay hidden
-		if msg.Finished {
-			if m.dlSeen {
-				m.dlMsg.Finished = true
-			}
-			return m, nil
-		}
-		m.dlMsg, m.dlSeen = msg, true
-		return m, nil
-
 	case suggestDebounceMsg:
 		// Stale if a keystroke landed during the pause; that keystroke's own
 		// debounce is the one that gets to query.
@@ -323,7 +294,6 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.w = msg.Width
 		m.h = msg.Height
-		m.dl.Width = clamp(msg.Width/3, 10, 40)
 	}
 
 	// Update the active input (a plain field or a group's focused sub-input).
@@ -371,7 +341,7 @@ func (m FormModel) View() string {
 	}
 	fields := strings.Join(rows, "\n")
 
-	footer := m.downloadRow() + m.renderFooter()
+	footer := m.renderFooter()
 	if m.sidePanel() {
 		// wide terminal: the example sits in the otherwise-empty right column,
 		// next to the question it belongs to, instead of above the footer
@@ -452,24 +422,6 @@ func (m FormModel) examplePanel() string {
 	return Box.Width(m.panelW() - 2).Render(b.String())
 }
 
-// downloadRow renders the background download above the footer: a labelled bar
-// while running, a dim done line after.
-func (m FormModel) downloadRow() string {
-	if !m.dlSeen { // nothing reported yet — an already-installed dependency stays silent
-		return ""
-	}
-	if m.dlMsg.Finished {
-		return row(" "+OK.Render("✓ ")+DimText.Render(m.dlMsg.Label+" · done"), "", m.w) + "\n"
-	}
-	pct := 0.0
-	if m.dlMsg.Total > 0 {
-		pct = float64(m.dlMsg.Done) / float64(m.dlMsg.Total)
-	}
-	left := FaintTxt.Render(" ⬇ ") + DimText.Render(m.dlMsg.Label) + "  " +
-		m.dl.ViewAs(pct) + "  " + DimText.Render(fmt.Sprintf("%3.0f%%", pct*100))
-	return row(left, "", m.w) + "\n"
-}
-
 // exampleBlock renders the active field's example above the footer (narrow
 // terminals).
 func (m FormModel) exampleBlock() string {
@@ -489,23 +441,6 @@ func (m FormModel) exampleBlock() string {
 		b.WriteString("\n")
 	}
 	return b.String()
-}
-
-// awaitReason reports why the current step can't be answered yet ("" = it can).
-// A group's Await holds the whole step.
-func (m FormModel) awaitReason() string {
-	if m.Current >= len(m.Fields) {
-		return ""
-	}
-	if f := m.Fields[m.Current]; f.Await != nil {
-		if r := f.Await(); r != "" {
-			return r
-		}
-	}
-	if f := m.active(); f != nil && f.Await != nil {
-		return f.Await()
-	}
-	return ""
 }
 
 // collapsedRow renders a one-line summary of a step: done steps show their
@@ -582,14 +517,6 @@ func (m FormModel) expandedField(f *Field, i int) string {
 	num := fmt.Sprintf("%d) ", i+1)
 	b.WriteString(row(Title.Render(num)+Text.Bold(true).Render(f.Title), "", m.bodyW()))
 	b.WriteString(m.descriptionBlock(f, 4))
-
-	// A field waiting on something (the location DB download) says so and shows
-	// no control: there is nothing useful to answer yet.
-	if reason := m.awaitReason(); reason != "" {
-		b.WriteString("\n")
-		b.WriteString(row("    "+Attn.Render("⏳ "+reason), "", m.bodyW()))
-		return b.String()
-	}
 
 	if f.Kind == FieldGroup {
 		for i, sub := range f.Subs {
@@ -715,9 +642,6 @@ func (m FormModel) renderFooter() string {
 	if m.Current >= len(m.Fields) {
 		return ""
 	}
-	if m.awaitReason() != "" {
-		return Footer(KeyHint("esc", "exit config")+"   "+KeyHint("ctrl+c", "discard & exit config"), m.w)
-	}
 	field := m.active()
 	if field == nil {
 		return ""
@@ -753,12 +677,6 @@ func (m FormModel) renderFooter() string {
 }
 
 func (m FormModel) moveNext() (tea.Model, tea.Cmd) {
-	// Held field (the town step while the location DB downloads): the screen
-	// already says why, and the download row above shows how far along it is.
-	if m.awaitReason() != "" {
-		return m, nil
-	}
-
 	// Validate the active input (a plain field or a group sub-input).
 	if f := m.active(); f != nil && f.Kind == FieldInput {
 		if f.Validator != nil {
@@ -839,9 +757,6 @@ func (m FormModel) answerExitAsk(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 // saveAndExit commits the active input and submits the form without visiting
 // every step.
 func (m FormModel) saveAndExit() (tea.Model, tea.Cmd) {
-	if m.awaitReason() != "" { // a held step (background download) still blocks, same as moveNext
-		return m, nil
-	}
 	if f := m.active(); f != nil && f.Kind == FieldInput {
 		if f.Validator != nil {
 			if err := f.Validator(m.ti.Value()); err != nil { // a failing validator on the field being typed still blocks

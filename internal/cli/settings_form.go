@@ -136,13 +136,6 @@ func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.
 			Kind:        tui.FieldGroup,
 			Title:       "Saved places",
 			Description: "The everyday places you shoot from, and how their photos are foldered.",
-			// Await blocks the form until the location database finishes downloading.
-			Await: func() string {
-				if _, err := geonames(); errors.Is(err, install.ErrPending) {
-					return "Waiting for the location database to finish downloading…"
-				}
-				return ""
-			},
 			Subs: []*tui.Field{
 				{
 					Kind: tui.FieldInput, Title: "Home town", Placeholder: "e.g. Delhi (blank to skip)",

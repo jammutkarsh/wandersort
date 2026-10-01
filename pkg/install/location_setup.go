@@ -59,7 +59,7 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 	// metadata first, and required: without it the database fails
 	// verification forever while never being re-downloaded
 	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
-	if err := downloadFile(ctx, log, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
+	if err := downloadFile(ctx, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
 		return fmt.Errorf("download %s: %w", LocationMetaFileName, err)
 	}
 
@@ -67,7 +67,7 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 	archivePath := dbPath + locationDBArchiveSuffix
 	// no digest here: the expected hash is of the decompressed db and ships
 	// in the metadata file above, which verifyLocationDB checks against
-	if err := downloadFile(ctx, log, archivePath, LocationDownloadBaseURL+"/"+archiveName, "", onProgress); err != nil {
+	if err := downloadFile(ctx, archivePath, LocationDownloadBaseURL+"/"+archiveName, "", onProgress); err != nil {
 		return fmt.Errorf("download %s: %w", archiveName, err)
 	}
 	// logged: nothing else reports progress during decompression

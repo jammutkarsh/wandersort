@@ -310,7 +310,7 @@ func TestShellModel(t *testing.T) {
 		// runs, only hosted here.
 		{"ConfigTabOpensTheWizard", func(t *testing.T) {
 			m := testShell(t)
-			m.a.Deps = m.a.newDeps(nil) // the wizard's geonames peek; never started
+			m.a.Deps = m.a.newDeps(nil, nil) // the wizard's geonames peek; never started
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 			m = next.(shellModel)
@@ -359,7 +359,7 @@ func TestShellModel(t *testing.T) {
 			// remembering that a quit was asked for.
 			t.Run("config", func(t *testing.T) {
 				m := testShell(t)
-				m.a.Deps = m.a.newDeps(nil)
+				m.a.Deps = m.a.newDeps(nil, nil)
 				next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 				m = next.(shellModel)
 				_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -442,12 +442,39 @@ func TestShellModel(t *testing.T) {
 			} {
 				m := testShell(t)
 				m.start = tc.start
-				msgs := flattenTeaCmd(m.Init())
+				msgs := flattenTeaCmd(m.startCmd())
 				if !slices.ContainsFunc(msgs, func(got tea.Msg) bool {
 					return reflect.DeepEqual(got, tc.want)
 				}) {
-					t.Errorf("%s: Init() = %v, want it to ask for %#v", tc.name, msgs, tc.want)
+					t.Errorf("%s: startCmd() = %v, want it to ask for %#v", tc.name, msgs, tc.want)
 				}
+			}
+		}},
+		// the getting-ready screen holds everything until the dependencies are
+		// in, then the session starts on its tab; a give-up is the exit error
+		{"GateHoldsUntilDepsReady", func(t *testing.T) {
+			m := testShell(t)
+			m.start = shellStart{tab: tabSettings}
+			m.gate = tui.NewReadyModel()
+
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			if got := next.(shellModel); got.tab != tabScan || got.gate == nil {
+				t.Errorf("ctrl+t while getting ready moved to tab %d, want the gate kept", got.tab)
+			}
+			next, cmd := next.(shellModel).Update(depsDoneMsg{})
+			if next.(shellModel).gate != nil {
+				t.Error("gate still up after the dependencies are ready")
+			}
+			if !slices.ContainsFunc(flattenTeaCmd(cmd), func(got tea.Msg) bool { return got == openSettingsMsg{} }) {
+				t.Error("lifting the gate must ask for the starting tab")
+			}
+
+			failed := testShell(t)
+			failed.gate = tui.NewReadyModel()
+			giveUp := errors.New("couldn't download place names")
+			next, _ = failed.Update(depsDoneMsg{err: giveUp})
+			if err := next.(shellModel).exitStatus(); !errors.Is(err, giveUp) {
+				t.Errorf("exitStatus() = %v, want the dependency failure", err)
 			}
 		}},
 		// …and the tab it asks for is the tab it lands on. Config is the one
@@ -474,7 +501,7 @@ func TestShellModel(t *testing.T) {
 		// A bare `wandersort` opens on the folder input and asks for nothing.
 		{"BareStartOpensTheHomeScreenOnly", func(t *testing.T) {
 			m := testShell(t)
-			for _, msg := range flattenTeaCmd(m.Init()) {
+			for _, msg := range flattenTeaCmd(m.startCmd()) {
 				switch msg.(type) {
 				case tui.StartScanMsg, openSettingsMsg, tui.OpenReviewMsg:
 					t.Errorf("a bare start should open no tab, got %#v", msg)

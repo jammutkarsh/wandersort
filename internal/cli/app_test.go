@@ -166,7 +166,7 @@ func TestCloseDBsNilSafe(t *testing.T) {
 func TestWorkflowDepsReadsThroughToCoordinator(t *testing.T) {
 	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
 	deps := a.workflowDeps()
-	a.Deps = a.newDeps(nil)
+	a.Deps = a.newDeps(nil, nil)
 
 	// Neither getter should be called (no download started), but they must
 	// resolve against the Coordinator built *after* workflowDeps returned.

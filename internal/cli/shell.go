@@ -55,6 +55,11 @@ type shellModel struct {
 	tab     int
 	start   shellStart
 
+	// gate is the getting-ready screen, shown alone until both dependencies
+	// are installed; nil after
+	gate    tui.Tab
+	depsErr error // why the dependencies gave up; the session's exit error
+
 	opening bool // a review is being built off the UI goroutine
 	w, h    int
 
@@ -80,11 +85,14 @@ type reviewOpenMsg struct {
 	err   error
 }
 
-// downloadLabels names each install phase for the progress rows.
-var downloadLabels = map[string]string{
+// depLabels names each dependency on screen.
+var depLabels = map[string]string{
 	install.PhaseExiftool: "exiftool",
-	install.PhaseLocation: "Location database",
+	install.PhaseLocation: "Place names",
 }
+
+// depsDoneMsg reports the dependency install ending, either way.
+type depsDoneMsg struct{ err error }
 
 // runShell is the one full-screen program hosting scan, settings and review.
 // start says which tab it opens on.
@@ -101,29 +109,43 @@ func (a *app) runShell(start shellStart) error {
 	a.Log = tuiLog
 	defer func() { a.Log = origLog }()
 
-	m := shellModel{a: a, ctx: ctx, start: start}
+	gate := tui.NewReadyModel(
+		tui.ReadyItem{Phase: install.PhaseExiftool, Label: depLabels[install.PhaseExiftool]},
+		tui.ReadyItem{Phase: install.PhaseLocation, Label: depLabels[install.PhaseLocation]},
+	)
+	m := shellModel{a: a, ctx: ctx, start: start, gate: gate}
 	m.screens[tabScan] = a.newHomeScreen(nil)
 	m.lib = a.readState(ctx)
 
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
-	// started once for the whole session; every scan reuses it
-	a.Deps = a.newDeps(func(phase string, done, total int64) {
-		label := downloadLabels[phase]
-		prog.Send(tui.InstallProgressMsg{Phase: phase, Label: label, Done: done, Total: total})
-		// the settings wizard gets the location download as its own progress
-		// row
-		if phase == install.PhaseLocation {
-			prog.Send(tui.DownloadMsg{Label: label, Done: done, Total: total})
-		}
-	})
+	// started once for the whole session; nothing else shows until it is done
+	a.Deps = a.newDeps(
+		func(p install.Progress) {
+			prog.Send(tui.InstallProgressMsg{Phase: p.Phase, Done: p.Done, Total: p.Total, Ready: p.Ready})
+		},
+		func(ctx context.Context, next int, err error) error {
+			phase, reason := install.PhaseLocation, err.Error()
+			if de, ok := errors.AsType[*install.DependencyError](err); ok {
+				phase, reason = de.Phase, de.Reason()
+			}
+			retry := make(chan struct{})
+			prog.Send(tui.RetryMsg{Phase: phase, Reason: reason, Next: next, Tries: install.MaxTries, Go: retry})
+			select {
+			case <-retry:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	)
 	a.Deps.Start(ctx)
 	// both goroutines end with the session context; shutdown waits for them
 	if a.work.start() {
 		go func() {
 			defer a.work.done()
-			// the database resolving is when the wizard's progress row settles
-			if _, err := a.Deps.Location(ctx); !errors.Is(err, context.Canceled) {
-				prog.Send(tui.DownloadMsg{Finished: true})
+			err := waitForDeps(ctx, a.Deps)
+			if !errors.Is(err, context.Canceled) {
+				prog.Send(depsDoneMsg{err: err})
 			}
 		}()
 	}
@@ -153,10 +175,10 @@ func (a *app) runShell(start shellStart) error {
 
 // exitStatus is how the session ended, read off the screens it kept.
 func (m shellModel) exitStatus() error {
+	if m.depsErr != nil {
+		return m.depsErr
+	}
 	if s, ok := m.screens[tabScan].(tui.ScanModel); ok {
-		if err := s.DepsFailure(); err != nil {
-			return err
-		}
 		if s.Cancelled() {
 			return errors.New("scan cancelled")
 		}
@@ -164,23 +186,55 @@ func (m shellModel) exitStatus() error {
 	return nil
 }
 
-// Init boots the home screen, then asks for the starting tab by message (Init
-// runs on a copy, so placing a screen here would be lost).
-func (m shellModel) Init() tea.Cmd {
-	cmd := m.screens[tabScan].Init()
+// Init shows the getting-ready screen; the tabs start once it lifts.
+func (m shellModel) Init() tea.Cmd { return m.gate.Init() }
+
+// updateGate routes everything to the getting-ready screen until the
+// dependencies are in.
+func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.w, m.h = msg.Width, msg.Height
+	case depsDoneMsg:
+		if msg.err == nil {
+			m.gate = nil
+			return m, tea.Batch(m.place(tabScan, m.screens[tabScan]), m.startCmd())
+		}
+		m.depsErr = msg.err
+		failed := tui.DepsFailedMsg{Phase: install.PhaseLocation, Reason: msg.err.Error(), Tries: install.MaxTries}
+		if de, ok := errors.AsType[*install.DependencyError](msg.err); ok {
+			failed.Phase, failed.Reason = de.Phase, de.Reason()
+		}
+		next, cmd := m.gate.Update(failed)
+		m.gate = next.(tui.Tab)
+		return m, cmd
+	case tui.Leave:
+		return m, tea.Quit
+	}
+	next, cmd := m.gate.Update(msg)
+	m.gate = next.(tui.Tab)
+	return m, cmd
+}
+
+// startCmd asks for the starting tab by message (Init runs on a copy, so
+// placing a screen there would be lost).
+func (m shellModel) startCmd() tea.Cmd {
 	switch {
 	case len(m.start.paths) > 0:
 		// `wandersort add -p …`: paths already given, start the run
-		return tea.Batch(cmd, msgCmd(tui.StartScanMsg{Paths: m.start.paths, Force: m.start.force}))
+		return msgCmd(tui.StartScanMsg{Paths: m.start.paths, Force: m.start.force})
 	case m.start.tab == tabSettings:
-		return tea.Batch(cmd, msgCmd(openSettingsMsg{}))
+		return msgCmd(openSettingsMsg{})
 	case m.start.tab == tabReview:
-		return tea.Batch(cmd, msgCmd(tui.OpenReviewMsg{}))
+		return msgCmd(tui.OpenReviewMsg{})
 	}
-	return cmd
+	return nil
 }
 
 func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.gate != nil {
+		return m.updateGate(msg)
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
@@ -491,6 +545,9 @@ func (m *shellModel) broadcast(msg tea.Msg) tea.Cmd {
 }
 
 func (m shellModel) View() string {
+	if m.gate != nil {
+		return m.gate.View()
+	}
 	s := m.screens[m.tab]
 	if s == nil {
 		return m.tabBar()
@@ -542,9 +599,6 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 				return context.Canceled
 			}
 			defer a.work.done()
-			if err := waitForDeps(ctx, a.Deps); err != nil {
-				return &tui.DepsErr{Err: err}
-			}
 			_, err := wf.RunScan(ctx, paths, force)
 			return err
 		},

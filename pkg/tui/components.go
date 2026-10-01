@@ -41,6 +41,9 @@ func (sb spinnerBar) update(msg tea.Msg) (spinnerBar, tea.Cmd) {
 	return sb, nil
 }
 
+// Brand is the app's name as the first thing on every screen's top line.
+func Brand() string { return Title.Render("◆ wandersort") }
+
 // Banner renders the branded title bar shown at the top of every screen:
 // "WanderSort" + a subtitle (e.g. "scan", "setup", "review").
 func Banner(subtitle string) string {

@@ -87,12 +87,6 @@ func TestConfig(t *testing.T) {
 			}
 			*collapseField.BoolValue = false // restore: cfg.CollapseLevels started false
 
-			// The step holds while the database downloads — the wizard says so instead
-			// of failing a validation the user can't fix.
-			if group.Await == nil || group.Await() == "" {
-				t.Error("saved-place step must wait while the location database downloads")
-			}
-
 			// Examples live outside the description, and only the active choice's.
 			dateOnly := group.Subs[3]
 			if strings.Contains(dateOnly.Description, "2024/") {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
@@ -47,48 +48,37 @@ func TestStartOfflineHappyPath(t *testing.T) {
 	}
 }
 
-// TestStartLocationOnlySkipsExiftool: the exiftool getter returns at once with
-// an error (nothing installs it) while the location getter goes through the
-// real download/verify path.
-func TestStartLocationOnlySkipsExiftool(t *testing.T) {
+// TestStartGivesUpOnBadLocationDB: a database that never verifies fails every
+// try, BeforeRetry is asked before tries 2 and 3, and both getters report it.
+func TestStartGivesUpOnBadLocationDB(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, config.LocationDBFileName)
-	buildLocationDB(t, dbPath, 1)
-	writeLocationMeta(t, dir, fileSHA256Helper(t, dbPath), 1)
-
-	c := New(Options{LocationDBPath: dbPath, Log: logger.NewNoopLogger()})
-
-	done := make(chan error, 1)
-	c.StartLocationOnly(context.Background(), func(err error) { done <- err })
-
-	if path, err := c.Exiftool(context.Background()); path != "" || !errors.Is(err, errExiftoolNotInstalled) {
-		t.Errorf("Exiftool() after StartLocationOnly = %q, %v, want errExiftoolNotInstalled", path, err)
-	}
-
-	if err := <-done; err != nil {
-		t.Errorf("StartLocationOnly onReady callback error = %v, want nil", err)
-	}
-	if _, err := c.Location(context.Background()); err != nil {
-		t.Errorf("Location() error = %v, want nil", err)
-	}
-}
-
-// TestStartLocationOnlyReportsVerifyFailure covers the onReady callback's
-// error path, not just its success path above.
-func TestStartLocationOnlyReportsVerifyFailure(t *testing.T) {
-	dir := t.TempDir()
+	fakeExiftool(t, filepath.Join(dir, exiftoolBin()), exiftoolVersion)
 	dbPath := filepath.Join(dir, config.LocationDBFileName)
 	buildLocationDB(t, dbPath, 1)
 	writeLocationMeta(t, dir, fileSHA256Helper(t, dbPath), 999) // row count mismatch
 
-	c := New(Options{LocationDBPath: dbPath, Log: logger.NewNoopLogger()})
-	done := make(chan error, 1)
-	c.StartLocationOnly(context.Background(), func(err error) { done <- err })
+	var asked []int
+	c := New(Options{
+		ExecutablePath: dir, LocationDBPath: dbPath, Log: logger.NewNoopLogger(),
+		BeforeRetry: func(_ context.Context, next int, err error) error {
+			asked = append(asked, next)
+			// the failed database was removed; put the bad one back so every try fails
+			buildLocationDB(t, dbPath, 1)
+			writeLocationMeta(t, dir, fileSHA256Helper(t, dbPath), 999)
+			return nil
+		},
+	})
+	c.Start(context.Background())
 
-	if err := <-done; err == nil {
-		t.Error("onReady callback error = nil, want the verify failure")
+	_, err := c.Location(context.Background())
+	var de *DependencyError
+	if !errors.As(err, &de) || de.Phase != PhaseLocation {
+		t.Fatalf("Location() = %v, want a location DependencyError", err)
 	}
-	if _, err := c.Location(context.Background()); err == nil {
-		t.Error("Location() error = nil, want the verify failure")
+	if path, err := c.Exiftool(context.Background()); err != nil || path == "" {
+		t.Errorf("Exiftool() = %q, %v, want the installed path: it succeeded on try 1", path, err)
+	}
+	if want := []int{2, 3}; !slices.Equal(asked, want) {
+		t.Errorf("BeforeRetry asked before tries %v, want %v", asked, want)
 	}
 }

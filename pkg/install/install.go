@@ -23,27 +23,70 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-// Phase names Options.OnProgress reports under.
+// Phase names the dependency a Progress or DependencyError is about.
 const (
 	PhaseExiftool = "exiftool"
 	PhaseLocation = "location"
 )
 
-// Options configures a Coordinator. Log and OnProgress may be nil.
+// MaxTries is how many times Start tries to install the dependencies before
+// giving up for this process.
+const MaxTries = 3
+
+// RetryDelay is how long the default BeforeRetry waits between tries.
+const RetryDelay = 10 * time.Second
+
+// Progress is one report about a dependency: bytes downloaded so far, or Ready
+// once it is installed and verified.
+type Progress struct {
+	Phase       string
+	Done, Total int64
+	Ready       bool
+}
+
+// RetryFunc runs before try next (2..MaxTries) with the error that ended the
+// previous one, and blocks until it is time to retry. A non-nil return stops
+// trying.
+type RetryFunc func(ctx context.Context, next int, err error) error
+
+// Options configures a Coordinator. Log, OnProgress and BeforeRetry may be nil;
+// a nil BeforeRetry logs the failure and waits RetryDelay.
 type Options struct {
 	ExecutablePath string // directory exiftool installs into
 	LocationDBPath string // path to the location database file
 	Log            logger.Logger
 
-	OnProgress func(phase string, done, total int64)
+	OnProgress  func(Progress)
+	BeforeRetry RetryFunc
+}
+
+// DependencyError is a failed install of one dependency.
+type DependencyError struct {
+	Phase string
+	Err   error
+}
+
+func (e *DependencyError) Error() string { return e.Phase + ": " + e.Err.Error() }
+func (e *DependencyError) Unwrap() error { return e.Err }
+
+// Reason is the innermost cause, short enough for one line on screen.
+func (e *DependencyError) Reason() string {
+	err := e.Err
+	for {
+		inner := errors.Unwrap(err)
+		if inner == nil {
+			return err.Error()
+		}
+		err = inner
+	}
 }
 
 // Coordinator installs exiftool and the location database under one install
 // lock and hands out readiness through blocking getters. Construct with New.
 type Coordinator struct {
 	opts    Options
-	started sync.Once   // Start/StartLocationOnly close the ready channels once
-	running atomic.Bool // set once a Start has run; Close waits only then
+	started sync.Once   // Start closes the ready channels once
+	running atomic.Bool // set once Start has run; Close waits only then
 
 	exifPath  string
 	exifErr   error
@@ -55,10 +98,13 @@ type Coordinator struct {
 	locReady   chan struct{}
 }
 
-// New returns a Coordinator ready for Start or StartLocationOnly.
+// New returns a Coordinator ready for Start.
 func New(opts Options) *Coordinator {
 	if opts.Log == nil {
 		opts.Log = logger.NewNoopLogger()
+	}
+	if opts.BeforeRetry == nil {
+		opts.BeforeRetry = logAndWait(opts.Log)
 	}
 	return &Coordinator{
 		opts:      opts,
@@ -67,59 +113,90 @@ func New(opts Options) *Coordinator {
 	}
 }
 
-// Start installs exiftool then the location database in the background.
-// Only the first Start or StartLocationOnly call does anything.
+// Start installs exiftool then the location database in the background, up to
+// MaxTries times. Only the first call does anything.
 func (c *Coordinator) Start(ctx context.Context) {
-	c.started.Do(func() { c.install(ctx, true, nil) })
+	c.started.Do(func() { c.start(ctx) })
 }
 
-// StartLocationOnly installs just the location database. onReady, if not nil,
-// runs once it resolves.
-func (c *Coordinator) StartLocationOnly(ctx context.Context, onReady func(error)) {
-	c.started.Do(func() { c.install(ctx, false, onReady) })
-}
-
-// install takes the install lock, then sets up exiftool (if asked) and the
-// location database in the background. exiftool goes first: it is the small
-// download the earlier metadata phase waits on. Each ready channel closes
-// exactly once, whatever fails.
-func (c *Coordinator) install(ctx context.Context, withExiftool bool, onReady func(error)) {
+func (c *Coordinator) start(ctx context.Context) {
 	c.running.Store(true)
-	if !withExiftool {
-		c.exifErr = errExiftoolNotInstalled
-		close(c.exifReady)
-	}
 	go func() {
-		defer func() {
-			close(c.locReady)
-			if onReady != nil {
-				onReady(c.locErr)
-			}
-		}()
+		defer close(c.locReady)
+		defer close(c.exifReady)
+
 		l, err := c.acquireLock(ctx)
 		if err != nil {
-			c.locErr = err
-			if withExiftool {
-				c.exifErr = err
-				close(c.exifReady)
-			}
+			c.exifErr, c.locErr = err, err
 			return
 		}
 		defer l.Unlock()
 
-		if withExiftool {
-			c.exifPath, c.exifErr = setupExiftool(ctx, c.opts.Log, c.opts.ExecutablePath, c.progressFor(PhaseExiftool))
-			if c.exifErr != nil {
-				c.exifErr = fmt.Errorf("exiftool: %w", c.exifErr)
-			}
-			close(c.exifReady)
-			if c.exifErr != nil {
-				c.locErr = fmt.Errorf("location database not installed: %w", c.exifErr)
-				return
+		err = tryUpTo(ctx, MaxTries, c.opts.BeforeRetry, c.installMissing)
+		if c.exifPath == "" {
+			c.exifErr = err
+		}
+		if c.resolver == nil {
+			c.locErr = err
+		}
+	}()
+}
+
+// installMissing is one try: each dependency not yet installed is installed,
+// exiftool first. One failing doesn't stop the other; a retry skips what an
+// earlier try finished.
+func (c *Coordinator) installMissing(ctx context.Context) error {
+	var errs []error
+	if c.exifPath == "" {
+		path, err := setupExiftool(ctx, c.opts.Log, c.opts.ExecutablePath, c.progressFor(PhaseExiftool))
+		if err != nil {
+			errs = append(errs, &DependencyError{Phase: PhaseExiftool, Err: err})
+		} else {
+			c.exifPath = path
+			c.report(Progress{Phase: PhaseExiftool, Ready: true})
+		}
+	}
+	if c.resolver == nil && ctx.Err() == nil {
+		resolver, locationDB, err := OpenLocationResolver(ctx, c.opts.Log, c.opts.LocationDBPath, c.progressFor(PhaseLocation))
+		if err != nil {
+			errs = append(errs, &DependencyError{Phase: PhaseLocation, Err: err})
+		} else {
+			c.resolver, c.locationDB = resolver, locationDB
+			c.report(Progress{Phase: PhaseLocation, Ready: true})
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// tryUpTo runs try until it succeeds, ctx ends, beforeRetry refuses, or tries
+// runs out.
+func tryUpTo(ctx context.Context, tries int, beforeRetry RetryFunc, try func(context.Context) error) error {
+	var err error
+	for n := 1; n <= tries; n++ {
+		if n > 1 {
+			if stop := beforeRetry(ctx, n, err); stop != nil {
+				return stop
 			}
 		}
-		c.resolver, c.locationDB, c.locErr = OpenLocationResolver(ctx, c.opts.Log, c.opts.LocationDBPath, c.progressFor(PhaseLocation))
-	}()
+		if err = try(ctx); err == nil || ctx.Err() != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("gave up after %d tries: %w", tries, err)
+}
+
+// logAndWait is the default RetryFunc: one warning, then RetryDelay.
+func logAndWait(log logger.Logger) RetryFunc {
+	return func(ctx context.Context, next int, err error) error {
+		log.Warn(fmt.Sprintf("Download failed (try %d of %d). Switch to a better network if you can; retrying in %s",
+			next-1, MaxTries, RetryDelay), logger.UserKey, true, "error", err)
+		select {
+		case <-time.After(RetryDelay):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 func (c *Coordinator) acquireLock(ctx context.Context) (*lock.Lock, error) {
@@ -136,10 +213,17 @@ func (c *Coordinator) acquireLock(ctx context.Context) (*lock.Lock, error) {
 	return l, nil
 }
 
-// progressThrottle caps how often byte progress reaches the UI: an unthrottled
-// burst of chunks blocks bubbletea's message loop and starves other phases.
+// progressThrottle caps download progress reports to about ten a second.
 const progressThrottle = 100 * time.Millisecond
 
+func (c *Coordinator) report(p Progress) {
+	if c.opts.OnProgress != nil {
+		c.opts.OnProgress(p)
+	}
+}
+
+// progressFor adapts a download's byte callback to a throttled OnProgress for
+// one phase; nil when nobody listens.
 func (c *Coordinator) progressFor(phase string) func(done, total int64) {
 	if c.opts.OnProgress == nil {
 		return nil
@@ -151,13 +235,9 @@ func (c *Coordinator) progressFor(phase string) func(done, total int64) {
 			return
 		}
 		last = now
-		c.opts.OnProgress(phase, done, total)
+		c.report(Progress{Phase: phase, Done: done, Total: total})
 	}
 }
-
-// errExiftoolNotInstalled is what Exiftool reports on a Coordinator started
-// with StartLocationOnly.
-var errExiftoolNotInstalled = errors.New("exiftool is not installed by this coordinator")
 
 // ErrPending reports that a dependency is still installing. Only LocationNow
 // returns it — the blocking getters wait instead.
@@ -222,54 +302,16 @@ func (c *Coordinator) awaitLog(ctx context.Context, ch <-chan struct{}, why stri
 	}
 }
 
-const (
-	// downloadStallTimeout aborts an attempt with no new bytes this long (a
-	// dead connection never errors itself). Armed before the request, so it
-	// also covers DNS/TCP/TLS/first byte.
-	downloadStallTimeout = 3 * time.Second
-
-	// downloadBackoffBase/Max bound the exponential retry delay
-	downloadBackoffBase = 1 * time.Second
-	downloadBackoffMax  = 8 * time.Second
-)
-
-// nonRetryable marks a download failure retrying can't fix (bad status code,
-// checksum mismatch).
-type nonRetryable struct{ err error }
-
-func (n *nonRetryable) Error() string { return n.err.Error() }
-func (n *nonRetryable) Unwrap() error { return n.err }
+// downloadStallTimeout aborts a download with no new bytes this long (a dead
+// connection never errors itself). Armed before the request, so it also covers
+// DNS/TCP/TLS/first byte.
+const downloadStallTimeout = 3 * time.Second
 
 // downloadFile fetches url to dest atomically, verifying wantSHA256 if set.
-// Transport failures retry forever with backoff until success or ctx is
-// cancelled.
-func downloadFile(ctx context.Context, log logger.Logger, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
+// One attempt: retrying is the Coordinator's job.
+func downloadFile(ctx context.Context, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
 	cleanStaleDownloads(filepath.Dir(dest))
-
-	for attempt := 1; ; attempt++ {
-		err := downloadAttempt(ctx, dest, url, wantSHA256, onProgress)
-		if err == nil {
-			return nil
-		}
-		// A bad status/checksum fails identically every time; only a
-		// transport failure is worth retrying.
-		var nr *nonRetryable
-		if errors.As(err, &nr) || ctx.Err() != nil {
-			return terminalDownloadErr(ctx, err)
-		}
-		if log != nil {
-			log.Warn("Download failed, retrying", logger.UserKey, true,
-				"url", url, "attempt", attempt, "error", err)
-		}
-		// exponent capped at 3 (1<<3 * base == downloadBackoffMax already) so
-		// an attempt count that climbs for hours never overflows the shift.
-		delay := min(downloadBackoffBase*time.Duration(1<<min(attempt-1, 3)), downloadBackoffMax)
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
+	return terminalDownloadErr(ctx, downloadAttempt(ctx, dest, url, wantSHA256, onProgress))
 }
 
 // ErrDownloadStalled is a download that stopped making progress: the attempt's
@@ -302,7 +344,7 @@ func cleanStaleDownloads(dir string) {
 	}
 }
 
-// downloadAttempt is one try at downloadFile, cancelled when no bytes arrive
+// downloadAttempt is downloadFile's one try, cancelled when no bytes arrive
 // for downloadStallTimeout.
 func downloadAttempt(ctx context.Context, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
 	attemptCtx, cancel := context.WithCancel(ctx)
@@ -329,7 +371,7 @@ func downloadAttempt(ctx context.Context, dest, url, wantSHA256 string, onProgre
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return &nonRetryable{fmt.Errorf("GET %s: unexpected status %s", url, resp.Status)}
+		return fmt.Errorf("GET %s: unexpected status %s", url, resp.Status)
 	}
 
 	// Write to a temp file in the same directory so os.Rename is atomic
@@ -371,7 +413,7 @@ func downloadAttempt(ctx context.Context, dest, url, wantSHA256 string, onProgre
 		}
 		if sum != wantSHA256 {
 			os.Remove(dest)
-			return &nonRetryable{fmt.Errorf("checksum mismatch for %s: got %s, want %s", filepath.Base(dest), sum, wantSHA256)}
+			return fmt.Errorf("checksum mismatch for %s: got %s, want %s", filepath.Base(dest), sum, wantSHA256)
 		}
 	}
 

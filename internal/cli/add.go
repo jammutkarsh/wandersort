@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,19 +17,24 @@ import (
 // waitForDeps blocks until both downloadable dependencies are ready, so a
 // failed download is one clear error before any file is touched.
 func waitForDeps(ctx context.Context, deps *install.Coordinator) error {
-	for _, d := range []struct {
-		name string
-		get  func() error
-	}{
-		{"exiftool", func() error { _, err := deps.Exiftool(ctx); return err }},
-		{"location database", func() error { _, err := deps.Location(ctx); return err }},
-	} {
-		// the technical error is already in the log; say what to do next
-		if err := d.get(); err != nil {
-			return fmt.Errorf("failed to download the %s — retry the scan to download it again", d.name)
-		}
+	if _, err := deps.Exiftool(ctx); err != nil {
+		return depsFailure(err)
+	}
+	if _, err := deps.Location(ctx); err != nil {
+		return depsFailure(err)
 	}
 	return nil
+}
+
+// depsFailure says which dependency could not be installed and what to do;
+// the full error is already in the log.
+func depsFailure(err error) error {
+	var de *install.DependencyError
+	if !errors.As(err, &de) {
+		return err
+	}
+	return fmt.Errorf("couldn't download %s after %d tries (%s) — check your connection and run wandersort again",
+		strings.ToLower(depLabels[de.Phase]), install.MaxTries, de.Reason())
 }
 
 func (a *app) newAddCmd() *cobra.Command {
@@ -96,7 +103,7 @@ func (a *app) runAddPlain(paths []string, force bool) error {
 	if err := a.openLibrary(ctx); err != nil {
 		return err
 	}
-	a.Deps = a.newDeps(nil)
+	a.Deps = a.newDeps(nil, nil)
 	a.Deps.Start(ctx)
 	defer a.closeDBs()
 

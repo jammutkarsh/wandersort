@@ -87,14 +87,16 @@ func interruptible() (context.Context, context.CancelFunc) {
 	return ctx, stop
 }
 
-// newDeps builds a Coordinator wired to this app's config and log.
-// onProgress may be nil (every non-TUI path).
-func (a *app) newDeps(onProgress func(phase string, done, total int64)) *install.Coordinator {
+// newDeps builds a Coordinator wired to this app's config and log. Both
+// callbacks may be nil (every non-TUI path): no progress, and a failed try is
+// logged before the next.
+func (a *app) newDeps(onProgress func(install.Progress), beforeRetry install.RetryFunc) *install.Coordinator {
 	return install.New(install.Options{
 		ExecutablePath: a.Config.ExecutablePath,
 		LocationDBPath: a.Config.LocationDBPath,
 		Log:            a.Log,
 		OnProgress:     onProgress,
+		BeforeRetry:    beforeRetry,
 	})
 }
 
