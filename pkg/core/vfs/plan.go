@@ -283,24 +283,21 @@ func assignTargetPaths(ctx context.Context, masters []masterFile, cfg Config) {
 	for i := range masters {
 		masters[i].orderTime, masters[i].orderHash = masters[i].takenAt, masters[i].FileHash
 	}
-	groupDirs := captureDirs(masters, skip, cfg)
+	grouped := captureDirs(masters, skip, cfg)
 	pairLiveVideos(masters)
 
-	// dirFor writes only its own master's dirLevels, so directories fan out.
-	dirs := make([]string, len(masters))
+	// dirFor writes only its own master's dir, so directories fan out.
 	forEachMaster(ctx, masters, cfg.Workers, func(i int, m *masterFile) {
-		if dir, ok := groupDirs[i]; ok {
-			dirs[i] = dir // a capture group shares its leader's directory
-		} else if m.MediaType == classifier.MediaTypeSidecar {
+		switch {
+		case grouped[i]: // a capture group shares its leader's directory
+		case m.MediaType == classifier.MediaTypeSidecar:
 			// an unpaired sidecar has nothing to derive a folder from
-			dirs[i], m.dirLevels, m.dirBounds = OrphanDir, []string{LevelOrphan}, []Bounds{{{}}}
-		} else {
-			dirs[i] = dirFor(m, skip, cfg)
+			m.dir = []segment{{OrphanDir, LevelOrphan, Bounds{{}}}}
+		default:
+			dirFor(m, skip, cfg)
 		}
 		// a placed folder the file matches completely wins over the rules
-		if dir, ok := cfg.placedTree.route(m); ok {
-			dirs[i] = dir
-		}
+		cfg.placedTree.route(m)
 	})
 
 	// Names are assigned sequentially: who gets the bare name and who gets _2
@@ -350,7 +347,8 @@ func assignTargetPaths(ctx context.Context, masters []masterFile, cfg Config) {
 			done[j] = true
 		}
 		assignSuffix(taken, paths, func(k int) (string, string) {
-			return dirs[members[k]], path.SanitizeFileName(masters[members[k]].FileName)
+			m := &masters[members[k]]
+			return dirPath(m.dir), path.SanitizeFileName(m.FileName)
 		})
 		for k, j := range members {
 			masters[j].targetPath = paths[k]
@@ -703,8 +701,9 @@ func (m *masterFile) hasExifTime() bool {
 }
 
 // captureDirs finds files that are one capture split across extensions
-// (edit/sidecar bundle, RAW+JPG) and returns their shared directory by index.
-func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int]string {
+// (edit/sidecar bundle, RAW+JPG), gives each its leader's directory, and
+// returns the grouped indices.
+func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int]bool {
 	type group struct{ members []int }
 	groups := map[string]*group{}
 	for i := range masters {
@@ -723,7 +722,7 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 		g.members = append(g.members, i)
 	}
 
-	dirs := map[int]string{}
+	grouped := map[int]bool{}
 	for key, g := range groups {
 		if len(g.members) < 2 {
 			continue
@@ -782,13 +781,12 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 				leader, bestScore = i, score
 			}
 		}
-		dir := dirFor(&masters[leader], skip, cfg)
+		dirFor(&masters[leader], skip, cfg)
 		for _, i := range g.members {
-			dirs[i] = dir
-			// the leader's levels come with its directory, or the member has
-			// no location folder (and no GPS for review renames)
-			masters[i].dirLevels = masters[leader].dirLevels
-			masters[i].dirBounds = masters[leader].dirBounds
+			grouped[i] = true
+			// levels and bounds come with the directory, or the member has no
+			// location folder (and no GPS for review renames)
+			masters[i].dir = masters[leader].dir
 			// the leader's time and hash also rank the member when names
 			// collide, so a sidecar keeps its photo's suffix
 			masters[i].orderTime = masters[leader].takenAt
@@ -803,7 +801,7 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 			masters[i].folderDate = masters[leader].folderTime()
 		}
 	}
-	return dirs
+	return grouped
 }
 
 // monthParts is the Year and Month folder pair from folderTime, shared by
@@ -818,24 +816,26 @@ func monthParts(m *masterFile) []string {
 	}
 }
 
-// dirFor derives the directory segments for one master, honouring Rules
-// order. skip names the levels assignTargetPaths step 3 found nothing to say with.
-func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
+// dirFor sets m.dir from the Rules, in order. skip names the levels
+// assignTargetPaths step 3 found nothing to say with.
+func dirFor(m *masterFile, skip map[string]bool, cfg Config) {
 	if m.takenAt.IsZero() {
-		m.dirLevels, m.dirBounds = []string{LevelFallback}, []Bounds{{{}}}
-		return fallbackDir
+		m.dir = []segment{{fallbackDir, LevelFallback, Bounds{{}}}}
+		return
 	}
 
-	parts := monthParts(m)
-	levels := []string{LevelYear, LevelMonth}
-	bounds := []Bounds{{boundsFor(m, LevelYear)}, {boundsFor(m, LevelMonth)}}
+	month := monthParts(m)
+	dir := []segment{
+		{month[0], LevelYear, Bounds{boundsFor(m, LevelYear)}},
+		{month[1], LevelMonth, Bounds{boundsFor(m, LevelMonth)}},
+	}
 
 	// A screenshot has no location/device/orientation worth a folder of its
 	// own — group every screenshot in the month together instead of letting
 	// the configured Rules fragment them.
 	if m.IsScreenshot {
-		m.dirLevels, m.dirBounds = append(levels, LevelScreenshots), append(bounds, Bounds{{}})
-		return strings.Join(append(parts, "Screenshots"), "/")
+		m.dir = append(dir, segment{"Screenshots", LevelScreenshots, Bounds{{}}})
+		return
 	}
 
 	for _, level := range cfg.Rules {
@@ -846,12 +846,9 @@ func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 		if seg == "" {
 			continue // level not derivable for this file — skip the folder
 		}
-		parts = append(parts, path.SanitizeSegment(seg))
-		levels = append(levels, level)
-		bounds = append(bounds, Bounds{boundsFor(m, level)})
+		dir = append(dir, segment{path.SanitizeSegment(seg), level, Bounds{boundsFor(m, level)}})
 	}
-	m.dirLevels, m.dirBounds = levels, bounds
-	return strings.Join(parts, "/")
+	m.dir = dir
 }
 
 // boundsFor is the constraint one dirFor folder puts on m: the value the

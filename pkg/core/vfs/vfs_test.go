@@ -339,12 +339,13 @@ func TestCaptureDirsForcesRawJpgTogetherAndKeepsRicherLocation(t *testing.T) {
 		{FileDir: "/src/d", FileName: "IMG_2566.CR2", MediaType: classifier.MediaTypeRaw, takenAt: takenAt, DBDateTaken: new(ts)},
 		{FileDir: "/src/d", FileName: "IMG_2566.JPG", MediaType: classifier.MediaTypeImage, takenAt: takenAt, DBDateTaken: new(ts), location: "Calangute"},
 	}
-	dirs := captureDirs(masters, nil, DefaultConfig())
-	if len(dirs) != 2 || dirs[0] != dirs[1] {
-		t.Fatalf("want RAW+JPG forced into one shared dir, got %v", dirs)
+	grouped := captureDirs(masters, nil, DefaultConfig())
+	dir0, dir1 := dirPath(masters[0].dir), dirPath(masters[1].dir)
+	if len(grouped) != 2 || dir0 != dir1 {
+		t.Fatalf("want RAW+JPG forced into one shared dir, got %q and %q", dir0, dir1)
 	}
-	if !strings.Contains(dirs[0], "Calangute") {
-		t.Errorf("group dir %q dropped the JPG's resolved location — RAW (no GPS) must not win leader over it", dirs[0])
+	if !strings.Contains(dir0, "Calangute") {
+		t.Errorf("group dir %q dropped the JPG's resolved location — RAW (no GPS) must not win leader over it", dir0)
 	}
 }
 

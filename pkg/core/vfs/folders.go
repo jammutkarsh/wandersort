@@ -8,11 +8,11 @@ import (
 	"database/sql/driver"
 	"encoding/json/v2"
 	"fmt"
-	"strings"
 
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 // folderRow is one folder_nodes row. Parent 0 is the top level.
@@ -153,19 +153,17 @@ func splitPlacedFolders(ctx context.Context, tx *sqlx.Tx) (map[int64]int64, erro
 		return nil, err
 	}
 	twins := map[int64]int64{}
-	paths := map[int64]string{}
 	for _, e := range entries {
 		if _, done := twins[e.NodeID]; !done {
-			// the old chain, top first, and each folder's level
+			// the old chain, top first
 			var old []int64
+			var dir []segment
 			for id := e.NodeID; id != 0; id = rows[id].Parent {
+				r := rows[id]
 				old = append([]int64{id}, old...)
+				dir = append([]segment{{r.Name, r.Level, r.Bounds}}, dir...)
 			}
-			levels := make([]string, len(old))
-			for i, id := range old {
-				levels[i] = rows[id].Level
-			}
-			chain, err := index.ensure(ctx, tx, folderPath(rows, paths, e.NodeID), levels)
+			chain, err := index.ensure(ctx, tx, dir)
 			if err != nil {
 				return nil, err
 			}
@@ -173,7 +171,7 @@ func splitPlacedFolders(ctx context.Context, tx *sqlx.Tx) (map[int64]int64, erro
 				twins[id] = chain[i]
 				// same path, same files: the twin means what the old folder did
 				if _, err := tx.ExecContext(ctx, `UPDATE folder_nodes SET bounds = ? WHERE id = ?`,
-					rows[id].Bounds, chain[i]); err != nil {
+					dir[i].bounds, chain[i]); err != nil {
 					return nil, fmt.Errorf("copy folder bounds: %w", err)
 				}
 			}
@@ -194,25 +192,22 @@ func splitPlacedFolders(ctx context.Context, tx *sqlx.Tx) (map[int64]int64, erro
 }
 
 // ensure returns the folder id of every segment of dir, top first, creating
-// the ones that don't exist yet. levels names the level of each segment.
-func (f *folderIndex) ensure(ctx context.Context, tx *sqlx.Tx, dir string, levels []string) ([]int64, error) {
-	if c, ok := f.chains[dir]; ok {
+// the ones that don't exist yet. Names are stored NFC.
+func (f *folderIndex) ensure(ctx context.Context, tx *sqlx.Tx, dir []segment) ([]int64, error) {
+	key := wspath.ToLibrary(dirPath(dir))
+	if c, ok := f.chains[key]; ok {
 		return c, nil
 	}
-	segs := strings.Split(dir, "/")
-	chain := make([]int64, len(segs))
+	chain := make([]int64, len(dir))
 	var parent int64
-	for i, name := range segs {
+	for i, s := range dir {
+		name := wspath.ToLibrary(s.name)
 		k := folderKey{parent, name}
 		id, ok := f.byKey[k]
 		if !ok {
-			level := ""
-			if i < len(levels) {
-				level = levels[i]
-			}
 			res, err := tx.ExecContext(ctx,
 				`INSERT INTO folder_nodes (parent_id, name, level) VALUES (?, ?, ?)`,
-				nullableID(parent), name, level)
+				nullableID(parent), name, s.level)
 			if err != nil {
 				return nil, fmt.Errorf("create folder %q: %w", name, err)
 			}
@@ -224,7 +219,7 @@ func (f *folderIndex) ensure(ctx context.Context, tx *sqlx.Tx, dir string, level
 		chain[i] = id
 		parent = id
 	}
-	f.chains[dir] = chain
+	f.chains[key] = chain
 	return chain, nil
 }
 

@@ -38,13 +38,12 @@ var specialLevels = map[string]levelBit{
 // placedTree is the placed folders, indexed for route. Read-only once built,
 // so route runs on every assignTargetPaths worker at once.
 type placedTree struct {
-	rows  map[int64]folderRow
-	kids  map[int64][]int64 // parent (0 = top) → children, in id order
-	paths map[int64]string
+	rows map[int64]folderRow
+	kids map[int64][]int64 // parent (0 = top) → children, in id order
 }
 
 func newPlacedTree(rows []folderRow) *placedTree {
-	t := &placedTree{rows: map[int64]folderRow{}, kids: map[int64][]int64{}, paths: map[int64]string{}}
+	t := &placedTree{rows: map[int64]folderRow{}, kids: map[int64][]int64{}}
 	for _, r := range rows {
 		t.rows[r.ID] = r
 	}
@@ -52,32 +51,32 @@ func newPlacedTree(rows []folderRow) *placedTree {
 	for _, id := range slices.Sorted(maps.Keys(t.rows)) {
 		p := t.rows[id].Parent
 		t.kids[p] = append(t.kids[p], id)
-		folderPath(t.rows, t.paths, id)
 	}
 	return t
 }
 
-// route returns the path of the placed folder m matches completely, and
-// points m's levels and bounds at that folder's chain. ok is false when no
+// route points m.dir at the placed folder m matches completely, if any
 // placed folder holds everything m's own path says.
-func (t *placedTree) route(m *masterFile) (dir string, ok bool) {
+func (t *placedTree) route(m *masterFile) {
 	if t == nil || len(t.rows) == 0 {
-		return "", false
+		return
 	}
 	file, want := statement(m)
 	id := t.find(0, file, want, 0)
 	if id == 0 {
-		return "", false
+		return
 	}
-	dir = t.paths[id]
-	var levels []string
-	var bounds []Bounds
+	m.dir = t.chain(id)
+}
+
+// chain is the segments from the top down to folder id.
+func (t *placedTree) chain(id int64) []segment {
+	var dir []segment
 	for ; id != 0; id = t.rows[id].Parent {
-		levels = append([]string{t.rows[id].Level}, levels...)
-		bounds = append([]Bounds{t.rows[id].Bounds}, bounds...)
+		r := t.rows[id]
+		dir = append([]segment{{r.Name, r.Level, r.Bounds}}, dir...)
 	}
-	m.dirLevels, m.dirBounds = levels, bounds
-	return dir, true
+	return dir
 }
 
 // find is the deepest folder below parent that m matches completely: the
@@ -124,15 +123,15 @@ func (t *placedTree) matches(r folderRow, file Constraint, want levelBit) (level
 func statement(m *masterFile) (Constraint, levelBit) {
 	var file Constraint
 	var want levelBit
-	for d, level := range m.dirLevels {
-		if bit, ok := specialLevels[level]; ok {
+	for _, s := range m.dir {
+		if bit, ok := specialLevels[s.level]; ok {
 			want |= bit
 			continue
 		}
-		if d >= len(m.dirBounds) || len(m.dirBounds[d]) == 0 {
+		if len(s.bounds) == 0 {
 			continue
 		}
-		c := m.dirBounds[d][0]
+		c := s.bounds[0]
 		fn, ft := file.levels()
 		cn, ct := c.levels()
 		for i := range fn {

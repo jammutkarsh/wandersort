@@ -43,7 +43,13 @@ func BenchmarkPersist(b *testing.B) {
 	for i := range masters {
 		masters[i].targetPath = fmt.Sprintf("2024/06_June/%02d/Goa/Apple iPhone 15 Pro/IMG_%05d.HEIC", i%28+1, i)
 		masters[i].clusterID = fmt.Sprintf("c%d", i%50)
-		masters[i].dirLevels = []string{LevelYear, LevelMonth, RuleDate, RuleLocation, RuleDevice}
+		masters[i].dir = []segment{
+			{"2024", LevelYear, Bounds{{}}},
+			{"06_June", LevelMonth, Bounds{{}}},
+			{fmt.Sprintf("%02d", i%28+1), RuleDate, Bounds{{}}},
+			{"Goa", RuleLocation, Bounds{{}}},
+			{"Apple iPhone 15 Pro", RuleDevice, Bounds{{}}},
+		}
 	}
 
 	for b.Loop() {

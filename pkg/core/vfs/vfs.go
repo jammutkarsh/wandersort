@@ -5,7 +5,6 @@ package vfs
 import (
 	"context"
 	"fmt"
-	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -227,24 +226,20 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 			if kept[m.FileID] {
 				continue
 			}
-			chain, err := folders.ensure(ctx, tx, path.Dir(wspath.ToLibrary(m.targetPath)), m.dirLevels)
+			chain, err := folders.ensure(ctx, tx, m.dir)
 			if err != nil {
 				return err
 			}
 			m.nodeID, m.locationNodeID = chain[len(chain)-1], 0
-			if d := m.locationDepth(); d >= 0 && d < len(chain) {
+			if d := m.locationDepth(); d >= 0 {
 				m.locationNodeID = chain[d]
 			}
 			for d, id := range chain {
-				c := Bounds{{}}
-				if d < len(m.dirBounds) {
-					c = m.dirBounds[d]
-				}
 				b, ok := bounds[id]
 				if !ok {
 					b = occupied[id] // nil unless the folder holds a decided file
 				}
-				bounds[id] = b.Union(c)
+				bounds[id] = b.Union(m.dir[d].bounds)
 			}
 		}
 		// rewritten on every plan, reused folders included: a range folder a

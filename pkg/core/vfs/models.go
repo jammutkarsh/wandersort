@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
@@ -157,21 +158,35 @@ type masterFile struct {
 	eventSegment       string // dated segment for unresolved clusters, e.g. "03-05"
 	dayOverride        string // date-level range label from assignTargetPaths step 6, e.g. "02_04"
 	targetPath         string
-	// the level that made each folder of targetPath's directory, one per
-	// segment — dirFor records it. The location entry is where the review
-	// tree hangs this file's GPS, whatever depth the Rules put it at.
-	dirLevels []string
-	// what each of those folders holds, one per segment — see boundsFor, or
-	// the placed folder's own bounds when route sent the file into one
-	dirBounds []Bounds
+	// dir is targetPath's directory, one segment per folder, top first: set
+	// by dirFor, or by route from the placed folder it sent the file into
+	dir []segment
 	// the folder_nodes rows persist linked this file to: its folder, and its
 	// location folder (0 = none)
 	nodeID, locationNodeID int64
 }
 
-// locationDepth is the index of the location folder in dirLevels, or -1.
+// segment is one folder of a planned directory: its name, the level that
+// made it, and what it holds (see boundsFor). The location segment is where
+// the review tree hangs a file's GPS, whatever depth the Rules put it at.
+type segment struct {
+	name   string
+	level  string
+	bounds Bounds
+}
+
+// dirPath is the "/"-joined names of dir.
+func dirPath(dir []segment) string {
+	names := make([]string, len(dir))
+	for i, s := range dir {
+		names[i] = s.name
+	}
+	return strings.Join(names, "/")
+}
+
+// locationDepth is the index of the location folder in dir, or -1.
 func (m *masterFile) locationDepth() int {
-	return slices.Index(m.dirLevels, RuleLocation)
+	return slices.IndexFunc(m.dir, func(s segment) bool { return s.level == RuleLocation })
 }
 
 // folderTime is the instant dated folder decisions use: folderDate when set,
