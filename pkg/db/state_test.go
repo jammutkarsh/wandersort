@@ -13,7 +13,7 @@ func TestForgetBeyondTheVariableLimit(t *testing.T) {
 	ctx := context.Background()
 	d := dbtest.New(t)
 	const n = 40_000
-	if _, err := d.ExecContext(ctx, `
+	if _, err := d.SQL.ExecContext(ctx, `
 		WITH RECURSIVE ids(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM ids WHERE id < ?)
 		INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
 			file_extension, media_type, discovered_at, last_seen_at)

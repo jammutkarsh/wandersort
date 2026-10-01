@@ -152,7 +152,9 @@ func prepare(ctx context.Context, database *db.DB, outputDir string, o Options) 
 		})
 		return rows, err
 	}
-	if err := db.RetryFailedTransfers(ctx, database.SQL); err != nil {
+	if err := database.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
+		return db.RetryFailedTransfers(ctx, tx)
+	}); err != nil {
 		return nil, err
 	}
 	freeSpace := o.freeSpace
@@ -240,7 +242,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 				target = wspath.ToLibrary(rel)
 			}
 			if !o.DryRun {
-				if err := markPlaced(database, r.ID, r.FileID, target); err != nil {
+				if err := markPlaced(ctx, database, r.ID, r.FileID, target); err != nil {
 					return &stepError{opCommit, fmt.Errorf("record the placed file: %w", err)}
 				}
 			}
@@ -251,7 +253,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		landed, size, xerr := xfer(ctx, src, dst, r.scanned(), commit)
 		if xerr != nil && committed == "" {
 			if !o.DryRun {
-				if err := markFailed(database, r.FileID, xerr); err != nil {
+				if err := markFailed(ctx, database, r.FileID, xerr); err != nil {
 					log.Error("could not record a failed transfer", "source", src, "error", err)
 				}
 			}
@@ -331,17 +333,10 @@ func cleanupPlacedDuplicates(ctx context.Context, database *db.DB, outputDir str
 		return nil
 	}
 
-	tx, err := database.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("clean up placed duplicates: begin tx: %w", err)
-	}
-	defer tx.Rollback()
-	if err := db.Forget(ctx, tx, ids); err != nil {
+	if err := database.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
+		return db.Forget(ctx, tx, ids)
+	}); err != nil {
 		return fmt.Errorf("clean up placed duplicates: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("clean up placed duplicates: commit: %w", err)
 	}
 	return nil
 }
@@ -359,18 +354,19 @@ func summary(o Options, rep Report, elapsed time.Duration) string {
 }
 
 // markPlaced records the file in the library at target. Synchronous: in a
-// batch, a rolled-back "placed" row could be reported as done.
-func markPlaced(database *db.DB, id, fileID int64, target string) error {
-	return database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+// batch, a rolled-back "placed" row could be reported as done. Not cancelled
+// with ctx: a verified copy is always recorded.
+func markPlaced(ctx context.Context, database *db.DB, id, fileID int64, target string) error {
+	return database.Writer.WriteSync(context.WithoutCancel(ctx), func(ctx context.Context, tx *sqlx.Tx) error {
 		return db.MarkPlaced(ctx, tx, id, fileID, target)
 	})
 }
 
 // markFailed records a TRANSFER error and leaves the row, and so its folder,
 // where it was planned: a retry lands where the user reviewed it.
-func markFailed(database *db.DB, fileID int64, xerr error) error {
+func markFailed(ctx context.Context, database *db.DB, fileID int64, xerr error) error {
 	xerr = db.WithStack(xerr) // frames must be taken here, not on the writer's goroutine
-	return database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+	return database.Writer.WriteSync(context.WithoutCancel(ctx), func(ctx context.Context, tx *sqlx.Tx) error {
 		return db.MarkFailed(ctx, tx, fileID, failedOp(xerr), xerr)
 	})
 }

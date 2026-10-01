@@ -199,7 +199,7 @@ func TestPlacedFolderIsNotReused(t *testing.T) {
 	ctx := context.Background()
 	h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 	placed := h.addFile(t, "lib/B.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
-	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
+	if _, err := h.d.SQL.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
 		t.Fatal(err)
 	}
 	placedFolder := dbtest.SeedEntry(t, h.d, placed, "2024/06_June/B.HEIC", "2024/06_June/B.HEIC")
@@ -262,7 +262,7 @@ func TestConfirmRenameLeavesCopiedFilesFolder(t *testing.T) {
 	ctx := context.Background()
 	copied := h.addFile(t, "lib/A.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 3024, 4032))
 	pending := h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:03 11:00:00", 0, 0, 3024, 4032))
-	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, copied); err != nil {
+	if _, err := h.d.SQL.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, copied); err != nil {
 		t.Fatal(err)
 	}
 	folder := dbtest.SeedEntry(t, h.d, copied, "2024/06_June/A.HEIC", "2024/06_June/A.HEIC")
@@ -310,7 +310,7 @@ func TestReplanJoinsLeftoversOfStoppedCopy(t *testing.T) {
 	ctx := context.Background()
 	copied := h.addFile(t, "lib/A.HEIC", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 3024, 4032))
 	pending := h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:03 11:00:00", 0, 0, 3024, 4032))
-	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, copied); err != nil {
+	if _, err := h.d.SQL.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, copied); err != nil {
 		t.Fatal(err)
 	}
 	dbtest.SeedEntry(t, h.d, copied, "2024/06_June/A.HEIC", "2024/06_June/A.HEIC")

@@ -28,7 +28,7 @@ func New(t testing.TB) *db.DB {
 // callers pick the id so tests can reference rows without querying back
 func SeedFile(t testing.TB, d *db.DB, id int64, dir, name string, size int64) {
 	t.Helper()
-	if _, err := d.ExecContext(context.Background(), `
+	if _, err := d.SQL.ExecContext(context.Background(), `
 		INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
 			file_extension, media_type, discovered_at, last_seen_at)
 		VALUES (?, ?, ?, ?, '2024-01-01T00:00:00.000000000Z', ?, 'IMAGE',
@@ -42,7 +42,7 @@ func SeedFile(t testing.TB, d *db.DB, id int64, dir, name string, size int64) {
 // holding only its hash — what execute verifies a copy against.
 func SeedHash(t testing.TB, d *db.DB, fileID int64, hash string) {
 	t.Helper()
-	if _, err := d.ExecContext(context.Background(),
+	if _, err := d.SQL.ExecContext(context.Background(),
 		`INSERT INTO file_metadata (file_hash, file_id) VALUES (?, ?)`, hash, fileID); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func SeedEntry(t testing.TB, d *db.DB, fileID int64, source, target string) int6
 		err := d.QueryRowContext(ctx,
 			`SELECT id FROM folder_nodes WHERE parent_id IS ? AND name = ?`, parent, name).Scan(&id)
 		if err != nil {
-			res, err := d.ExecContext(ctx,
+			res, err := d.SQL.ExecContext(ctx,
 				`INSERT INTO folder_nodes (parent_id, name, level) VALUES (?, ?, '')`, parent, name)
 			if err != nil {
 				t.Fatal(err)
@@ -70,7 +70,7 @@ func SeedEntry(t testing.TB, d *db.DB, fileID int64, source, target string) int6
 		}
 		parent = id
 	}
-	if _, err := d.ExecContext(ctx, `
+	if _, err := d.SQL.ExecContext(ctx, `
 		INSERT INTO virtual_fs_entries (file_id, source_path, node_id, target_path)
 		VALUES (?, ?, ?, ?)`, fileID, source, parent, target); err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func SeedEntry(t testing.TB, d *db.DB, fileID int64, source, target string) int6
 // SeedPlaced marks fileID as landed in the library.
 func SeedPlaced(t testing.TB, d *db.DB, fileID int64) {
 	t.Helper()
-	if _, err := d.ExecContext(context.Background(),
+	if _, err := d.SQL.ExecContext(context.Background(),
 		`UPDATE file_registry SET placed = 1 WHERE id = ?`, fileID); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func SeedPlaced(t testing.TB, d *db.DB, fileID int64) {
 // SeedTransferError gives fileID the TRANSFER failure execute would record.
 func SeedTransferError(t testing.TB, d *db.DB, fileID int64, message string) {
 	t.Helper()
-	if _, err := d.ExecContext(context.Background(), `
+	if _, err := d.SQL.ExecContext(context.Background(), `
 		INSERT INTO errors (file_id, stage, op, kind, detail, first_seen_at, last_seen_at)
 		VALUES (?, ?, 'copy', 'other', ?, '2024-01-01T00:00:00.000000000Z', '2024-01-01T00:00:00.000000000Z')`,
 		fileID, db.StageTransfer, `{"message":"`+message+`"}`); err != nil {

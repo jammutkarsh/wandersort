@@ -289,7 +289,7 @@ func TestExtractor(t *testing.T) {
 				t.Fatal(err)
 			}
 			dbtest.SeedFile(t, d, 1, root, "photo.jpg", 5)
-			if _, err := d.ExecContext(ctx, `
+			if _, err := d.SQL.ExecContext(ctx, `
 				CREATE TRIGGER lose_metadata BEFORE INSERT ON file_metadata
 				BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
 				t.Fatal(err)
@@ -337,7 +337,7 @@ func TestExtractor(t *testing.T) {
 				t.Fatal(err)
 			}
 			dbtest.SeedFile(t, d, 1, root, "IMG_0001.AAE", 5)
-			if _, err := d.ExecContext(ctx,
+			if _, err := d.SQL.ExecContext(ctx,
 				`UPDATE file_registry SET media_type = ? WHERE id = 1`, classifier.MediaTypeSidecar); err != nil {
 				t.Fatal(err)
 			}
@@ -707,7 +707,7 @@ func TestExtractor(t *testing.T) {
 					t.Fatal(err)
 				}
 				dbtest.SeedFile(t, d, id, root, name, int64(len(name)))
-				if _, err := d.ExecContext(ctx,
+				if _, err := d.SQL.ExecContext(ctx,
 					`UPDATE file_registry SET volume_uuid = ? WHERE id = ?`, uuid, id); err != nil {
 					t.Fatal(err)
 				}

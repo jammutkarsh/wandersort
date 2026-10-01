@@ -20,7 +20,7 @@ func TestResetWipesAllTables(t *testing.T) {
 		{`INSERT INTO user_labels (label, kind) VALUES ('Goa Trip', 'EVENT')`, nil},
 	}
 	for _, s := range seed {
-		if _, err := d.ExecContext(ctx, s.query, s.args...); err != nil {
+		if _, err := d.SQL.ExecContext(ctx, s.query, s.args...); err != nil {
 			t.Fatalf("seed %q: %v", s.query, err)
 		}
 	}
@@ -66,7 +66,7 @@ func TestResetKeepsLibrarySettings(t *testing.T) {
 	ctx := context.Background()
 	d := dbtest.New(t)
 
-	if _, err := d.ExecContext(ctx, `INSERT INTO library_settings
+	if _, err := d.SQL.ExecContext(ctx, `INSERT INTO library_settings
 		(id, rules, collapse_levels, saved_places_date_only, merge_same_location_days, saved_places)
 		VALUES (1, '["device"]', 1, 1, 1, '["Indore"]')`); err != nil {
 		t.Fatal(err)

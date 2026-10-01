@@ -310,13 +310,7 @@ func (s *Scanner) sweep(ctx context.Context, scan int64, r sweptRoot, gaps walkG
 		}
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sweep %q: begin tx: %w", root, err)
-	}
-	defer tx.Rollback()
-
-	query := `DELETE FROM file_registry WHERE last_seen_scan < ? AND ` + underDir +
+	query := `SELECT id FROM file_registry WHERE last_seen_scan < ? AND ` + underDir +
 		` AND (volume_uuid IS NULL OR ? = '' OR volume_uuid = ?)`
 	args := []any{scan, trimmed, prefix, prefixEnd, r.volume, r.volume}
 	if !gaps.empty() {
@@ -331,16 +325,17 @@ func (s *Scanner) sweep(ctx context.Context, scan int64, r sweptRoot, gaps walkG
 		}
 	}
 
-	// The registry row alone: metadata, plan and error rows go with it, by
-	// ON DELETE CASCADE
-	result, err := tx.ExecContext(ctx, query, args...)
-	if err != nil {
+	// the registry rows alone: metadata, plan and error rows cascade
+	var swept int
+	if err := s.db.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
+		var ids []int64
+		if err := tx.SelectContext(ctx, &ids, query, args...); err != nil {
+			return err
+		}
+		swept = len(ids)
+		return db.Forget(ctx, tx, ids)
+	}); err != nil {
 		return fmt.Errorf("sweep %q: %w", root, err)
-	}
-	swept, _ := result.RowsAffected()
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("sweep %q: commit: %w", root, err)
 	}
 
 	if swept > 0 {
@@ -356,12 +351,6 @@ const underDir = `(file_dir = ? OR (file_dir >= ? AND file_dir < ?))`
 // storeScan builds the BulkWriter op for one discovered file. It must touch
 // nothing outside tx: a failed batch replays every op.
 func (s *Scanner) storeScan(file FileDiscovery, scan int64, force bool) db.DBOperation {
-	// a changed file (size/mtime, or any under force) is a new file: delete
-	// the row (dependants cascade) and let the insert make a fresh one
-	const replaceChanged = `
-		DELETE FROM file_registry
-		WHERE file_dir = ? AND file_name = ?
-		  AND (file_size != ? OR file_modified_at != ? OR ? = 1)`
 	const query = `
 		INSERT INTO file_registry (
 			file_dir, file_name, file_size, file_modified_at,
@@ -375,18 +364,13 @@ func (s *Scanner) storeScan(file FileDiscovery, scan int64, force bool) db.DBOpe
 			file_origin = excluded.file_origin,
 			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid)`
 
-	forceInt := 0
-	if force {
-		forceInt = 1
-	}
-
 	return func(ctx context.Context, tx *sqlx.Tx) error {
 		now := db.FormatTime(time.Now())
 		modifiedAt := db.FormatTime(file.ModTime)
-		// an error rolls back the delete too; the writer replays the batch
-		// without this op and reports it at Flush
-		if _, err := tx.ExecContext(ctx, replaceChanged,
-			file.Dir, file.Name, file.Size, modifiedAt, forceInt); err != nil {
+		// a changed file (or any under force) is a new file: forget the old row
+		// and let the insert make a fresh one. An error rolls both back; the
+		// writer replays the batch without this op and reports it at Flush.
+		if err := db.ForgetChanged(ctx, tx, file.Dir, file.Name, file.Size, modifiedAt, force); err != nil {
 			return fmt.Errorf("replace changed %s: %w", file.Name, err)
 		}
 		if _, err := tx.ExecContext(ctx, query,

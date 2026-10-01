@@ -77,14 +77,13 @@ func (bw *BulkWriter) Write(op DBOperation) bool {
 // and returns its outcome (nil = committed). Use it when the outcome must be
 // reported. It never joins a batch: a batch replays failed ops, so an op in
 // one could report success from a rolled-back transaction.
-func (bw *BulkWriter) WriteSync(op DBOperation) error {
+func (bw *BulkWriter) WriteSync(ctx context.Context, op DBOperation) error {
 	bw.drain()
 	bw.mu.RLock()
 	defer bw.mu.RUnlock()
 	if bw.closed.Load() {
 		return fmt.Errorf("writer closed")
 	}
-	ctx := context.Background()
 	tx, err := bw.sqlDB.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -97,14 +96,13 @@ func (bw *BulkWriter) WriteSync(op DBOperation) error {
 }
 
 // DryRun runs op in its own transaction and always rolls it back.
-func (bw *BulkWriter) DryRun(op DBOperation) error {
+func (bw *BulkWriter) DryRun(ctx context.Context, op DBOperation) error {
 	bw.drain()
 	bw.mu.RLock()
 	defer bw.mu.RUnlock()
 	if bw.closed.Load() {
 		return fmt.Errorf("writer closed")
 	}
-	ctx := context.Background()
 	tx, err := bw.sqlDB.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)

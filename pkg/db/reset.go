@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"fmt"
+
+	"github.com/jmoiron/sqlx"
 )
 
 // ResetCounts reports how many rows were deleted from each table
@@ -16,56 +18,36 @@ type ResetCounts struct {
 // ResetAll deletes all application data in FK-safe order within a transaction
 func (d *DB) ResetAll(ctx context.Context) (ResetCounts, error) {
 	var resp ResetCounts
-
-	tx, err := d.BeginTx(ctx, nil)
+	err := d.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
+		// entries first so the count is theirs; folders after the entries
+		// that reference them; the registry cascades to metadata and errors,
+		// so metadata is counted first; user_labels too, so a reset library
+		// behaves like a new one
+		steps := []struct {
+			what  string
+			query string
+			count *int64
+		}{
+			{"vfs entries", `DELETE FROM virtual_fs_entries`, &resp.VFSEntriesDeleted},
+			{"folder nodes", `DELETE FROM folder_nodes`, nil},
+			{"metadata", `DELETE FROM file_metadata`, &resp.FileMetadataDeleted},
+			{"files", `DELETE FROM file_registry`, &resp.FilesDeleted},
+			{"user labels", `DELETE FROM user_labels`, &resp.UserLabelsDeleted},
+		}
+		for _, step := range steps {
+			result, err := tx.ExecContext(ctx, step.query)
+			if err != nil {
+				return fmt.Errorf("delete %s: %w", step.what, err)
+			}
+			if step.count != nil {
+				*step.count, _ = result.RowsAffected()
+			}
+		}
+		return nil
+	})
 	if err != nil {
-		return ResetCounts{}, fmt.Errorf("reset: begin tx: %w", err)
+		return ResetCounts{}, fmt.Errorf("reset: %w", err)
 	}
-	defer tx.Rollback()
-
-	var count int64
-
-	// entries first so the count is theirs; the cascade would delete them anyway
-	result, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries`)
-	if err != nil {
-		return ResetCounts{}, fmt.Errorf("reset: delete vfs entries: %w", err)
-	}
-	count, _ = result.RowsAffected()
-	resp.VFSEntriesDeleted = count
-
-	// the plan's folders go after the entries that reference them
-	if _, err := tx.ExecContext(ctx, `DELETE FROM folder_nodes`); err != nil {
-		return ResetCounts{}, fmt.Errorf("reset: delete folder nodes: %w", err)
-	}
-
-	// deleting the registry cascades to metadata and errors; count metadata first
-	result, err = tx.ExecContext(ctx, `DELETE FROM file_metadata`)
-	if err != nil {
-		return ResetCounts{}, fmt.Errorf("reset: delete metadata: %w", err)
-	}
-	count, _ = result.RowsAffected()
-	resp.FileMetadataDeleted = count
-
-	result, err = tx.ExecContext(ctx, `DELETE FROM file_registry`)
-	if err != nil {
-		return ResetCounts{}, fmt.Errorf("reset: delete files: %w", err)
-	}
-	count, _ = result.RowsAffected()
-	resp.FilesDeleted = count
-
-	// Factory wipe: confirmed folder names and anchors go too, so a reset
-	// output dir behaves exactly like a brand-new one
-	result, err = tx.ExecContext(ctx, `DELETE FROM user_labels`)
-	if err != nil {
-		return ResetCounts{}, fmt.Errorf("reset: delete user labels: %w", err)
-	}
-	count, _ = result.RowsAffected()
-	resp.UserLabelsDeleted = count
-
-	if err := tx.Commit(); err != nil {
-		return ResetCounts{}, fmt.Errorf("reset: commit: %w", err)
-	}
-
 	return resp, nil
 }
 

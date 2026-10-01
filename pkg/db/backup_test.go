@@ -79,13 +79,13 @@ func TestRestoreBringsBackBackedUpState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Goa', 'EVENT')`); err != nil {
+	if _, err := d.SQL.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Goa', 'EVENT')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.Backup(ctx, dest); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.ExecContext(ctx, `DELETE FROM user_labels`); err != nil {
+	if _, err := d.SQL.ExecContext(ctx, `DELETE FROM user_labels`); err != nil {
 		t.Fatal(err)
 	}
 	d.Close()
@@ -163,7 +163,7 @@ func newBackedUp(t *testing.T) (live, dest string) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	if _, err := d.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Goa', 'EVENT')`); err != nil {
+	if _, err := d.SQL.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Goa', 'EVENT')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.Backup(ctx, dest); err != nil {
@@ -323,7 +323,7 @@ func TestOpenBacksUpBeforeMigratingAndRefusesNewerSchema(t *testing.T) {
 		t.Fatalf("a fresh database was backed up: %v", err)
 	}
 	// pretend the newest migration has not run yet
-	if _, err := d.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = (SELECT MAX(version) FROM schema_migrations)`); err != nil {
+	if _, err := d.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = (SELECT MAX(version) FROM schema_migrations)`); err != nil {
 		t.Fatal(err)
 	}
 	d.Close()
@@ -339,7 +339,7 @@ func TestOpenBacksUpBeforeMigratingAndRefusesNewerSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (999)`); err != nil {
+	if _, err := d.SQL.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (999)`); err != nil {
 		t.Fatal(err)
 	}
 	d.Close()

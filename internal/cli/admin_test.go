@@ -182,7 +182,7 @@ func seedDB(t *testing.T, dbPath string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.ExecContext(context.Background(), `INSERT INTO user_labels (label, kind) VALUES ('Goa', 'EVENT')`); err != nil {
+	if _, err := d.SQL.ExecContext(context.Background(), `INSERT INTO user_labels (label, kind) VALUES ('Goa', 'EVENT')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.Close(); err != nil {

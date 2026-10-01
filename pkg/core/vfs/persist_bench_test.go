@@ -26,7 +26,7 @@ func seedRegistry(b *testing.B, d *db.DB, n int) {
 			'.HEIC', 'IMAGE', '2024-06-01T10:00:00.000000000Z', '2024-06-01T10:00:00.000000000Z')`,
 			i+1, i%20, i)
 	}
-	if _, err := d.ExecContext(context.Background(), sb.String()); err != nil {
+	if _, err := d.SQL.ExecContext(context.Background(), sb.String()); err != nil {
 		b.Fatal(err)
 	}
 }

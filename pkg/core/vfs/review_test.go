@@ -68,7 +68,7 @@ func TestReview(t *testing.T) {
 			}
 			// typed in an earlier review too: remembering it again is not an
 			// error, and it stays one name
-			if _, err := h.d.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Manali', 'EVENT')`); err != nil {
+			if _, err := h.d.SQL.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Manali', 'EVENT')`); err != nil {
 				t.Fatal(err)
 			}
 
@@ -394,7 +394,7 @@ func TestReviewConfirmAvoidsPlacedNames(t *testing.T) {
 	fresh := h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
 	placed := h.addFile(t, "lib/a.heic", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
 	ctx := context.Background()
-	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
+	if _, err := h.d.SQL.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
 		t.Fatal(err)
 	}
 	dbtest.SeedEntry(t, h.d, placed, "lib/a.heic", "2024/06_June/Manali/a.heic")
@@ -432,7 +432,7 @@ func TestReviewConfirmKeepsPairSuffix(t *testing.T) {
 	edit := h.addFile(t, "dump/IMG_0001.AAE", classifier.MediaTypeSidecar, classifier.CommonMetadata{})
 	placed := h.addFile(t, "lib/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:20 14:00:00", 0, 0, 3024, 4032))
 	ctx := context.Background()
-	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
+	if _, err := h.d.SQL.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
 		t.Fatal(err)
 	}
 	dbtest.SeedEntry(t, h.d, placed, "lib/IMG_0001.HEIC", "2024/06_June/Manali/IMG_0001.HEIC")

@@ -226,7 +226,7 @@ func forget(ctx context.Context, database *db.DB, outputDir string, ids []int64)
 	if err := database.Backup(ctx, filepath.Join(outputDir, db.BackupFileName)); err != nil {
 		return fmt.Errorf("back up the database before forgetting missing files: %w", err)
 	}
-	return database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+	return database.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
 		return db.Forget(ctx, tx, ids)
 	})
 }

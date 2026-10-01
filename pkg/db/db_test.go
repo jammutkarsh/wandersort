@@ -249,7 +249,7 @@ func TestQueryContextAndQueryRowContext(t *testing.T) {
 	t.Cleanup(func() { d.Close() })
 	ctx := context.Background()
 
-	if _, err := d.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('a', 'EVENT')`); err != nil {
+	if _, err := d.SQL.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('a', 'EVENT')`); err != nil {
 		t.Fatal(err)
 	}
 

@@ -204,7 +204,7 @@ func TestScanner(t *testing.T) {
 			rows := registryByName(t, d)
 			dbtest.SeedHash(t, d, rows["lost.jpg"].ID, "hash-lost")
 
-			if _, err := d.ExecContext(ctx, `
+			if _, err := d.SQL.ExecContext(ctx, `
 				CREATE TRIGGER lose_upsert BEFORE UPDATE ON file_registry
 				WHEN NEW.file_name = 'lost.jpg'
 				BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
@@ -519,10 +519,10 @@ func TestScanner(t *testing.T) {
 			dbtest.SeedFile(t, d, 2, "/lib", "unseen.jpg", 10)
 			// seen by scan 7, but stamped as if the clock had stepped back a
 			// year; unseen stamped far in the future
-			if _, err := d.ExecContext(ctx, `UPDATE file_registry SET last_seen_scan = 7, last_seen_at = '2000-01-01T00:00:00.000000000Z' WHERE id = 1`); err != nil {
+			if _, err := d.SQL.ExecContext(ctx, `UPDATE file_registry SET last_seen_scan = 7, last_seen_at = '2000-01-01T00:00:00.000000000Z' WHERE id = 1`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := d.ExecContext(ctx, `UPDATE file_registry SET last_seen_scan = 6, last_seen_at = '2999-01-01T00:00:00.000000000Z' WHERE id = 2`); err != nil {
+			if _, err := d.SQL.ExecContext(ctx, `UPDATE file_registry SET last_seen_scan = 6, last_seen_at = '2999-01-01T00:00:00.000000000Z' WHERE id = 2`); err != nil {
 				t.Fatal(err)
 			}
 			if err := sc.sweep(ctx, 7, sweptRoot{root: "/lib", seen: 1}, walkGaps{}); err != nil {
@@ -593,7 +593,7 @@ func TestScanner(t *testing.T) {
 					sc, d := newDBScanner(t)
 					dbtest.SeedFile(t, d, 1, "/Volumes/NO NAME/DCIM", "a.jpg", 10)
 					if tt.rowVolume != "" {
-						if _, err := d.ExecContext(ctx, `UPDATE file_registry SET volume_uuid = ?`, tt.rowVolume); err != nil {
+						if _, err := d.SQL.ExecContext(ctx, `UPDATE file_registry SET volume_uuid = ?`, tt.rowVolume); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -613,7 +613,7 @@ func TestScanner(t *testing.T) {
 			sc, d := newDBScanner(t)
 
 			dbtest.SeedFile(t, d, 1, "/gone", "vanished.jpg", 10)
-			if _, err := d.ExecContext(ctx,
+			if _, err := d.SQL.ExecContext(ctx,
 				`INSERT INTO file_metadata (file_hash, file_id) VALUES ('vanished-hash', 1)`); err != nil {
 				t.Fatal(err)
 			}

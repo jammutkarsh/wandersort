@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/jmoiron/sqlx"
+
 	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
@@ -91,7 +93,8 @@ func SaveSettings(ctx context.Context, database *db.DB, s Settings) error {
 	if err != nil {
 		return fmt.Errorf("save library settings: %w", err)
 	}
-	if _, err := database.SQL.ExecContext(ctx, `INSERT INTO library_settings
+	if err := database.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO library_settings
 		(id, rules, collapse_levels, saved_places_date_only, merge_same_location_days, saved_places)
 		VALUES (1, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET rules = excluded.rules,
@@ -99,7 +102,9 @@ func SaveSettings(ctx context.Context, database *db.DB, s Settings) error {
 			saved_places_date_only = excluded.saved_places_date_only,
 			merge_same_location_days = excluded.merge_same_location_days,
 			saved_places = excluded.saved_places`,
-		string(rules), s.CollapseLevels, s.SavedPlacesDateOnly, s.MergeSameLocationDays, string(places)); err != nil {
+			string(rules), s.CollapseLevels, s.SavedPlacesDateOnly, s.MergeSameLocationDays, string(places))
+		return err
+	}); err != nil {
 		return fmt.Errorf("save library settings: %w", err)
 	}
 	return nil

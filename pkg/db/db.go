@@ -36,8 +36,9 @@ const (
 	connMaxLifetime = 0
 )
 
-// DB wraps *sql.DB with a BulkWriter for database operations
-// BulkWriter is nil for a location database (OpenLocation)
+// DB is an open database. Reads use SQL; every write goes through Writer
+// (Write batched, WriteSync for an outcome), so writes stay in one order and
+// their failures are reported. Writer is nil for the location database.
 type DB struct {
 	SQL    *sqlx.DB
 	Writer *BulkWriter
@@ -181,14 +182,6 @@ func (db *DB) Optimize(ctx context.Context) error {
 		return fmt.Errorf("shrink memory failed: %w", err)
 	}
 	return nil
-}
-
-func (db *DB) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sqlx.Tx, error) {
-	return db.SQL.BeginTxx(ctx, opts)
-}
-
-func (db *DB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return db.SQL.ExecContext(ctx, query, args...)
 }
 
 func (db *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {

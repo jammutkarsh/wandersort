@@ -67,6 +67,7 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 - `placed` and registry deletes go only through `pkg/db/state.go`. `MarkPlaced` runs in `WriteSync`.
 - Execute only copies: no code path deletes or modifies a source file.
 - Connection pragmas live in the DSN (`appDSN`); `synchronous=FULL`, `mmap_size=0`, foreign keys asserted.
+- Every write goes through `db.Writer` (`Write` batched, `WriteSync` when the outcome matters); `DB.SQL` is for reads. `Flush` returns writes lost since the last flush.
 - `BulkWriter` ops must touch nothing outside their transaction (failed batches replay).
 - No tag yet: edit existing migrations in place; delete `.wandersort.db` after such an edit.
 - Imports point down. `pkg/path`, `pkg/logger`, `pkg/lock`, `pkg/atomicfile` import nothing else in the project.

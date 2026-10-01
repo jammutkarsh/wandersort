@@ -42,7 +42,7 @@ func (h *harness) addFile(t *testing.T, relPath, mediaType string, meta classifi
 	id := h.nextID
 	dir := filepath.Join("/src", filepath.Dir(relPath))
 	name := filepath.Base(relPath)
-	if _, err := h.d.ExecContext(context.Background(), `
+	if _, err := h.d.SQL.ExecContext(context.Background(), `
 		INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
 			file_extension, media_type, discovered_at, last_seen_at)
 		VALUES (?, ?, ?, 1024, '2024-06-01T10:00:00.000000000Z', ?, ?,
@@ -50,7 +50,7 @@ func (h *harness) addFile(t *testing.T, relPath, mediaType string, meta classifi
 		id, dir, name, filepath.Ext(name), mediaType); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.d.ExecContext(context.Background(), `
+	if _, err := h.d.SQL.ExecContext(context.Background(), `
 		INSERT INTO file_metadata (file_hash, file_id,
 			exif_image_width, exif_image_height, exif_orientation,
 			exif_gps_latitude, exif_gps_longitude, exif_make, exif_model,
@@ -72,7 +72,7 @@ func (h *harness) addFile(t *testing.T, relPath, mediaType string, meta classifi
 func (h *harness) addScreenshot(t *testing.T, relPath string, meta classifier.CommonMetadata) int64 {
 	t.Helper()
 	id := h.addFile(t, relPath, classifier.MediaTypeImage, meta)
-	if _, err := h.d.ExecContext(context.Background(),
+	if _, err := h.d.SQL.ExecContext(context.Background(),
 		`UPDATE file_metadata SET is_screenshot = 1 WHERE file_id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -637,7 +637,7 @@ func TestRebuildRemovesStaleEntries(t *testing.T) {
 
 	// The second file turns out to be a copy of the first: once they share a
 	// hash only one can be the master, and the loser's entry is stale.
-	if _, err := h.d.ExecContext(context.Background(),
+	if _, err := h.d.SQL.ExecContext(context.Background(),
 		`UPDATE file_metadata SET file_hash = 'shared' WHERE file_id IN (?, ?)`, keep, gone); err != nil {
 		t.Fatal(err)
 	}
@@ -736,14 +736,14 @@ func TestPlacedFileIsNeverReproposed(t *testing.T) {
 		metaWith("2024:06:03 14:00:00", 15.5439, 73.7553, 3024, 4032))
 
 	ctx := context.Background()
-	if _, err := h.d.ExecContext(ctx,
+	if _, err := h.d.SQL.ExecContext(ctx,
 		`UPDATE file_metadata SET file_hash = 'shared' WHERE file_id IN (?, ?)`, placed, dup); err != nil {
 		t.Fatal(err)
 	}
 	// Nothing has to demote the duplicate: a hash group holding a placed file
 	// is dropped whole, because that file is the master of its hash by virtue
 	// of being on disk at its target.
-	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
+	if _, err := h.d.SQL.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
 		t.Fatal(err)
 	}
 	dbtest.SeedEntry(t, h.d, placed, "2024/06_June/Goa/Photos/IMG_0001.HEIC", "2024/06_June/Goa/Photos/IMG_0001.HEIC")

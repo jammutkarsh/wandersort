@@ -13,7 +13,7 @@ func TestSchemaOneMetadataRowPerFile(t *testing.T) {
 	d := dbtest.New(t)
 	dbtest.SeedFile(t, d, 1, "/src", "a.jpg", 1)
 	dbtest.SeedHash(t, d, 1, "blake3:aa")
-	if _, err := d.ExecContext(context.Background(),
+	if _, err := d.SQL.ExecContext(context.Background(),
 		`INSERT INTO file_metadata (file_hash, file_id) VALUES ('blake3:bb', 1)`); err == nil {
 		t.Error("a second metadata row for one file was accepted")
 	}
@@ -23,10 +23,10 @@ func TestSchemaOneMetadataRowPerFile(t *testing.T) {
 func TestSchemaLabelsAreASet(t *testing.T) {
 	d := dbtest.New(t)
 	ctx := context.Background()
-	if _, err := d.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Goa', 'EVENT')`); err != nil {
+	if _, err := d.SQL.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Goa', 'EVENT')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Goa', 'EVENT')`); err == nil {
+	if _, err := d.SQL.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('Goa', 'EVENT')`); err == nil {
 		t.Error("the same label was stored twice")
 	}
 }
@@ -36,7 +36,7 @@ func TestSchemaLabelsAreASet(t *testing.T) {
 // timestamp that sorts out of place.
 func TestSchemaRefusesWrongTypes(t *testing.T) {
 	d := dbtest.New(t)
-	if _, err := d.ExecContext(context.Background(), `
+	if _, err := d.SQL.ExecContext(context.Background(), `
 		INSERT INTO file_registry (file_dir, file_name, file_size, file_modified_at,
 			file_extension, discovered_at, last_seen_at)
 		VALUES ('/src', 'a.jpg', '12 KB', 't', '.jpg', 't', 't')`); err == nil {

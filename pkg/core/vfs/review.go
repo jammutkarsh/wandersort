@@ -194,7 +194,7 @@ func Labels(ctx context.Context, database *db.DB, log logger.Logger) []string {
 // Confirm applies the edited tree onto the plan's folders and entries, and
 // records typed names in user_labels. Synchronous: nil means committed.
 func Confirm(ctx context.Context, database *db.DB, roots []Node) error {
-	if err := database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+	if err := database.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
 		return confirm(ctx, tx, roots)
 	}); err != nil {
 		return fmt.Errorf("confirm vfs: %w", err)

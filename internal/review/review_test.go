@@ -104,7 +104,7 @@ func TestReview(t *testing.T) {
 
 			for i, name := range []string{"a.jpg", "b.jpg"} {
 				fileID := int64(i + 1)
-				if _, err := d.ExecContext(ctx, `
+				if _, err := d.SQL.ExecContext(ctx, `
 			INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
 				file_extension, media_type, discovered_at, last_seen_at)
 			VALUES (?, '/src', ?, 1024, '2024-06-01T10:00:00.000000000Z', '.jpg', 'IMAGE',
@@ -1330,7 +1330,7 @@ func TestReview(t *testing.T) {
 func insertVFSEntry(t *testing.T, d *db.DB, fileID int64, sourcePath, targetPath string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := d.ExecContext(ctx, `
+	if _, err := d.SQL.ExecContext(ctx, `
 		INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
 			file_extension, media_type, discovered_at, last_seen_at)
 		VALUES (?, '/src', ?, 1024, '2024-06-01T10:00:00.000000000Z', '.jpg', 'IMAGE',

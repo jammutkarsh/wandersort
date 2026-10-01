@@ -25,7 +25,7 @@ func (h *harness) placeFile(t *testing.T, meta classifier.CommonMetadata, target
 	t.Helper()
 	ctx := context.Background()
 	id := h.addFile(t, "lib/"+path.Base(target), classifier.MediaTypeImage, meta)
-	if _, err := h.d.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, id); err != nil {
+	if _, err := h.d.SQL.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
 	var parent int64
@@ -34,7 +34,7 @@ func (h *harness) placeFile(t *testing.T, meta classifier.CommonMetadata, target
 		err := h.d.QueryRowContext(ctx, `SELECT id FROM folder_nodes WHERE parent_id IS ? AND name = ?`,
 			nullableID(parent), name).Scan(&folder)
 		if err != nil {
-			res, err := h.d.ExecContext(ctx, `INSERT INTO folder_nodes (parent_id, name, level, bounds) VALUES (?, ?, ?, ?)`,
+			res, err := h.d.SQL.ExecContext(ctx, `INSERT INTO folder_nodes (parent_id, name, level, bounds) VALUES (?, ?, ?, ?)`,
 				nullableID(parent), name, levels[i], bounds[i])
 			if err != nil {
 				t.Fatal(err)
@@ -45,7 +45,7 @@ func (h *harness) placeFile(t *testing.T, meta classifier.CommonMetadata, target
 		}
 		parent = folder
 	}
-	if _, err := h.d.ExecContext(ctx, `INSERT INTO virtual_fs_entries (file_id, source_path, node_id, target_path)
+	if _, err := h.d.SQL.ExecContext(ctx, `INSERT INTO virtual_fs_entries (file_id, source_path, node_id, target_path)
 		VALUES (?, ?, ?, ?)`, id, target, parent, target); err != nil {
 		t.Fatal(err)
 	}

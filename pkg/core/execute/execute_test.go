@@ -301,7 +301,7 @@ func TestMarkResultRecordsAndClearsError(t *testing.T) {
 	d := dbtest.New(t)
 	seedApproved(t, d, 1, "A.jpg", "hello")
 
-	if err := markFailed(d, 1, &stepError{opStat, fmt.Errorf("source missing: %w", fs.ErrNotExist)}); err != nil {
+	if err := markFailed(context.Background(), d, 1, &stepError{opStat, fmt.Errorf("source missing: %w", fs.ErrNotExist)}); err != nil {
 		t.Fatal(err)
 	}
 	var row struct {
@@ -315,7 +315,7 @@ func TestMarkResultRecordsAndClearsError(t *testing.T) {
 		t.Errorf("error row = %+v, want op stat, kind not-found", row)
 	}
 
-	if err := markPlaced(d, 1, 1, "A.jpg"); err != nil {
+	if err := markPlaced(context.Background(), d, 1, 1, "A.jpg"); err != nil {
 		t.Fatal(err)
 	}
 	if status, _ := rowStatus(t, d, 1); status != statePlaced {
@@ -335,10 +335,10 @@ func TestMarkPlacedReportsItsError(t *testing.T) {
 	// the DELETE below it is fine — the failure we can force is a closed
 	// writer, which is what a shutdown mid-run looks like.
 	d.Writer.Close()
-	if err := markPlaced(d, 1, 1, "A.jpg"); err == nil {
+	if err := markPlaced(context.Background(), d, 1, 1, "A.jpg"); err == nil {
 		t.Error("markPlaced returned nil after the writer was closed")
 	}
-	if err := markFailed(d, 1, fmt.Errorf("boom")); err == nil {
+	if err := markFailed(context.Background(), d, 1, fmt.Errorf("boom")); err == nil {
 		t.Error("markFailed returned nil after the writer was closed")
 	}
 }
@@ -484,7 +484,7 @@ func TestRunCleanupLeavesErrorRowsAlone(t *testing.T) {
 	// row 2's source doesn't exist on disk, so it lands at ERROR
 	dbtest.SeedFile(t, d, 2, "/no/such/dir", "missing.jpg", 0)
 	dbtest.SeedEntry(t, d, 2, "/no/such/dir/missing.jpg", "missing.jpg")
-	if _, err := d.ExecContext(context.Background(),
+	if _, err := d.SQL.ExecContext(context.Background(),
 		`INSERT INTO file_metadata (file_hash, file_id) VALUES ('missing-hash', 2)`); err != nil {
 		t.Fatal(err)
 	}
@@ -792,7 +792,7 @@ func TestLeftBehindNamesNeverReadFiles(t *testing.T) {
 	seedApproved(t, d, 1, "read.jpg", "read")
 	dbtest.SeedFile(t, d, 2, "/card/DCIM", "failed.jpg", 1)
 	dbtest.SeedFile(t, d, 3, "/card/DCIM", "unread.jpg", 1)
-	if err := d.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+	if err := d.Writer.WriteSync(context.Background(), func(ctx context.Context, tx *sqlx.Tx) error {
 		return db.RecordError(ctx, tx, 2, db.StageRead, "open", errors.New("reader dropped out"))
 	}); err != nil {
 		t.Fatal(err)

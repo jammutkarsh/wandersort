@@ -62,7 +62,7 @@ func TestFlushReportsALostWriteOnce(t *testing.T) {
 		return err
 	})
 	d.Writer.Write(func(context.Context, *sqlx.Tx) error { return poison })
-	if err := d.Writer.WriteSync(func(context.Context, *sqlx.Tx) error { return nil }); err != nil {
+	if err := d.Writer.WriteSync(context.Background(), func(context.Context, *sqlx.Tx) error { return nil }); err != nil {
 		t.Fatalf("WriteSync: %v", err)
 	}
 
@@ -97,7 +97,7 @@ func TestDryRunRollsBack(t *testing.T) {
 		}
 		return n
 	}
-	if err := d.Writer.DryRun(func(ctx context.Context, tx *sqlx.Tx) error {
+	if err := d.Writer.DryRun(context.Background(), func(ctx context.Context, tx *sqlx.Tx) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('dry', 'EVENT')`); err != nil {
 			return err
 		}
@@ -112,11 +112,11 @@ func TestDryRunRollsBack(t *testing.T) {
 		t.Errorf("after the dry run: count = %d, want nothing kept", n)
 	}
 	wantErr := fmt.Errorf("deliberate failure")
-	if err := d.Writer.DryRun(func(context.Context, *sqlx.Tx) error { return wantErr }); !errors.Is(err, wantErr) {
+	if err := d.Writer.DryRun(context.Background(), func(context.Context, *sqlx.Tx) error { return wantErr }); !errors.Is(err, wantErr) {
 		t.Errorf("DryRun error = %v, want %v", err, wantErr)
 	}
 	d.Writer.Close()
-	if err := d.Writer.DryRun(func(context.Context, *sqlx.Tx) error { return nil }); err == nil {
+	if err := d.Writer.DryRun(context.Background(), func(context.Context, *sqlx.Tx) error { return nil }); err == nil {
 		t.Error("DryRun on a closed writer must fail")
 	}
 }
@@ -128,7 +128,7 @@ func TestWriteSyncReturnsOperationOutcome(t *testing.T) {
 	}
 	t.Cleanup(func() { d.Close() })
 
-	if err := d.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+	if err := d.Writer.WriteSync(context.Background(), func(ctx context.Context, tx *sqlx.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('sync', 'EVENT')`)
 		return err
 	}); err != nil {
@@ -143,7 +143,7 @@ func TestWriteSyncReturnsOperationOutcome(t *testing.T) {
 	}
 
 	wantErr := fmt.Errorf("deliberate failure")
-	if err := d.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+	if err := d.Writer.WriteSync(context.Background(), func(ctx context.Context, tx *sqlx.Tx) error {
 		return wantErr
 	}); !errors.Is(err, wantErr) {
 		t.Fatalf("WriteSync error case: got %v, want %v", err, wantErr)
@@ -170,13 +170,13 @@ func TestWriteSyncTruthfulBesideFailingBatch(t *testing.T) {
 
 	// sees what was enqueued before it
 	var before int
-	if err := d.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+	if err := d.Writer.WriteSync(context.Background(), func(ctx context.Context, tx *sqlx.Tx) error {
 		return tx.GetContext(ctx, &before, `SELECT COUNT(*) FROM user_labels WHERE label = 'before'`)
 	}); err != nil || before != 1 {
 		t.Fatalf("WriteSync ran before earlier writes: err=%v before=%d", err, before)
 	}
 
-	if err := d.Writer.WriteSync(insert("sync")); err != nil {
+	if err := d.Writer.WriteSync(context.Background(), insert("sync")); err != nil {
 		t.Fatalf("WriteSync: %v", err)
 	}
 	// an op that writes and then fails leaves nothing behind
@@ -186,7 +186,7 @@ func TestWriteSyncTruthfulBesideFailingBatch(t *testing.T) {
 		}
 		return errors.New("late failure")
 	}
-	if err := d.Writer.WriteSync(failing); err == nil {
+	if err := d.Writer.WriteSync(context.Background(), failing); err == nil {
 		t.Fatal("WriteSync reported success for a failing op")
 	}
 	var got []string

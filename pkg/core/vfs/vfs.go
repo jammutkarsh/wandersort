@@ -159,7 +159,7 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 // transaction and leaves decided rows (placed, or TRANSFER error) alone, except
 // a failed row whose file is no longer an elected master.
 func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
-	err := v.db.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
+	err := v.db.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
 		// A placed file's row is kept unconditionally. A failed row stays only
 		// while its file is still the elected master of its hash.
 		var failedIDs []int64

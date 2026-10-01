@@ -65,6 +65,18 @@ func Forget(ctx context.Context, tx *sqlx.Tx, fileIDs []int64) error {
 	return nil
 }
 
+// ForgetChanged forgets the registry row at dir/name when the file there is no
+// longer the one recorded (size or modification time differs), or always when
+// force is set; dependants cascade.
+func ForgetChanged(ctx context.Context, tx *sqlx.Tx, dir, name string, size int64, modifiedAt string, force bool) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM file_registry
+		WHERE file_dir = ? AND file_name = ? AND (file_size != ? OR file_modified_at != ? OR ?)`,
+		dir, name, size, modifiedAt, force); err != nil {
+		return fmt.Errorf("forget changed file: %w", err)
+	}
+	return nil
+}
+
 // maxInIDs is how many ids one IN (?) statement binds; SQLite allows 32,766
 // variables per statement.
 const maxInIDs = 10_000

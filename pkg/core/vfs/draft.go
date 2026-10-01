@@ -322,7 +322,7 @@ func PreviewDraft(ctx context.Context, database *db.DB, outputDir string, read f
 	if err != nil {
 		return err
 	}
-	return database.Writer.DryRun(func(ctx context.Context, tx *sqlx.Tx) error {
+	return database.Writer.DryRun(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
 		if len(tree) > 0 && len(d.edits) > 0 {
 			if err := confirm(ctx, tx, d.Tree()); err != nil {
 				return fmt.Errorf("apply review edits: %w", err)
