@@ -170,6 +170,13 @@ func prepare(ctx context.Context, database *db.DB, outputDir string, o Options) 
 	return loadPending(ctx, database.SQL)
 }
 
+// CheckFits reports *NotEnoughSpaceError when the output volume can't hold
+// the pending transfer; nil when it can, or when free space can't be read.
+// The same check Run refuses on, for callers that only want to warn.
+func CheckFits(ctx context.Context, database *db.DB, outputDir string) error {
+	return checkFits(ctx, database, outputDir, volume.Space)
+}
+
 // checkFits refuses a transfer the output volume can't hold: every pending file,
 // room for the backup (twice the database's page size), and a reserve
 // (volume.TransferNeeds). An unreadable free-space figure lets it run.

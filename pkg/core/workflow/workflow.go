@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
@@ -152,8 +153,14 @@ func (wf *Workflow) runPhases(ctx context.Context, paths []string, force bool) e
 		}
 	}
 	// last thing before the run is done, so it sits next to the "review"
-	// hint rather than scrolling past mid-pipeline
-	volume.CheckOutputSpace(ctx, wf.db, wf.log, wf.outputDir)
+	// hint; the same check execute refuses on, so the two never disagree
+	var full *execute.NotEnoughSpaceError
+	if err := execute.CheckFits(ctx, wf.db, wf.outputDir); errors.As(err, &full) {
+		wf.log.Warn(fmt.Sprintf("Output volume may be too small: copying the plan needs %s, only %s is free at %s",
+			volume.HumanBytes(full.Needed), volume.HumanBytes(full.Free), wf.outputDir), logger.UserKey, true)
+	} else if err != nil {
+		wf.log.Warn("Could not check the output volume's free space", "error", err)
+	}
 	return nil
 }
 

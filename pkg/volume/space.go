@@ -1,39 +1,6 @@
 package volume
 
-import (
-	"context"
-	"fmt"
-
-	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/logger"
-)
-
-// CheckOutputSpace warns once when the output volume can't hold the library.
-// Best-effort: never a failure.
-func CheckOutputSpace(ctx context.Context, database *db.DB, log logger.Logger, outputDir string) {
-	// one file per content hash: duplicates are never copied
-	var librarySize int64
-	if err := database.SQL.GetContext(ctx, &librarySize,
-		`SELECT COALESCE(SUM(size), 0) FROM (
-			SELECT MIN(fr.file_size) AS size FROM file_registry fr
-			JOIN file_metadata fm ON fm.file_id = fr.id
-			GROUP BY fm.file_hash)`); err != nil {
-		log.Error("Failed to size the library", "error", err)
-		return
-	}
-
-	free, err := FreeBytes(outputDir)
-	if err != nil {
-		log.Warn("Cannot check output volume free space", "path", outputDir, "error", err)
-		return
-	}
-
-	if uint64(librarySize) > free {
-		msg := fmt.Sprintf("Output volume may be too small: organizing the library needs up to %s, but only %s is free at %s",
-			HumanBytes(uint64(librarySize)), HumanBytes(free), outputDir)
-		log.Warn(msg, logger.UserKey, true)
-	}
-}
+import "fmt"
 
 // FreeBytes returns the bytes available to the current user on the volume
 // containing path.

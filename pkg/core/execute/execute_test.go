@@ -926,3 +926,19 @@ func TestRunTransfersWhenFreeSpaceIsUnknown(t *testing.T) {
 		t.Fatalf("Run = %+v, %v; want the file placed", rep, err)
 	}
 }
+
+// The space check counts only what is still to be copied: files already in the
+// library take no new room.
+func TestCheckFitsIgnoresPlacedFiles(t *testing.T) {
+	d := dbtest.New(t)
+	out := t.TempDir()
+	seedApproved(t, d, 1, "2024/a.jpg", "pending")
+	dbtest.SeedFile(t, d, 2, "2024", "big.jpg", 500<<30)
+	dbtest.SeedEntry(t, d, 2, "2024/big.jpg", "2024/big.jpg")
+	dbtest.SeedPlaced(t, d, 2)
+
+	plenty := func(string) (uint64, uint64, error) { return 10 << 30, 100 << 30, nil }
+	if err := checkFits(context.Background(), d, out, plenty); err != nil {
+		t.Errorf("checkFits = %v; a placed 500 GiB file must not count", err)
+	}
+}
