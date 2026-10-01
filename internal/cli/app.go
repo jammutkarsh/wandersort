@@ -102,11 +102,11 @@ func (a *app) newDeps(onProgress func(phase string, done, total int64)) *install
 // method values: a.Deps may not exist yet when the workflow is built.
 func (a *app) workflowDeps() workflow.Deps {
 	return workflow.Deps{
-		Exiftool: func() (string, error) {
-			return a.Deps.Exiftool()
+		Exiftool: func(ctx context.Context) (string, error) {
+			return a.Deps.Exiftool(ctx)
 		},
-		Location: func() (*location.Resolver, error) {
-			return a.Deps.Location()
+		Location: func(ctx context.Context) (*location.Resolver, error) {
+			return a.Deps.Location(ctx)
 		},
 	}
 }
@@ -196,10 +196,8 @@ func (a *app) closeDBs() {
 	}
 	a.outLock.Unlock() // nil-safe; after Close, so no other process opens the database mid-close
 	if a.Deps != nil {
-		if ldb := a.Deps.LocationDBIfReady(); ldb != nil {
-			if err := ldb.Close(); err != nil {
-				a.Log.Error("failed to close location database", "error", err)
-			}
+		if err := a.Deps.Close(); err != nil {
+			a.Log.Error("failed to close location database", "error", err)
 		}
 	}
 }

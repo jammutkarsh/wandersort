@@ -33,7 +33,7 @@ func main() {
 		OnProgress:     printProgress,
 	})
 	loc.StartLocationOnly(ctx, nil)
-	if _, err := loc.Location(); err != nil {
+	if _, err := loc.Location(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "fetchtestdeps: location db:", err)
 		os.Exit(1)
 	}
@@ -46,7 +46,7 @@ func main() {
 		OnProgress:     printProgress,
 	})
 	exif.Start(ctx)
-	if _, err := exif.Exiftool(); err != nil {
+	if _, err := exif.Exiftool(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "fetchtestdeps: exiftool (non-fatal, no test needs it yet):", err)
 	}
 

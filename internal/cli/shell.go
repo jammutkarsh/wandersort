@@ -66,8 +66,7 @@ type shellModel struct {
 	settingsBefore config.Settings
 }
 
-// scanReadyMsg reports the output lock + database opened off the UI goroutine,
-// so a lock held by another process never blocks the render loop.
+// scanReadyMsg reports whether the library opened for a scan.
 type scanReadyMsg struct {
 	paths []string
 	force bool
@@ -90,8 +89,6 @@ func (a *app) runShell(start shellStart) error {
 	defer a.work.closeAndWait()
 	defer cancel()
 
-	// the forwarding goroutine outlives Run() and exits with the process; the
-	// program always drains the channel
 	events := make(chan logger.Event, 4096)
 	tuiLog := logger.NewTUI(a.Config.LogLevel, a.logFile, func(e logger.Event) { events <- e })
 	origLog := a.Log
@@ -113,17 +110,29 @@ func (a *app) runShell(start shellStart) error {
 		}
 	})
 	a.Deps.Start(ctx)
-	// the blocking getter returns when the database resolves, which is when
-	// the wizard's progress row settles
-	go func() {
-		_, _ = a.Deps.Location()
-		prog.Send(tui.DownloadMsg{Finished: true})
-	}()
-	go func() {
-		for e := range events {
-			prog.Send(tui.LogEventMsg{Event: e})
-		}
-	}()
+	// both goroutines end with the session context; shutdown waits for them
+	if a.work.start() {
+		go func() {
+			defer a.work.done()
+			// the database resolving is when the wizard's progress row settles
+			if _, err := a.Deps.Location(ctx); !errors.Is(err, context.Canceled) {
+				prog.Send(tui.DownloadMsg{Finished: true})
+			}
+		}()
+	}
+	if a.work.start() {
+		go func() {
+			defer a.work.done()
+			for {
+				select {
+				case e := <-events:
+					prog.Send(tui.LogEventMsg{Event: e})
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
 
 	final, err := prog.Run()
 	if err != nil {
@@ -181,15 +190,10 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleLeave(msg)
 
 	case tui.StartScanMsg:
-		paths, force := msg.Paths, msg.Force
-		a, ctx := m.a, m.ctx
-		return m, func() tea.Msg {
-			if !a.work.start() {
-				return nil
-			}
-			defer a.work.done()
-			return scanReadyMsg{paths: paths, force: force, err: a.openLibrary(ctx)}
-		}
+		// opened here, on the UI goroutine, which is the only one that writes
+		// the app's library fields; opening is quick (the lock never waits)
+		err := m.a.openLibrary(m.ctx)
+		return m, msgCmd(scanReadyMsg{paths: msg.Paths, force: msg.Force, err: err})
 
 	case tui.OpenReviewMsg:
 		return m, m.openReview()
@@ -438,14 +442,16 @@ func (m *shellModel) openReview() tea.Cmd {
 	}
 	m.opening = true
 	a, ctx := m.a, m.ctx
+	// open on the UI goroutine (see StartScanMsg); building the tree is the
+	// slow part and runs off it
+	if err := a.openLibrary(ctx); err != nil {
+		return msgCmd(reviewOpenMsg{err: err})
+	}
 	return func() tea.Msg {
 		if !a.work.start() {
 			return nil
 		}
 		defer a.work.done()
-		if err := a.openLibrary(ctx); err != nil {
-			return reviewOpenMsg{err: err}
-		}
 		model, err := a.newReviewScreen(ctx)
 		return reviewOpenMsg{model: model, err: err}
 	}
@@ -534,7 +540,7 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 				return context.Canceled
 			}
 			defer a.work.done()
-			if err := waitForDeps(a.Deps); err != nil {
+			if err := waitForDeps(ctx, a.Deps); err != nil {
 				return &tui.DepsErr{Err: err}
 			}
 			_, err := wf.RunScan(ctx, paths, force)

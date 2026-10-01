@@ -13,18 +13,16 @@ import (
 	"testing"
 )
 
-// TestReadinessIsNotReadyUntilClosed covers the non-blocking peeks: before
-// anything closes locReady, LocationNow and LocationDBIfReady must not block
-// and must report "still pending" — the whole point of these being separate
-// from the blocking Location/Exiftool getters.
+// Before anything is ready, LocationNow reports ErrPending without blocking,
+// and Close on a never-started Coordinator returns at once.
 func TestReadinessIsNotReadyUntilClosed(t *testing.T) {
 	c := New(Options{})
 
 	if _, err := c.LocationNow(); !errors.Is(err, ErrPending) {
 		t.Errorf("LocationNow() = %v before Start, want ErrPending", err)
 	}
-	if got := c.LocationDBIfReady(); got != nil {
-		t.Errorf("LocationDBIfReady() = %v before Start, want nil", got)
+	if err := c.Close(); err != nil {
+		t.Errorf("Close() before Start = %v, want nil", err)
 	}
 }
 
@@ -42,13 +40,13 @@ func TestGettersUnblockOnceReady(t *testing.T) {
 		close(c.locReady)
 	}()
 
-	path, err := c.Exiftool()
+	path, err := c.Exiftool(context.Background())
 	if err != nil || path != "/bin/exiftool" {
 		t.Errorf("Exiftool() = %q, %v, want /bin/exiftool, nil", path, err)
 	}
 	// Location() blocks until locReady closes, establishing the
 	// happens-before edge the LocationNow() check below relies on.
-	if _, err := c.Location(); err != nil {
+	if _, err := c.Location(context.Background()); err != nil {
 		t.Errorf("Location() = %v, want nil", err)
 	}
 	if _, err := c.LocationNow(); err != nil {

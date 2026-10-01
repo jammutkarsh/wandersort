@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -25,7 +26,7 @@ func TestStartOfflineHappyPath(t *testing.T) {
 	c := New(Options{ExecutablePath: dir, LocationDBPath: dbPath, Log: logger.NewNoopLogger()})
 	c.Start(context.Background())
 
-	path, err := c.Exiftool()
+	path, err := c.Exiftool(context.Background())
 	if err != nil {
 		t.Fatalf("Exiftool() error = %v", err)
 	}
@@ -33,21 +34,21 @@ func TestStartOfflineHappyPath(t *testing.T) {
 		t.Errorf("Exiftool() = %q, want %q", path, want)
 	}
 
-	resolver, err := c.Location()
+	resolver, err := c.Location(context.Background())
 	if err != nil {
 		t.Fatalf("Location() error = %v", err)
 	}
 	if resolver == nil {
 		t.Error("Location() resolver = nil, want non-nil")
 	}
-	if got := c.LocationDBIfReady(); got == nil {
-		t.Error("LocationDBIfReady() = nil after Location() resolved, want the handle")
+	if err := c.Close(); err != nil {
+		t.Errorf("Close() = %v, want the location database closed cleanly", err)
 	}
 }
 
-// TestStartLocationOnlySkipsExiftool covers StartLocationOnly's contract: the
-// exiftool getter must return immediately (nothing ever installs it) while
-// the location getter still goes through the real download/verify path.
+// TestStartLocationOnlySkipsExiftool: the exiftool getter returns at once with
+// an error (nothing installs it) while the location getter goes through the
+// real download/verify path.
 func TestStartLocationOnlySkipsExiftool(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, LocationDBFileName)
@@ -59,14 +60,14 @@ func TestStartLocationOnlySkipsExiftool(t *testing.T) {
 	done := make(chan error, 1)
 	c.StartLocationOnly(context.Background(), func(err error) { done <- err })
 
-	if path, err := c.Exiftool(); path != "" || err != nil {
-		t.Errorf("Exiftool() after StartLocationOnly = %q, %v, want \"\", nil", path, err)
+	if path, err := c.Exiftool(context.Background()); path != "" || !errors.Is(err, errExiftoolNotInstalled) {
+		t.Errorf("Exiftool() after StartLocationOnly = %q, %v, want errExiftoolNotInstalled", path, err)
 	}
 
 	if err := <-done; err != nil {
 		t.Errorf("StartLocationOnly onReady callback error = %v, want nil", err)
 	}
-	if _, err := c.Location(); err != nil {
+	if _, err := c.Location(context.Background()); err != nil {
 		t.Errorf("Location() error = %v, want nil", err)
 	}
 }
@@ -86,7 +87,7 @@ func TestStartLocationOnlyReportsVerifyFailure(t *testing.T) {
 	if err := <-done; err == nil {
 		t.Error("onReady callback error = nil, want the verify failure")
 	}
-	if _, err := c.Location(); err == nil {
+	if _, err := c.Location(context.Background()); err == nil {
 		t.Error("Location() error = nil, want the verify failure")
 	}
 }

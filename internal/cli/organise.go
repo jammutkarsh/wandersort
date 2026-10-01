@@ -38,7 +38,7 @@ wandersort organise`,
 // (after a wizard save) and returns the new tree. Placed and failed rows keep
 // theirs.
 func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
-	resolver, err := a.Deps.Location()
+	resolver, err := a.Deps.Location(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("dependencies: %w", err)
 	}
@@ -54,7 +54,7 @@ func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
 func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
 	// vfs already waited for the location download; without a resolver,
 	// rename completion is just disabled
-	resolver, err := a.Deps.Location()
+	resolver, err := a.Deps.Location(ctx)
 	if err != nil {
 		a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
 	}

@@ -23,8 +23,8 @@ import (
 // Deps supplies the two downloadable dependencies, blocking until each is
 // ready.
 type Deps struct {
-	Exiftool func() (string, error)             // path to the exiftool binary
-	Location func() (*location.Resolver, error) // open geonames resolver
+	Exiftool func(context.Context) (string, error)             // path to the exiftool binary
+	Location func(context.Context) (*location.Resolver, error) // open geonames resolver
 }
 
 // ErrOverlapsLibrary means a folder to scan is, holds, or sits inside the
@@ -178,7 +178,7 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 			run: func(ctx context.Context) (int, error) {
 				// blocks here (not at construction) if exiftool is still
 				// downloading — the walk has already run meanwhile
-				exiftoolPath, err := wf.deps.Exiftool()
+				exiftoolPath, err := wf.deps.Exiftool(ctx)
 				if err != nil {
 					return 0, fmt.Errorf("exiftool: %w", err)
 				}
@@ -193,7 +193,7 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 		{
 			kind: workflowPhaseVFS,
 			run: func(ctx context.Context) (int, error) {
-				resolver, err := wf.deps.Location()
+				resolver, err := wf.deps.Location(ctx)
 				if err != nil {
 					return 0, fmt.Errorf("location resolver: %w", err)
 				}

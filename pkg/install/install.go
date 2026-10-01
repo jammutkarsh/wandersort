@@ -42,8 +42,8 @@ type Options struct {
 // lock and hands out readiness through blocking getters. Construct with New.
 type Coordinator struct {
 	opts    Options
-	started sync.Once       // Start/StartLocationOnly close the ready channels once
-	ctx     context.Context // set by Start/StartLocationOnly; lets awaitLog give up on cancel
+	started sync.Once   // Start/StartLocationOnly close the ready channels once
+	running atomic.Bool // set once a Start has run; Close waits only then
 
 	exifPath  string
 	exifErr   error
@@ -57,6 +57,9 @@ type Coordinator struct {
 
 // New returns a Coordinator ready for Start or StartLocationOnly.
 func New(opts Options) *Coordinator {
+	if opts.Log == nil {
+		opts.Log = logger.NewNoopLogger()
+	}
 	return &Coordinator{
 		opts:      opts,
 		exifReady: make(chan struct{}),
@@ -71,7 +74,7 @@ func (c *Coordinator) Start(ctx context.Context) {
 }
 
 func (c *Coordinator) start(ctx context.Context) {
-	c.ctx = ctx
+	c.running.Store(true)
 	go func() {
 		l, err := c.acquireLock(ctx)
 		if err != nil {
@@ -107,8 +110,9 @@ func (c *Coordinator) StartLocationOnly(ctx context.Context, onReady func(error)
 }
 
 func (c *Coordinator) startLocationOnly(ctx context.Context, onReady func(error)) {
-	c.ctx = ctx
-	close(c.exifReady) // nothing waits on exiftool through this Coordinator
+	c.running.Store(true)
+	c.exifErr = errExiftoolNotInstalled
+	close(c.exifReady)
 	go func() {
 		l, err := c.acquireLock(ctx)
 		if err != nil {
@@ -134,9 +138,7 @@ func (c *Coordinator) acquireLock(ctx context.Context) (*lock.Lock, error) {
 	// try non-blocking first, so waiting can be announced rather than looking hung
 	l, err := lock.AcquireInstall(ctx, installDir, false)
 	if errors.Is(err, lock.ErrHeld) {
-		if c.opts.Log != nil {
-			c.opts.Log.Info("Waiting for another process to finish installing dependencies...", logger.UserKey, true)
-		}
+		c.opts.Log.Info("Waiting for another process to finish installing dependencies...", logger.UserKey, true)
 		l, err = lock.AcquireInstall(ctx, installDir, true)
 	}
 	if err != nil {
@@ -164,14 +166,18 @@ func (c *Coordinator) progressFor(phase string) func(done, total int64) {
 	}
 }
 
+// errExiftoolNotInstalled is what Exiftool reports on a Coordinator started
+// with StartLocationOnly.
+var errExiftoolNotInstalled = errors.New("exiftool is not installed by this coordinator")
+
 // ErrPending reports that a dependency is still installing. Only LocationNow
 // returns it — the blocking getters wait instead.
 var ErrPending = errors.New("dependency is still downloading")
 
 // Exiftool blocks until the binary is ready, logging "Waiting for …" only if
 // it actually has to wait.
-func (c *Coordinator) Exiftool() (string, error) {
-	if err := c.awaitLog(c.exifReady, "Waiting for the exiftool download to finish…"); err != nil {
+func (c *Coordinator) Exiftool(ctx context.Context) (string, error) {
+	if err := c.awaitLog(ctx, c.exifReady, "Waiting for the exiftool download to finish…"); err != nil {
 		return "", err
 	}
 	return c.exifPath, c.exifErr
@@ -179,8 +185,8 @@ func (c *Coordinator) Exiftool() (string, error) {
 
 // Location blocks until the location resolver is ready, with the same
 // "say so only if it actually blocks" behaviour as Exiftool.
-func (c *Coordinator) Location() (*location.Resolver, error) {
-	if err := c.awaitLog(c.locReady, "Waiting for the location database download to finish…"); err != nil {
+func (c *Coordinator) Location(ctx context.Context) (*location.Resolver, error) {
+	if err := c.awaitLog(ctx, c.locReady, "Waiting for the location database download to finish…"); err != nil {
 		return nil, err
 	}
 	return c.resolver, c.locErr
@@ -197,37 +203,33 @@ func (c *Coordinator) LocationNow() (*location.Resolver, error) {
 	}
 }
 
-// LocationDBIfReady returns the location database handle without blocking, or
-// nil if not resolved.
-func (c *Coordinator) LocationDBIfReady() *db.DB {
-	select {
-	case <-c.locReady:
-		return c.locationDB
-	default:
+// Close waits for a started install to finish (cancel its context first to
+// stop it early) and closes the location database it opened.
+func (c *Coordinator) Close() error {
+	if !c.running.Load() {
 		return nil
 	}
+	<-c.locReady
+	if c.locationDB == nil {
+		return nil
+	}
+	return c.locationDB.Close()
 }
 
 // awaitLog waits on ch, logging why only if it isn't already closed, and gives
-// up on ctx cancellation.
-func (c *Coordinator) awaitLog(ch <-chan struct{}, why string) error {
+// up when ctx is done.
+func (c *Coordinator) awaitLog(ctx context.Context, ch <-chan struct{}, why string) error {
 	select {
 	case <-ch:
 		return nil
 	default:
 	}
-	if c.opts.Log != nil {
-		c.opts.Log.Info(why, logger.UserKey, true)
-	}
-	if c.ctx == nil {
-		<-ch
-		return nil
-	}
+	c.opts.Log.Info(why, logger.UserKey, true)
 	select {
 	case <-ch:
 		return nil
-	case <-c.ctx.Done():
-		return c.ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

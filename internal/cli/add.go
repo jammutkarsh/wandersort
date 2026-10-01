@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -13,13 +14,13 @@ import (
 
 // waitForDeps blocks until both downloadable dependencies are ready, so a
 // failed download is one clear error before any file is touched.
-func waitForDeps(deps *install.Coordinator) error {
+func waitForDeps(ctx context.Context, deps *install.Coordinator) error {
 	for _, d := range []struct {
 		name string
 		get  func() error
 	}{
-		{"exiftool", func() error { _, err := deps.Exiftool(); return err }},
-		{"location database", func() error { _, err := deps.Location(); return err }},
+		{"exiftool", func() error { _, err := deps.Exiftool(ctx); return err }},
+		{"location database", func() error { _, err := deps.Location(ctx); return err }},
 	} {
 		// the technical error is already in the log; say what to do next
 		if err := d.get(); err != nil {
@@ -99,7 +100,7 @@ func (a *app) runAddPlain(paths []string, force bool) error {
 	a.Deps.Start(ctx)
 	defer a.closeDBs()
 
-	if err := waitForDeps(a.Deps); err != nil {
+	if err := waitForDeps(ctx, a.Deps); err != nil {
 		return err
 	}
 

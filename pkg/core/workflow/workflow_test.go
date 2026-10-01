@@ -180,7 +180,7 @@ func TestPhaseSummaryFormatting(t *testing.T) {
 func TestMetadataPhaseWrapsExiftoolDepsError(t *testing.T) {
 	wf, _ := newTestWorkflow(t)
 	wf.deps = Deps{
-		Exiftool: func() (string, error) { return "", errors.New("download failed") },
+		Exiftool: func(context.Context) (string, error) { return "", errors.New("download failed") },
 	}
 
 	phases := wf.workflowPhases([]string{"/root"}, false)
@@ -205,7 +205,7 @@ func TestMetadataPhaseWrapsExiftoolDepsError(t *testing.T) {
 func TestVFSPhaseWrapsLocationDepsError(t *testing.T) {
 	wf, _ := newTestWorkflow(t)
 	wf.deps = Deps{
-		Location: func() (*location.Resolver, error) { return nil, errors.New("download failed") },
+		Location: func(context.Context) (*location.Resolver, error) { return nil, errors.New("download failed") },
 	}
 
 	phases := wf.workflowPhases([]string{"/root"}, false)
