@@ -64,10 +64,15 @@ func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.
 		if err != nil {
 			return typed // pending or broken geonames — never drop what was typed
 		}
-		if name, err := resolver.Canonical(ctx, typed); err == nil {
+		name, err := resolver.Canonical(ctx, typed)
+		switch {
+		case err == nil:
 			return name
+		case errors.Is(err, location.ErrNotExact):
+			return "" // a near-miss the validator would have rejected
+		default:
+			return typed // lookup failed: never drop what was typed
 		}
-		return "" // near-miss the validator would have rejected ("did you mean")
 	}
 
 	paths := path.New()

@@ -5,11 +5,15 @@ package location_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
+	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
 // TestResolveByNameHonoursQualifiers is the bug the package doc calls out: a
@@ -207,4 +211,22 @@ func closeTo(a, b float64) bool {
 	const eps = 1e-4
 	d := a - b
 	return d > -eps && d < eps
+}
+
+// A database Canonical can't query is an error, not a silent "save as typed".
+func TestCanonicalReportsALookupFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.db")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := db.OpenLocation(path, logger.NewNoopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { empty.Close() })
+
+	got, err := location.NewResolver(empty, logger.NewNoopLogger()).Canonical(context.Background(), "Springfield")
+	if err == nil || errors.Is(err, location.ErrNotExact) {
+		t.Fatalf("Canonical = %q, %v; want the lookup error", got, err)
+	}
 }

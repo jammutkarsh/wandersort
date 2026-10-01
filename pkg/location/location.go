@@ -633,22 +633,29 @@ func levenshtein(a, b string) int {
 // canonicalSearchLimit is how many rows Canonical scans for an exact match.
 const canonicalSearchLimit = 8
 
+// ErrNotExact means a typed place name only nearly matches a geonames entry.
+var ErrNotExact = errors.New("no exact match")
+
 // Canonical returns the spelling a typed place name must be stored as: geonames'
 // own form, qualified enough to resolve back to one row. An unknown name comes
-// back unchanged; a near-miss is an error naming the closest alternative.
+// back unchanged; a near-miss is ErrNotExact naming the closest alternative; a
+// database failure is returned as is.
 func (r *Resolver) Canonical(ctx context.Context, typed string) (string, error) {
 	typed = strings.TrimSpace(typed)
 	if typed == "" || r == nil {
 		return "", fmt.Errorf("locationResolver: no place name given")
 	}
 	matches, err := r.SearchByName(ctx, typed, canonicalSearchLimit)
-	if err != nil || len(matches) == 0 {
+	if err != nil {
+		return "", fmt.Errorf("look up %q: %w", typed, err)
+	}
+	if len(matches) == 0 {
 		return typed, nil
 	}
 	if name, ok := exactMatch(matches, typed); ok {
 		return name, nil
 	}
-	return "", fmt.Errorf("no exact match for %q (did you mean %s?)", typed, matches[0].FullName)
+	return "", fmt.Errorf("%w for %q (did you mean %s?)", ErrNotExact, typed, matches[0].FullName)
 }
 
 // SuggestNames lists FullName completions for a prefix: the qualified form is
