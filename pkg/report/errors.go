@@ -5,7 +5,6 @@ package report
 import (
 	"context"
 	"database/sql"
-	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
 	"path"
@@ -60,7 +59,7 @@ type Row struct {
 	FirstSeenAt string         `json:"first_seen_at"`
 	LastSeenAt  string         `json:"last_seen_at"`
 	File        File           `json:"file"`
-	Detail      jsontext.Value `json:"detail"`
+	Detail      db.ErrorDetail `json:"detail"`
 }
 
 // Querier is the read side of a database handle.
@@ -126,10 +125,9 @@ func volumeClass(cache map[string]string, uuid, dir string) string {
 // groupKey names what rows have in common: stage/op/kind at the recording
 // call site, then the file's extension and volume class.
 func groupKey(r Row) string {
-	var detail db.ErrorDetail
 	site := "unknown"
-	if json.Unmarshal(r.Detail, &detail) == nil && len(detail.Frames) > 0 {
-		f := detail.Frames[0]
+	if len(r.Detail.Frames) > 0 {
+		f := r.Detail.Frames[0]
 		site = fmt.Sprintf("%s:%d", path.Base(filepath.ToSlash(f.File)), f.Line)
 	}
 	return fmt.Sprintf("%s/%s/%s at %s, %s, %s", r.Stage, r.Op, r.Kind, site, r.File.Extension, r.File.VolumeClass)
@@ -161,35 +159,18 @@ type knownPaths struct {
 	target string // the planned library-relative path, "" when not planned
 }
 
-// scrubDetail replaces the paths in every string of the stored detail object
-// and returns it as JSON again.
-func scrubDetail(detail string, k knownPaths) (jsontext.Value, error) {
-	var v any
-	if err := json.Unmarshal([]byte(detail), &v); err != nil {
-		return nil, fmt.Errorf("read error detail: %w", err)
+// scrubDetail decodes the stored detail and replaces the paths in its message
+// and error chain.
+func scrubDetail(stored string, k knownPaths) (db.ErrorDetail, error) {
+	var detail db.ErrorDetail
+	if err := json.Unmarshal([]byte(stored), &detail); err != nil {
+		return db.ErrorDetail{}, fmt.Errorf("read error detail: %w", err)
 	}
-	out, err := json.Marshal(walkStrings(v, k.scrub), json.Deterministic(true))
-	if err != nil {
-		return nil, fmt.Errorf("write error detail: %w", err)
+	detail.Message = k.scrub(detail.Message)
+	for i := range detail.Chain {
+		detail.Chain[i].Error = k.scrub(detail.Chain[i].Error)
 	}
-	return out, nil
-}
-
-// walkStrings applies fn to every string in a decoded JSON value.
-func walkStrings(v any, fn func(string) string) any {
-	switch v := v.(type) {
-	case string:
-		return fn(v)
-	case []any:
-		for i := range v {
-			v[i] = walkStrings(v[i], fn)
-		}
-	case map[string]any:
-		for key := range v {
-			v[key] = walkStrings(v[key], fn)
-		}
-	}
-	return v
+	return detail, nil
 }
 
 // pathToken matches any absolute path left after exact replacement (for

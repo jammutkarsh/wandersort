@@ -39,7 +39,7 @@ func TestDisambiguate(t *testing.T) {
 		{"nothing to qualify with", "Nowhere", "", "", 2, 1, 2, "Nowhere"},
 	}
 	for _, tc := range tests {
-		got := disambiguate(tc.city, tc.state, tc.country, tc.nameCnt, tc.countryCnt, tc.inCountryCnt, false, ", ")
+		got := disambiguate(place{tc.city, tc.state, tc.country}, collisions{tc.nameCnt, tc.countryCnt, tc.inCountryCnt}, false, ", ")
 		if got != tc.want {
 			t.Errorf("%s: disambiguate(%q,%q,%q,%d,%d,%d) = %q, want %q",
 				tc.name, tc.city, tc.state, tc.country, tc.nameCnt, tc.countryCnt, tc.inCountryCnt, got, tc.want)

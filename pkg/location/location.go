@@ -257,8 +257,8 @@ func (r *Resolver) fillNames(ctx context.Context, rows []geoRow) error {
 	for i := range rows {
 		row := &rows[i]
 		count := counts[nocaseKey(row.city)]
-		row.displayName = disambiguate(row.plain, row.state, row.country,
-			count.total, count.countries, count.inCountry[row.code], r.cityClaimed(row.plain), ", ")
+		row.displayName = disambiguate(place{row.plain, row.state, row.country},
+			collisions{count.total, count.countries, count.inCountry[row.code]}, r.cityClaimed(row.plain), ", ")
 		row.fullName = fullName(row.plain, row.state, row.country)
 		row.folderName = path.SanitizeSegment(row.displayName)
 	}
@@ -718,23 +718,30 @@ func (r *Resolver) cityClaimed(city string) bool {
 // disambiguate returns city plus the smallest qualifier that tells same-named
 // cities apart (state, then country), or just city when unique and no anchor
 // claims it. sep is " - " for folder names, ", " for display.
-func disambiguate(city, state, country string, nameCount, countryCount, inCountryCount int, anchorClaims bool, sep string) string {
-	if nameCount <= 1 && !anchorClaims {
-		return city
+func disambiguate(p place, c collisions, anchorClaims bool, sep string) string {
+	if c.sameName <= 1 && !anchorClaims {
+		return p.city
 	}
 	// state even when the name also occurs abroad: nothing in that state
 	// collides, and a state is what a reader recognizes
-	if inCountryCount > 1 && state != "" {
-		return city + sep + stripDiacritics(state)
+	if c.sameNameInCountry > 1 && p.state != "" {
+		return p.city + sep + stripDiacritics(p.state)
 	}
-	if countryCount > 1 && country != "" {
-		return city + sep + stripDiacritics(country)
+	if c.countries > 1 && p.country != "" {
+		return p.city + sep + stripDiacritics(p.country)
 	}
-	if state != "" {
-		return city + sep + stripDiacritics(state)
+	if p.state != "" {
+		return p.city + sep + stripDiacritics(p.state)
 	}
-	return city
+	return p.city
 }
+
+// place is a city with the state and country that can qualify its name.
+type place struct{ city, state, country string }
+
+// collisions is how many places share a city's name: in total, across how many
+// countries, and inside the place's own country.
+type collisions struct{ sameName, countries, sameNameInCountry int }
 
 // fullName spells a place out (city, state, country, skipping missing parts)
 // for pick lists.
@@ -811,8 +818,7 @@ func (r *Resolver) BuildAnchors(ctx context.Context, savedPlaces []string) []Anc
 		anchors = append(anchors, Anchor{Name: name, Lat: lat, Lon: lon})
 	}
 	// qualify FolderName only where anchors share a city, as disambiguate does
-	type entry struct{ city, state, country string }
-	entries := make([]entry, len(anchors))
+	entries := make([]place, len(anchors))
 	for i, a := range anchors {
 		city, qualifiers := splitQualified(a.Name)
 		var state, country string
@@ -822,7 +828,7 @@ func (r *Resolver) BuildAnchors(ctx context.Context, savedPlaces []string) []Anc
 		if len(qualifiers) > 1 {
 			country = qualifiers[1]
 		}
-		entries[i] = entry{city, state, country}
+		entries[i] = place{city, state, country}
 	}
 	// per-city: total count, distinct countries, count per country
 	cityCount := map[string]int{}
@@ -834,12 +840,9 @@ func (r *Resolver) BuildAnchors(ctx context.Context, savedPlaces []string) []Anc
 		}
 		cityCountries[e.city][e.country]++
 	}
-	for i := range anchors {
-		e := entries[i]
-		nameCount := cityCount[e.city]
-		countryCount := len(cityCountries[e.city])
-		inCountryCount := cityCountries[e.city][e.country]
-		anchors[i].FolderName = disambiguate(e.city, e.state, e.country, nameCount, countryCount, inCountryCount, false, " - ")
+	for i, e := range entries {
+		c := collisions{cityCount[e.city], len(cityCountries[e.city]), cityCountries[e.city][e.country]}
+		anchors[i].FolderName = disambiguate(e, c, false, " - ")
 	}
 	return anchors
 }

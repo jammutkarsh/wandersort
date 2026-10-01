@@ -2,6 +2,7 @@ package report
 
 import (
 	"context"
+	"encoding/json/v2"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -100,7 +101,11 @@ func TestErrorsExport(t *testing.T) {
 			!strings.HasSuffix(summary[0], ", .HEIC, "+rows[0].File.VolumeClass) {
 			t.Errorf("summary = %v", summary)
 		}
-		out := string(rows[0].Detail)
+		raw, err := json.Marshal(rows[0].Detail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := string(raw)
 		if strings.Contains(out, "zzuser") {
 			t.Errorf("redact=%v: the username survived in %s", redact, out)
 		}
