@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jammutkarsh/wandersort/internal/review"
-	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
@@ -85,18 +85,10 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 
 	ctx, cancel := interruptible()
 	defer cancel()
-	if err := db.Restore(ctx, backup, a.Config.AppDBPath); errors.Is(err, db.ErrInUse) {
+	if err := library.Restore(ctx, a.Config.AppDBPath, a.Log); errors.Is(err, db.ErrInUse) {
 		return fmt.Errorf("%w — close it (a sqlite browser, a backup tool) and try again; nothing was changed", err)
 	} else if err != nil {
 		return fmt.Errorf("restore failed: %w", err)
-	}
-	// Open once to prove the restored file is a usable library database.
-	d, err := db.New(ctx, a.Config.AppDBPath, a.Log)
-	if err != nil {
-		return fmt.Errorf("restored database does not open: %w", err)
-	}
-	if err := d.Close(); err != nil {
-		a.Log.Warn("closing restored database", "error", err)
 	}
 
 	fmt.Fprintln(os.Stderr, tui.OK.Render("Database restored from the backup of "+taken+"."))
@@ -117,13 +109,10 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 	}
 	defer a.closeDBs()
 
-	// already empty: a backup now would overwrite the one holding the data
-	// the earlier reset deleted
-	empty, err := a.AppDB.IsEmpty(ctx)
-	if err != nil {
+	// already empty: nothing to ask about
+	if empty, err := a.AppDB.IsEmpty(ctx); err != nil {
 		return err
-	}
-	if empty {
+	} else if empty {
 		fmt.Fprintln(os.Stderr, "Nothing to reset — the database is already empty.")
 		return nil
 	}
@@ -145,23 +134,8 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 		return fmt.Errorf("reset cancelled")
 	}
 
-	// The backup is what makes this undoable; no backup, no wipe.
-	outDir := filepath.Dir(a.Config.AppDBPath)
-	if err := a.AppDB.Backup(ctx, filepath.Join(outDir, db.BackupFileName)); err != nil {
-		return fmt.Errorf("back up database before reset: %w", err)
-	}
-
-	if _, err := a.AppDB.ResetAll(ctx); err != nil {
-		return fmt.Errorf("reset failed: %w", err)
-	}
-
-	if err := a.AppDB.Optimize(ctx); err != nil {
-		a.Log.Warn("database optimization after reset failed", "error", err)
-	}
-
-	// The edits describe a plan that no longer exists.
-	if err := vfs.RemoveDraft(outDir); err != nil {
-		a.Log.Warn("could not remove the review draft", "error", err)
+	if err := library.Reset(ctx, a.AppDB, a.Config.OutputDir(), a.Log); err != nil {
+		return err
 	}
 
 	// Preview copies outlive a session, so a wipe has to take them too.

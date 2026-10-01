@@ -187,7 +187,7 @@ func Restore(ctx context.Context, backup, live string) error {
 		return fmt.Errorf("backup %s: %w", backup, err)
 	}
 
-	dbh, err := sql.Open("sqlite", live)
+	dbh, err := sql.Open("sqlite", appDSN(live)) // the app's durability settings, fullfsync included
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
