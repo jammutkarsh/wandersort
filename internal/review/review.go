@@ -73,7 +73,6 @@ func buildRows(tree []vfs.Node) []*reviewRow {
 }
 
 type Model struct {
-	tree    []vfs.Node
 	rows    []*reviewRow
 	cursor  int
 	offset  int // first visible row (scroll position)
@@ -99,8 +98,7 @@ type Model struct {
 	visualMode   bool
 	visualAnchor int
 	showHelp     bool // [?] — full-screen key reference; any key closes it
-	// draft owns the base plan, the journal and the tree they make; tree is
-	// always draft.Tree()
+	// draft owns the base plan, the journal and the tree they make
 	draft       *vfs.Draft
 	statusMsg   string
 	statusIsErr bool // rejection, not confirmation: rendered in a warning colour
@@ -120,13 +118,12 @@ func newModel(draft *vfs.Draft, ctx context.Context, database *db.DB, resolver *
 		spin:       sp,
 		suggCursor: -1,
 		draft:      draft,
-		tree:       draft.Tree(),
 		ctx:        ctx,
 		db:         database,
 		resolver:   resolver,
 		log:        log,
 	}
-	m.rows = buildRows(m.tree)
+	m.rows = buildRows(draft.Tree())
 	// user_labels only changes when execute applies a plan, never while this
 	// screen is up, so load it once instead of querying per keystroke.
 	m.labels = vfs.Labels(ctx, database, log)
@@ -166,8 +163,7 @@ func (m Model) wrapDim(s string) string {
 
 // reflow rebuilds the row list after a tree edit (rename, merge, drop, undo).
 func (m *Model) reflow() {
-	m.tree = m.draft.Tree()
-	m.rows = buildRows(m.tree)
+	m.rows = buildRows(m.draft.Tree())
 	m.cursor = min(m.cursor, len(m.rows)-1) // the tree may have shrunk
 }
 

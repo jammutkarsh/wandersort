@@ -37,8 +37,8 @@ func (m Model) View() string {
 // what it holds on the right — the same left/right split every screen uses.
 func (m Model) header() string {
 	files := 0
-	for i := range m.tree {
-		files += m.tree[i].FileCount
+	for _, n := range m.draft.Tree() {
+		files += n.FileCount
 	}
 	left := "Edit the proposed folders — edits are kept as you go; nothing is copied until 'wandersort execute'."
 	return tui.Banner("review") + "\n" +
