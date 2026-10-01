@@ -41,7 +41,7 @@ func (m Model) header() string {
 		files += n.FileCount
 	}
 	left := "Edit the proposed folders — edits are kept as you go; nothing is copied until 'wandersort copy'."
-	return tui.Banner("review") + "\n" +
+	return "\n" +
 		tui.Row(tui.DimText.Render(left),
 			tui.FaintTxt.Render(fmt.Sprintf("%d folders  %d files", len(m.rows), files)), m.width)
 }

@@ -350,7 +350,7 @@ func (m FormModel) View() string {
 	} else {
 		footer = m.exampleBlock() + footer
 	}
-	body := Banner("config") + "\n" + fields
+	body := "\n" + fields
 
 	if m.h > 0 {
 		if lines := strings.Split(body, "\n"); len(lines) > m.h-lipgloss.Height(footer)-1 {

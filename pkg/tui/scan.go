@@ -242,7 +242,7 @@ func warningLine(e logger.Event) string {
 }
 
 func (m ScanModel) View() string {
-	top := Banner("scan") + "\n" + m.viewNotes() + "\n"
+	top := "\n" + m.viewNotes() + "\n"
 	footer := m.footer()
 
 	// The running stage's file tail gets every terminal row the chrome doesn't

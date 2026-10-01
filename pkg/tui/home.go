@@ -61,12 +61,31 @@ type HomeModel struct {
 
 	// confirmForce is the full-screen ask before a force re-scan
 	confirmForce bool
+	showKeys     bool // the ? overlay is up
+}
+
+// homeKeys is the Add tab's full key list, behind ?.
+var homeKeys = []KeyGroup{
+	{"Folders", []KeyLine{
+		{"enter", "add the folder typed"},
+		{"tab", "complete the folder name"},
+		{"↑", "take the last folder back to edit"},
+		{"ctrl+x", "remove the last folder"},
+	}},
+	{"Planning", []KeyLine{
+		{"enter", "on an empty line: plan the folders listed"},
+		{"ctrl+g", "plan again, re-reading every file"},
+	}},
+	{"App", []KeyLine{
+		{"ctrl+t", "next tab"},
+		{"ctrl+c", "quit"},
+	}},
 }
 
 func NewHomeModel(cfg HomeConfig) HomeModel {
 	paths := path.New()
 	ti := textinput.New()
-	ti.Prompt = lipgloss.NewStyle().Foreground(Primary).Render("» ")
+	ti.Prompt = lipgloss.NewStyle().Foreground(Primary).Render("❯ ")
 	// Home-relative and OS-separated, not a hardcoded unix path: Windows'
 	// equivalent lives under its own user profile drive, never "~/Pictures".
 	ti.Placeholder = paths.RelativeToHome(filepath.Join(paths.HomeDir, "Pictures"))
@@ -108,9 +127,19 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.showKeys {
+			m.showKeys = false
+			return m, nil
+		}
 		// Every letter is ordinary input here — the input is always focused —
-		// so the screen's own commands are all ctrl-chorded.
+		// so the screen's own commands are ctrl-chorded, and ? is only help
+		// on an empty line.
 		switch msg.String() {
+		case "?":
+			if m.ti.Value() == "" {
+				m.showKeys = true
+				return m, nil
+			}
 		case "ctrl+c":
 			return m, Left(Leave{Quit: true})
 		case "ctrl+g":
@@ -238,26 +267,26 @@ func (m HomeModel) View() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(Banner("scan"))
 	b.WriteString("\n")
-
 	for _, l := range m.cfg.LastScan {
-		b.WriteString(row(FaintTxt.Render(" # ")+DimText.Render(l), "", m.w))
+		b.WriteString(row("  "+OK.Render("✓ ")+DimText.Render(l), "", m.w))
+		b.WriteString("\n")
+	}
+	if len(m.cfg.LastScan) > 0 {
 		b.WriteString("\n")
 	}
 
-	title := "Folders to scan"
+	title := "Add photos from"
 	if len(m.cfg.LastScan) > 0 {
-		title = "Add more folders to scan"
+		title = "Add more photos from"
 	}
-	b.WriteString(row(" "+Title.Render(title), "", m.w))
-	b.WriteString("\n")
-	for i, p := range m.added {
-		line := "  " + OK.Render(fmt.Sprintf("%d) ", i+1)) + Text.Render(m.paths.RelativeToHome(p))
-		b.WriteString(row(" "+line, "", m.w))
+	b.WriteString(row("  "+Text.Bold(true).Render(title), "", m.w))
+	b.WriteString("\n\n")
+	for _, p := range m.added {
+		b.WriteString(row("    "+OK.Render("✓ ")+Text.Render(m.paths.RelativeToHome(p)), "", m.w))
 		b.WriteString("\n")
 	}
-	b.WriteString("\n   ")
+	b.WriteString("  ")
 	b.WriteString(m.ti.View())
 	b.WriteString("\n")
 
@@ -281,7 +310,11 @@ func (m HomeModel) View() string {
 		b.WriteString(row("      "+FaintTxt.Render(fmt.Sprintf("↓ %d more", rest)), "", m.w) + "\n")
 	}
 
-	return Screen(b.String(), m.footer(), m.h)
+	view := Screen(b.String(), m.footer(), m.h)
+	if m.showKeys {
+		return KeyHelp(view, homeKeys, m.w, m.h)
+	}
+	return view
 }
 
 func (m HomeModel) footer() string {
@@ -294,20 +327,19 @@ func (m HomeModel) footer() string {
 		b.WriteString(row(Attn.Render("⚠ "+m.err.Error()), "", m.w))
 		b.WriteString("\n")
 	}
+	if len(m.added) > 0 && len(m.sugg) == 0 {
+		b.WriteString(row("  "+FaintTxt.Render("Enter on an empty line plans these folders."), "", m.w))
+		b.WriteString("\n")
+	}
 	var hints []string
 	if len(m.sugg) > 0 {
-		hints = append(hints, KeyHint("↑↓", "pick"), KeyHint("tab", "complete"))
+		hints = append(hints, KeyHint("tab", "complete"))
 	}
-	hints = append(hints, KeyHint("enter", "add folder"))
-	if len(m.added) > 0 {
-		hints = append(hints, KeyHint("enter on empty", "start scan"))
-		if len(m.sugg) == 0 {
-			hints = append(hints, KeyHint("↑", "edit a folder"))
-		}
-		hints = append(hints, KeyHint("ctrl+x", "remove last"))
-		hints = append(hints, KeyHint("ctrl+g", "force re-scan"))
+	hints = append(hints, KeyHint("enter", "add"))
+	if len(m.added) > 0 && len(m.sugg) == 0 {
+		hints = append(hints, KeyHint("↑", "edit last"))
 	}
-	hints = append(hints, KeyHint("ctrl+c", "quit"))
+	hints = append(hints, MoreKeys())
 	b.WriteString(Footer(strings.Join(hints, "   "), m.w))
 	return b.String()
 }

@@ -22,12 +22,12 @@ import (
 // a run.
 const (
 	tabScan = iota
-	tabSettings
 	tabReview
+	tabSettings
 	numTabs
 )
 
-var tabNames = [numTabs]string{"Add", "Settings", "Organise"}
+var tabNames = [numTabs]string{"Add", "Organise", "Settings"}
 
 // shellStart is which tab a session opens on, and with what. Every
 // full-screen command is the same shell opened on its own tab.
@@ -563,26 +563,29 @@ func (m shellModel) View() string {
 	return m.tabBar() + "\n" + s.View()
 }
 
-// tabBar is the one line the container owns; it is how ctrl+t is discovered.
+// tabBar is the one line the container owns: the app's name, the tabs (a ●
+// where something waits), and the library on the right.
 func (m shellModel) tabBar() string {
-	parts := make([]string, 0, numTabs)
+	parts := []string{tui.Brand()}
 	for i, name := range tabNames {
 		switch {
 		case i == m.tab:
-			parts = append(parts, tui.Selected.Render(" "+name+" "))
+			parts = append(parts, tui.Selected.Bold(true).Render(" "+name+" "))
 		case i == tabReview && m.opening:
-			parts = append(parts, tui.DimText.Render(" "+name+" — opening… "))
-		case i == tabReview && !m.canReview():
-			parts = append(parts, tui.FaintTxt.Render(" "+name+" — waiting for scan "))
+			parts = append(parts, tui.DimText.Render(" "+name+"… "))
+		case i == tabReview && m.canReview():
+			parts = append(parts, tui.Text.Render(" "+name+" ")+tui.Title.Render("●"))
 		case i == tabReview:
-			// a plan on disk is as ready as a prefetched one
-			parts = append(parts, tui.OK.Render(" "+name+" ✓ ready "))
+			parts = append(parts, tui.FaintTxt.Render(" "+name+" "))
 		default:
 			parts = append(parts, tui.DimText.Render(" "+name+" "))
 		}
 	}
-	return tui.Row(strings.Join(parts, tui.FaintTxt.Render("·")),
-		tui.KeyHint("ctrl+t", "switch"), m.w)
+	library := ""
+	if m.a.AppDB != nil || m.lib.Exists {
+		library = path.New().RelativeToHome(m.a.Config.OutputDir())
+	}
+	return tui.Row(strings.Join(parts, "  "), tui.FaintTxt.Render(library), m.w)
 }
 
 /* --- screen constructors --- */

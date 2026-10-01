@@ -156,7 +156,7 @@ func TestShellModel(t *testing.T) {
 			}
 
 			m.screens[tabReview] = &probe{name: "review"}
-			m.tab = tabSettings
+			m.tab = tabScan
 			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 			if got := next.(shellModel).tab; got != tabReview {
 				t.Errorf("ctrl+t with a ready review = tab %d, want review", got)
@@ -177,8 +177,8 @@ func TestShellModel(t *testing.T) {
 			if !m.reviewReady() {
 				t.Error("the review should be marked ready")
 			}
-			if v := ansi.Strip(m.tabBar()); !strings.Contains(v, "ready") {
-				t.Errorf("tab bar should announce the ready review: %q", v)
+			if v := ansi.Strip(m.tabBar()); !strings.Contains(v, "Organise ●") {
+				t.Errorf("tab bar should mark the ready review: %q", v)
 			}
 
 			// Same message with the scan tab active does switch.
@@ -227,7 +227,7 @@ func TestShellModel(t *testing.T) {
 			if cmd == nil {
 				t.Error("the new home screen needs its Init")
 			}
-			if v := ansi.Strip(m.View()); !strings.Contains(v, "Add more folders to scan") {
+			if v := ansi.Strip(m.View()); !strings.Contains(v, "Add more photos from") {
 				t.Errorf("the finished run should be summarized above the input:\n%s", v)
 			}
 		}},
@@ -265,8 +265,8 @@ func TestShellModel(t *testing.T) {
 			if m.canReview() {
 				t.Fatal("no database yet — nothing to review")
 			}
-			if v := ansi.Strip(m.tabBar()); !strings.Contains(v, "waiting for scan") {
-				t.Errorf("tab bar should say why review is closed: %q", v)
+			if v := ansi.Strip(m.tabBar()); strings.Contains(v, "●") {
+				t.Errorf("tab bar marks a review with nothing to review: %q", v)
 			}
 
 			// An earlier run's database, no prefetched screen — exactly the
@@ -280,12 +280,11 @@ func TestShellModel(t *testing.T) {
 			}
 			// The tab bar is the only thing that tells the user the plan is
 			// there — saying nothing (a plain dim tab) reads as "not yet".
-			if v := ansi.Strip(m.tabBar()); !strings.Contains(v, "ready") {
-				t.Errorf("tab bar should announce the proposal on disk: %q", v)
+			if v := ansi.Strip(m.tabBar()); !strings.Contains(v, "Organise ●") {
+				t.Errorf("tab bar should mark the proposal on disk: %q", v)
 			}
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-			next, cmd := next.(shellModel).Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 			m = next.(shellModel)
 			if !m.opening || cmd == nil {
 				t.Fatalf("ctrl+t into an unprefetched review should build one, opening=%v", m.opening)
