@@ -86,12 +86,12 @@ type Extractor struct {
 	classes map[string]volume.Class
 }
 
-func New(database *db.DB, log logger.Logger, exiftoolPath string, workers int) *Extractor {
+// New starts the exiftool pool. Without it every file would be stored with
+// empty metadata and never read again, so a pool that won't start is an error.
+func New(database *db.DB, log logger.Logger, exiftoolPath string, workers int) (*Extractor, error) {
 	pool, err := exiftool.NewPool(exiftoolPath, workers)
 	if err != nil {
-		// An unavailable exiftool binary is not fatal: files still get hashed
-		// and persisted with empty metadata so the pipeline can proceed.
-		log.Warn("Exiftool unavailable; metadata will be empty", "error", err)
+		return nil, fmt.Errorf("start exiftool: %w", err)
 	}
 
 	budget := int64(min(max(workers, 1), maxReadBudget))
@@ -103,7 +103,7 @@ func New(database *db.DB, log logger.Logger, exiftoolPath string, workers int) *
 		reads:   semaphore.NewWeighted(budget),
 		budget:  budget,
 		classes: map[string]volume.Class{},
-	}
+	}, nil
 }
 
 // readTargets is how many files of a class may be read at once with the full
@@ -131,9 +131,7 @@ func readCost(class volume.Class, budget int64) int64 {
 // Run pages through every unread file and reads it in a bounded worker pool.
 // Returns how many files were persisted
 func (e *Extractor) Run(ctx context.Context) (int, error) {
-	if e.pool != nil {
-		defer e.pool.Close()
-	}
+	defer e.pool.Close()
 
 	toRead := make(chan fileRecord, 2*e.workers)
 	producerErr := make(chan error, 1)
@@ -180,8 +178,10 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 
 	persisted := int(extracted.Load())
 	e.log.Info("Metadata extraction complete", "filesRead", persisted)
+	if err := e.db.Writer.Flush(); err != nil {
+		return 0, fmt.Errorf("record what was read: %w", err)
+	}
 	// Files that failed are tried again next run; say how many failed this one.
-	e.db.Writer.Flush()
 	var unreadable int
 	if err := e.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM errors WHERE stage = ? AND last_seen_at >= ?`,
@@ -402,27 +402,23 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 		return true
 	}
 
-	// a failed extraction isn't a failed file: hash and folder still place it,
+	// an unparseable tag isn't a failed file: hash and folder still place it,
 	// so persist empty metadata with no errors row
 	var meta classifier.CommonMetadata
 	// sidecars (.AAE edit files) carry no EXIF: hash only
 	if file.mediaType != classifier.MediaTypeSidecar {
 		op = opExiftool
 		var err error
-		if e.pool != nil {
-			meta, err = e.pool.Extract(ctx, file.absPath)
-		} else {
-			err = fmt.Errorf("exiftool not available")
-		}
+		meta, err = e.pool.Extract(ctx, file.absPath)
 		if err != nil {
 			// cancelled pipeline killed exiftool: shutdown, not a bad file
 			if ctx.Err() != nil {
 				return false
 			}
-			// exiftool died or hung: tags unknown, not empty. An empty row
-			// would plan the file by its file date for good, so record a READ
-			// error and retry next run.
-			if errors.Is(err, exiftool.ErrProcess) {
+			// exiftool died, hung or could not open the file: tags unknown,
+			// not empty. An empty row would plan the file by its file date for
+			// good, so record a READ error and retry next run.
+			if errors.Is(err, exiftool.ErrProcess) || errors.Is(err, exiftool.ErrNoOutput) {
 				e.log.Error("exiftool failed on file", "fileId", file.id, "path", file.absPath, "error", err)
 				e.db.Writer.Write(storeFailure(file.id, opExiftool, db.WithStack(err)))
 				return true

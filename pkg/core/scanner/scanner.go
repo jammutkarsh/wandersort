@@ -105,8 +105,9 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 	workers.Wait()
 	close(results)
 
-	// flush the queued upserts so the sweep sees every last_seen_scan
-	s.db.Writer.Flush()
+	// flush the queued upserts so the sweep sees every last_seen_scan; a lost
+	// upsert leaves its file's stamp old, so sweeping would delete a live row
+	flushErr := s.db.Writer.Flush()
 
 	totalFiles := 0
 	var firstScanErr error
@@ -118,6 +119,9 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 			}
 			continue
 		}
+		if flushErr != nil {
+			continue
+		}
 		if err := s.sweep(ctx, scan, sweptRoot{root: result.root, volume: result.volume, seen: result.count}, result.gaps); err != nil {
 			s.log.Error("Failed to sweep path", "path", result.root, "error", err)
 			if firstScanErr == nil {
@@ -126,6 +130,9 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 		}
 	}
 
+	if flushErr != nil {
+		return totalFiles, fmt.Errorf("record scanned files (nothing removed): %w", flushErr)
+	}
 	return totalFiles, firstScanErr
 }
 
@@ -377,17 +384,18 @@ func (s *Scanner) storeScan(file FileDiscovery, scan int64, force bool) db.DBOpe
 	return func(ctx context.Context, tx *sqlx.Tx) error {
 		now := db.FormatTime(time.Now())
 		modifiedAt := db.FormatTime(file.ModTime)
+		// an error rolls back the delete too; the writer replays the batch
+		// without this op and reports it at Flush
 		if _, err := tx.ExecContext(ctx, replaceChanged,
 			file.Dir, file.Name, file.Size, modifiedAt, forceInt); err != nil {
-			s.log.Warn("Failed to upsert file", "path", file.Name, "error", err)
-			return nil // one bad row must not fail its whole batch
+			return fmt.Errorf("replace changed %s: %w", file.Name, err)
 		}
 		if _, err := tx.ExecContext(ctx, query,
 			file.Dir, file.Name, file.Size, modifiedAt,
 			db.StrOrNil(file.VolumeUUID), file.MediaType, file.Extension,
 			FileOriginSource, now, now, scan,
 		); err != nil {
-			s.log.Warn("Failed to upsert file", "path", file.Name, "error", err)
+			return fmt.Errorf("upsert %s: %w", file.Name, err)
 		}
 		return nil
 	}

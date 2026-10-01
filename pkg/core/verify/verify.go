@@ -130,7 +130,9 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		}
 	}
 
-	database.Writer.Flush() // every result recorded before the report says so
+	if err := database.Writer.Flush(); err != nil { // every result recorded before the report says so
+		return rep, fmt.Errorf("record verify results: %w", err)
+	}
 
 	if err := forget(ctx, database, outputDir, gone); err != nil {
 		return rep, err

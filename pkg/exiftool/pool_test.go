@@ -132,3 +132,31 @@ func TestPoolReplacesDeadWorker(t *testing.T) {
 		t.Fatal("the pool handed out a dead worker instead of starting a new one")
 	}
 }
+
+// silentExiftool answers every request with no JSON, as exiftool does for a
+// file it cannot open.
+func silentExiftool(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "exiftool")
+	script := "#!/bin/sh\nwhile read -r l; do [ \"$l\" = \"-execute\" ] && echo '{ready}'; done\n"
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// No output is unknown tags, not empty ones, and not a dead worker.
+func TestExtractWithoutOutputIsNoOutput(t *testing.T) {
+	e, err := New(silentExiftool(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	_, err = e.Extract(context.Background(), "/a/x.jpg")
+	if !errors.Is(err, ErrNoOutput) || errors.Is(err, ErrProcess) {
+		t.Fatalf("Extract = %v, want ErrNoOutput and not ErrProcess", err)
+	}
+	if e.Dead() {
+		t.Error("a file exiftool could not open must not cost the worker")
+	}
+}

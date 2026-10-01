@@ -40,6 +40,9 @@ type BulkWriter struct {
 	done          chan struct{}
 	mu            sync.RWMutex
 	closed        atomic.Bool
+
+	errMu  sync.Mutex
+	failed error // first lost write since the last Flush
 }
 
 func NewBulkWriter(sqlDB *sqlx.DB, log logger.Logger) *BulkWriter {
@@ -75,7 +78,7 @@ func (bw *BulkWriter) Write(op DBOperation) bool {
 // reported. It never joins a batch: a batch replays failed ops, so an op in
 // one could report success from a rolled-back transaction.
 func (bw *BulkWriter) WriteSync(op DBOperation) error {
-	bw.Flush()
+	bw.drain()
 	bw.mu.RLock()
 	defer bw.mu.RUnlock()
 	if bw.closed.Load() {
@@ -95,7 +98,7 @@ func (bw *BulkWriter) WriteSync(op DBOperation) error {
 
 // DryRun runs op in its own transaction and always rolls it back.
 func (bw *BulkWriter) DryRun(op DBOperation) error {
-	bw.Flush()
+	bw.drain()
 	bw.mu.RLock()
 	defer bw.mu.RUnlock()
 	if bw.closed.Load() {
@@ -110,9 +113,20 @@ func (bw *BulkWriter) DryRun(op DBOperation) error {
 	return op(ctx, tx)
 }
 
-// Flush blocks until all currently-enqueued operations have been written to the
-// database. Use this at phase boundaries to guarantee visibility before reads
-func (bw *BulkWriter) Flush() {
+// Flush blocks until every enqueued op has run and returns the first op that
+// failed since the last Flush (then forgets it): a non-nil error means rows
+// were lost. Call it at phase boundaries.
+func (bw *BulkWriter) Flush() error {
+	bw.drain()
+	bw.errMu.Lock()
+	defer bw.errMu.Unlock()
+	err := bw.failed
+	bw.failed = nil
+	return err
+}
+
+// drain blocks until every enqueued op has run, leaving any failure for Flush.
+func (bw *BulkWriter) drain() {
 	if bw.closed.Load() {
 		return
 	}
@@ -159,6 +173,11 @@ func (bw *BulkWriter) start() {
 		}
 		if err := bw.executeBatch(batch); err != nil {
 			bw.log.Error("Bulk DB write failed", "error", err, "size", len(batch))
+			bw.errMu.Lock()
+			if bw.failed == nil {
+				bw.failed = err
+			}
+			bw.errMu.Unlock()
 		}
 		// Clear pointers to allow GC of captured variables in DBOperation closures
 		for i := range batch {
@@ -237,31 +256,38 @@ func (bw *BulkWriter) executeBatch(batch []DBOperation) error {
 // when the batch transaction fails (e.g. due to SQLITE_BUSY or constraint errors)
 func (bw *BulkWriter) executeIndividually(ctx context.Context, batch []DBOperation) error {
 	var failed int
+	var firstErr error
+	fail := func(err error) {
+		failed++
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
 
 	for i, op := range batch {
 		tx, err := bw.sqlDB.BeginTxx(ctx, nil)
 		if err != nil {
-			failed++
+			fail(err)
 			bw.log.Error("Bulk writer fallback begin tx failed", "index", i, "error", err)
 			continue
 		}
 
 		if err := op(ctx, tx); err != nil {
 			_ = tx.Rollback()
-			failed++
+			fail(err)
 			bw.log.Error("Bulk writer fallback operation failed", "index", i, "error", err)
 			continue
 		}
 
 		if err := tx.Commit(); err != nil {
-			failed++
+			fail(err)
 			bw.log.Error("Bulk writer fallback commit failed", "index", i, "error", err)
 			continue
 		}
 	}
 
 	if failed > 0 {
-		return fmt.Errorf("bulk writer fallback failed for %d/%d operations", failed, len(batch))
+		return fmt.Errorf("bulk writer fallback failed for %d/%d operations: %w", failed, len(batch), firstErr)
 	}
 	return nil
 }

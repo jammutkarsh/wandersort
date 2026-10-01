@@ -187,6 +187,36 @@ func TestScanner(t *testing.T) {
 				t.Errorf("total discoveries = %d, want %d", total, expected)
 			}
 		}},
+		// A re-scan whose upsert is lost must not sweep: the lost row's stamp
+		// is old, so the sweep would delete a file that is still there
+		{"RunKeepsRowsWhenAnUpsertIsLost", func(t *testing.T) {
+			ctx := context.Background()
+			sc, d := newDBScanner(t)
+			root := t.TempDir()
+			for _, name := range []string{"kept.jpg", "lost.jpg"} {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := sc.Run(ctx, []string{root}, false); err != nil {
+				t.Fatalf("first scan: %v", err)
+			}
+			rows := registryByName(t, d)
+			dbtest.SeedHash(t, d, rows["lost.jpg"].ID, "hash-lost")
+
+			if _, err := d.ExecContext(ctx, `
+				CREATE TRIGGER lose_upsert BEFORE UPDATE ON file_registry
+				WHEN NEW.file_name = 'lost.jpg'
+				BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sc.Run(ctx, []string{root}, false); err == nil {
+				t.Fatal("re-scan with a lost upsert returned nil, want an error")
+			}
+			if got, ok := registryByName(t, d)["lost.jpg"]; !ok || !got.Read {
+				t.Errorf("lost.jpg = %+v (present %v), want its row and metadata kept", got, ok)
+			}
+		}},
 		{"RunRescan", func(t *testing.T) {
 			ctx := context.Background()
 			sc, d := newDBScanner(t)

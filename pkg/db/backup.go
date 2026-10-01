@@ -39,7 +39,7 @@ func (d *DB) Backup(ctx context.Context, dest string) error {
 	// Writes still queued in the async writer belong to the state being
 	// backed up; without this the backup could miss the last edits.
 	if d.Writer != nil {
-		d.Writer.Flush()
+		d.Writer.drain()
 	}
 	plain, tmp := dest+".db.tmp", dest+".tmp"
 	for _, f := range []string{plain, tmp} {

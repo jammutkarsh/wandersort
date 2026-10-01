@@ -32,6 +32,10 @@ var ErrProcess = errors.New("exiftool process failed")
 // argument per line, so the rest would become exiftool options.
 var ErrUnsafePath = errors.New("path contains a line break and cannot be passed to exiftool")
 
+// ErrNoOutput means exiftool answered with no metadata for the file (it could
+// not open it): the tags are unknown, not empty. The worker stays usable.
+var ErrNoOutput = errors.New("exiftool returned no metadata for the file")
+
 // exiftoolTags lists every tag ParseMetadata reads (~90% smaller output than
 // all tags). No -fast2: it drops GPS/CreationDate from QuickTime videos.
 var exiftoolTags = []string{
@@ -41,7 +45,7 @@ var exiftoolTags = []string{
 	"-ImageWidth", "-ImageHeight", "-ImageSize", "-Megapixels",
 	"-Orientation",
 	"-Make", "-Model", "-LensModel", "-Software",
-	"-CreateDate", "-ModifyDate", "-DateTimeOriginal", "-CreationDate",
+	"-CreateDate", "-ModifyDate", "-DateTimeOriginal", "-CreationDate", "-MediaCreateDate",
 	"-ISO", "-Aperture", "-FNumber", "-FocalLength",
 	"-ExposureTime", "-ShutterSpeed", "-ExposureMode", "-ExposureProgram",
 	"-ExposureCompensation", "-Flash", "-MeteringMode", "-WhiteBalance",
@@ -122,8 +126,9 @@ func (e *Extractor) Extract(ctx context.Context, path string) (classifier.Common
 		return classifier.CommonMetadata{}, fmt.Errorf("%w: %s: %w", ErrProcess, what, err)
 	}
 
-	args := make([]string, 0, 2+len(exiftoolTags)+2)
-	args = append(args, "-json", "-n")
+	args := make([]string, 0, 4+len(exiftoolTags)+2)
+	// -charset filename=utf8: read the path as UTF-8, not the Windows code page
+	args = append(args, "-json", "-n", "-charset", "filename=utf8")
 	args = append(args, exiftoolTags...)
 	args = append(args, path, "-execute")
 	for _, arg := range args {
@@ -149,10 +154,10 @@ func (e *Extractor) Extract(ctx context.Context, path string) (classifier.Common
 	var arr []jsontext.Value
 	if err := json.Unmarshal(out.Bytes(), &arr,
 		jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true)); err != nil {
-		return classifier.CommonMetadata{}, fmt.Errorf("exiftool output is not a JSON array: %w", err)
+		return classifier.CommonMetadata{}, fmt.Errorf("%w: output is not a JSON array: %w", ErrNoOutput, err)
 	}
 	if len(arr) == 0 {
-		return classifier.CommonMetadata{}, fmt.Errorf("exiftool returned an empty array for %s", path)
+		return classifier.CommonMetadata{}, fmt.Errorf("%w: empty array", ErrNoOutput)
 	}
 
 	return classifier.ParseMetadata(filepath.Ext(path), arr[0])

@@ -175,7 +175,11 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 				if err != nil {
 					return 0, fmt.Errorf("exiftool: %w", err)
 				}
-				return metadata.New(wf.db, wf.log, exiftoolPath, wf.workers).Run(ctx)
+				extractor, err := metadata.New(wf.db, wf.log, exiftoolPath, wf.workers)
+				if err != nil {
+					return 0, err
+				}
+				return extractor.Run(ctx)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Read %d files", count) },
 		},
@@ -213,7 +217,10 @@ func (wf *Workflow) run(ctx context.Context, phase workflowPhase) (int, error) {
 		return count, fmt.Errorf("%s phase failed: %w", phase.kind, err)
 	}
 
-	wf.db.Writer.Flush() // make this phase's writes visible to the next one
+	// make this phase's writes visible to the next one; a lost write fails it
+	if err := wf.db.Writer.Flush(); err != nil {
+		return count, fmt.Errorf("%s phase failed: %w", phase.kind, err)
+	}
 
 	// checkpoint after every phase to keep the WAL small; not fatal
 	if cpErr := wf.db.Checkpoint(); cpErr != nil {

@@ -47,6 +47,40 @@ func TestFlushDrainsEnqueuedOps(t *testing.T) {
 	}
 }
 
+// A lost write reaches the next Flush, even past a WriteSync that drained it,
+// and is reported once: the Flush after that starts clean.
+func TestFlushReportsALostWriteOnce(t *testing.T) {
+	d, err := New(context.Background(), filepath.Join(t.TempDir(), "test.db"), logger.NewNoopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	poison := errors.New("poison")
+	d.Writer.Write(func(ctx context.Context, tx *sqlx.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO user_labels (label, kind) VALUES ('kept', 'EVENT')`)
+		return err
+	})
+	d.Writer.Write(func(context.Context, *sqlx.Tx) error { return poison })
+	if err := d.Writer.WriteSync(func(context.Context, *sqlx.Tx) error { return nil }); err != nil {
+		t.Fatalf("WriteSync: %v", err)
+	}
+
+	if err := d.Writer.Flush(); !errors.Is(err, poison) {
+		t.Fatalf("Flush = %v, want the lost write's error", err)
+	}
+	if err := d.Writer.Flush(); err != nil {
+		t.Fatalf("second Flush = %v, want nil (already reported)", err)
+	}
+	var kept int
+	if err := d.SQL.Get(&kept, `SELECT COUNT(*) FROM user_labels WHERE label = 'kept'`); err != nil {
+		t.Fatal(err)
+	}
+	if kept != 1 {
+		t.Errorf("the good op in the failed batch: %d rows, want 1", kept)
+	}
+}
+
 // DryRun lets op see its own writes and then keeps none of them; op's error
 // comes back as is.
 func TestDryRunRollsBack(t *testing.T) {
