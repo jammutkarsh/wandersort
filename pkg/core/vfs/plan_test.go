@@ -944,14 +944,12 @@ func TestPlanMergeRunAcrossMonth(t *testing.T) {
 	}
 }
 
-// A file with no EXIF date is filed by its file date as wall-clock time where
-// it was taken, like EXIF times: 20:00 UTC on Dec 31 is Jan 1 at UTC+5:30.
-func TestPlanFilesAnUndatedFileByLocalFileDate(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Zone = time.FixedZone("UTC+5:30", 5*3600+30*60)
+// A file with no EXIF date is filed by its stored wall-clock file date, read
+// as-is like EXIF times.
+func TestPlanFilesAnUndatedFileByWallClockFileDate(t *testing.T) {
 	got := runPlan(t, []masterFile{
-		{FileDir: "/src", FileName: "a.jpg", ModifiedAt: "2023-12-31T20:00:00Z"},
-	}, cfg)
+		{FileDir: "/src", FileName: "a.jpg", ModifiedAt: "2024-01-01T01:30:00.000000000"},
+	}, DefaultConfig())
 	if want := "2024/01_January/01/a.jpg"; got[0].targetPath != want {
 		t.Errorf("got %q, want %q", got[0].targetPath, want)
 	}

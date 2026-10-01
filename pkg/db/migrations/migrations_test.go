@@ -119,7 +119,7 @@ func TestRunRecordsRunAtInTheStoredTimeForm(t *testing.T) {
 	if err := db.Get(&runAt, `SELECT run_at FROM schema_migrations WHERE version = 1`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := time.Parse("2006-01-02T15:04:05.000000000Z07:00", runAt); err != nil {
+	if _, err := time.Parse("2006-01-02T15:04:05.000000000", runAt); err != nil {
 		t.Errorf("run_at = %q, not the fixed-width stored form: %v", runAt, err)
 	}
 }

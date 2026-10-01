@@ -8,9 +8,9 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// sqlNowDefault is the SQL DEFAULT for timestamps: millisecond precision padded
-// to db.TimeLayout's 9-digit fraction.
-const sqlNowDefault = `(strftime('%Y-%m-%dT%H:%M:%f000000Z','now'))`
+// sqlNowDefault is the SQL DEFAULT for timestamps: local wall-clock time,
+// millisecond precision padded to db.TimeLayout's 9-digit fraction.
+const sqlNowDefault = `(strftime('%Y-%m-%dT%H:%M:%f000000','now','localtime'))`
 
 // Migration describes a single schema migration step
 type Migration struct {
@@ -99,8 +99,8 @@ func Run(db *sqlx.DB) (int, error) {
 			}
 		}
 
-		// run_at takes the column default: the same fixed-width UTC form as
-		// every other stored timestamp
+		// run_at takes the column default: the same wall-clock form as every
+		// other stored timestamp
 		if _, err := tx.Exec(
 			`INSERT INTO schema_migrations (version) VALUES (?)`, schema.Version,
 		); err != nil {

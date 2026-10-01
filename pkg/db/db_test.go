@@ -126,16 +126,16 @@ func TestFormatTime(t *testing.T) {
 		in   time.Time
 		want string
 	}{
-		{"zero value", time.Time{}, "0001-01-01T00:00:00.000000000Z"},
+		{"zero value", time.Time{}, "0001-01-01T00:00:00.000000000"},
 		{
-			"non-UTC converts to UTC",
-			time.Date(2024, 6, 15, 12, 0, 0, 0, time.FixedZone("IST", 5*3600+30*60)),
-			"2024-06-15T06:30:00.000000000Z",
+			"keeps the wall clock, drops the zone",
+			time.Date(2024, 6, 15, 12, 0, 0, 0, time.FixedZone("UTC+5:30", 5*3600+30*60)),
+			"2024-06-15T12:00:00.000000000",
 		},
 		{
 			"sub-second precision preserved",
 			time.Date(2024, 6, 15, 12, 0, 0, 123456789, time.UTC),
-			"2024-06-15T12:00:00.123456789Z",
+			"2024-06-15T12:00:00.123456789",
 		},
 	}
 	for _, tt := range tests {
@@ -146,8 +146,8 @@ func TestFormatTime(t *testing.T) {
 		})
 	}
 
-	// round-trip: formatting then parsing back with TimeLayout must reproduce
-	// the same instant, since every stored timestamp goes through this pair
+	// round-trip: formatting then parsing back with TimeLayout reproduces the
+	// same wall-clock reading
 	original := time.Date(2024, 6, 15, 12, 30, 45, 999000000, time.UTC)
 	formatted := FormatTime(original)
 	parsed, err := time.Parse(TimeLayout, formatted)

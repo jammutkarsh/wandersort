@@ -50,9 +50,6 @@ type Config struct {
 	// SavedPlaces is the same places as the names the user typed, before
 	// resolution — what the settings hold and what a save is compared against.
 	SavedPlaces []string
-	// Zone is where file dates are read as wall-clock time, matching EXIF
-	// times; DefaultConfig sets the machine's own.
-	Zone *time.Location
 	// Workers sizes the pool every per-master pass fans out over — deriveAll,
 	// resolveLocations and assignTargetPaths (see forEachMaster).
 	// 0 or 1 runs them inline.
@@ -76,7 +73,6 @@ func DefaultConfig() Config {
 		CollapseLevels:        true,
 		SavedPlacesDateOnly:   true,
 		MergeSameLocationDays: true,
-		Zone:                  time.Local,
 	}
 }
 

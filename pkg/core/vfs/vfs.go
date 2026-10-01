@@ -123,7 +123,7 @@ func (v *VFS) placedTimes(ctx context.Context) ([]time.Time, error) {
 	}
 	times := make([]time.Time, 0, len(placed))
 	for i := range placed {
-		if t := placed[i].captureTime(v.cfg.Zone); !t.IsZero() {
+		if t := placed[i].captureTime(); !t.IsZero() {
 			times = append(times, t)
 		}
 	}

@@ -17,13 +17,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// TimeLayout is RFC3339 with fixed-width nanoseconds, so string order in SQL is
-// time order. Stored in UTC; converted to local only for display.
-const TimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
+// TimeLayout is wall-clock time with fixed-width nanoseconds and no zone, so
+// string order in SQL is time order. Every stored time is wall clock.
+const TimeLayout = "2006-01-02T15:04:05.000000000"
 
-// FormatTime renders t in the canonical stored form: UTC, fixed-width nanos
+// FormatTime renders t's wall-clock reading in the stored form.
 func FormatTime(t time.Time) string {
-	return t.UTC().Format(TimeLayout)
+	return t.Format(TimeLayout)
 }
 
 // SQLite connection pool tuning

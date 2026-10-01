@@ -48,7 +48,7 @@ func (l *File) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Persist creates the file (named by UTC start time and PID), flushes the
+// Persist creates the file (named by local start time and PID), flushes the
 // buffer and prunes to the newest keepLogs. Idempotent and nil-safe.
 func (l *File) Persist() {
 	if l == nil {
@@ -68,7 +68,7 @@ func (l *File) persist() {
 			_ = os.Remove(p) // best-effort: a file still open on Windows stays until a later run
 		}
 	}
-	name := time.Now().UTC().Format("2006-01-02T15-04-05Z") + "_" + strconv.Itoa(os.Getpid()) + ".log"
+	name := time.Now().Format("2006-01-02T15-04-05") + "_" + strconv.Itoa(os.Getpid()) + ".log"
 	path := filepath.Join(l.dir, name)
 	err := os.MkdirAll(l.dir, 0o755)
 	var file *os.File
