@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -35,6 +36,38 @@ type app struct {
 	// logFile is this process's log, shared by the startup and TUI loggers.
 	// Buffered in memory until openLibrary (or a warning) persists it.
 	logFile *logger.File
+	// work is background work on the library; shutdown waits for it before
+	// closing the database.
+	work workGroup
+}
+
+// workGroup tracks background work so shutdown can wait for it; work that
+// would start after shutdown began is refused instead.
+type workGroup struct {
+	mu     sync.Mutex
+	closed bool
+	wg     sync.WaitGroup
+}
+
+// start registers one piece of work, or reports false once shutdown began.
+func (g *workGroup) start() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return false
+	}
+	g.wg.Add(1)
+	return true
+}
+
+func (g *workGroup) done() { g.wg.Done() }
+
+// closeAndWait refuses new work and waits for what is running.
+func (g *workGroup) closeAndWait() {
+	g.mu.Lock()
+	g.closed = true
+	g.mu.Unlock()
+	g.wg.Wait()
 }
 
 func Execute() error {
@@ -153,6 +186,9 @@ func (a *app) saveSettings(ctx context.Context, outputDir string, s config.Setti
 func (a *app) closeDBs() {
 	// a failed Close can leave WAL/SHM locked (locking_mode=EXCLUSIVE); log it
 	if a.AppDB != nil {
+		if err := a.AppDB.Writer.Flush(); err != nil {
+			a.Log.Error("some writes were lost before closing", "error", err)
+		}
 		a.Log.Info("Closing databases")
 		if err := a.AppDB.Close(); err != nil {
 			a.Log.Error("failed to close app database", "error", err)

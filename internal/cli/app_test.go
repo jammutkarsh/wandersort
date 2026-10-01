@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
@@ -235,5 +236,28 @@ func TestConfirmPlainPrompt(t *testing.T) {
 				t.Errorf("confirm(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// Shutdown waits for running work and refuses work that starts after it.
+func TestWorkGroupShutdown(t *testing.T) {
+	var g workGroup
+	if !g.start() {
+		t.Fatal("start refused before shutdown")
+	}
+	finished := make(chan struct{})
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(finished)
+		g.done()
+	}()
+	g.closeAndWait()
+	select {
+	case <-finished:
+	default:
+		t.Fatal("closeAndWait returned before the running work finished")
+	}
+	if g.start() {
+		t.Error("work started after shutdown")
 	}
 }

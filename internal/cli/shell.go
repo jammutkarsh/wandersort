@@ -84,10 +84,11 @@ type reviewOpenMsg struct {
 // runShell is the one full-screen program hosting scan, settings and review.
 // start says which tab it opens on.
 func (a *app) runShell(start shellStart) error {
+	// on the way out: stop running work, wait for it, then flush and close
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	defer a.closeDBs()
+	defer a.work.closeAndWait()
+	defer cancel()
 
 	// the forwarding goroutine outlives Run() and exits with the process; the
 	// program always drains the channel
@@ -182,7 +183,13 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tui.StartScanMsg:
 		paths, force := msg.Paths, msg.Force
 		a, ctx := m.a, m.ctx
-		return m, func() tea.Msg { return scanReadyMsg{paths: paths, force: force, err: a.openLibrary(ctx)} }
+		return m, func() tea.Msg {
+			if !a.work.start() {
+				return nil
+			}
+			defer a.work.done()
+			return scanReadyMsg{paths: paths, force: force, err: a.openLibrary(ctx)}
+		}
 
 	case tui.OpenReviewMsg:
 		return m, m.openReview()
@@ -325,6 +332,10 @@ type replanDoneMsg struct{ err error }
 func (m *shellModel) replan() tea.Cmd {
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
+		if !a.work.start() {
+			return nil
+		}
+		defer a.work.done()
 		if _, err := a.rebuildTree(ctx); err != nil {
 			a.Log.Warn("Could not re-plan the folders for the new settings — 'wandersort execute' would still copy the old plan. Open the settings and save again.",
 				logger.UserKey, true, "error", err)
@@ -428,6 +439,10 @@ func (m *shellModel) openReview() tea.Cmd {
 	m.opening = true
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
+		if !a.work.start() {
+			return nil
+		}
+		defer a.work.done()
 		if err := a.openLibrary(ctx); err != nil {
 			return reviewOpenMsg{err: err}
 		}
@@ -515,14 +530,24 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 	wf := workflow.NewWorkflow(a.AppDB, a.Log, a.Config, a.workflowDeps())
 	return tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {
+			if !a.work.start() {
+				return context.Canceled
+			}
+			defer a.work.done()
 			if err := waitForDeps(a.Deps); err != nil {
 				return &tui.DepsErr{Err: err}
 			}
 			_, err := wf.RunScan(ctx, paths, force)
 			return err
 		},
-		Cancel:     cancel,
-		ReviewNext: func() (tui.Tab, error) { return a.newReviewScreen(ctx) },
+		Cancel: cancel,
+		ReviewNext: func() (tui.Tab, error) {
+			if !a.work.start() {
+				return nil, context.Canceled
+			}
+			defer a.work.done()
+			return a.newReviewScreen(ctx)
+		},
 	})
 }
 
