@@ -283,6 +283,10 @@ func downloadFile(ctx context.Context, log logger.Logger, dest, url, wantSHA256 
 	}
 }
 
+// ErrDownloadStalled is a download that stopped making progress: the attempt's
+// own timeout, not the caller's cancellation.
+var ErrDownloadStalled = errors.New("download stalled")
+
 // terminalDownloadErr is downloadFile's final error. A stall cancels the
 // attempt's own context, so context.Canceled passes through only when the
 // caller's ctx is actually done; otherwise a network failure would read as
@@ -292,7 +296,7 @@ func terminalDownloadErr(ctx context.Context, err error) error {
 		return err
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return errors.New(err.Error())
+		return fmt.Errorf("%w: %v", ErrDownloadStalled, err)
 	}
 	return err
 }

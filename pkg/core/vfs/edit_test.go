@@ -2,21 +2,17 @@ package vfs
 
 import (
 	"errors"
+	"hash/fnv"
 	"reflect"
 	"testing"
 )
 
-// pathIDs gives every folder path a test states a stable int ID, so a
-// hand-built tree still reads as paths.
-var pathIDs = map[string]int64{}
-
+// pid gives every folder path a test states a stable positive ID (a hash of
+// the path), so a hand-built tree still reads as paths.
 func pid(path string) int64 {
-	if id, ok := pathIDs[path]; ok {
-		return id
-	}
-	id := int64(len(pathIDs) + 1)
-	pathIDs[path] = id
-	return id
+	h := fnv.New64a()
+	h.Write([]byte(path))
+	return int64(h.Sum64() >> 1)
 }
 
 func pids(paths ...string) []int64 {

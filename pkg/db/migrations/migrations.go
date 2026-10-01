@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -29,26 +30,25 @@ var ErrNewerSchema = errors.New("the library was written by a newer version of W
 // Pending reports how many migrations Run would apply, and how many are
 // already applied (0 means a fresh database). It fails with ErrNewerSchema
 // on a database carrying a version this build does not know.
-func Pending(db *sqlx.DB) (pending, applied int, err error) {
-	todo, done, err := plan(db)
+func Pending(ctx context.Context, db *sqlx.DB) (pending, applied int, err error) {
+	todo, done, err := plan(ctx, db)
 	return len(todo), done, err
 }
 
 // plan reads the applied versions and returns the migrations still to run, in
-// version order, and how many are already applied.
-func plan(db *sqlx.DB) ([]Migration, int, error) {
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS schema_migrations (
-			version INTEGER PRIMARY KEY,
-			run_at  TEXT NOT NULL DEFAULT ` + sqlNowDefault + `
-		) STRICT
-	`); err != nil {
-		return nil, 0, fmt.Errorf("error creating schema_migrations table: %w", err)
+// version order, and how many are already applied. It writes nothing: a
+// database without schema_migrations has applied none.
+func plan(ctx context.Context, db *sqlx.DB) ([]Migration, int, error) {
+	var tracked bool
+	if err := db.GetContext(ctx, &tracked, `SELECT EXISTS (
+		SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')`); err != nil {
+		return nil, 0, fmt.Errorf("error checking for schema_migrations: %w", err)
 	}
-
 	var versions []uint
-	if err := db.Select(&versions, `SELECT version FROM schema_migrations`); err != nil {
-		return nil, 0, fmt.Errorf("error reading applied migration versions: %w", err)
+	if tracked {
+		if err := db.SelectContext(ctx, &versions, `SELECT version FROM schema_migrations`); err != nil {
+			return nil, 0, fmt.Errorf("error reading applied migration versions: %w", err)
+		}
 	}
 
 	ordered := slices.Clone(schemas)
@@ -79,21 +79,28 @@ func plan(db *sqlx.DB) ([]Migration, int, error) {
 
 // Run applies any migrations not yet recorded in schema_migrations, in version
 // order, each tracked individually. Refuses ErrNewerSchema first.
-func Run(db *sqlx.DB) (int, error) {
-	todo, _, err := plan(db)
+func Run(ctx context.Context, db *sqlx.DB) (int, error) {
+	todo, _, err := plan(ctx, db)
 	if err != nil {
 		return 0, err
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version INTEGER PRIMARY KEY,
+			run_at  TEXT NOT NULL DEFAULT `+sqlNowDefault+`
+		) STRICT`); err != nil {
+		return 0, fmt.Errorf("error creating schema_migrations table: %w", err)
 	}
 
 	ran := 0
 	for _, schema := range todo {
-		tx, err := db.Begin()
+		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return 0, fmt.Errorf("migration v%d: error beginning transaction: %w", schema.Version, err)
 		}
 
 		for _, stmt := range schema.SQL {
-			if _, err := tx.Exec(stmt); err != nil {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
 				tx.Rollback()
 				return 0, fmt.Errorf("migration v%d (%s): error executing SQL: %w", schema.Version, schema.Description, err)
 			}
@@ -101,7 +108,7 @@ func Run(db *sqlx.DB) (int, error) {
 
 		// run_at takes the column default: the same wall-clock form as every
 		// other stored timestamp
-		if _, err := tx.Exec(
+		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO schema_migrations (version) VALUES (?)`, schema.Version,
 		); err != nil {
 			tx.Rollback()
@@ -114,7 +121,7 @@ func Run(db *sqlx.DB) (int, error) {
 		ran++
 	}
 
-	if _, err := db.Exec("PRAGMA optimize"); err != nil {
+	if _, err := db.ExecContext(ctx, "PRAGMA optimize"); err != nil {
 		return 0, fmt.Errorf("error optimizing database: %w", err)
 	}
 

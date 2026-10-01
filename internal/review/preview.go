@@ -40,13 +40,10 @@ type previewDoneMsg struct {
 	err error
 }
 
-// previewRootDir is a var only so tests can point it at a disposable
-// directory — nothing else reassigns it.
-var previewRootDir = filepath.Join(os.TempDir(), "wandersort-previews")
-
-// PreviewRoot is where every peek copy lives; fixed so copies are reused across
-// sessions. Cleaned by execute and `admin clear`.
-func PreviewRoot() string { return previewRootDir }
+// PreviewRoot is where every peek copy lives, under the system temp folder
+// ($TMPDIR); fixed so copies are reused across sessions. Cleaned by execute
+// and `admin clear`.
+func PreviewRoot() string { return filepath.Join(os.TempDir(), "wandersort-previews") }
 
 // CleanPreviews removes every preview copy.
 func CleanPreviews() error {

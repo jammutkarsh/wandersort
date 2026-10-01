@@ -26,15 +26,17 @@ func MarkPlaced(ctx context.Context, tx *sqlx.Tx, entryID, fileID int64, target 
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE virtual_fs_entries SET source_path = ?, target_path = ? WHERE id = ?`,
 		target, target, entryID); err != nil {
-		return err
+		return fmt.Errorf("mark placed: repoint plan row: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE file_registry SET file_dir = ?, file_name = ?, placed = 1 WHERE id = ?`,
 		stdpath.Dir(target), stdpath.Base(target), fileID); err != nil {
-		return err
+		return fmt.Errorf("mark placed: repoint file: %w", err)
 	}
-	_, err := tx.ExecContext(ctx, `DELETE FROM errors WHERE file_id = ?`, fileID)
-	return err
+	if _, err := tx.ExecContext(ctx, `DELETE FROM errors WHERE file_id = ?`, fileID); err != nil {
+		return fmt.Errorf("mark placed: clear errors: %w", err)
+	}
+	return nil
 }
 
 // MarkFailed records a failed transfer. The plan row stays where it was
@@ -90,7 +92,7 @@ func ExecIn(ctx context.Context, tx *sqlx.Tx, query string, ids []int64) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, tx.Rebind(q), args...); err != nil {
-			return err
+			return fmt.Errorf("ids %d–%d: %w", start, min(start+maxInIDs, len(ids))-1, err)
 		}
 	}
 	return nil

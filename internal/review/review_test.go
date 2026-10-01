@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	previewRootDir = filepath.Join(dir, "previews")
+	os.Setenv("TMPDIR", dir)
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
@@ -40,13 +40,11 @@ func TestMain(m *testing.M) {
 // usePreviewRoot points the preview root at a directory only this test uses.
 func usePreviewRoot(t *testing.T) string {
 	t.Helper()
-	prev := previewRootDir
-	previewRootDir = filepath.Join(t.TempDir(), "previews")
-	t.Cleanup(func() { previewRootDir = prev })
-	if err := os.MkdirAll(previewRootDir, 0o755); err != nil {
+	t.Setenv("TMPDIR", t.TempDir())
+	if err := os.MkdirAll(PreviewRoot(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return previewRootDir
+	return PreviewRoot()
 }
 
 // testModel opens a review over tree with an empty draft in a temp dir.

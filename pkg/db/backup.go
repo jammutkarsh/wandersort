@@ -12,6 +12,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 )
@@ -205,7 +206,7 @@ func Restore(ctx context.Context, backup, live string) error {
 	var mode string
 	if err := c.QueryRowContext(ctx, `PRAGMA journal_mode=DELETE`).Scan(&mode); err != nil {
 		var se *sqlite.Error
-		if errors.As(err, &se) && se.Code()&0xff == 5 { // SQLITE_BUSY
+		if errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_BUSY { // primary code, extended bits masked
 			return ErrInUse
 		}
 		return fmt.Errorf("database %s is unreadable (%w); rename it aside and restore again", live, err)

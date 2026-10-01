@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -42,29 +43,29 @@ func TestMigrations(t *testing.T) {
 		{"RunRefusesVersionsItDoesNotKnow", func(t *testing.T) {
 			db := openTestDB(t)
 			swapSchemas(t, []Migration{testMigration(1), testMigration(2)})
-			if _, err := Run(db); err != nil {
+			if _, err := Run(context.Background(), db); err != nil {
 				t.Fatal(err)
 			}
 			// an older build: knows only version 1
 			swapSchemas(t, []Migration{testMigration(1)})
-			if _, err := Run(db); !errors.Is(err, ErrNewerSchema) {
+			if _, err := Run(context.Background(), db); !errors.Is(err, ErrNewerSchema) {
 				t.Fatalf("Run = %v, want ErrNewerSchema", err)
 			}
-			if _, _, err := Pending(db); !errors.Is(err, ErrNewerSchema) {
+			if _, _, err := Pending(context.Background(), db); !errors.Is(err, ErrNewerSchema) {
 				t.Fatalf("Pending = %v, want ErrNewerSchema", err)
 			}
 		}},
 		{"PendingCountsWhatRunWouldApply", func(t *testing.T) {
 			db := openTestDB(t)
 			swapSchemas(t, []Migration{testMigration(1)})
-			if p, a, err := Pending(db); err != nil || p != 1 || a != 0 {
+			if p, a, err := Pending(context.Background(), db); err != nil || p != 1 || a != 0 {
 				t.Fatalf("fresh: Pending = (%d, %d, %v), want (1, 0, nil)", p, a, err)
 			}
-			if _, err := Run(db); err != nil {
+			if _, err := Run(context.Background(), db); err != nil {
 				t.Fatal(err)
 			}
 			swapSchemas(t, []Migration{testMigration(1), testMigration(2)})
-			if p, a, err := Pending(db); err != nil || p != 1 || a != 1 {
+			if p, a, err := Pending(context.Background(), db); err != nil || p != 1 || a != 1 {
 				t.Fatalf("upgrade: Pending = (%d, %d, %v), want (1, 1, nil)", p, a, err)
 			}
 		}},
@@ -73,16 +74,16 @@ func TestMigrations(t *testing.T) {
 
 			// A high version already applied must not block a lower one added later.
 			swapSchemas(t, []Migration{testMigration(1000)})
-			if n, err := Run(db); err != nil || n != 1 {
+			if n, err := Run(context.Background(), db); err != nil || n != 1 {
 				t.Fatalf("first run: got (%d, %v), want (1, nil)", n, err)
 			}
 
 			swapSchemas(t, []Migration{testMigration(1000), testMigration(1)})
-			if n, err := Run(db); err != nil || n != 1 {
+			if n, err := Run(context.Background(), db); err != nil || n != 1 {
 				t.Fatalf("run with late lower version: got (%d, %v), want (1, nil)", n, err)
 			}
 
-			if n, err := Run(db); err != nil || n != 0 {
+			if n, err := Run(context.Background(), db); err != nil || n != 0 {
 				t.Fatalf("rerun: got (%d, %v), want (0, nil)", n, err)
 			}
 
@@ -97,7 +98,7 @@ func TestMigrations(t *testing.T) {
 		{"RunRejectsDuplicateVersions", func(t *testing.T) {
 			db := openTestDB(t)
 			swapSchemas(t, []Migration{testMigration(3), testMigration(3)})
-			if _, err := Run(db); err == nil {
+			if _, err := Run(context.Background(), db); err == nil {
 				t.Fatal("want duplicate version error, got nil")
 			}
 		}},
@@ -112,7 +113,7 @@ func TestMigrations(t *testing.T) {
 func TestRunRecordsRunAtInTheStoredTimeForm(t *testing.T) {
 	db := openTestDB(t)
 	swapSchemas(t, []Migration{testMigration(1)})
-	if _, err := Run(db); err != nil {
+	if _, err := Run(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
 	var runAt string

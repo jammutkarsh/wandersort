@@ -123,7 +123,7 @@ func openAppDB(ctx context.Context, dbPath string, log logger.Logger) (*DB, erro
 
 	// back up an existing library before migrating it; a newer schema is
 	// refused
-	pending, applied, err := migrations.Pending(sqlxDB)
+	pending, applied, err := migrations.Pending(ctx, sqlxDB)
 	if err != nil {
 		sqlxDB.Close()
 		return nil, fmt.Errorf("appDB: %w", err)
@@ -137,7 +137,7 @@ func openAppDB(ctx context.Context, dbPath string, log logger.Logger) (*DB, erro
 		log.Info("Backed up the library database before upgrading it", "backup", dest)
 	}
 
-	count, err := migrations.Run(sqlxDB)
+	count, err := migrations.Run(ctx, sqlxDB)
 	if err != nil {
 		sqlxDB.Close()
 		return nil, fmt.Errorf("appDB: migrations - %w", err)
