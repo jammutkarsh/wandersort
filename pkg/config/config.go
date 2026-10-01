@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
+	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 // DefaultLibrary is the output folder's name under $HOME until the user picks
@@ -81,10 +83,17 @@ func (cfg *Configuration) OutputDir() string { return filepath.Dir(cfg.AppDBPath
 // only these is still empty as far as the user is concerned.
 var osClutter = map[string]bool{".DS_Store": true, "Thumbs.db": true, "desktop.ini": true}
 
-// CheckLibrary reports whether dir may be an output folder: missing, empty, or
-// already a library. Anything else would receive files on top of content the
+// ErrNetworkLibrary refuses a library on a network drive: file and SQLite locks
+// there don't keep two computers out, so the database could be corrupted.
+var ErrNetworkLibrary = errors.New("it is on a network drive (NAS, SMB, NFS), which WanderSort doesn't support; pick a folder on a local or USB drive")
+
+// CheckLibrary reports whether dir may be an output folder: local, and missing,
+// empty, or already a library. Anything else would receive files on top of content the
 // database doesn't know. OS clutter and a lone lock file don't count.
 func CheckLibrary(dir string) error {
+	if volume.IsNetwork(dir) {
+		return fmt.Errorf("output folder %s: %w", dir, ErrNetworkLibrary)
+	}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil

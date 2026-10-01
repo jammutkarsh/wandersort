@@ -1,5 +1,10 @@
 package volume
 
+import (
+	"os"
+	"path/filepath"
+)
+
 // Class is how a volume behaves under concurrent reads. Detection is a best
 // guess (RAIDs mix, NASes hide their disks); treat ClassUnknown as a
 // conservative answer, not a failure.
@@ -45,6 +50,21 @@ func ClassForPath(path string) Class {
 		return ClassUnknown
 	}
 	return class
+}
+
+// IsNetwork reports whether path, or its nearest existing ancestor, is on a
+// network mount (NFS, SMB, …). False when it can't tell.
+func IsNetwork(path string) bool {
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return ClassForPath(path) == ClassNetwork
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return false
+		}
+		path = parent
+	}
 }
 
 // networkFilesystems are fstypes whose backing storage is unknowable here;
