@@ -12,20 +12,23 @@ Flow: `add` (scan → metadata → vfs) proposes a plan, `organise` edits it, `c
 
 ## Commands (`internal/cli`)
 
-One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`), `root.go` (flags, library choice) and `shell.go` (the TUI).
+One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`), `root.go` (flags, library choice), `exit.go` (exit codes, `--json`) and `shell.go` (the TUI).
 
 | Command | File | What |
 |---|---|---|
-| `wandersort` | `shell.go` | Full-screen shell: Add / Settings / Organise tabs, `ctrl+t` cycles |
-| `add -p …` | `add.go` | Runs the pipeline (shell on the Add tab, or `--plain`) |
+| `wandersort` | `shell.go` | Full-screen shell: getting ready, then Add / Organise / Copy / Settings tabs, `ctrl+t` cycles |
+| `add -p …` | `add.go` | Runs the pipeline (shell on the Add tab, or plain with `--plain`/`--json`/no terminal) |
 | `organise` | `organise.go` | Shell on the Organise tab; also `rebuildTree`, `newReviewScreen` |
-| `copy` | `copy.go` | Applies the draft and copies files in (`--dry-run`, `--json`) |
-| `check` | `check.go` | Verifies placed files (`--full` re-hashes) |
+| `copy` | `copy.go` | Applies the draft and copies files in (shell on the Copy tab, or plain; `--dry-run`, `--json`) |
+| `check` | `check.go` | Verifies placed files (`--full` re-hashes, `--json`) |
 | `admin clear\|db\|report` | `admin_*.go` | Preview cache, `--reset`/`--restore`, issue zip |
 
 - Settings live in the library (`library_settings`), not a global file. The only per-run choice is which library: `--output-path`, else the most recent (`~/.wandersort/libraries`).
 - `openLibrary` is the one way to open a library: check folder, take lock, open DB, load settings, remember it. A session that never opens one writes nothing.
-- The settings wizard is a shell tab (`settings_form.go`, `settings_examples.go`); saving a changed setting re-plans at once.
+- The shell opens on the getting-ready screen (`tui.ReadyModel`) until exiftool and the place names are installed: `install.MaxTries` tries, asking for a better network between them; giving up exits 1. Then it opens the last library, if there is one.
+- Settings is a shell tab (`settings_form.go`, `settings_examples.go`): a three-step setup (library, layout, home) when no library is open, else a list of rows edited one at a time. Saving a changed setting re-plans at once.
+- Exit codes (`exit.go`): 0 done, 1 error, 2 bad usage, 3 finished with failed files, 4 library busy. `--json` prints one result object on stdout at the end.
+- A copy that leaves files out writes an HTML page (`report.Failures`, `report.SaveHTML`) beside the run's log, same name, `.html` (`logger.File.Page`).
 - `state.go` answers "what can the user do next" (`libraryState`).
 - Screens never call `tea.Quit`; they hand back with `tui.Leave`. The shell owns the program.
 
@@ -46,16 +49,16 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 | `tui` | Design system and screens (see `pkg/tui/README.md`) |
 | `db` | Library `DB` (pragmas in the DSN, `BulkWriter`, `Forget`), `ReadOnly` (location DB, report), `state.go` (file transitions), `errors.go`, backup/restore, `migrations/` |
 | `config` | Runtime paths, library `Settings` (one JSON value; `HomeTown`/`WorkTown`), library history, `CheckLibrary` |
-| `install` | Versions, downloads, verification and readiness of exiftool and the location DB (`Coordinator`) |
+| `install` | Versions, downloads, verification and readiness of exiftool and the location DB (`Coordinator`, up to `MaxTries` tries) |
 | `location` | Offline reverse/forward geocoding over the geonames DB; name qualifiers and suggestions |
 | `exiftool` | Runs the installed exiftool (`-stay_open` pool) |
 | `classifier` | Extension → media type, ignored dirs, exiftool JSON → `CommonMetadata` |
 | `path` | Segment/file-name sanitizing, `ToLibrary` (NFC) vs `ToSourcePath` (bytes kept), root reduction |
 | `atomicfile` | Durable copy, no-replace rename, synced `MkdirAll` |
-| `volume` | Volume UUID, storage class, free space |
+| `volume` | Volume UUID, storage class, free space, drive name (`Label`) |
 | `logger` | slog fan-out: console (only `UserKey` lines + warnings), JSON file log, TUI events |
 | `lock` | OS advisory locks (output dir, installs) |
-| `report` | Scrubbed export of the `errors` table |
+| `report` | Scrubbed export of the `errors` table; the failure page a copy writes |
 
 ## Rules that bite
 

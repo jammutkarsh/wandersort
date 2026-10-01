@@ -17,26 +17,27 @@ Use the semantic styles (`Title`, `Text`, `DimText`, `FaintTxt`, `OK`, `Attn`, `
 
 ## Layout rules
 
-- **Alt-screen, full width and height.** `Banner` at the top, `Footer` pinned to the last row by `Screen`; the rest is live content.
-- **The right column is the screen's one number** (elapsed time, file count). Content truncates with `…`; the number never does.
+- **One top line.** The shell draws `Brand()`, the tabs (Add, Organise, Copy, Settings; `●` where something waits) and the library on the right. Screens draw nothing above their content.
+- **At most five keys in a footer**, ending with `MoreKeys()`. The rest go in the screen's `KeyGroup`s, drawn over the screen by `KeyHelp` on `?`; any key closes it. In a text input `?` is text unless the input is empty.
+- **The right column is the screen's one number** (elapsed time, file count, size). Content truncates with `…`; the number never does.
+- **Choices are numbered** (`❯ 1)`); a digit picks one, arrows are the fallback.
+- **Warnings wait for the end of a run**, then show once; the log has every one.
 - **Measure, don't assume.** Footers wrap on narrow terminals; budget rows with `lipgloss.Height`.
 
 ## Components
 
-- `Banner(subtitle)`: branded title box.
-- `StageList`: buildkit-style step stack. One ` => [i/N] Name` row per stage, a progress bar and streaming file tail under the running one, finished stages collapsed to one line. Driven by `logger.Event`s.
+- `ReadyModel`: the getting-ready screen every session opens on. Lists the dependencies, shows their downloads (`InstallProgressMsg`), asks for a better network between tries (`RetryMsg`, 10 s countdown, enter retries now) and gives up after the last (`DepsFailedMsg`).
+- `StageList`: one row per stage (`○` pending, spinner running, `✓` done, `✗` failed), elapsed time on the right, the running stage's bar and the item it is on. `Remaining`/`TimeLeft` guess the time left from the bar's rate. Used by the plan and copy screens.
+- `ScanModel`: Find / Read / Plan, then the numbered "what next" choice.
+- `CopyModel`: what a copy would do, the copy (bytes on the bar), and what it did, naming files left out by reason.
+- `FormModel`: the settings setup. `FieldSelect` (numbered single choice), `FieldMultiSelect`, `FieldConfirm`, `FieldInput`, `FieldGroup` (one screen, any kinds). `Field.Skip` leaves a follow-up step out; `Heading` adds a title and step count; `Then` lets a host screen keep going after it ends. `Field.Example` shows only the option under the cursor: a bordered right column on wide terminals (≥ 100 cols), a block above the footer otherwise.
+- `SettingsModel`: a library's settings as a list; enter edits one row with a one-step `FormModel`.
+- `HomeModel`: the Add tab's folder list.
 - `Footer(help, w)` / `KeyHint(key, action)`: every key goes through `KeyHint` (non-breaking spaces, so wrapping only happens between hints).
-- `Row(left, right, w)`: one full-width line, right column aligned to the edge.
-- `Screen(body, footer, h)`: pins the footer to the bottom.
+- `Row(left, right, w)`, `Screen(body, footer, h)`: one full-width line; a footer pinned to the bottom.
 - `Tab` / `Leave` / `SwitchMsg`: how the shell hosts screens. Screens never quit the program; they hand back with `Leave`.
-- `FormModel`: the settings wizard.
-  - Options are numbered; arrows are the fallback.
-  - `Field.Example` shows only the option under the cursor: a bordered right column on wide terminals (≥ 100 cols), a block above the footer otherwise.
-  - `Field.Await` holds a step until it can be answered, showing why.
-  - Background downloads report into the screen they block (`DownloadMsg`, `InstallProgressMsg`) and settle as a dim `✓ done` line. An already-present dependency shows nothing.
-  - A `FieldGroup` is one screen whose members can be any field kind.
-- The review tree (`internal/review`) is the pattern for list screens: `Screen` + `Banner` + measured header/footer, a `Row` per line, `Selected` on the cursor row and `[V]` range, mode-dependent `KeyHint`s.
+- The review tree (`internal/review`) is the pattern for list screens: a measured header and footer, a `Row` per line, `Selected` on the cursor row and `[V]` range, mode-dependent `KeyHint`s.
 
 ## Data flow
 
-The logger is the bus (`pkg/logger/stream.go`); the pipeline never imports `tui`. `UserKey` = milestone (everywhere), `StreamKey` = per-item line (TUI and file log), `PhaseKey`/`EventKey`/`ElapsedKey` = stage routing. Plain mode (`--plain`, non-TTY stderr) uses the line console with the same theme styles.
+The logger is the bus (`pkg/logger/stream.go`); the pipeline never imports `tui`. `UserKey` = milestone (everywhere), `StreamKey` = per-item line (TUI and file log), `PhaseKey`/`EventKey`/`ElapsedKey` = stage routing. The copy screen takes `execute.Options.OnStep`/`OnProgress` callbacks instead. Plain mode (`--plain`, `--json`, non-TTY stderr) prints milestones as sentences, one per stage, and keeps the `warn` tag for warnings.
