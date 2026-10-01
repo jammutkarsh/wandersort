@@ -279,15 +279,15 @@ func TestQueryContextAndQueryRowContext(t *testing.T) {
 	}
 }
 
-func TestOpenLocationDB(t *testing.T) {
+func TestOpenReadOnly(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
-		_, err := OpenLocation(filepath.Join(t.TempDir(), "missing.db"), logger.NewNoopLogger())
-		if err == nil || !strings.Contains(err.Error(), "location database not found") {
+		_, err := OpenReadOnly(filepath.Join(t.TempDir(), "missing.db"))
+		if err == nil || !strings.Contains(err.Error(), "database not found") {
 			t.Fatalf("got %v, want a not-found error", err)
 		}
 	})
 
-	t.Run("opens an existing file read-only, no Writer", func(t *testing.T) {
+	t.Run("opens an existing file read-only", func(t *testing.T) {
 		dbPath := filepath.Join(t.TempDir(), "location.db")
 		seed, err := sql.Open("sqlite", dbPath)
 		if err != nil {
@@ -300,15 +300,12 @@ func TestOpenLocationDB(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		d, err := OpenLocation(dbPath, logger.NewNoopLogger())
+		d, err := OpenReadOnly(dbPath)
 		if err != nil {
-			t.Fatalf("OpenLocation: %v", err)
+			t.Fatalf("OpenReadOnly: %v", err)
 		}
-		defer d.SQL.Close()
+		defer d.Close()
 
-		if d.Writer != nil {
-			t.Error("a location database must have a nil Writer")
-		}
 		var name string
 		if err := d.SQL.QueryRow(`SELECT name FROM sqlite_master WHERE name='geonames_cities'`).Scan(&name); err != nil {
 			t.Fatalf("querying seeded table: %v", err)

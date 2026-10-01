@@ -63,8 +63,8 @@ func TestVerifyLocationDB(t *testing.T) {
 	buildLocationDB(t, dbPath, 3)
 	hash := fileSHA256Helper(t, dbPath)
 
-	openRO := func() *db.DB {
-		d, err := db.OpenLocation(dbPath, logger.NewNoopLogger())
+	openRO := func() *db.ReadOnly {
+		d, err := db.OpenReadOnly(dbPath)
 		if err != nil {
 			t.Fatalf("open location db: %v", err)
 		}

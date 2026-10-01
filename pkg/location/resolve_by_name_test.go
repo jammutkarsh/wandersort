@@ -219,7 +219,7 @@ func TestCanonicalReportsALookupFailure(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	empty, err := db.OpenLocation(path, logger.NewNoopLogger())
+	empty, err := db.OpenReadOnly(path)
 	if err != nil {
 		t.Fatal(err)
 	}

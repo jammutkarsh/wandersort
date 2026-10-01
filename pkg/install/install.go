@@ -50,7 +50,7 @@ type Coordinator struct {
 	exifReady chan struct{}
 
 	resolver   *location.Resolver
-	locationDB *db.DB
+	locationDB *db.ReadOnly
 	locErr     error
 	locReady   chan struct{}
 }

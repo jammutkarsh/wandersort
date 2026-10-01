@@ -17,7 +17,7 @@ import (
 )
 
 // This file is the location-database half of pkg/install's job: pkg/location
-// only ever queries an already-open, already-verified *db.DB.
+// only ever queries an already-open, already-verified *db.ReadOnly.
 
 const (
 	// LocationDownloadBaseURL is the download URL for the locationDB asset.
@@ -120,7 +120,7 @@ func decompressZstd(archivePath, dest string) error {
 
 // verifyLocationDB checks a database's checksum and the row count of every
 // table its metadata names.
-func verifyLocationDB(dbPath string, locationDB *db.DB, log logger.Logger) error {
+func verifyLocationDB(dbPath string, locationDB *db.ReadOnly, log logger.Logger) error {
 	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
@@ -146,7 +146,7 @@ func verifyLocationDB(dbPath string, locationDB *db.DB, log logger.Logger) error
 	// every table meta.Rows names is checked
 	for table, want := range meta.Rows {
 		var count int
-		if err := locationDB.QueryRowContext(context.Background(),
+		if err := locationDB.SQL.QueryRowContext(context.Background(),
 			fmt.Sprintf(`SELECT COUNT(*) FROM %q`, table)).Scan(&count); err != nil {
 			return fmt.Errorf("verifying location database table %s: %w", table, err)
 		}
@@ -166,13 +166,13 @@ func removeIfExists(p string) error {
 }
 
 // OpenLocationResolver downloads (if missing), verifies and opens the location
-// database. The caller owns closing the returned *db.DB.
-func OpenLocationResolver(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) (*location.Resolver, *db.DB, error) {
+// database. The caller owns closing the returned *db.ReadOnly.
+func OpenLocationResolver(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) (*location.Resolver, *db.ReadOnly, error) {
 	if err := downloadLocationDB(ctx, log, dbPath, onProgress); err != nil {
 		return nil, nil, fmt.Errorf("location db: %w", err)
 	}
 
-	locationDB, err := db.OpenLocation(dbPath, log)
+	locationDB, err := db.OpenReadOnly(dbPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("location db: %w", err)
 	}

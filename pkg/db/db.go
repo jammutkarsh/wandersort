@@ -36,9 +36,9 @@ const (
 	connMaxLifetime = 0
 )
 
-// DB is an open database. Reads use SQL; every write goes through Writer
-// (Write batched, WriteSync for an outcome), so writes stay in one order and
-// their failures are reported. Writer is nil for the location database.
+// DB is an open library database. Reads use SQL; every write goes through
+// Writer (Write batched, WriteSync for an outcome), so writes stay in one
+// order and their failures are reported.
 type DB struct {
 	SQL    *sqlx.DB
 	Writer *BulkWriter
@@ -53,9 +53,7 @@ func New(ctx context.Context, dbPath string, log logger.Logger) (*DB, error) {
 // Close doesn't Checkpoint: it runs on every quit, including a bare cancel
 // with nothing to flush, and that cost turned "let me out" into a stall.
 func (d *DB) Close() error {
-	if d.Writer != nil {
-		d.Writer.Close()
-	}
+	d.Writer.Close()
 	return d.SQL.Close()
 }
 
@@ -150,27 +148,28 @@ func openAppDB(ctx context.Context, dbPath string, log logger.Logger) (*DB, erro
 	return d, nil
 }
 
-// OpenLocation opens the read-only location database. It has no writer and
-// no migrations: the file is downloaded whole and never written.
-func OpenLocation(dbPath string, log logger.Logger) (*DB, error) {
-	if _, err := os.Stat(dbPath); err != nil {
-		return nil, fmt.Errorf("location database not found at %s: %w", dbPath, err)
-	}
+// ReadOnly is a database opened only for reads (mode=ro): the location
+// database, or a library read without taking it over.
+type ReadOnly struct{ SQL *sqlx.DB }
 
-	dsn := fmt.Sprintf("file:%s?mode=ro&_journal=OFF&_sync=OFF", dbPath)
-	sqlDB, err := sql.Open("sqlite", dsn)
+// OpenReadOnly opens the existing database at path for reads.
+func OpenReadOnly(path string) (*ReadOnly, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("database not found at %s: %w", path, err)
+	}
+	sqlDB, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String())
 	if err != nil {
-		return nil, fmt.Errorf("locationDB: unable to open - %w", err)
+		return nil, fmt.Errorf("open %s read-only: %w", path, err)
 	}
-
 	if err := sqlDB.Ping(); err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("locationDB: unable to ping - %w", err)
+		return nil, fmt.Errorf("open %s read-only: %w", path, err)
 	}
-
-	log.Info("Successfully connected to location database", "path", dbPath)
-	return &DB{SQL: sqlx.NewDb(sqlDB, "sqlite")}, nil
+	return &ReadOnly{SQL: sqlx.NewDb(sqlDB, "sqlite")}, nil
 }
+
+// Close closes the database.
+func (r *ReadOnly) Close() error { return r.SQL.Close() }
 
 // Optimize reclaims SQLite disk space (incremental_vacuum) and releases
 // internal memory (shrink_memory). Call after large delete operations.

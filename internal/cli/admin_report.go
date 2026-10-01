@@ -4,18 +4,17 @@ import (
 	"archive/zip"
 	"bufio"
 	"context"
-	"database/sql"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/report"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
@@ -172,7 +171,7 @@ func (a *app) exportErrors(redactPaths bool) ([]report.Row, []string) {
 	if !a.libraryExists() {
 		return nil, nil
 	}
-	conn, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: a.Config.AppDBPath, RawQuery: "mode=ro"}).String())
+	conn, err := db.OpenReadOnly(a.Config.AppDBPath)
 	if err != nil {
 		a.Log.Warn("could not open the database for the error report", "error", err)
 		return nil, nil
@@ -180,7 +179,7 @@ func (a *app) exportErrors(redactPaths bool) ([]report.Row, []string) {
 	defer conn.Close()
 
 	home, _ := os.UserHomeDir()
-	rows, summary, err := report.Errors(context.Background(), conn, report.Options{
+	rows, summary, err := report.Errors(context.Background(), conn.SQL, report.Options{
 		Home: home, Library: a.Config.OutputDir(), Redact: redactPaths,
 	})
 	if err != nil {

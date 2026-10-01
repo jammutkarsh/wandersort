@@ -42,7 +42,7 @@ type cacheKey struct {
 }
 
 type Resolver struct {
-	db    *db.DB
+	db    *db.ReadOnly
 	cache *sync.Map // Lookup results; shared by WithAnchors views
 	log   logger.Logger
 	// anchors make Candidates/SearchByName qualify a name a saved place
@@ -52,7 +52,7 @@ type Resolver struct {
 
 // NewResolver wraps an already-open, verified location database (pkg/install
 // downloads and verifies it).
-func NewResolver(locationDB *db.DB, log logger.Logger) *Resolver {
+func NewResolver(locationDB *db.ReadOnly, log logger.Logger) *Resolver {
 	return &Resolver{db: locationDB, cache: &sync.Map{}, log: log}
 }
 
@@ -193,7 +193,7 @@ func (r *Resolver) countNames(ctx context.Context, cities []string) (map[string]
 		FROM geonames_cities gc
 		WHERE gc.city COLLATE NOCASE IN (?` + strings.Repeat(",?", len(want)-1) + `)
 		GROUP BY gc.city COLLATE NOCASE, gc.country_code`
-	rows, err := r.db.QueryContext(ctx, query, want...)
+	rows, err := r.db.SQL.QueryContext(ctx, query, want...)
 	if err != nil {
 		return nil, fmt.Errorf("locationResolver: name counts: %w", err)
 	}
@@ -272,7 +272,7 @@ const kmPerDegree = 111.0
 // Candidates returns up to limit matches within deltaDegrees, nearest first,
 // plain spellings ahead of diacritic ones.
 func (r *Resolver) Candidates(ctx context.Context, lat, lon, deltaDegrees float64, limit int) ([]Candidate, error) {
-	rows, err := r.db.QueryContext(ctx, candidateQuery, lat, lon, deltaDegrees, candidateFetchLimit)
+	rows, err := r.db.SQL.QueryContext(ctx, candidateQuery, lat, lon, deltaDegrees, candidateFetchLimit)
 	if err != nil {
 		return nil, fmt.Errorf("locationResolver: query: %w", err)
 	}
@@ -332,7 +332,7 @@ func (r *Resolver) ResolveByName(ctx context.Context, name string) (lat, lon flo
 	// honour the qualifiers: the bare city alone would resolve to whichever
 	// same-named row comes back first
 	city, qualifiers := splitQualified(name)
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := r.db.SQL.QueryContext(ctx,
 		`SELECT COALESCE(state, ''), COALESCE(country, ''), latitude, longitude
 		 FROM geonames_cities WHERE city = ? COLLATE NOCASE`, city)
 	if err != nil {
@@ -360,7 +360,7 @@ func (r *Resolver) ResolveByName(ctx context.Context, name string) (lat, lon flo
 // ASCII-only and there is no stripped column to index, so this scans.
 func (r *Resolver) resolveStripped(ctx context.Context, name string, qualifiers []string) (lat, lon float64, err error) {
 	want := strings.ToLower(stripDiacritics(name))
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := r.db.SQL.QueryContext(ctx,
 		`SELECT city, COALESCE(state, ''), COALESCE(country, ''), latitude, longitude FROM geonames_cities`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("locationResolver: resolve by name: %w", err)
@@ -400,7 +400,7 @@ func (r *Resolver) SearchByName(ctx context.Context, prefix string, limit int) (
 	// offered and what an anchor is saved as, so it has to find the same row
 	city, qualifiers := splitQualified(prefix)
 	fetch := limit * searchOverfetchFactor
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := r.db.SQL.QueryContext(ctx,
 		`SELECT gc.city, gc.latitude, gc.longitude,
 		        COALESCE(gc.state, ''), COALESCE(gc.country, ''), COALESCE(gc.country_code, '')
 		 FROM geonames_cities gc
@@ -496,7 +496,7 @@ func (r *Resolver) fuzzySearchTrigram(ctx context.Context, city string, qualifie
 	}
 	args[len(grams)] = fuzzyFetchLimit
 
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := r.db.SQL.QueryContext(ctx,
 		`SELECT gc.city, gc.latitude, gc.longitude,
 		        COALESCE(gc.state, ''), COALESCE(gc.country, ''), COALESCE(gc.country_code, '')
 		 FROM geonames_trigrams gt
@@ -521,7 +521,7 @@ func (r *Resolver) fuzzySearchTrigram(ctx context.Context, city string, qualifie
 // distance. Slower; for databases without geonames_trigrams.
 func (r *Resolver) fuzzySearchLevenshtein(ctx context.Context, city string, qualifiers []string, limit int) ([]geoRow, error) {
 	fuzzyPrefix := city[:min(2, len(city))]
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := r.db.SQL.QueryContext(ctx,
 		`SELECT gc.city, gc.latitude, gc.longitude,
 		        COALESCE(gc.state, ''), COALESCE(gc.country, ''), COALESCE(gc.country_code, '')
 		 FROM geonames_cities gc
