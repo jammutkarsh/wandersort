@@ -54,6 +54,9 @@ type copyResult struct {
 
 func (a *app) runCopy(cmd *cobra.Command) error {
 	dryRun, _ := cmd.Flags().GetBool(flagDryRun)
+	if a.isTuiEnabled(cmd) && !dryRun {
+		return a.runShell(shellStart{tab: tabCopy})
+	}
 	start := time.Now()
 	var res copyResult
 	return a.emitJSON(&res, start, a.copyPlain(dryRun, &res))
@@ -81,12 +84,8 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	defer a.reportLeftBehind(left)
 
 	rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{
-		DryRun: dryRun,
-		OnApplied: func() {
-			if err := review.CleanPreviews(); err != nil {
-				a.Log.Warn("could not remove the preview copies", "error", err)
-			}
-		},
+		DryRun:    dryRun,
+		OnApplied: a.cleanPreviews,
 	})
 	if errors.Is(err, context.Canceled) {
 		// every file not yet reached is still pending; nothing is half-placed
@@ -108,6 +107,92 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 		fmt.Fprintln(os.Stderr, "Nothing left to copy — run 'wandersort add' to plan more files.")
 	}
 	return nil
+}
+
+// newCopyScreen opens the library and builds the Copy tab over what is
+// waiting to be copied.
+func (a *app) newCopyScreen(session context.Context) (tui.Tab, error) {
+	if err := a.openLibrary(session); err != nil {
+		return nil, err
+	}
+	outputDir := a.Config.OutputDir()
+	files, bytes, err := execute.Pending(session, a.AppDB)
+	if err != nil {
+		return nil, err
+	}
+	space, err := execute.SpaceFor(session, a.AppDB, outputDir)
+	if err != nil {
+		return nil, err
+	}
+	plan := tui.CopyPlan{
+		Files: files, Bytes: bytes, Edits: a.readState(session).Edits,
+		Free: int64(space.Free), FreeKnown: space.Known, Fits: space.Fits(),
+	}
+
+	// the copy's own context: its ctrl+c must not end the session
+	ctx, cancel := context.WithCancel(session)
+	return tui.NewCopyModel(tui.CopyConfig{
+		Library: outputDir,
+		Plan:    plan,
+		Cancel:  cancel,
+		Run: func(onStep func(string), onProgress func(string, int64, int, int)) (tui.CopyResult, error) {
+			if !a.work.start() {
+				return tui.CopyResult{}, context.Canceled
+			}
+			defer a.work.done()
+			rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{
+				OnApplied:  a.cleanPreviews,
+				OnStep:     onStep,
+				OnProgress: onProgress,
+			})
+			res := tui.CopyResult{Copied: rep.Done, Failed: rep.Failed, Bytes: rep.Bytes}
+			if err != nil {
+				return res, err
+			}
+			left, lerr := execute.LeftBehind(ctx, a.AppDB)
+			if lerr != nil {
+				return res, lerr
+			}
+			res.NotRead = len(left)
+			if res.Failed+res.NotRead > 0 {
+				res.Report = a.saveFailurePage(ctx)
+				res.Problems = a.copyProblems(ctx)
+			}
+			return res, nil
+		},
+	}), nil
+}
+
+// copyProblems groups the files a copy left out by reason, for the screen.
+func (a *app) copyProblems(ctx context.Context) []tui.CopyProblem {
+	failures, err := report.Failures(ctx, a.AppDB.SQL)
+	if err != nil {
+		a.Log.Warn("could not list the files left out", "error", err)
+		return nil
+	}
+	var out []tui.CopyProblem
+	index := map[string]int{}
+	for _, d := range failures.Drives {
+		for _, g := range d.Groups {
+			i, ok := index[g.Reason]
+			if !ok {
+				i = len(out)
+				index[g.Reason] = i
+				out = append(out, tui.CopyProblem{Reason: g.Reason, Next: g.Next})
+			}
+			for _, f := range g.Files {
+				out[i].Paths = append(out[i].Paths, wspath.New().RelativeToHome(f.Source))
+			}
+		}
+	}
+	return out
+}
+
+// cleanPreviews removes the review's peek copies once the edits are applied.
+func (a *app) cleanPreviews() {
+	if err := review.CleanPreviews(); err != nil {
+		a.Log.Warn("could not remove the preview copies", "error", err)
+	}
 }
 
 // saveFailurePage writes the page listing every file not in the library,

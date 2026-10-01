@@ -23,11 +23,12 @@ import (
 const (
 	tabScan = iota
 	tabReview
+	tabCopy
 	tabSettings
 	numTabs
 )
 
-var tabNames = [numTabs]string{"Add", "Organise", "Settings"}
+var tabNames = [numTabs]string{"Add", "Organise", "Copy", "Settings"}
 
 // shellStart is which tab a session opens on, and with what. Every
 // full-screen command is the same shell opened on its own tab.
@@ -235,6 +236,8 @@ func (m shellModel) startCmd() tea.Cmd {
 		return msgCmd(openSettingsMsg{})
 	case m.start.tab == tabReview:
 		return msgCmd(tui.OpenReviewMsg{})
+	case m.start.tab == tabCopy:
+		return msgCmd(tui.OpenCopyMsg{})
 	}
 	return nil
 }
@@ -273,6 +276,18 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case openSettingsMsg:
 		return m, m.openSettings()
+
+	case tui.OpenCopyMsg:
+		return m, m.openCopy()
+
+	case tui.CopyFinishedMsg:
+		// files moved into the library: the counts changed and a kept review
+		// would show folders that are now placed
+		m.refresh()
+		if m.tab != tabReview {
+			m.screens[tabReview] = nil
+		}
+		return m, nil
 
 	case scanReadyMsg:
 		if msg.err != nil {
@@ -321,6 +336,8 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case m.tab == tabSettings && m.screens[tabSettings] == nil:
 			return m, m.openSettings()
+		case m.tab == tabCopy && !m.copyRunning():
+			return m, m.openCopy() // fresh numbers every visit
 		case m.tab == tabScan:
 			if cmd := m.scanTabHome(); cmd != nil {
 				return m, cmd
@@ -331,8 +348,13 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// ctrl+c goes to a running scan first (warn once, then cancel). Other
 	// screens answer it with a tui.Leave, handled below.
-	if k.String() == "ctrl+c" && m.scanRunning() {
-		m.tab = tabScan
+	if k.String() == "ctrl+c" {
+		switch {
+		case m.scanRunning():
+			m.tab = tabScan
+		case m.copyRunning():
+			m.tab = tabCopy
+		}
 	}
 	return m, m.forward(m.tab, k)
 }
@@ -363,10 +385,13 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 		// next, but only if there are any
 		m.refresh()
 		if m.lib.HasEdits() {
-			note = "Your edits are kept — run 'wandersort copy' to apply them and copy the files."
+			note = "Your edits are kept; Copy applies them."
 			m.a.Log.Info(note, logger.UserKey, true)
 		}
 		m.screens[tabReview] = nil
+	case tabCopy:
+		m.screens[tabCopy] = nil
+		m.refresh()
 	}
 
 	// Not a quit: the session goes on. A settled plan or a saved setting
@@ -455,18 +480,20 @@ func (m *shellModel) homeAgain(note string) tea.Cmd {
 	return m.place(tabScan, m.a.newHomeScreen(history))
 }
 
-// nextTab cycles scan → settings → review → scan, skipping review when there is
-// nothing to review and settings while a scan runs.
+// nextTab cycles through the tabs, skipping what can't be used now: Organise
+// with nothing to review, Copy with nothing to copy, and anything that would
+// start new work or change settings under a running scan or copy.
 func (m shellModel) nextTab() int {
 	for i := 1; i <= numTabs; i++ {
 		t := (m.tab + i) % numTabs
-		if t == tabReview && !m.canReview() {
-			continue
+		switch {
+		case t == tabReview && !m.canReview():
+		case t == tabCopy && (m.scanRunning() || (m.screens[tabCopy] == nil && m.lib.Planned == 0)):
+		case t == tabSettings && (m.scanRunning() || m.copyRunning()):
+		case t == tabScan && m.copyRunning():
+		default:
+			return t
 		}
-		if t == tabSettings && m.scanRunning() {
-			continue
-		}
-		return t
 	}
 	return m.tab
 }
@@ -524,6 +551,26 @@ func (m *shellModel) openReview() tea.Cmd {
 	}
 }
 
+// copyRunning asks the copy tab whether it is busy.
+func (m shellModel) copyRunning() bool {
+	s := m.screens[tabCopy]
+	return s != nil && s.Busy()
+}
+
+// openCopy places a fresh Copy tab, unless a copy is already running there.
+func (m *shellModel) openCopy() tea.Cmd {
+	if m.copyRunning() {
+		m.tab = tabCopy
+		return nil
+	}
+	screen, err := m.a.newCopyScreen(m.ctx)
+	if err != nil {
+		return m.forward(tabScan, tui.HomeErrMsg{Err: err})
+	}
+	m.tab = tabCopy
+	return m.place(tabCopy, screen)
+}
+
 // scanRunning asks the scan tab whether it is busy.
 func (m shellModel) scanRunning() bool {
 	s := m.screens[tabScan]
@@ -579,6 +626,10 @@ func (m shellModel) tabBar() string {
 		case i == tabReview && m.canReview():
 			parts = append(parts, tui.Text.Render(" "+name+" ")+tui.Title.Render("●"))
 		case i == tabReview:
+			parts = append(parts, tui.FaintTxt.Render(" "+name+" "))
+		case i == tabCopy && (m.copyRunning() || m.lib.Planned > 0):
+			parts = append(parts, tui.Text.Render(" "+name+" ")+tui.Title.Render("●"))
+		case i == tabCopy:
 			parts = append(parts, tui.FaintTxt.Render(" "+name+" "))
 		default:
 			parts = append(parts, tui.DimText.Render(" "+name+" "))
