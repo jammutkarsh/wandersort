@@ -37,14 +37,15 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 - `vfs`: plans every unplaced master. `elect.go` picks one copy per hash each run; `plan.go`'s `Plan` derives facts, resolves locations, then `assignTargetPaths` (numbered steps, order is the rule). Plan is persisted as `folder_nodes` (folder tree with ids and `bounds`) + `virtual_fs_entries`. `route.go` sends new files into matching placed folders. `draft.go` is the review edit journal (`.wandersort.draft`); `edit.go` holds merge/drop/flatten.
 - `execute`: `Run` checks space, applies the draft, backs up the DB, transfers each pending row (`land.go`: hash-verified copy that never replaces an existing file), then forgets duplicates of placed files. Sequential and resumable.
 - `verify`: `check`'s engine; forgets placed files that are gone, records damage as `VERIFY` errors.
+- `library`: whole-library maintenance: `Reset` (backup, wipe, drop the draft) and `Restore` (restore, prove it opens, drop the draft).
 
 ## Supporting packages (`pkg`)
 
 | Package | Owns |
 |---|---|
 | `tui` | Design system and screens (see `pkg/tui/README.md`) |
-| `db` | SQLite open (pragmas in the DSN), `BulkWriter`, `state.go` (file transitions), `errors.go`, backup/restore, `migrations/` |
-| `config` | Runtime paths, library `Settings`, library history, `CheckLibrary` |
+| `db` | Library `DB` (pragmas in the DSN, `BulkWriter`, `Forget`), `ReadOnly` (location DB, report), `state.go` (file transitions), `errors.go`, backup/restore, `migrations/` |
+| `config` | Runtime paths, library `Settings` (one JSON value; `HomeTown`/`WorkTown`), library history, `CheckLibrary` |
 | `install` | Versions, downloads, verification and readiness of exiftool and the location DB (`Coordinator`) |
 | `location` | Offline reverse/forward geocoding over the geonames DB; name qualifiers and suggestions |
 | `exiftool` | Runs the installed exiftool (`-stay_open` pool) |
