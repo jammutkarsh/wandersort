@@ -58,7 +58,7 @@ func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
 	if err != nil {
 		a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
 	}
-	resolver = resolver.WithAnchors(resolver.BuildAnchors(ctx, a.Config.SavedPlaces))
+	resolver = resolver.WithAnchors(resolver.BuildAnchors(ctx, a.Config.SavedPlaces()))
 	outputDir := a.Config.OutputDir()
 	tree, err := vfs.BuildTree(ctx, a.AppDB)
 	if err != nil {

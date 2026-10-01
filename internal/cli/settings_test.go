@@ -128,8 +128,8 @@ func TestConfig(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(g.SavedPlaces) < 2 || g.SavedPlaces[0] != "Indore" || g.SavedPlaces[1] != "Indore" {
-				t.Errorf("saved-place = %v, want the typed town kept (work defaults to home)", g.SavedPlaces)
+			if g.HomeTown != "Indore" || g.WorkTown != "Indore" {
+				t.Errorf("home/work = %q/%q, want the typed town kept (work defaults to home)", g.HomeTown, g.WorkTown)
 			}
 
 			if err := save(); err != nil {
@@ -144,7 +144,8 @@ func TestConfig(t *testing.T) {
 				CollapseLevels:        false,
 				SavedPlacesDateOnly:   false, // the example checks above left it off
 				MergeSameLocationDays: cfg.MergeSameLocationDays,
-				SavedPlaces:           got.SavedPlaces, // covered above
+				HomeTown:              got.HomeTown, // covered above
+				WorkTown:              got.WorkTown,
 			}
 			if !got.Equal(want) {
 				t.Fatalf("saved settings = %+v, want %+v", got, want)
@@ -238,8 +239,8 @@ func TestConfig(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(g.SavedPlaces) == 0 || g.SavedPlaces[0] != "Indore, Madhya Pradesh, India" {
-				t.Errorf("saved home town = %v, want the canonical geonames spelling", g.SavedPlaces)
+			if g.HomeTown != "Indore, Madhya Pradesh, India" {
+				t.Errorf("saved home town = %q, want the canonical geonames spelling", g.HomeTown)
 			}
 		}},
 		// TestTreeExample covers the wizard's example renderer: sibling paths must

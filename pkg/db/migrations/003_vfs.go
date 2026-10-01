@@ -16,16 +16,8 @@ var schema003 = Migration{
 const librarySettings = `
 CREATE TABLE IF NOT EXISTS library_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    -- the folder levels below Year/Month, in nesting order: a JSON array of
-    -- level names ([] is a flat Year/Month). Read in Go only.
-    rules TEXT NOT NULL,
-    collapse_levels INTEGER NOT NULL,
-    saved_places_date_only INTEGER NOT NULL,
-    merge_same_location_days INTEGER NOT NULL,
-    -- the everyday places, as the user typed them: a JSON array, positional
-    -- (0 home, 1 work, the rest more of the same). Resolved to coordinates
-    -- per run, never stored resolved.
-    saved_places TEXT NOT NULL
+    -- config.Settings as JSON; read in Go only
+    settings TEXT NOT NULL
 ) STRICT;
 `
 

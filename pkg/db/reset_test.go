@@ -66,21 +66,20 @@ func TestResetKeepsLibrarySettings(t *testing.T) {
 	ctx := context.Background()
 	d := dbtest.New(t)
 
-	if _, err := d.SQL.ExecContext(ctx, `INSERT INTO library_settings
-		(id, rules, collapse_levels, saved_places_date_only, merge_same_location_days, saved_places)
-		VALUES (1, '["device"]', 1, 1, 1, '["Indore"]')`); err != nil {
+	const stored = `{"rules":["device"]}`
+	if _, err := d.SQL.ExecContext(ctx, `INSERT INTO library_settings (id, settings) VALUES (1, ?)`, stored); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.ResetAll(ctx); err != nil {
 		t.Fatalf("ResetAll: %v", err)
 	}
 
-	var rules string
-	if err := d.SQL.GetContext(ctx, &rules, `SELECT rules FROM library_settings WHERE id = 1`); err != nil {
+	var settings string
+	if err := d.SQL.GetContext(ctx, &settings, `SELECT settings FROM library_settings WHERE id = 1`); err != nil {
 		t.Fatalf("the settings row must survive a reset: %v", err)
 	}
-	if rules != `["device"]` {
-		t.Errorf("rules = %q after reset, want them untouched", rules)
+	if settings != stored {
+		t.Errorf("settings = %q after reset, want them untouched", settings)
 	}
 
 	// ...and an empty database is still empty with only settings in it, so

@@ -33,7 +33,8 @@ func TestSettings(t *testing.T) {
 		CollapseLevels:        false,
 		SavedPlacesDateOnly:   false,
 		MergeSameLocationDays: true,
-		SavedPlaces:           []string{"Delhi", "Gurugram"},
+		HomeTown:              "Delhi",
+		WorkTown:              "Gurugram",
 	}
 	if err := SaveSettings(ctx, database, want); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
@@ -78,15 +79,16 @@ func TestSettingsAreThisLibrarys(t *testing.T) {
 }
 
 func TestSettingsEqual(t *testing.T) {
-	base := Settings{Rules: []string{"date"}, CollapseLevels: true, SavedPlaces: []string{"Indore"}}
-	same := Settings{Rules: []string{"date"}, CollapseLevels: true, SavedPlaces: []string{"Indore"}}
+	base := Settings{Rules: []string{"date"}, CollapseLevels: true, HomeTown: "Indore"}
+	same := Settings{Rules: []string{"date"}, CollapseLevels: true, HomeTown: "Indore"}
 	if !base.Equal(same) {
 		t.Error("identical settings must compare equal — a save that changes nothing throws no plan away")
 	}
 	for name, other := range map[string]Settings{
-		"rules":       {Rules: []string{"location"}, CollapseLevels: true, SavedPlaces: []string{"Indore"}},
-		"toggle":      {Rules: []string{"date"}, CollapseLevels: false, SavedPlaces: []string{"Indore"}},
-		"savedPlaces": {Rules: []string{"date"}, CollapseLevels: true, SavedPlaces: []string{"Bhopal"}},
+		"rules":    {Rules: []string{"location"}, CollapseLevels: true, HomeTown: "Indore"},
+		"toggle":   {Rules: []string{"date"}, CollapseLevels: false, HomeTown: "Indore"},
+		"homeTown": {Rules: []string{"date"}, CollapseLevels: true, HomeTown: "Bhopal"},
+		"workTown": {Rules: []string{"date"}, CollapseLevels: true, HomeTown: "Indore", WorkTown: "Bhopal"},
 	} {
 		if base.Equal(other) {
 			t.Errorf("a changed %s must not compare equal", name)
@@ -230,5 +232,25 @@ func TestCheckLibrary(t *testing.T) {
 				t.Errorf("error %v does not point at 'wandersort admin db --restore'", err)
 			}
 		})
+	}
+}
+
+// SavedPlaces lists each everyday place once: a work town left as the home
+// town is one place, not two anchors that would qualify each other's names.
+func TestSavedPlaces(t *testing.T) {
+	for _, tt := range []struct {
+		home, work string
+		want       []string
+	}{
+		{"", "", nil},
+		{"A", "", []string{"A"}},
+		{"A", "A", []string{"A"}},
+		{"A", "B", []string{"A", "B"}},
+		{"", "B", []string{"B"}},
+	} {
+		got := Settings{HomeTown: tt.home, WorkTown: tt.work}.SavedPlaces()
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("SavedPlaces(%q, %q) = %v, want %v", tt.home, tt.work, got, tt.want)
+		}
 	}
 }

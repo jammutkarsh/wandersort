@@ -46,7 +46,7 @@ func Propose(ctx context.Context, database *db.DB, resolver *location.Resolver, 
 		}
 	}
 	cfg := ConfigFor(appCfg)
-	cfg.Anchors = resolver.BuildAnchors(ctx, appCfg.SavedPlaces)
+	cfg.Anchors = resolver.BuildAnchors(ctx, appCfg.SavedPlaces())
 	log.Info("Proposing destination folders", "rules", cfg.Rules, "anchors", len(cfg.Anchors))
 	return New(database, resolver, log, cfg).Run(ctx)
 }

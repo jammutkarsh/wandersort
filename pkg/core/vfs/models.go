@@ -93,7 +93,7 @@ func ConfigFor(appCfg *config.Configuration) Config {
 	cfg.SavedPlacesDateOnly = appCfg.SavedPlacesDateOnly
 	cfg.MergeSameLocationDays = appCfg.MergeSameLocationDays
 	cfg.Workers = appCfg.Workers
-	cfg.SavedPlaces = appCfg.SavedPlaces
+	cfg.SavedPlaces = appCfg.SavedPlaces()
 	switch {
 	// RuleNone is interpreted only here
 	case len(appCfg.Rules) == 1 && appCfg.Rules[0] == RuleNone:

@@ -28,13 +28,7 @@ func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.
 	collapse := a.Config.CollapseLevels
 	mergeDays := a.Config.MergeSameLocationDays
 	spDateOnly := a.Config.SavedPlacesDateOnly
-	home, work := "", ""
-	if places := a.Config.SavedPlaces; len(places) > 0 {
-		home = places[0]
-		if len(places) > 1 {
-			work = places[1]
-		}
-	}
+	home, work := a.Config.HomeTown, a.Config.WorkTown
 
 	// rejects a typo (close candidates exist) but accepts an unknown name, or
 	// any name when the geonames database failed to open
@@ -202,7 +196,8 @@ func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.
 			SavedPlacesDateOnly:   spDateOnly,
 			MergeSameLocationDays: mergeDays,
 			// Canonicalize towns to the exact geonames spelling before saving.
-			SavedPlaces: []string{canonicalTownOrTyped(home), canonicalTownOrTyped(work)},
+			HomeTown: canonicalTownOrTyped(home),
+			WorkTown: canonicalTownOrTyped(work),
 		}
 		if err := a.saveSettings(ctx, paths.ExpandPath(strings.TrimSpace(out)), s); err != nil {
 			return fmt.Errorf("save settings: %w", err)
