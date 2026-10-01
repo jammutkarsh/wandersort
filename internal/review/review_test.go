@@ -1099,7 +1099,7 @@ func TestReview(t *testing.T) {
 			m := testModel(t, siblingTree(), nil)
 			m.height, m.width = 40, 80
 			out := ansi.Strip(m.View())
-			for _, want := range []string{"2024", "June", "03", "09", "4 folders", "1 files"} {
+			for _, want := range []string{"2024", "June", "03", "09", "4 folders", "1 file"} {
 				if !strings.Contains(out, want) {
 					t.Errorf("View() missing %q:\n%s", want, out)
 				}
@@ -1111,7 +1111,7 @@ func TestReview(t *testing.T) {
 			m.height, m.width = 40, 80
 			m.showHelp = true
 			out := ansi.Strip(m.View())
-			for _, want := range []string{"Moving", "Naming", "Reshaping", "Leaving", "merge the selected folders"} {
+			for _, want := range []string{"Move", "Change", "Go back", "merge them into one", "2024"} {
 				if !strings.Contains(out, want) {
 					t.Errorf("helpView missing %q:\n%s", want, out)
 				}
@@ -1605,7 +1605,8 @@ func TestDraft(t *testing.T) {
 	t.Run("no copy or move key", func(t *testing.T) {
 		m, _ := newDBModel(t, t.TempDir())
 		m.showHelp = true
-		help := m.helpView()
+		m.height, m.width = 40, 100
+		help := ansi.Strip(m.View())
 		for _, s := range []string{m.keyHelp(), help} {
 			if strings.Contains(s, "copy approved") || strings.Contains(s, "move approved") {
 				t.Errorf("review must offer no transfer key, got %q", s)

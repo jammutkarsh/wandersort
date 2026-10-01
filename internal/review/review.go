@@ -102,6 +102,7 @@ type Model struct {
 	draft       *vfs.Draft
 	statusMsg   string
 	statusIsErr bool // rejection, not confirmation: rendered in a warning colour
+	statusUndo  bool // an edit landed: the line offers [u]
 
 	// async preview copy ([p])
 	previewing bool

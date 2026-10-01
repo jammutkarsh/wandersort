@@ -25,21 +25,28 @@ func MoreKeys() string { return KeyHint("?", "more keys") }
 var keyHelpBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(Primary).Padding(0, 2)
 
 // KeyHelp draws groups in a bordered box over base, centred in a w×h screen,
-// so the screen stays visible around it.
+// so the screen stays visible around it. Groups go side by side when one
+// column would not fit the height.
 func KeyHelp(base string, groups []KeyGroup, w, h int) string {
-	var b strings.Builder
+	blocks := make([]string, len(groups))
 	for i, g := range groups {
-		if i > 0 {
-			b.WriteString("\n\n")
-		}
+		var b strings.Builder
 		b.WriteString(Title.Render(g.Title))
 		for _, k := range g.Keys {
-			pad := strings.Repeat(" ", max(10-ansi.StringWidth(k.Key), 2))
+			pad := strings.Repeat(" ", max(8-ansi.StringWidth(k.Key), 2))
 			b.WriteString("\n" + Text.Render(k.Key) + pad + DimText.Render(k.What))
 		}
+		blocks[i] = b.String()
 	}
-	b.WriteString("\n\n" + FaintTxt.Render("any key closes"))
-	return overlay(base, keyHelpBox.Render(b.String()), w, h)
+	body := strings.Join(blocks, "\n\n")
+	const chrome = 6 // border, padding, the closing hint
+	if h > 0 && lipgloss.Height(body)+chrome > h && len(blocks) > 1 {
+		half := (len(blocks) + 1) / 2
+		left := lipgloss.NewStyle().PaddingRight(4).Render(strings.Join(blocks[:half], "\n\n"))
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Join(blocks[half:], "\n\n"))
+	}
+	body += "\n\n" + FaintTxt.Render("any key closes")
+	return overlay(base, keyHelpBox.Render(body), w, h)
 }
 
 // overlay draws box over base, centred, keeping base's lines either side.
@@ -50,10 +57,23 @@ func overlay(base, box string, w, h int) string {
 	}
 	boxLines := strings.Split(box, "\n")
 	boxW := lipgloss.Width(box)
+	if w > 0 && boxW > w {
+		for i := range boxLines {
+			boxLines[i] = ansi.Truncate(boxLines[i], w, "")
+		}
+		boxW = w
+	}
 	x := max((w-boxW)/2, 0)
 	y := max((h-len(boxLines))/2, 1)
+	if h > 0 && len(boxLines) > h {
+		boxLines = boxLines[:h] // a terminal too short for the list shows what fits
+		y = 0
+	}
 	for i, bl := range boxLines {
 		row := y + i
+		if h > 0 && row >= h {
+			break
+		}
 		if row >= len(lines) {
 			lines = append(lines, "")
 		}

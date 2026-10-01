@@ -19,7 +19,7 @@ func (m *Model) undo() {
 	if n := len(m.draft.Edits()); n > 0 {
 		left = fmt.Sprintf(" (%d more)", n)
 	}
-	m.statusMsg, m.statusIsErr = "undid "+last.Op+left, false
+	m.statusMsg, m.statusIsErr = "Undid the "+last.Op+left, false
 }
 
 // applyEdit hands one edit to the draft, then reflows and reports. Returns the
@@ -33,7 +33,7 @@ func (m *Model) applyEdit(e vfs.Edit, status func(vfs.Outcome) string) (vfs.Outc
 		return out, false
 	}
 	m.visualMode = false
-	m.statusMsg, m.statusIsErr = status(out), false
+	m.statusMsg, m.statusIsErr, m.statusUndo = status(out), false, true
 	return out, true
 }
 
@@ -62,7 +62,7 @@ func (m *Model) mergeSelection() {
 	}
 
 	if out, ok := m.applyEdit(vfs.Edit{Op: vfs.OpMerge, Nodes: ids}, func(o vfs.Outcome) string {
-		return fmt.Sprintf("merged %d folders into %q under %q ([u] to undo)", len(ids), o.Name, o.Parent)
+		return fmt.Sprintf("Merged %d folders into %s", len(ids), o.Name)
 	}); ok {
 		m.focusNode(out.Focus)
 	}
@@ -76,7 +76,7 @@ func (m *Model) applyRename(name string) {
 		return
 	}
 	if _, ok := m.applyEdit(vfs.Edit{Op: vfs.OpRename, Node: id, From: old, To: name}, func(vfs.Outcome) string {
-		return fmt.Sprintf("renamed %q to %q ([u] to undo)", old, name)
+		return fmt.Sprintf("Renamed %s to %s", old, name)
 	}); ok {
 		m.focusNode(id) // the re-sort may have moved it
 	}
@@ -114,11 +114,10 @@ func (m *Model) dropFolders(targets []*reviewRow) {
 
 	m.applyEdit(vfs.Edit{Op: vfs.OpDrop, Nodes: ids}, func(o vfs.Outcome) string {
 		names := o.Names
-		what := fmt.Sprintf("dropped %q", names[0])
 		if len(names) > 1 {
-			what = fmt.Sprintf("dropped %d folders", len(names))
+			return fmt.Sprintf("Dropped %d folders; their contents moved up a level", len(names))
 		}
-		return what + " — their files moved up one level ([u] to undo)"
+		return fmt.Sprintf("Dropped %s; its contents moved up a level", names[0])
 	})
 }
 
@@ -134,10 +133,10 @@ func (m *Model) flattenFolders(targets []*reviewRow) {
 	// [m]'s job, not this one
 	m.applyEdit(vfs.Edit{Op: vfs.OpFlatten, Nodes: ids}, func(o vfs.Outcome) string {
 		names := o.Names
-		into := fmt.Sprintf("%q", names[len(names)-1])
+		into := names[len(names)-1]
 		if len(names) > 1 {
 			into = fmt.Sprintf("%d folders", len(names))
 		}
-		return fmt.Sprintf("flattened %d subfolders into %s ([u] to undo)", o.Absorbed, into)
+		return fmt.Sprintf("Flattened %d subfolders into %s", o.Absorbed, into)
 	})
 }
