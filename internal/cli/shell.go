@@ -134,6 +134,7 @@ func (a *app) runShell(start shellStart) error {
 			prog.Send(tui.InstallProgressMsg{Phase: p.Phase, Done: p.Done, Total: p.Total, Ready: p.Ready})
 		},
 		func(ctx context.Context, next int, err error) error {
+			a.Log.Warn("Download failed, asking for a better network", "try", next-1, "error", err)
 			retry := make(chan struct{})
 			prog.Send(tui.RetryMsg{Failed: failedDeps(err), Next: next, Tries: install.MaxTries, Go: retry})
 			select {

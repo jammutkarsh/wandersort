@@ -7,6 +7,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 // CopyPlan is what a copy would do, read before it starts.
@@ -198,6 +200,9 @@ func (m *CopyModel) stepTo(step string) {
 	if !plan.FreeKnown {
 		done["space"] = "Free space unknown; copying anyway"
 	}
+	if plan.Edits == 0 {
+		done["apply"] = "No edits to apply"
+	}
 	for _, s := range m.sl.stages {
 		if s.Key == step {
 			m.sl.Start(step, "")
@@ -368,7 +373,7 @@ func (m CopyModel) belowStages() string {
 		if len(m.res.Problems) > 0 {
 			b.WriteString("\n")
 		} else {
-			line(DimText.Render("Originals left where they were. Your library is in ") + Text.Render(m.cfg.Library))
+			line(DimText.Render("Originals left where they were. Your library is in ") + Text.Render(path.New().RelativeToHome(m.cfg.Library)))
 			b.WriteString("\n")
 		}
 		for i, c := range []string{"Open the library", "Add more folders"} {
