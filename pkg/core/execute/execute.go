@@ -58,8 +58,9 @@ func (e *NotEnoughSpaceError) Error() string {
 		volume.HumanBytes(e.Needed), volume.HumanBytes(e.Files), volume.HumanBytes(e.Reserve), volume.HumanBytes(e.Free))
 }
 
-// Pending counts the files a transfer started now would handle, and their total
-// size (review edits never change sizes).
+// Pending counts every planned file not yet in the library, and their total
+// size: what a transfer started now would copy, since it retries earlier
+// failures too. Review edits never change sizes.
 func Pending(ctx context.Context, database *db.DB) (files int, bytes int64, err error) {
 	var n struct {
 		Files int   `db:"files"`
@@ -68,7 +69,7 @@ func Pending(ctx context.Context, database *db.DB) (files int, bytes int64, err 
 	if err := database.SQL.GetContext(ctx, &n,
 		`SELECT count(*) AS files, COALESCE(SUM(fr.file_size), 0) AS bytes
 		FROM virtual_fs_entries ve JOIN file_registry fr ON fr.id = ve.file_id
-		WHERE `+db.PendingTransfer("ve.file_id")); err != nil {
+		WHERE fr.placed = 0`); err != nil {
 		return 0, 0, fmt.Errorf("count pending files: %w", err)
 	}
 	return n.Files, n.Bytes, nil

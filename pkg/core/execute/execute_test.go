@@ -266,9 +266,9 @@ func TestRunSkipsPlacedAndRetriesFailedRows(t *testing.T) {
 	}
 }
 
-// Pending counts what is waiting: not a placed file nor one with a failed
-// transfer, and nothing in an empty library. A dry run counts those plus the
-// failed one a real run retries, and leaves it failed.
+// Pending counts every planned file not yet placed, failed ones included
+// (execute retries them), and nothing in an empty library. A dry run reports
+// the same and leaves the failed one failed.
 func TestPendingCountsWhatRunWouldTransfer(t *testing.T) {
 	d := dbtest.New(t)
 	ctx := context.Background()
@@ -283,12 +283,12 @@ func TestPendingCountsWhatRunWouldTransfer(t *testing.T) {
 	seedApproved(t, d, 4, "b.jpg", "defgh")
 
 	files, bytes, err := Pending(ctx, d)
-	if err != nil || files != 2 || bytes != 8 {
-		t.Fatalf("Pending = %d files, %d bytes, %v; want 2 files, 8 bytes", files, bytes, err)
+	if err != nil || files != 3 || bytes != 14 {
+		t.Fatalf("Pending = %d files, %d bytes, %v; want 3 files, 14 bytes", files, bytes, err)
 	}
 	rep, err := Run(ctx, d, logger.NewNoopLogger(), t.TempDir(), Options{DryRun: true})
-	if err != nil || rep.Done != files+1 || rep.Bytes != bytes+int64(len("failed")) {
-		t.Errorf("dry run = %+v, %v; want Pending's %d files, %d bytes plus the failed one", rep, err, files, bytes)
+	if err != nil || rep.Done != files || rep.Bytes != bytes {
+		t.Errorf("dry run = %+v, %v; want Pending's %d files, %d bytes", rep, err, files, bytes)
 	}
 	if status, _ := rowStatus(t, d, 2); status != stateFailed {
 		t.Errorf("dry run changed the failed file: status = %q", status)
