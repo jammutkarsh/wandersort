@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -17,7 +18,7 @@ import (
 // downloading it once per machine if missing.
 func Resolver(t testing.TB) *location.Resolver {
 	t.Helper()
-	dbPath := filepath.Join(depsDir(t), install.LocationDBFileName)
+	dbPath := filepath.Join(depsDir(t), config.LocationDBFileName)
 
 	// a failed open here means the download couldn't happen (offline) — skip
 	// rather than fail, since that's not a defect in the code under test

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -19,7 +20,7 @@ func TestStartOfflineHappyPath(t *testing.T) {
 	dir := t.TempDir()
 	fakeExiftool(t, filepath.Join(dir, exiftoolBin()), exiftoolVersion)
 
-	dbPath := filepath.Join(dir, LocationDBFileName)
+	dbPath := filepath.Join(dir, config.LocationDBFileName)
 	buildLocationDB(t, dbPath, 2)
 	writeLocationMeta(t, dir, fileSHA256Helper(t, dbPath), 2)
 
@@ -51,7 +52,7 @@ func TestStartOfflineHappyPath(t *testing.T) {
 // real download/verify path.
 func TestStartLocationOnlySkipsExiftool(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, LocationDBFileName)
+	dbPath := filepath.Join(dir, config.LocationDBFileName)
 	buildLocationDB(t, dbPath, 1)
 	writeLocationMeta(t, dir, fileSHA256Helper(t, dbPath), 1)
 
@@ -76,7 +77,7 @@ func TestStartLocationOnlySkipsExiftool(t *testing.T) {
 // error path, not just its success path above.
 func TestStartLocationOnlyReportsVerifyFailure(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, LocationDBFileName)
+	dbPath := filepath.Join(dir, config.LocationDBFileName)
 	buildLocationDB(t, dbPath, 1)
 	writeLocationMeta(t, dir, fileSHA256Helper(t, dbPath), 999) // row count mismatch
 

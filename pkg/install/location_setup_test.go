@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -59,7 +60,7 @@ func writeLocationMeta(t *testing.T, dir, hash string, rows int) {
 
 func TestVerifyLocationDB(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, LocationDBFileName)
+	dbPath := filepath.Join(dir, config.LocationDBFileName)
 	buildLocationDB(t, dbPath, 3)
 	hash := fileSHA256Helper(t, dbPath)
 
@@ -106,7 +107,7 @@ func TestVerifyLocationDB(t *testing.T) {
 // already on disk, which is also what keeps this test network-free.
 func TestDownloadLocationDBSkipsExisting(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, LocationDBFileName)
+	dbPath := filepath.Join(dir, config.LocationDBFileName)
 	buildLocationDB(t, dbPath, 1)
 	before := fileSHA256Helper(t, dbPath)
 
@@ -124,7 +125,7 @@ func TestDownloadLocationDBSkipsExisting(t *testing.T) {
 // covered independently above; this pins that the three steps compose.
 func TestOpenLocationResolverOffline(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, LocationDBFileName)
+	dbPath := filepath.Join(dir, config.LocationDBFileName)
 	buildLocationDB(t, dbPath, 5)
 	writeLocationMeta(t, dir, fileSHA256Helper(t, dbPath), 5)
 
@@ -143,7 +144,7 @@ func TestOpenLocationResolverOffline(t *testing.T) {
 // leaking it back to the caller alongside the error.
 func TestOpenLocationResolverVerifyFailureClosesDB(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, LocationDBFileName)
+	dbPath := filepath.Join(dir, config.LocationDBFileName)
 	buildLocationDB(t, dbPath, 5)
 	writeLocationMeta(t, dir, fileSHA256Helper(t, dbPath), 999) // row count mismatch
 

@@ -16,10 +16,10 @@ import (
 // one; the settings wizard shows it as the placeholder.
 const DefaultLibrary = "WandersortLibrary"
 
-const (
-	defaultDBFileName  = ".wandersort.db"
-	locationDBFileName = "location.db"
-)
+const defaultDBFileName = ".wandersort.db"
+
+// LocationDBFileName is the location database's name in the app folder.
+const LocationDBFileName = "location.db"
 
 // Configuration is one run's settings: the library's own Settings (loaded once
 // the library is open) plus paths this process computes.
@@ -51,7 +51,7 @@ func New() (*Configuration, error) {
 	cfg := &Configuration{
 		Settings:       DefaultSettings(),
 		appDir:         appDir,
-		LocationDBPath: filepath.Join(appDir, locationDBFileName),
+		LocationDBPath: filepath.Join(appDir, LocationDBFileName),
 		LogDir:         filepath.Join(appDir, "logs"),
 		Workers:        runtime.NumCPU(),
 		ExecutablePath: filepath.Join(appDir, "bin"),

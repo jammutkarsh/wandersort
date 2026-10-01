@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -23,8 +24,6 @@ const (
 	// LocationDownloadBaseURL is the download URL for the locationDB asset.
 	// Upstream update schedules and data details can be found at the source URL.
 	LocationDownloadBaseURL = "https://locationdb.utkarshchourasia.in"
-
-	LocationDBFileName = "location.db"
 
 	// locationDBArchiveSuffix: the database ships zstd-compressed (pure-Go
 	// zstd decodes far faster than xz)
@@ -64,7 +63,7 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 		return fmt.Errorf("download %s: %w", LocationMetaFileName, err)
 	}
 
-	archiveName := LocationDBFileName + locationDBArchiveSuffix
+	archiveName := config.LocationDBFileName + locationDBArchiveSuffix
 	archivePath := dbPath + locationDBArchiveSuffix
 	// no digest here: the expected hash is of the decompressed db and ships
 	// in the metadata file above, which verifyLocationDB checks against

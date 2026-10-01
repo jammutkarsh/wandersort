@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -24,7 +25,7 @@ func main() {
 	}
 	ctx := context.Background()
 	log := logger.New(nil)
-	dbPath := filepath.Join(dir, install.LocationDBFileName)
+	dbPath := filepath.Join(dir, config.LocationDBFileName)
 
 	// location first, on its own Coordinator: it is the one tests depend on
 	loc := install.New(install.Options{
