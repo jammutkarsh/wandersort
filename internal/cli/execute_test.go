@@ -17,9 +17,7 @@ import (
 func execCmd(t *testing.T) *cobra.Command {
 	t.Helper()
 	cmd := &cobra.Command{Use: "execute"}
-	cmd.Flags().Bool(flagMove, false, "")
 	cmd.Flags().Bool(flagDryRun, false, "")
-	cmd.Flags().Bool(flagYes, false, "")
 	return cmd
 }
 

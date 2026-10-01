@@ -208,9 +208,8 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 			return nil
 		}
 
-		// skip symlinked files: the recorded size would be the link's, and a
-		// move would carry the link, not the photo. (WalkDir never follows
-		// directory links either.)
+		// skip symlinked files: the recorded size would be the link's. (WalkDir
+		// never follows directory links either.)
 		if d.Type()&fs.ModeSymlink != 0 {
 			s.log.Warn("Skipping a link; add the folder it points to instead", "walkingPath", s.path.RelativeToHome(p))
 			return nil

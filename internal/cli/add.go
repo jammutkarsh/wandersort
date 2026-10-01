@@ -36,7 +36,7 @@ func (a *app) newAddCmd() *cobra.Command {
 		Long: `Reads the given folders, fingerprints every photo and video in them, works
 out which are duplicates of each other, and plans where each one belongs.
 
-Nothing is copied or moved — 'wandersort execute' does that. This only adds
+Nothing is copied — 'wandersort execute' does that. This only adds
 files to the plan.
 
 Opens WanderSort on the Add tab, the same app a bare 'wandersort' opens, so

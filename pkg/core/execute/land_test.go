@@ -2,12 +2,9 @@ package execute
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/jammutkarsh/wandersort/pkg/db"
 )
 
 // Landing is tested through the transfer seam alone: temp folders, no
@@ -42,7 +39,7 @@ func TestTransferRecoversLandedFileWhenSourceIsGone(t *testing.T) {
 			writeFile(t, withSuffix(dst, 2), "hello")
 
 			var committed []string
-			landed, _, err := xfer(context.Background(), ModeMove, filepath.Join(dir, "gone.jpg"), dst,
+			landed, _, err := xfer(context.Background(), filepath.Join(dir, "gone.jpg"), dst,
 				scanned{hash: hashOf("hello"), size: 5}, recorder(&committed))
 			if err != nil {
 				t.Fatal(err)
@@ -59,38 +56,13 @@ func TestTransferRecoversLandedFileWhenSourceIsGone(t *testing.T) {
 func TestTransferFailsWhenSourceIsGoneAndNothingLanded(t *testing.T) {
 	dir := t.TempDir()
 	var committed []string
-	_, _, err := productionTransfer(context.Background(), ModeCopy, filepath.Join(dir, "gone.jpg"),
+	_, _, err := productionTransfer(context.Background(), filepath.Join(dir, "gone.jpg"),
 		filepath.Join(dir, "lib", "A.jpg"), scanned{hash: hashOf("hello"), size: 5}, recorder(&committed))
 	if failedOp(err) != opStat {
 		t.Errorf("err = %v (op %s), want a stat failure", err, failedOp(err))
 	}
 	if len(committed) != 0 {
 		t.Errorf("committed %v for a file that never landed", committed)
-	}
-}
-
-// A move whose source changed since the scan goes through the hash-checked
-// copy, which refuses it: nothing lands, nothing is recorded, source kept.
-func TestTransferMoveRefusesSourceChangedSinceScan(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "A.jpg")
-	writeFile(t, src, "HELLO")
-	dst := filepath.Join(dir, "lib", "A.jpg")
-
-	var committed []string
-	_, _, err := productionTransfer(context.Background(), ModeMove, src, dst,
-		scanned{hash: hashOf("hello"), size: 5, modifiedAt: "2000-01-01T00:00:00.000000000Z"}, recorder(&committed))
-	if !errors.Is(err, db.ErrChecksumMismatch) {
-		t.Errorf("err = %v, want a checksum mismatch", err)
-	}
-	if len(committed) != 0 {
-		t.Errorf("committed %v", committed)
-	}
-	if got, err := os.ReadFile(src); err != nil || string(got) != "HELLO" {
-		t.Errorf("source = %q, %v; want it kept", got, err)
-	}
-	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("a changed source landed in the library: %v", err)
 	}
 }
 
@@ -102,7 +74,7 @@ func TestTransferCopyReportsSize(t *testing.T) {
 	dst := filepath.Join(dir, "lib", "A.jpg")
 
 	var committed []string
-	landed, size, err := productionTransfer(context.Background(), ModeCopy, src, dst,
+	landed, size, err := productionTransfer(context.Background(), src, dst,
 		scanned{hash: hashOf("hello"), size: 5}, recorder(&committed))
 	if err != nil {
 		t.Fatal(err)
@@ -115,9 +87,9 @@ func TestTransferCopyReportsSize(t *testing.T) {
 	}
 }
 
-// A move never deletes a source the taken name only appears to hold: a
-// symlink to the source, or the source's own name.
-func TestTransferMoveKeepsTheOnlyCopy(t *testing.T) {
+// A taken name that only appears to hold the file (a symlink to the source, or
+// the source's own name) never counts as a library copy, and the source stays.
+func TestTransferNeverTrustsALinkToTheSource(t *testing.T) {
 	cases := map[string]func(t *testing.T, src string) (dst string){
 		"symlink to the source": func(t *testing.T, src string) string {
 			dst := filepath.Join(filepath.Dir(src), "lib", "A.jpg")
@@ -135,15 +107,11 @@ func TestTransferMoveKeepsTheOnlyCopy(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			src := filepath.Join(t.TempDir(), "A.jpg")
 			writeFile(t, src, "photo")
-			info, err := os.Stat(src)
-			if err != nil {
-				t.Fatal(err)
-			}
 			dst := dstFor(t, src)
 
 			var committed []string
-			landed, _, err := productionTransfer(context.Background(), ModeMove, src, dst,
-				scanned{hash: hashOf("photo"), size: 5, modifiedAt: db.FormatTime(info.ModTime())}, recorder(&committed))
+			landed, _, err := productionTransfer(context.Background(), src, dst,
+				scanned{hash: hashOf("photo"), size: 5}, recorder(&committed))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -157,20 +125,9 @@ func TestTransferMoveKeepsTheOnlyCopy(t *testing.T) {
 			if len(committed) != 1 || committed[0] != landed {
 				t.Errorf("committed %v, want only %s", committed, landed)
 			}
+			if got, err := os.ReadFile(src); err != nil || string(got) != "photo" {
+				t.Errorf("source = %q, %v; want it untouched", got, err)
+			}
 		})
-	}
-}
-
-// A move whose source is gone has nothing to copy: the failure is the
-// rename's, and no copy is attempted.
-func TestPlaceMoveWithVanishedSourceDoesNotCopy(t *testing.T) {
-	dir := t.TempDir()
-	dst := filepath.Join(dir, "lib", "A.jpg")
-	err := place(ModeMove, filepath.Join(dir, "gone.jpg"), dst, hashOf("photo"), func() error {
-		t.Error("committed a file that never moved")
-		return nil
-	})
-	if failedOp(err) != opRename {
-		t.Errorf("err = %v (op %s), want a rename failure", err, failedOp(err))
 	}
 }

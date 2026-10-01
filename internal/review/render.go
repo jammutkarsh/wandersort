@@ -40,7 +40,7 @@ func (m Model) header() string {
 	for i := range m.tree {
 		files += m.tree[i].FileCount
 	}
-	left := "Edit the proposed folders — edits are kept as you go; nothing moves until 'wandersort execute'."
+	left := "Edit the proposed folders — edits are kept as you go; nothing is copied until 'wandersort execute'."
 	return tui.Banner("review") + "\n" +
 		tui.Row(tui.DimText.Render(left),
 			tui.FaintTxt.Render(fmt.Sprintf("%d folders  %d files", len(m.rows), files)), m.width)

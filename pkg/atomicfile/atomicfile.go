@@ -125,10 +125,6 @@ func MkdirAll(dir string) error {
 // undid the link. A copy fallback would fail the same way.
 var ErrSourceKept = errors.New("source could not be removed")
 
-// ErrSourceLeft means RenameCommit linked and committed newpath but couldn't
-// remove oldpath; nothing is undone.
-var ErrSourceLeft = errors.New("moved and recorded, but the source name could not be removed")
-
 // Rename moves oldpath to newpath without replacing an existing newpath (which
 // os.Rename does): hard link, then unlink. A taken newpath is fs.ErrExist; an
 // unremovable oldpath undoes the link (ErrSourceKept).
@@ -136,69 +132,24 @@ var ErrSourceLeft = errors.New("moved and recorded, but the source name could no
 // Order matters: oldpath and newpath being one directory entry (however
 // spelled) is checked first and is a no-op, since unlinking would delete the
 // only name. Only then does newpath being oldpath's inode mean a crash-
-// interrupted move, which Rename finishes.
+// interrupted rename, which Rename finishes.
 func Rename(oldpath, newpath string) error {
-	return renameCommit(oldpath, newpath, nil, osOps())
-}
-
-// RenameCommit is Rename with commit run after newpath durably names the file
-// and before oldpath is unlinked, so no crash leaves a moved file unrecorded.
-// A commit error undoes the move; an unremovable source after commit is
-// ErrSourceLeft; any other error after a successful commit means moved and
-// recorded, but not cleanly.
-//
-// ponytail: without hard links (exFAT, some network mounts) the move is one
-// rename and commit can only follow it; the caller recovers that gap.
-func RenameCommit(oldpath, newpath string, commit func() error) error {
-	if commit == nil {
-		commit = func() error { return nil }
-	}
-	return renameCommit(oldpath, newpath, commit, osOps())
-}
-
-// fsOps is what renameCommit does to the disk that a test may need to fail.
-type fsOps struct {
-	link     func(oldpath, newpath string) error
-	syncDirs func(paths ...string) error
-}
-
-func osOps() fsOps { return fsOps{link: os.Link, syncDirs: syncDirs} }
-
-func renameCommit(oldpath, newpath string, commit func() error, ops fsOps) error {
 	if sameEntry(oldpath, newpath) {
-		if commit != nil {
-			return commit()
-		}
 		return nil
 	}
-	err := ops.link(oldpath, newpath)
+	err := os.Link(oldpath, newpath)
 	if err == nil || errors.Is(err, fs.ErrExist) && halfDoneMove(oldpath, newpath) {
-		if commit != nil {
-			// newpath has to survive a power cut before anything records it
-			if err := ops.syncDirs(newpath); err != nil {
-				os.Remove(newpath)
-				return err
-			}
-			if err := commit(); err != nil {
-				os.Remove(newpath) // oldpath still names the file
-				return err
-			}
-		}
-		// Already gone (a sync client, the user) is a finished move: newpath
-		// is now the file's only name, and undoing the link would delete it.
+		// already gone is a finished rename: newpath is now the only name
 		if err := os.Remove(oldpath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			if commit != nil {
-				return fmt.Errorf("%w: remove %s: %w", ErrSourceLeft, oldpath, err)
-			}
 			os.Remove(newpath)
 			return fmt.Errorf("%w: remove %s after linking it to %s: %w", ErrSourceKept, oldpath, newpath, err)
 		}
-		return ops.syncDirs(newpath, oldpath)
+		return syncDirs(newpath, oldpath)
 	}
 	if errors.Is(err, fs.ErrExist) {
 		return fmt.Errorf("%s: %w", newpath, fs.ErrExist)
 	}
-	// no hard links here, or another device (os.Rename reports that)
+	// no hard links here (exFAT, some network mounts)
 	// ponytail: check-then-rename races a newpath created in between;
 	// renameat2(RENAME_NOREPLACE)/renamex_np(RENAME_EXCL) would close it
 	if _, err := os.Lstat(newpath); err == nil {
@@ -209,18 +160,7 @@ func renameCommit(oldpath, newpath string, commit func() error, ops fsOps) error
 	if err := os.Rename(oldpath, newpath); err != nil {
 		return fmt.Errorf("rename to %s: %w", newpath, err)
 	}
-	// the file has moved: record it even if the folders won't sync, or it sits
-	// in the library unrecorded
-	syncErr := ops.syncDirs(newpath, oldpath)
-	if commit != nil {
-		if err := commit(); err != nil {
-			if rerr := os.Rename(newpath, oldpath); rerr != nil {
-				return errors.Join(err, fmt.Errorf("the file stays at %s, unrecorded: %w", newpath, rerr))
-			}
-			return err
-		}
-	}
-	return syncErr
+	return syncDirs(newpath, oldpath)
 }
 
 // syncDirs makes the directory entries just created or removed durable: until

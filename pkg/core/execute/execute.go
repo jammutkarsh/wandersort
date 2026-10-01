@@ -1,4 +1,5 @@
-// Package execute copies or moves planned files into the library: every
+// Package execute copies planned files into the library (sources are never
+// modified): every
 // pending row is placed at outputDir/target_path, success sets placed, failure
 // records a TRANSFER error. The only phase that touches the user's media.
 //
@@ -24,28 +25,8 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
-// Mode is Copy or Move. The zero value is Copy, the safe default; Move must be
-// chosen explicitly.
-type Mode int
-
-const (
-	ModeCopy Mode = iota
-	ModeMove
-)
-
-// moves reports whether m removes the source once the file is placed.
-func (m Mode) moves() bool { return m == ModeMove || m == moveCopying }
-
-func (m Mode) String() string {
-	if m.moves() {
-		return "move"
-	}
-	return "copy"
-}
-
 // Options controls one Run.
 type Options struct {
-	Mode Mode
 	// DryRun touches nothing and reports the paths a real run would use, review
 	// edits applied.
 	DryRun bool
@@ -135,18 +116,17 @@ type pendingRow struct {
 	TargetPath string `db:"target_path"`
 	FileHash   string `db:"file_hash"`
 	Size       int64  `db:"file_size"`
-	ModifiedAt string `db:"file_modified_at"`
 }
 
 func (r pendingRow) scanned() scanned {
-	return scanned{hash: r.FileHash, size: r.Size, modifiedAt: r.ModifiedAt}
+	return scanned{hash: r.FileHash, size: r.Size}
 }
 
 func loadPending(ctx context.Context, q sqlx.QueryerContext) ([]pendingRow, error) {
 	var rows []pendingRow
 	if err := sqlx.SelectContext(ctx, q, &rows,
 		`SELECT ve.id, ve.file_id, ve.source_path, ve.target_path, COALESCE(fm.file_hash, '') AS file_hash,
-			fr.file_size, fr.file_modified_at
+			fr.file_size
 		FROM virtual_fs_entries ve JOIN file_registry fr ON fr.id = ve.file_id
 		LEFT JOIN file_metadata fm ON fm.file_id = ve.file_id
 		WHERE `+db.PendingTransfer("ve.file_id")+` ORDER BY ve.id`); err != nil {
@@ -193,9 +173,6 @@ func prepare(ctx context.Context, database *db.DB, outputDir string, o Options) 
 // checkFits refuses a transfer the output volume can't hold: every pending file,
 // room for the backup (twice the database's page size), and a reserve
 // (volume.TransferNeeds). An unreadable free-space figure lets it run.
-//
-// ponytail: a same-volume move needs no room for files but counts them anyway.
-// Split by mode or volume if someone is blocked on it.
 func checkFits(ctx context.Context, database *db.DB, outputDir string, freeSpace func(string) (uint64, uint64, error)) error {
 	_, pending, err := Pending(ctx, database)
 	if err != nil {
@@ -263,7 +240,7 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 			return nil
 		}
 
-		landed, size, xerr := xfer(ctx, o.Mode, src, dst, r.scanned(), commit)
+		landed, size, xerr := xfer(ctx, src, dst, r.scanned(), commit)
 		if xerr != nil && committed == "" {
 			if !o.DryRun {
 				if err := markFailed(database, r.FileID, xerr); err != nil {
@@ -363,13 +340,8 @@ func cleanupPlacedDuplicates(ctx context.Context, database *db.DB, outputDir str
 
 func summary(o Options, rep Report, elapsed time.Duration) string {
 	verb := "Copied"
-	switch {
-	case o.DryRun && o.Mode == ModeMove:
-		verb = "Would move"
-	case o.DryRun:
+	if o.DryRun {
 		verb = "Would copy"
-	case o.Mode == ModeMove:
-		verb = "Moved"
 	}
 	msg := fmt.Sprintf("%s %d files (%s) in %s", verb, rep.Done, volume.HumanBytes(uint64(rep.Bytes)), elapsed)
 	if rep.Failed > 0 {
@@ -379,8 +351,7 @@ func summary(o Options, rep Report, elapsed time.Duration) string {
 }
 
 // markPlaced records the file in the library at target. Synchronous: in a
-// batch, a rolled-back "placed" row could be reported as done after a move
-// already deleted the source.
+// batch, a rolled-back "placed" row could be reported as done.
 func markPlaced(database *db.DB, id, fileID int64, target string) error {
 	return database.Writer.WriteSync(func(ctx context.Context, tx *sqlx.Tx) error {
 		return db.MarkPlaced(ctx, tx, id, fileID, target)

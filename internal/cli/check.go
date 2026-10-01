@@ -16,7 +16,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 		Use:   "check",
 		Short: "Check that every file in the library is still what was recorded",
 		Long: `Re-checks the library against its own records: every file that was copied
-or moved in is still there, still the right size and — with --full — still
+in is still there, still the right size and — with --full — still
 hashes to what it did when it was scanned. Also asks SQLite whether the
 database holding your folder structure is sound, and reports any leftover
 temp files a crashed transfer left behind.

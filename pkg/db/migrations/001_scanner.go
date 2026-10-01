@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS file_registry (
 
     file_origin TEXT NOT NULL DEFAULT 'SOURCE',
 
-    -- Set once execute lands this file at its target, copy or move alike.
+    -- Set once execute lands this file at its target.
     -- A fact about the file, not the plan: virtual_fs_entries rows are
     -- replaced on every scan and settings change, this flag never is. The
     -- vfs phase treats a placed file as the permanent master of its hash:

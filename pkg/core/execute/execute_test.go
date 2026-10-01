@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -137,31 +136,11 @@ func TestRunCopyNeverTouchesSource(t *testing.T) {
 	out := t.TempDir()
 	src := seedApproved(t, d, 1, "A.jpg", "hello")
 
-	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeCopy}); err != nil {
+	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(src); err != nil {
 		t.Errorf("copy removed the source: %v", err)
-	}
-}
-
-func TestRunMoveUnlinksSourceOnlyAfterVerifiedCopy(t *testing.T) {
-	d := dbtest.New(t)
-	out := t.TempDir()
-	src := seedApproved(t, d, 1, "A.jpg", "hello")
-
-	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.Done != 1 {
-		t.Fatalf("got %+v", rep)
-	}
-	if _, err := os.Stat(filepath.Join(out, "A.jpg")); err != nil {
-		t.Errorf("destination missing: %v", err)
-	}
-	if _, err := os.Stat(src); !os.IsNotExist(err) {
-		t.Errorf("source still exists after move: %v", err)
 	}
 }
 
@@ -170,7 +149,7 @@ func TestRunDryRunTouchesNothing(t *testing.T) {
 	out := t.TempDir()
 	src := seedApproved(t, d, 1, "A.jpg", "hello")
 
-	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove, DryRun: true})
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{DryRun: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,117 +356,77 @@ func targetPath(t *testing.T, d *db.DB, id int64) string {
 // doesn't know about — is never replaced: the transfer takes the next free
 // _N name and the row records where it really landed.
 func TestRunNeverOverwritesExistingDestination(t *testing.T) {
-	for _, mode := range []Mode{ModeCopy, ModeMove} {
-		t.Run(mode.String(), func(t *testing.T) {
-			d := dbtest.New(t)
-			out := t.TempDir()
-			src := seedApproved(t, d, 1, "2024/A.jpg", "incoming")
-			if err := os.MkdirAll(filepath.Join(out, "2024"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			for name, body := range map[string]string{"A.jpg": "already here", "A_1.jpg": "also here"} {
-				if err := os.WriteFile(filepath.Join(out, "2024", name), []byte(body), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: mode})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if rep.Done != 1 || rep.Failed != 0 {
-				t.Fatalf("got %+v", rep)
-			}
-			for name, want := range map[string]string{"A.jpg": "already here", "A_1.jpg": "also here", "A_2.jpg": "incoming"} {
-				got, err := os.ReadFile(filepath.Join(out, "2024", name))
-				if err != nil || string(got) != want {
-					t.Errorf("%s = %q, %v; want %q", name, got, err, want)
-				}
-			}
-			if got := targetPath(t, d, 1); got != "2024/A_2.jpg" {
-				t.Errorf("target_path = %q, want 2024/A_2.jpg", got)
-			}
-			_, err = os.Stat(src)
-			if mode == ModeCopy && err != nil {
-				t.Errorf("copy removed the source: %v", err)
-			}
-			if mode == ModeMove && !os.IsNotExist(err) {
-				t.Errorf("move left the source behind: %v", err)
-			}
-		})
-	}
-}
-
-// A move that can't land anywhere keeps its source.
-func TestRunMoveKeepsSourceWhenNothingLanded(t *testing.T) {
-	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
-		t.Skip("root and Windows ignore the read-only output folder this test relies on")
-	}
 	d := dbtest.New(t)
 	out := t.TempDir()
-	src := seedApproved(t, d, 1, "ro/A.jpg", "incoming")
-	// Only the target folder is read-only: the output folder itself has to
-	// take the database backup, or the run stops before trying anything.
-	ro := filepath.Join(out, "ro")
-	if err := os.Mkdir(ro, 0o555); err != nil {
+	src := seedApproved(t, d, 1, "2024/A.jpg", "incoming")
+	if err := os.MkdirAll(filepath.Join(out, "2024"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(ro, 0o755) })
+	for name, body := range map[string]string{"A.jpg": "already here", "A_1.jpg": "also here"} {
+		if err := os.WriteFile(filepath.Join(out, "2024", name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Failed != 1 {
+	if rep.Done != 1 || rep.Failed != 0 {
 		t.Fatalf("got %+v", rep)
 	}
-	if got, err := os.ReadFile(src); err != nil || string(got) != "incoming" {
-		t.Errorf("source = %q, %v; want it untouched", got, err)
+	for name, want := range map[string]string{"A.jpg": "already here", "A_1.jpg": "also here", "A_2.jpg": "incoming"} {
+		got, err := os.ReadFile(filepath.Join(out, "2024", name))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+	if got := targetPath(t, d, 1); got != "2024/A_2.jpg" {
+		t.Errorf("target_path = %q, want 2024/A_2.jpg", got)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("copy removed the source: %v", err)
 	}
 }
 
 // After a transfer lands, the row's source_path and the registry entry point at
 // the library: the same relative value as target_path.
 func TestRunRepointsToLibraryRelativePath(t *testing.T) {
-	for _, mode := range []Mode{ModeCopy, ModeMove} {
-		t.Run(mode.String(), func(t *testing.T) {
-			d := dbtest.New(t)
-			out := t.TempDir()
-			seedApproved(t, d, 1, "2024/A.jpg", "hello")
+	d := dbtest.New(t)
+	out := t.TempDir()
+	seedApproved(t, d, 1, "2024/A.jpg", "hello")
 
-			if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: mode}); err != nil {
-				t.Fatal(err)
-			}
+	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil {
+		t.Fatal(err)
+	}
 
-			var row struct {
-				SourcePath string `db:"source_path"`
-				TargetPath string `db:"target_path"`
-			}
-			if err := d.SQL.Get(&row, `SELECT source_path, target_path FROM virtual_fs_entries WHERE file_id = 1`); err != nil {
-				t.Fatal(err)
-			}
-			if row.SourcePath != row.TargetPath {
-				t.Errorf("source_path = %q, want it to equal target_path %q", row.SourcePath, row.TargetPath)
-			}
-			if filepath.IsAbs(row.SourcePath) {
-				t.Errorf("source_path = %q, want library-relative", row.SourcePath)
-			}
+	var row struct {
+		SourcePath string `db:"source_path"`
+		TargetPath string `db:"target_path"`
+	}
+	if err := d.SQL.Get(&row, `SELECT source_path, target_path FROM virtual_fs_entries WHERE file_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if row.SourcePath != row.TargetPath {
+		t.Errorf("source_path = %q, want it to equal target_path %q", row.SourcePath, row.TargetPath)
+	}
+	if filepath.IsAbs(row.SourcePath) {
+		t.Errorf("source_path = %q, want library-relative", row.SourcePath)
+	}
 
-			var reg struct {
-				FileDir  string `db:"file_dir"`
-				FileName string `db:"file_name"`
-				Placed   bool   `db:"placed"`
-			}
-			if err := d.SQL.Get(&reg, `SELECT file_dir, file_name, placed FROM file_registry WHERE id = 1`); err != nil {
-				t.Fatal(err)
-			}
-			if got := reg.FileDir + "/" + reg.FileName; got != row.TargetPath {
-				t.Errorf("file_registry points at %q, want %q", got, row.TargetPath)
-			}
-			if !reg.Placed {
-				t.Error("placed = false after a successful transfer, want true")
-			}
-		})
+	var reg struct {
+		FileDir  string `db:"file_dir"`
+		FileName string `db:"file_name"`
+		Placed   bool   `db:"placed"`
+	}
+	if err := d.SQL.Get(&reg, `SELECT file_dir, file_name, placed FROM file_registry WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.FileDir + "/" + reg.FileName; got != row.TargetPath {
+		t.Errorf("file_registry points at %q, want %q", got, row.TargetPath)
+	}
+	if !reg.Placed {
+		t.Error("placed = false after a successful transfer, want true")
 	}
 }
 
@@ -614,103 +553,31 @@ func TestRunRefusesSourceChangedSinceScan(t *testing.T) {
 // A taken name already holding this very file — an earlier copy the crash
 // or `recover` left unrecorded — is where the file is: no second copy at _1.
 func TestRunRecognisesFileAlreadyPlaced(t *testing.T) {
-	for _, mode := range []Mode{ModeCopy, ModeMove} {
-		t.Run(mode.String(), func(t *testing.T) {
-			d := dbtest.New(t)
-			out := t.TempDir()
-			src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
-			if err := os.MkdirAll(filepath.Join(out, "2024"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(out, "2024", "A.jpg"), []byte("hello"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-
-			rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: mode})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if rep.Done != 1 || rep.Failed != 0 {
-				t.Fatalf("got %+v", rep)
-			}
-			if got := targetPath(t, d, 1); got != "2024/A.jpg" {
-				t.Errorf("target_path = %q, want 2024/A.jpg", got)
-			}
-			if _, err := os.Stat(filepath.Join(out, "2024", "A_1.jpg")); !os.IsNotExist(err) {
-				t.Error("placed a second copy at A_1.jpg")
-			}
-			_, err = os.Stat(src)
-			if mode == ModeCopy && err != nil {
-				t.Errorf("copy removed the source: %v", err)
-			}
-			if mode == ModeMove && !os.IsNotExist(err) {
-				t.Errorf("move left the source behind: %v", err)
-			}
-		})
-	}
-}
-
-// A move whose file is verified in the library but whose source can't be
-// removed is still DONE at the landed path: an ERROR row would leave a
-// library file the database doesn't know about.
-func TestRunMoveRecordsLandedFileWhenSourceKept(t *testing.T) {
-	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
-		t.Skip("root and Windows ignore the read-only source folder this test relies on")
-	}
 	d := dbtest.New(t)
 	out := t.TempDir()
-	src := seedApproved(t, d, 1, "A.jpg", "hello")
-	if err := os.WriteFile(filepath.Join(out, "A.jpg"), []byte("hello"), 0o644); err != nil {
+	src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
+	if err := os.MkdirAll(filepath.Join(out, "2024"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(filepath.Dir(src), 0o555); err != nil {
+	if err := os.WriteFile(filepath.Join(out, "2024", "A.jpg"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(filepath.Dir(src), 0o755) })
 
-	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Done != 1 {
+	if rep.Done != 1 || rep.Failed != 0 {
 		t.Fatalf("got %+v", rep)
 	}
-	if status, _ := rowStatus(t, d, 1); status != statePlaced {
-		t.Errorf("status = %q, want %q", status, statePlaced)
+	if got := targetPath(t, d, 1); got != "2024/A.jpg" {
+		t.Errorf("target_path = %q, want 2024/A.jpg", got)
+	}
+	if _, err := os.Stat(filepath.Join(out, "2024", "A_1.jpg")); !os.IsNotExist(err) {
+		t.Error("placed a second copy at A_1.jpg")
 	}
 	if _, err := os.Stat(src); err != nil {
-		t.Errorf("source gone: %v", err)
-	}
-}
-
-// A library copy matching the scan is no reason to delete a source edited
-// since (same size): the move stops at ERROR and the edit survives.
-func TestRunMoveKeepsSourceEditedSinceScanWhenAlreadyPlaced(t *testing.T) {
-	d := dbtest.New(t)
-	out := t.TempDir()
-	src := seedApproved(t, d, 1, "A.jpg", "hello")
-	if err := os.WriteFile(filepath.Join(out, "A.jpg"), []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(src, []byte("HELLO"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.Failed != 1 {
-		t.Fatalf("got %+v", rep)
-	}
-	if status, _ := rowStatus(t, d, 1); status != stateFailed {
-		t.Errorf("status = %q, want %q", status, stateFailed)
-	}
-	if got, err := os.ReadFile(src); err != nil || string(got) != "HELLO" {
-		t.Errorf("source = %q, %v; want the edit kept", got, err)
-	}
-	if _, err := os.Stat(filepath.Join(out, "A_1.jpg")); !os.IsNotExist(err) {
-		t.Error("placed the edited source at A_1.jpg")
+		t.Errorf("copy removed the source: %v", err)
 	}
 }
 
@@ -747,7 +614,7 @@ func TestPlaceCommitsOnlyOnceTheFileIsInPlace(t *testing.T) {
 	}
 
 	var sawFile bool
-	err := place(ModeCopy, src, dst, hashOf("hello"), func() error {
+	err := place(src, dst, hashOf("hello"), func() error {
 		_, statErr := os.Stat(dst)
 		sawFile = statErr == nil
 		return fmt.Errorf("writer closed")
@@ -763,42 +630,6 @@ func TestPlaceCommitsOnlyOnceTheFileIsInPlace(t *testing.T) {
 	}
 	if _, err := os.Stat(dst); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("an unrecorded copy was left in the library: %v", err)
-	}
-}
-
-// A same-device move is one atomic rename, so a commit that fails afterwards
-// cannot lose the file — but left there, it is a library file no row accounts
-// for. The rename is undone instead, and the next run moves it for real.
-func TestRunMoveWithFailedCommitPutsTheSourceBack(t *testing.T) {
-	d := dbtest.New(t)
-	out := t.TempDir()
-	src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
-
-	d.Writer.Close() // every commit fails
-	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.Done != 0 || rep.Failed != 1 {
-		t.Errorf("report = %+v, want nothing counted as done", rep)
-	}
-	if _, err := os.Stat(filepath.Join(out, "2024", "A.jpg")); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("an unrecorded file was left in the library: %v", err)
-	}
-	if _, err := os.Stat(src); err != nil {
-		t.Fatalf("the source should be back where it was: %v", err)
-	}
-
-	d.Writer = db.NewBulkWriter(d.SQL, logger.NewNoopLogger())
-	rep, err = Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.Done != 1 {
-		t.Errorf("report = %+v, want the file moved", rep)
-	}
-	if status, detail := rowStatus(t, d, 1); status != statePlaced {
-		t.Errorf("status = %q (%v), want %q", status, detail, statePlaced)
 	}
 }
 
@@ -847,7 +678,7 @@ func TestRunRecordsLandedFileWhoseSourceIsGone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -881,7 +712,7 @@ func TestRunRecordsLandedFilePastAGap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -950,87 +781,6 @@ func TestCleanupKeepsDuplicatesWhenThePlacedFileIsGone(t *testing.T) {
 	}
 	if count != 1 {
 		t.Error("the cleanup forgot a duplicate of a file that is no longer in the library")
-	}
-}
-
-// A same-device move records the file while it still has both names: a crash
-// after the record leaves a source name behind, never a moved file nothing
-// records (which a scan before the next execute would then have swept).
-func TestPlaceMoveCommitsWhileBothNamesExist(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "A.jpg")
-	if err := os.WriteFile(src, []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	dst := filepath.Join(dir, "lib", "A.jpg")
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	var srcThere, dstThere bool
-	err := place(ModeMove, src, dst, hashOf("hello"), func() error {
-		_, e1 := os.Stat(src)
-		_, e2 := os.Stat(dst)
-		srcThere, dstThere = e1 == nil, e2 == nil
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !srcThere || !dstThere {
-		t.Errorf("at commit: source there = %v, destination there = %v; want both", srcThere, dstThere)
-	}
-	if _, err := os.Stat(src); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("source still there after the move: %v", err)
-	}
-}
-
-// A same-device move renames an unchanged source: the library file is the
-// source's own inode, nothing copied.
-func TestRunMoveRenamesUnchangedSource(t *testing.T) {
-	d := dbtest.New(t)
-	out := t.TempDir()
-	src := seedApproved(t, d, 1, "A.jpg", "hello")
-	before, err := os.Stat(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove}); err != nil {
-		t.Fatal(err)
-	}
-	after, err := os.Stat(filepath.Join(out, "A.jpg"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !os.SameFile(before, after) {
-		t.Error("library file is a copy, want the source renamed into place")
-	}
-}
-
-// A move whose source changed since the scan (same size, new bytes, new date)
-// is not renamed unchecked: it goes through the hash-checked copy, which
-// refuses it and keeps the source.
-func TestRunMoveChecksChangedSource(t *testing.T) {
-	d := dbtest.New(t)
-	out := t.TempDir()
-	src := seedApproved(t, d, 1, "A.jpg", "hello")
-	if err := os.WriteFile(src, []byte("HELLO"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.Done != 0 || rep.Failed != 1 {
-		t.Fatalf("got %+v, want the one file failed", rep)
-	}
-	if _, err := os.Stat(filepath.Join(out, "A.jpg")); !os.IsNotExist(err) {
-		t.Errorf("library A.jpg: %v, want nothing placed", err)
-	}
-	if got, err := os.ReadFile(src); err != nil || string(got) != "HELLO" {
-		t.Errorf("source = %q, %v; want it kept", got, err)
-	}
-	if _, errText := rowStatus(t, d, 1); errText == nil || !strings.Contains(*errText, "changed since it was scanned") {
-		t.Errorf("error = %v, want the checksum refusal", errText)
 	}
 }
 

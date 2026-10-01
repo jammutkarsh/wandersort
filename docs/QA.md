@@ -75,10 +75,10 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 53. `[A]` `execute` after review edits → files land under the edited folders, draft gone, `.wandersort.db.zst` written.
 54. `[A]` `execute --dry-run` → reports the edited target paths, writes nothing.
 55. `[A]` too little free space → refuses before changing anything; draft still there.
-56. `[H]` `execute --move` → asks first (names never-read files); `--yes` skips the question; sources removed only after verified copies.
+56. `[A]` after `execute`, every source file is byte-identical and still in place; there is no `--move` flag.
 57. `[A]` a source edited after the scan (same size) → `checksum-mismatch` error, nothing lands, source kept.
 58. `[A]` an occupied target name → lands at `_1`, nothing overwritten; the same file already there → recorded, not copied twice.
-59. `[A]` kill mid-run, run again → resumes; nothing copied twice.
+59. `[A]` kill mid-run, run again → resumes; nothing copied twice; files that failed last run are tried again.
 60. `[A]` re-add the same card after execute → nothing proposed again.
 
 ## 7. Check

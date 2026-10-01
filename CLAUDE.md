@@ -6,7 +6,7 @@ Map of the codebase. Coding rules live in `AGENTS.md` (symlink to `.agents/AGENT
 
 ## What WanderSort is
 
-A local media organizer: point it at photo/video folders, it plans a readable folder tree in an output folder (the *library*) and copies or moves files in. One SQLite database per library (`.wandersort.db`) is the only durable state; an OS file lock on the library means one process at a time.
+A local media organizer: point it at photo/video folders, it plans a readable folder tree in an output folder (the *library*) and copies files in (sources are never modified or deleted). One SQLite database per library (`.wandersort.db`) is the only durable state; an OS file lock on the library means one process at a time.
 
 Flow: `add` (scan → metadata → vfs) proposes a plan, `organise` edits it, `execute` applies it, `check` verifies it later.
 
@@ -19,7 +19,7 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 | `wandersort` | `shell.go` | Full-screen shell: Add / Settings / Organise tabs, `ctrl+t` cycles |
 | `add -p …` | `add.go` | Runs the pipeline (shell on the Add tab, or `--plain`) |
 | `organise` | `organise.go` | Shell on the Organise tab; also `rebuildTree`, `newReviewScreen` |
-| `execute` | `execute.go` | Applies the draft and transfers (`--move`, `--dry-run`, `--yes`) |
+| `execute` | `execute.go` | Applies the draft and copies files in (`--dry-run`) |
 | `check` | `check.go` | Verifies placed files (`--full` re-hashes) |
 | `admin clear\|db\|report` | `admin_*.go` | Preview cache, `--reset`/`--restore`, issue zip |
 
@@ -35,7 +35,7 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 - `scanner`: walks roots into `file_registry`. Each scan has a counter stamp; rows under a clean root with an older stamp are swept (hard delete, dependants cascade). A changed file (size/mtime) is a new row.
 - `metadata`: the only pass that reads bytes: BLAKE3 hash then exiftool per file, one `file_metadata` row. Reads are throttled by storage class; volumes drain fastest first.
 - `vfs`: plans every unplaced master. `elect.go` picks one copy per hash each run; `plan.go`'s `Plan` derives facts, resolves locations, then `assignTargetPaths` (numbered steps, order is the rule). Plan is persisted as `folder_nodes` (folder tree with ids and `bounds`) + `virtual_fs_entries`. `route.go` sends new files into matching placed folders. `draft.go` is the review edit journal (`.wandersort.draft`); `edit.go` holds merge/drop/flatten.
-- `execute`: `Run` checks space, applies the draft, backs up the DB, transfers each pending row (`land.go`: hash-verified copy, no-replace rename, commit before unlinking a source), then forgets duplicates of placed files. Sequential and resumable.
+- `execute`: `Run` checks space, applies the draft, backs up the DB, transfers each pending row (`land.go`: hash-verified copy that never replaces an existing file), then forgets duplicates of placed files. Sequential and resumable.
 - `verify`: `check`'s engine; forgets placed files that are gone, records damage as `VERIFY` errors.
 
 ## Supporting packages (`pkg`)
@@ -64,7 +64,7 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 - Year and Month folders are fixed in review (`vfs.ErrFixedFolder`).
 - One day lives in exactly one date folder.
 - `placed` and registry deletes go only through `pkg/db/state.go`. `MarkPlaced` runs in `WriteSync`.
-- Execute commits a file as placed before a move unlinks its source.
+- Execute only copies: no code path deletes or modifies a source file.
 - Connection pragmas live in the DSN (`appDSN`); `synchronous=FULL`, `mmap_size=0`, foreign keys asserted.
 - `BulkWriter` ops must touch nothing outside their transaction (failed batches replay).
 - No tag yet: edit existing migrations in place; delete `.wandersort.db` after such an edit.

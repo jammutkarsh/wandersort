@@ -78,7 +78,7 @@ wandersort
 # automatically on first use.
 wandersort add --paths ~/Pictures,/Volumes/SD   # plan where every file goes
 wandersort organise                              # correct the plan
-wandersort execute                               # copy the files in (--move to move)
+wandersort execute                               # copy the files in
 wandersort check                                 # later: verify the library
 ```
 

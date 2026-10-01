@@ -17,36 +17,29 @@ import (
 func (a *app) newExecuteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "execute",
-		Short: "Copy or move approved files into the output folder",
-		Long: `Applies your 'wandersort organise' edits to the plan, approves it, and
-transfers every file from its source into <output>/<planned folder>. Copy is
-the default and never touches a source file; --move deletes each source only
-after its copy there is verified complete. Stops before changing anything if
-the output has too little free space. Safe to re-run: a run interrupted
-partway picks up where it left off next time.`,
+		Short: "Copy approved files into the output folder",
+		Long: `Applies your 'wandersort organise' edits to the plan and copies every file
+from its source into <output>/<planned folder>. Sources are never modified or
+deleted; each copy is verified against the scanned hash before it counts.
+Stops before changing anything if the output has too little free space. Safe
+to re-run: a run interrupted partway picks up where it left off, and files that
+failed before are tried again.`,
 		Example: `# Copy every approved file (safe, default)
 wandersort execute
 
 # See what would happen without touching anything
-wandersort execute --dry-run
-
-# Move instead of copy — prompts for confirmation unless --yes
-wandersort execute --move`,
+wandersort execute --dry-run`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runExecute(cmd)
 		},
 	}
 
-	cmd.Flags().Bool(flagMove, false, "Move files instead of copying, deleting each source once its copy is verified")
 	cmd.Flags().Bool(flagDryRun, false, "Report what would be transferred, and where, without touching anything")
-	cmd.Flags().Bool(flagYes, false, "Skip the confirmation prompt --move asks for")
 	return cmd
 }
 
 func (a *app) runExecute(cmd *cobra.Command) error {
-	move, _ := cmd.Flags().GetBool(flagMove)
 	dryRun, _ := cmd.Flags().GetBool(flagDryRun)
-	yes, _ := cmd.Flags().GetBool(flagYes)
 
 	if !a.libraryExists() {
 		return fmt.Errorf("no database found — run 'wandersort add' first")
@@ -65,27 +58,9 @@ func (a *app) runExecute(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-
-	// Move is the only thing that can delete the user's files, so it asks
-	// unless --yes (or a dry run). Never-read files are named in the question:
-	// they are not moved, and a source emptied of the rest looks done.
-	if move && !dryRun && !yes {
-		detail := "Each source file is deleted once its copy at the output is verified complete — this cannot be undone."
-		if len(left) > 0 {
-			detail += fmt.Sprintf(" %d source files could not be read and will stay where they are — keep their folders.", len(left))
-		}
-		if !a.confirm(cmd, "Move files instead of copying?", detail) {
-			return fmt.Errorf("execute cancelled")
-		}
-	}
 	defer a.reportLeftBehind(left)
 
-	mode := execute.ModeCopy
-	if move {
-		mode = execute.ModeMove
-	}
 	rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{
-		Mode:   mode,
 		DryRun: dryRun,
 		OnApplied: func() {
 			if err := review.CleanPreviews(); err != nil {
@@ -125,7 +100,7 @@ func (a *app) reportLeftBehind(left []string) {
 		a.Log.Info("never read, so not transferred", "source", p)
 	}
 	paths := wspath.New()
-	fmt.Fprintf(os.Stderr, "%s %d source files could not be read, so they are not in the library and were not moved:\n",
+	fmt.Fprintf(os.Stderr, "%s %d source files could not be read, so they are not in the library:\n",
 		tui.Attn.Render("⚠"), len(left))
 	for _, p := range left[:min(len(left), maxLeftBehindShown)] {
 		fmt.Fprintf(os.Stderr, "    %s\n", paths.RelativeToHome(p))

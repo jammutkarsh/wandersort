@@ -15,9 +15,9 @@ import (
 func (a *app) newOrganiseCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "organise",
-		Short: "Correct the proposed folder structure before anything moves",
+		Short: "Correct the proposed folder structure before anything is copied",
 		Long: `Walks the folder hierarchy proposed by the last scan so you can rename,
-merge, drop and flatten folders before anything is moved. Every edit is kept
+merge, drop and flatten folders before anything is copied. Every edit is kept
 as you make it, across sessions; 'wandersort execute' applies them and copies
 the files. Names you type are remembered and offered as rename completions in
 later reviews.`,
