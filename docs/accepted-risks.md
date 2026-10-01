@@ -50,3 +50,32 @@ file. A card imported again is therefore re-read in full on every
 
 **Accepted because:** it costs time, never data, and keeping rows for files
 that are not in the library contradicts "only what is in the library matters".
+
+## `check` forgets every missing placed file, however many
+
+`check` deletes the record of any placed file it can't find, with no limit
+on how many go at once. Renaming or moving a folder inside the library by
+hand makes every file in it look missing, and all of their records are
+forgotten; the next `execute` then overwrites the one backup holding them.
+
+**Accepted because:** the library's folders are WanderSort's to manage, and
+users are not expected to rename them. A proportional limit is the upgrade
+path if that stops being true.
+
+## A re-plan discards the review draft before the new plan is saved
+
+`vfs.Propose` removes `.wandersort.draft` before planning. If the re-plan
+fails or is cancelled, the old plan stays in the database but the review
+edits made against it are gone.
+
+**Accepted because:** a re-plan means the user changed settings or added
+files, and the plan is meant to be reviewed again afterwards.
+
+## Scanning the library itself is only refused when the path matches exactly
+
+The "don't add the library as a source" check compares paths byte for byte,
+so on a case-insensitive filesystem a differently-cased path to the library
+gets through.
+
+**Accepted because:** re-scanning a library is not a supported workflow yet;
+the check is revisited when it is.
