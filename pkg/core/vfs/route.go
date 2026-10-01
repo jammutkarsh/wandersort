@@ -133,13 +133,14 @@ func statement(m *masterFile) (Constraint, levelBit) {
 			continue
 		}
 		c := m.dirBounds[d][0]
-		fill(&file.Year, c.Year)
-		fill(&file.Month, c.Month)
-		fill(&file.Date, c.Date)
-		fill(&file.Location, c.Location)
-		fill(&file.Device, c.Device)
-		fill(&file.Orientation, c.Orientation)
-		fill(&file.Media, c.Media)
+		fn, ft := file.levels()
+		cn, ct := c.levels()
+		for i := range fn {
+			fill(fn[i].set, *cn[i].set)
+		}
+		for i := range ft {
+			fill(ft[i].set, *ct[i].set)
+		}
 	}
 	return file, want | constrained(file)
 }
@@ -154,19 +155,14 @@ func fill[T any](dst *[]T, src []T) {
 // constrained is the levels c sets.
 func constrained(c Constraint) levelBit {
 	var b levelBit
-	for _, l := range [...]struct {
-		bit levelBit
-		set bool
-	}{
-		{bitYear, c.Year != nil},
-		{bitMonth, c.Month != nil},
-		{bitDate, c.Date != nil},
-		{bitLocation, c.Location != nil},
-		{bitDevice, c.Device != nil},
-		{bitOrientation, c.Orientation != nil},
-		{bitMedia, c.Media != nil},
-	} {
-		if l.set {
+	nums, texts := c.levels()
+	for _, l := range nums {
+		if *l.set != nil {
+			b |= l.bit
+		}
+	}
+	for _, l := range texts {
+		if *l.set != nil {
 			b |= l.bit
 		}
 	}

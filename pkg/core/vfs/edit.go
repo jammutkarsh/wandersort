@@ -23,6 +23,32 @@ type Constraint struct {
 	Media       []string `json:"media,omitzero"`
 }
 
+// numLevel and textLevel point at one level of a Constraint.
+type (
+	numLevel struct {
+		bit levelBit
+		set *[]int
+	}
+	textLevel struct {
+		bit levelBit
+		set *[]string
+	}
+)
+
+// levels is every level of c, in a fixed order, so two constraints' levels
+// pair up by index. Each function over levels walks these; a new level is
+// added here.
+func (c *Constraint) levels() (nums [3]numLevel, texts [4]textLevel) {
+	nums = [3]numLevel{{bitYear, &c.Year}, {bitMonth, &c.Month}, {bitDate, &c.Date}}
+	texts = [4]textLevel{
+		{bitLocation, &c.Location},
+		{bitDevice, &c.Device},
+		{bitOrientation, &c.Orientation},
+		{bitMedia, &c.Media},
+	}
+	return nums, texts
+}
+
 // Bounds is what one folder holds: a file belongs if it satisfies any one
 // alternative, and a folder's full range is its Bounds AND its ancestors'.
 // Alternatives keep a merge exact (<city A> on the 3rd + <city B> on the 20th
@@ -55,10 +81,20 @@ func (b Bounds) Intersect(o Bounds) Bounds {
 // values, satisfies any alternative. A level the file has no value for fails
 // every alternative that constrains it.
 func (b Bounds) Matches(file Constraint) bool {
+	fn, ft := file.levels()
 	return slices.ContainsFunc(b, func(c Constraint) bool {
-		return admits(c.Year, file.Year) && admits(c.Month, file.Month) && admits(c.Date, file.Date) &&
-			admits(c.Location, file.Location) && admits(c.Device, file.Device) &&
-			admits(c.Orientation, file.Orientation) && admits(c.Media, file.Media)
+		cn, ct := c.levels()
+		for i := range cn {
+			if !admits(*cn[i].set, *fn[i].set) {
+				return false
+			}
+		}
+		for i := range ct {
+			if !admits(*ct[i].set, *ft[i].set) {
+				return false
+			}
+		}
+		return true
 	})
 }
 
@@ -75,58 +111,55 @@ func (b Bounds) with(c Constraint) Bounds {
 
 // join is a ∪ c as one alternative, when they differ on one level at most.
 func (a Constraint) join(c Constraint) (Constraint, bool) {
+	var out Constraint
+	an, at := a.levels()
+	cn, ct := c.levels()
+	on, ot := out.levels()
 	diff := 0
-	for _, same := range []bool{
-		sameSet(a.Year, c.Year), sameSet(a.Month, c.Month), sameSet(a.Date, c.Date),
-		sameSet(a.Location, c.Location), sameSet(a.Device, c.Device),
-		sameSet(a.Orientation, c.Orientation), sameSet(a.Media, c.Media),
-	} {
-		if !same {
-			diff++
-		}
+	for i := range an {
+		diff += joinLevel(*an[i].set, *cn[i].set, on[i].set)
+	}
+	for i := range at {
+		diff += joinLevel(*at[i].set, *ct[i].set, ot[i].set)
 	}
 	if diff > 1 {
 		return Constraint{}, false
 	}
-	return Constraint{
-		Year:        unionSet(a.Year, c.Year),
-		Month:       unionSet(a.Month, c.Month),
-		Date:        unionSet(a.Date, c.Date),
-		Location:    unionSet(a.Location, c.Location),
-		Device:      unionSet(a.Device, c.Device),
-		Orientation: unionSet(a.Orientation, c.Orientation),
-		Media:       unionSet(a.Media, c.Media),
-	}, true
+	return out, true
+}
+
+// joinLevel sets out to a ∪ b and counts 1 when a and b differ.
+func joinLevel[T cmp.Ordered](a, b []T, out *[]T) int {
+	*out = unionSet(a, b)
+	if sameSet(a, b) {
+		return 0
+	}
+	return 1
 }
 
 // intersect is a ∩ c; ok is false when any level comes out empty.
 func (a Constraint) intersect(c Constraint) (Constraint, bool) {
-	out := Constraint{
-		Year:        intersectSet(a.Year, c.Year),
-		Month:       intersectSet(a.Month, c.Month),
-		Date:        intersectSet(a.Date, c.Date),
-		Location:    intersectSet(a.Location, c.Location),
-		Device:      intersectSet(a.Device, c.Device),
-		Orientation: intersectSet(a.Orientation, c.Orientation),
-		Media:       intersectSet(a.Media, c.Media),
+	var out Constraint
+	an, at := a.levels()
+	cn, ct := c.levels()
+	on, ot := out.levels()
+	for i := range an {
+		if !intersectLevel(*an[i].set, *cn[i].set, on[i].set) {
+			return Constraint{}, false
+		}
 	}
-	for _, n := range []int{
-		emptyLen(out.Year), emptyLen(out.Month), emptyLen(out.Date), emptyLen(out.Location),
-		emptyLen(out.Device), emptyLen(out.Orientation), emptyLen(out.Media),
-	} {
-		if n == 0 {
+	for i := range at {
+		if !intersectLevel(*at[i].set, *ct[i].set, ot[i].set) {
 			return Constraint{}, false
 		}
 	}
 	return out, true
 }
 
-// emptyLen is len(s), or -1 for an unconstrained (nil) level.
-func emptyLen[T any](s []T) int {
-	if s == nil {
-		return -1
-	}
-	return len(s)
+// intersectLevel sets out to a ∩ b; false when that holds nothing.
+func intersectLevel[T comparable](a, b []T, out *[]T) bool {
+	*out = intersectSet(a, b)
+	return *out == nil || len(*out) > 0
 }
 
 // sameSet compares two sorted sets, nil (unconstrained) only equal to nil.

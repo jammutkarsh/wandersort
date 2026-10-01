@@ -545,3 +545,23 @@ func TestEditsRefuseFixedFolders(t *testing.T) {
 		t.Errorf("merge days across months: %v, want it to work", err)
 	}
 }
+
+// TestLevelsCoverEveryField: a Constraint field missing from levels() would be
+// ignored by Matches, join, intersect and route.
+func TestLevelsCoverEveryField(t *testing.T) {
+	typ := reflect.TypeFor[Constraint]()
+	seen := levelBit(0)
+	for i := range typ.NumField() {
+		var c Constraint
+		f := reflect.ValueOf(&c).Elem().Field(i)
+		f.Set(reflect.MakeSlice(f.Type(), 0, 0))
+		bit := constrained(c)
+		if bit == 0 || bit&(bit-1) != 0 || seen&bit != 0 {
+			t.Errorf("field %s: levels() gives bit %b, want one unused bit", typ.Field(i).Name, bit)
+		}
+		seen |= bit
+		if (Bounds{c}).Matches(Constraint{}) {
+			t.Errorf("field %s: an empty level still matches", typ.Field(i).Name)
+		}
+	}
+}
