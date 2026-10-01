@@ -197,14 +197,8 @@ func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM virtual_fs_entries WHERE `+db.PendingTransfer("file_id")); err != nil {
 			return fmt.Errorf("clear previous vfs proposal: %w", err)
 		}
-		if len(stale) > 0 {
-			q, args, err := sqlx.In(`DELETE FROM virtual_fs_entries WHERE file_id IN (?)`, stale)
-			if err != nil {
-				return fmt.Errorf("clear stale vfs entries: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, tx.Rebind(q), args...); err != nil {
-				return fmt.Errorf("clear stale vfs entries: %w", err)
-			}
+		if err := db.ExecIn(ctx, tx, `DELETE FROM virtual_fs_entries WHERE file_id IN (?)`, stale); err != nil {
+			return fmt.Errorf("clear stale vfs entries: %w", err)
 		}
 
 		// split folders a stopped copy shares with placed files first, so the

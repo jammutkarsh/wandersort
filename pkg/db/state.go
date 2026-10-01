@@ -59,12 +59,27 @@ func Forget(ctx context.Context, tx *sqlx.Tx, fileIDs []int64) error {
 	if len(fileIDs) == 0 {
 		return nil
 	}
-	q, args, err := sqlx.In(`DELETE FROM file_registry WHERE id IN (?)`, fileIDs)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, tx.Rebind(q), args...); err != nil {
+	if err := ExecIn(ctx, tx, `DELETE FROM file_registry WHERE id IN (?)`, fileIDs); err != nil {
 		return fmt.Errorf("forget files: %w", err)
+	}
+	return nil
+}
+
+// maxInIDs is how many ids one IN (?) statement binds; SQLite allows 32,766
+// variables per statement.
+const maxInIDs = 10_000
+
+// ExecIn runs query, whose one IN (?) takes ids, in batches of maxInIDs within
+// tx, so any number of ids works.
+func ExecIn(ctx context.Context, tx *sqlx.Tx, query string, ids []int64) error {
+	for start := 0; start < len(ids); start += maxInIDs {
+		q, args, err := sqlx.In(query, ids[start:min(start+maxInIDs, len(ids))])
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, tx.Rebind(q), args...); err != nil {
+			return err
+		}
 	}
 	return nil
 }
