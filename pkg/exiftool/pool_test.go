@@ -146,17 +146,56 @@ func silentExiftool(t *testing.T) string {
 }
 
 // No output is unknown tags, not empty ones, and not a dead worker.
-func TestExtractWithoutOutputIsNoOutput(t *testing.T) {
+func TestExtractWithoutOutputIsUnreadable(t *testing.T) {
 	e, err := New(silentExiftool(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer e.Close()
 	_, err = e.Extract(context.Background(), "/a/x.jpg")
-	if !errors.Is(err, ErrNoOutput) || errors.Is(err, ErrProcess) {
-		t.Fatalf("Extract = %v, want ErrNoOutput and not ErrProcess", err)
+	if !errors.Is(err, ErrUnreadable) || errors.Is(err, ErrProcess) {
+		t.Fatalf("Extract = %v, want ErrUnreadable and not ErrProcess", err)
 	}
 	if e.Dead() {
 		t.Error("a file exiftool could not open must not cost the worker")
+	}
+}
+
+// scriptedExiftool answers every file with out, the way exiftool -json does.
+func scriptedExiftool(t *testing.T, out string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "exiftool")
+	script := "#!/bin/sh\nwhile read -r l; do [ \"$l\" = \"-execute\" ] && printf '%s\\n{ready}\\n' '" + out + "'; done\n"
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// An exiftool I/O error is an unreadable file (retried later); a format it
+// doesn't understand is a readable file with no tags.
+func TestExtractClassifiesExiftoolErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name, out      string
+		wantUnreadable bool
+	}{
+		{"cannot open", `[{"SourceFile":"/a/x.jpg","Error":"Error opening file"}]`, true},
+		{"unknown format", `[{"SourceFile":"/a/x.jpg","Error":"Unknown file type"}]`, false},
+		{"no error", `[{"SourceFile":"/a/x.jpg","Make":"<make>"}]`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := New(scriptedExiftool(t, tt.out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer e.Close()
+			_, err = e.Extract(context.Background(), "/a/x.jpg")
+			if got := errors.Is(err, ErrUnreadable); got != tt.wantUnreadable {
+				t.Errorf("Extract = %v; unreadable = %v, want %v", err, got, tt.wantUnreadable)
+			}
+			if !tt.wantUnreadable && err != nil {
+				t.Errorf("Extract = %v, want the (empty) metadata", err)
+			}
+		})
 	}
 }

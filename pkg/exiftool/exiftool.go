@@ -32,9 +32,13 @@ var ErrProcess = errors.New("exiftool process failed")
 // argument per line, so the rest would become exiftool options.
 var ErrUnsafePath = errors.New("path contains a line break and cannot be passed to exiftool")
 
-// ErrNoOutput means exiftool answered with no metadata for the file (it could
-// not open it): the tags are unknown, not empty. The worker stays usable.
-var ErrNoOutput = errors.New("exiftool returned no metadata for the file")
+// ErrUnreadable means exiftool could not read the file (no output, or an I/O
+// error it reported): the tags are unknown, not empty. The worker stays usable.
+var ErrUnreadable = errors.New("exiftool could not read the file")
+
+// ioErrors are the exiftool Error messages that mean the file couldn't be read,
+// as opposed to read but not understood (an unknown format keeps empty tags).
+var ioErrors = []string{"File not found", "Error opening file", "Error reading file"}
 
 // exiftoolTags lists every tag ParseMetadata reads (~90% smaller output than
 // all tags). No -fast2: it drops GPS/CreationDate from QuickTime videos.
@@ -51,6 +55,7 @@ var exiftoolTags = []string{
 	"-ExposureCompensation", "-Flash", "-MeteringMode", "-WhiteBalance",
 	"-GPSLatitude", "-GPSLongitude", "-GPSAltitude", "-GPSAltitudeRef", "-GPSPosition",
 	"-Description", "-UserComment", "-SamsungCaptureInfo",
+	"-Error",
 }
 
 // Extractor talks to a single long-lived exiftool process running in
@@ -154,10 +159,18 @@ func (e *Extractor) Extract(ctx context.Context, path string) (classifier.Common
 	var arr []jsontext.Value
 	if err := json.Unmarshal(out.Bytes(), &arr,
 		jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true)); err != nil {
-		return classifier.CommonMetadata{}, fmt.Errorf("%w: output is not a JSON array: %w", ErrNoOutput, err)
+		return classifier.CommonMetadata{}, fmt.Errorf("%w: output is not a JSON array: %w", ErrUnreadable, err)
 	}
 	if len(arr) == 0 {
-		return classifier.CommonMetadata{}, fmt.Errorf("%w: empty array", ErrNoOutput)
+		return classifier.CommonMetadata{}, fmt.Errorf("%w: empty array", ErrUnreadable)
+	}
+	var status struct{ Error string }
+	if json.Unmarshal(arr[0], &status, jsontext.AllowInvalidUTF8(true), jsontext.AllowDuplicateNames(true)) == nil {
+		for _, msg := range ioErrors {
+			if strings.Contains(status.Error, msg) {
+				return classifier.CommonMetadata{}, fmt.Errorf("%w: %s", ErrUnreadable, status.Error)
+			}
+		}
 	}
 
 	return classifier.ParseMetadata(filepath.Ext(path), arr[0])
