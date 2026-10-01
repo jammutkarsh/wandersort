@@ -95,14 +95,15 @@ func alreadyLanded(dst string, scan scanned) (string, bool) {
 	return "", false
 }
 
-// isCopy reports whether p holds size bytes hashing to want; size first, so a
-// mismatch is never read.
+// isCopy reports whether p is a regular file of size bytes hashing to want;
+// size first, so a mismatch is never read. A symlink is never a copy: it may
+// point at the source itself.
 func isCopy(p string, size int64, want string) bool {
 	if want == "" {
 		return false
 	}
-	info, err := os.Stat(p)
-	if err != nil || info.Size() != size {
+	info, err := os.Lstat(p)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != size {
 		return false
 	}
 	got, err := metadata.HashFile(p)
@@ -155,8 +156,26 @@ func placeFree(ctx context.Context, mode Mode, src, dst, want string, commit com
 		if err := commit(target); err != nil {
 			return target, err
 		}
+		if sameFile(src, target) {
+			// one file under both names: Rename keeps its only name, or
+			// finishes a move a crash left as two links
+			if err := atomicfile.Rename(src, target); err != nil {
+				return target, &stepError{opRemoveSource, fmt.Errorf("%w: %w", errSourceNotRemoved, err)}
+			}
+			return target, nil
+		}
 		return target, removeSource(src)
 	}
+}
+
+// sameFile reports whether a and b name one file; any Lstat failure is "no".
+func sameFile(a, b string) bool {
+	ai, err := os.Lstat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Lstat(b)
+	return err == nil && os.SameFile(ai, bi)
 }
 
 // holds reports whether p is already a copy of src: a copy of the scanned
@@ -207,6 +226,11 @@ func place(mode Mode, src, dst, want string, commit func() error) error {
 		case errors.Is(err, fs.ErrExist):
 			return err
 		case errors.Is(err, atomicfile.ErrSourceKept):
+			return &stepError{opRename, err}
+		}
+		// a gone source has moved (and was recorded) or vanished: a copy has
+		// nothing to read
+		if _, lerr := os.Lstat(src); lerr != nil {
 			return &stepError{opRename, err}
 		}
 		// anything else — another device, mostly — falls back to a copy

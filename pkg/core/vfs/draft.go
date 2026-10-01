@@ -313,7 +313,7 @@ func ApplyDraft(ctx context.Context, database *db.DB, outputDir string) error {
 
 // PreviewDraft runs read against the plan with the draft applied, inside a
 // transaction that is rolled back (dry runs).
-func PreviewDraft(ctx context.Context, database *db.DB, outputDir string, read func(context.Context, sqlx.QueryerContext) error) error {
+func PreviewDraft(ctx context.Context, database *db.DB, outputDir string, read func(context.Context, *sqlx.Tx) error) error {
 	tree, err := BuildTree(ctx, database)
 	if err != nil {
 		return err

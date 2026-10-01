@@ -364,3 +364,27 @@ func TestRenameCommit(t *testing.T) {
 		}
 	})
 }
+
+// Without hard links the rename moves the file in one step: a folder that
+// won't sync afterwards must not stop the move being recorded.
+func TestRenameCommitWithoutHardLinksRecordsDespiteSyncFailure(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "a.jpg"), filepath.Join(dir, "b.jpg")
+	write(t, src, "photo")
+	syncFailed := errors.New("sync failed")
+	ops := fsOps{
+		link:     func(string, string) error { return errors.New("hard links not supported") },
+		syncDirs: func(...string) error { return syncFailed },
+	}
+	committed := false
+	err := renameCommit(src, dst, func() error { committed = true; return nil }, ops)
+	if !errors.Is(err, syncFailed) {
+		t.Errorf("err = %v, want the sync failure reported", err)
+	}
+	if !committed {
+		t.Error("a moved file was not recorded")
+	}
+	if read(t, dst) != "photo" {
+		t.Error("destination lost the bytes")
+	}
+}

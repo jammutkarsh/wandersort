@@ -4,7 +4,7 @@
 //
 // Sequential (nothing has measured its throughput) and resumable by
 // construction: it only selects pending rows, so a stopped run resumes where it
-// stopped. Failed files are not retried automatically.
+// stopped. Every run retries the files an earlier one failed to transfer.
 package execute
 
 import (
@@ -115,10 +115,10 @@ func LeftBehind(ctx context.Context, database *db.DB) ([]string, error) {
 	return paths, nil
 }
 
-// Run is the whole transfer: refuse a plan the output can't hold
-// (*NotEnoughSpaceError, nothing changed), apply the review draft, back up the
-// database, then place every pending entry. A dry run writes nothing. The
-// caller holds the output lock.
+// Run is the whole transfer: make earlier failures pending again, refuse a plan
+// the output can't hold (*NotEnoughSpaceError, no file or plan changed), apply
+// the review draft, back up the database, then place every pending entry. A dry
+// run writes nothing. The caller holds the output lock.
 func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, o Options) (Report, error) {
 	xfer := productionTransfer
 	if o.DryRun {
@@ -155,18 +155,24 @@ func loadPending(ctx context.Context, q sqlx.QueryerContext) ([]pendingRow, erro
 	return rows, nil
 }
 
-// prepare does the pre-transfer steps in order: space check (so a refusal
-// changes nothing), apply the draft, read the pending rows. A dry run applies
-// the draft in a rolled-back transaction instead.
+// prepare does the pre-transfer steps in order: make earlier failures pending
+// again, space check (a refusal changes nothing else), apply the draft, read
+// the pending rows. A dry run does all of it in a rolled-back transaction.
 func prepare(ctx context.Context, database *db.DB, outputDir string, o Options) ([]pendingRow, error) {
 	if o.DryRun {
 		var rows []pendingRow
-		err := vfs.PreviewDraft(ctx, database, outputDir, func(ctx context.Context, q sqlx.QueryerContext) error {
+		err := vfs.PreviewDraft(ctx, database, outputDir, func(ctx context.Context, tx *sqlx.Tx) error {
+			if err := db.RetryFailedTransfers(ctx, tx); err != nil {
+				return err
+			}
 			var err error
-			rows, err = loadPending(ctx, q)
+			rows, err = loadPending(ctx, tx)
 			return err
 		})
 		return rows, err
+	}
+	if err := db.RetryFailedTransfers(ctx, database.SQL); err != nil {
+		return nil, err
 	}
 	freeSpace := o.freeSpace
 	if freeSpace == nil {
@@ -278,7 +284,9 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 			o.OnProgress(committed, size, i+1, len(rows))
 		}
 	}
-	database.Writer.Flush()
+	if err := database.Writer.Flush(); err != nil {
+		return rep, fmt.Errorf("record transfer results: %w", err)
+	}
 
 	if err := ctx.Err(); err != nil {
 		// stopped between files: the rest stays pending; duplicate cleanup

@@ -114,3 +114,63 @@ func TestTransferCopyReportsSize(t *testing.T) {
 		t.Errorf("copy touched the source: %v", err)
 	}
 }
+
+// A move never deletes a source the taken name only appears to hold: a
+// symlink to the source, or the source's own name.
+func TestTransferMoveKeepsTheOnlyCopy(t *testing.T) {
+	cases := map[string]func(t *testing.T, src string) (dst string){
+		"symlink to the source": func(t *testing.T, src string) string {
+			dst := filepath.Join(filepath.Dir(src), "lib", "A.jpg")
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(src, dst); err != nil {
+				t.Skipf("no symlinks here: %v", err)
+			}
+			return dst
+		},
+		"the source itself": func(t *testing.T, src string) string { return src },
+	}
+	for name, dstFor := range cases {
+		t.Run(name, func(t *testing.T) {
+			src := filepath.Join(t.TempDir(), "A.jpg")
+			writeFile(t, src, "photo")
+			info, err := os.Stat(src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dst := dstFor(t, src)
+
+			var committed []string
+			landed, _, err := productionTransfer(context.Background(), ModeMove, src, dst,
+				scanned{hash: hashOf("photo"), size: 5, modifiedAt: db.FormatTime(info.ModTime())}, recorder(&committed))
+			if err != nil {
+				t.Fatal(err)
+			}
+			li, err := os.Lstat(landed)
+			if err != nil || !li.Mode().IsRegular() {
+				t.Fatalf("landed at %s (%v, %v); want a regular file", landed, li, err)
+			}
+			if got, err := os.ReadFile(landed); err != nil || string(got) != "photo" {
+				t.Errorf("landed file = %q, %v; want the photo", got, err)
+			}
+			if len(committed) != 1 || committed[0] != landed {
+				t.Errorf("committed %v, want only %s", committed, landed)
+			}
+		})
+	}
+}
+
+// A move whose source is gone has nothing to copy: the failure is the
+// rename's, and no copy is attempted.
+func TestPlaceMoveWithVanishedSourceDoesNotCopy(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "lib", "A.jpg")
+	err := place(ModeMove, filepath.Join(dir, "gone.jpg"), dst, hashOf("photo"), func() error {
+		t.Error("committed a file that never moved")
+		return nil
+	})
+	if failedOp(err) != opRename {
+		t.Errorf("err = %v (op %s), want a rename failure", err, failedOp(err))
+	}
+}

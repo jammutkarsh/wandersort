@@ -259,9 +259,9 @@ func TestRunRecordsErrorAndContinuesPastFailure(t *testing.T) {
 	}
 }
 
-// A placed file and a failed one are both decided: a re-run touches neither,
-// and the failed row keeps the folder it was planned into.
-func TestRunSkipsPlacedAndFailedRows(t *testing.T) {
+// A placed file is decided and a re-run leaves it alone; a failed transfer is
+// tried again, so the file still reaches the library.
+func TestRunSkipsPlacedAndRetriesFailedRows(t *testing.T) {
 	d := dbtest.New(t)
 	out := t.TempDir()
 	seedApproved(t, d, 1, "placed.jpg", "x")
@@ -273,21 +273,23 @@ func TestRunSkipsPlacedAndFailedRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Done != 0 || rep.Failed != 0 {
-		t.Fatalf("a decided row was touched: %+v", rep)
+	if rep.Done != 1 || rep.Failed != 0 {
+		t.Fatalf("got %+v, want only the failed file transferred", rep)
 	}
-	for _, name := range []string{"placed.jpg", "2024/failed.jpg"} {
-		if _, err := os.Stat(filepath.Join(out, name)); !os.IsNotExist(err) {
-			t.Errorf("%s was written to the output", name)
-		}
+	if _, err := os.Stat(filepath.Join(out, "placed.jpg")); !os.IsNotExist(err) {
+		t.Error("a placed file was written to the output again")
+	}
+	if status, _ := rowStatus(t, d, 2); status != statePlaced {
+		t.Errorf("failed file after a re-run: status = %q, want %q", status, statePlaced)
 	}
 	if got := targetPath(t, d, 2); got != "2024/failed.jpg" {
-		t.Errorf("failed row's target = %q, want the planned one", got)
+		t.Errorf("retried row's target = %q, want the planned one", got)
 	}
 }
 
-// Pending counts exactly what Run would transfer: a placed file and one with
-// a failed transfer are not waiting, and an empty library waits for nothing.
+// Pending counts what is waiting: not a placed file nor one with a failed
+// transfer, and nothing in an empty library. A dry run counts those plus the
+// failed one a real run retries, and leaves it failed.
 func TestPendingCountsWhatRunWouldTransfer(t *testing.T) {
 	d := dbtest.New(t)
 	ctx := context.Background()
@@ -306,8 +308,11 @@ func TestPendingCountsWhatRunWouldTransfer(t *testing.T) {
 		t.Fatalf("Pending = %d files, %d bytes, %v; want 2 files, 8 bytes", files, bytes, err)
 	}
 	rep, err := Run(ctx, d, logger.NewNoopLogger(), t.TempDir(), Options{DryRun: true})
-	if err != nil || rep.Done != files || rep.Bytes != bytes {
-		t.Errorf("dry run = %+v, %v; want the %d files, %d bytes Pending counted", rep, err, files, bytes)
+	if err != nil || rep.Done != files+1 || rep.Bytes != bytes+int64(len("failed")) {
+		t.Errorf("dry run = %+v, %v; want Pending's %d files, %d bytes plus the failed one", rep, err, files, bytes)
+	}
+	if status, _ := rowStatus(t, d, 2); status != stateFailed {
+		t.Errorf("dry run changed the failed file: status = %q", status)
 	}
 }
 
@@ -763,8 +768,7 @@ func TestPlaceCommitsOnlyOnceTheFileIsInPlace(t *testing.T) {
 
 // A same-device move is one atomic rename, so a commit that fails afterwards
 // cannot lose the file — but left there, it is a library file no row accounts
-// for, behind a failure row that stops any later run from reconciling it. The
-// rename is undone instead, and the next run moves it for real.
+// for. The rename is undone instead, and the next run moves it for real.
 func TestRunMoveWithFailedCommitPutsTheSourceBack(t *testing.T) {
 	d := dbtest.New(t)
 	out := t.TempDir()
@@ -786,9 +790,6 @@ func TestRunMoveWithFailedCommitPutsTheSourceBack(t *testing.T) {
 	}
 
 	d.Writer = db.NewBulkWriter(d.SQL, logger.NewNoopLogger())
-	if _, err := d.SQL.Exec(`DELETE FROM errors WHERE stage = ?`, db.StageTransfer); err != nil {
-		t.Fatal(err)
-	}
 	rep, err = Run(context.Background(), d, logger.NewNoopLogger(), out, Options{Mode: ModeMove})
 	if err != nil {
 		t.Fatal(err)

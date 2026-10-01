@@ -43,6 +43,16 @@ func MarkFailed(ctx context.Context, tx *sqlx.Tx, fileID int64, op string, err e
 	return RecordError(ctx, tx, fileID, StageTransfer, op, err)
 }
 
+// RetryFailedTransfers makes every unplaced file with a failed transfer pending
+// again, so the next transfer tries it once more.
+func RetryFailedTransfers(ctx context.Context, x sqlx.ExecerContext) error {
+	if _, err := x.ExecContext(ctx, `DELETE FROM errors WHERE stage = ?
+		AND file_id IN (SELECT id FROM file_registry WHERE placed = 0)`, StageTransfer); err != nil {
+		return fmt.Errorf("retry failed transfers: %w", err)
+	}
+	return nil
+}
+
 // Forget deletes files' registry rows; hash, plan and error rows cascade.
 // Irreversible: back up first if unsure.
 func Forget(ctx context.Context, tx *sqlx.Tx, fileIDs []int64) error {
