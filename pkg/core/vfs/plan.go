@@ -555,9 +555,36 @@ func dayStart(d int) time.Time {
 // cross-month shape ("Aug_28-Sep_04", "Dec_30-Jan_02") across one.
 func dayRange(lo, hi time.Time) string {
 	if lo.Year() == hi.Year() && lo.Month() == hi.Month() {
-		return fmt.Sprintf("%02d_%02d", lo.Day(), hi.Day())
+		return formatDayRange(lo.Day(), hi.Day())
 	}
 	return eventSegment(lo, hi)
+}
+
+// parseDayRange reads a Date folder name ("03" or "01_02") back into its days;
+// ok is false for anything else.
+func parseDayRange(name string) (lo, hi int, ok bool) {
+	a, b, found := strings.Cut(name, "_")
+	if !found {
+		b = a
+	}
+	if len(a) != 2 || len(b) != 2 {
+		return 0, 0, false
+	}
+	lo, errA := strconv.Atoi(a)
+	hi, errB := strconv.Atoi(b)
+	if errA != nil || errB != nil || lo < 1 || lo > 31 || hi < 1 || hi > 31 {
+		return 0, 0, false
+	}
+	return lo, hi, true
+}
+
+// formatDayRange names a Date folder for days lo..hi of one month: "03", or
+// "01_02" for a merged run. parseDayRange reads it back.
+func formatDayRange(lo, hi int) string {
+	if lo == hi {
+		return fmt.Sprintf("%02d", lo)
+	}
+	return fmt.Sprintf("%02d_%02d", lo, hi)
 }
 
 // assignSuffix fills paths with dir/stem[_N]ext for every member, using the
@@ -914,7 +941,7 @@ func segmentFor(m *masterFile, level string, cfg Config) string {
 			// would read as that month's day and collide with it
 			return m.takenAt.Format("Jan_02")
 		}
-		return m.takenAt.Format("02")
+		return formatDayRange(m.takenAt.Day(), m.takenAt.Day())
 	case RuleDevice:
 		return m.device
 	case RuleOrientation:

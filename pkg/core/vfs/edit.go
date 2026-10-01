@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"strconv"
-	"strings"
 )
 
 // Review tree edits (merge/drop/flatten) as plain []Node functions.
@@ -355,32 +353,6 @@ func pruneEmptied(nodes []Node, leafIDs map[int64]bool) []Node {
 		out = append(out, n)
 	}
 	return out
-}
-
-// parseDayRange reads a Date folder name ("03" or "01_02") back into its days;
-// ok is false for anything else.
-func parseDayRange(name string) (lo, hi int, ok bool) {
-	a, b, found := strings.Cut(name, "_")
-	if !found {
-		b = a
-	}
-	if len(a) != 2 || len(b) != 2 {
-		return 0, 0, false
-	}
-	lo, errA := strconv.Atoi(a)
-	hi, errB := strconv.Atoi(b)
-	if errA != nil || errB != nil || lo < 1 || lo > 31 || hi < 1 || hi > 31 {
-		return 0, 0, false
-	}
-	return lo, hi, true
-}
-
-// formatDayRange matches the planner's day-merge folder name.
-func formatDayRange(lo, hi int) string {
-	if lo == hi {
-		return fmt.Sprintf("%02d", lo)
-	}
-	return fmt.Sprintf("%02d_%02d", lo, hi)
 }
 
 // combinedDayRange spans every pick's days when every pick is a plain Date
