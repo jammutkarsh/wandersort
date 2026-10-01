@@ -51,16 +51,17 @@ file. A card imported again is therefore re-read in full on every
 **Accepted because:** it costs time, never data, and keeping rows for files
 that are not in the library contradicts "only what is in the library matters".
 
-## `check` forgets every missing placed file, however many
+## Records follow the files, with no backup or limit
 
-`check` deletes the record of any placed file it can't find, with no limit
-on how many go at once. Renaming or moving a folder inside the library by
-hand makes every file in it look missing, and all of their records are
-forgotten; the next `execute` then overwrites the one backup holding them.
+A row means a file that exists. The scanner's sweep (gone from a source),
+`check` (gone from the library) and `execute`'s duplicate cleanup all forget
+records the same way, through `db.Forget`, with no backup first and no limit
+on how many go at once. Renaming or moving a folder inside the library by hand
+makes its files look gone to `check`, and their records are forgotten.
 
-**Accepted because:** the library's folders are WanderSort's to manage, and
-users are not expected to rename them. A proportional limit is the upgrade
-path if that stops being true.
+**Accepted because:** the database mirrors what exists. A file with no record
+was placed by hand; the library's folders are WanderSort's to manage, and
+users are not expected to rename them.
 
 ## A re-plan discards the review draft before the new plan is saved
 

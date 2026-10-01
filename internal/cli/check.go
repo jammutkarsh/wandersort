@@ -23,8 +23,7 @@ temp files a crashed transfer left behind.
 
 No file is changed or deleted. A file that is gone from the library is
 listed and forgotten, so the next check doesn't list it again and 'wandersort
-add' can bring back a copy still at a source; the database is backed up
-first. A file that is there but wrong is listed and kept in the library's
+add' can bring back a copy still at a source. A file that is there but wrong is listed and kept in the library's
 error list, so 'wandersort admin report' carries it.`,
 		Example: `# Quick pass: is everything still there, at the right size?
 wandersort check

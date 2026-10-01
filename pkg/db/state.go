@@ -55,13 +55,18 @@ func RetryFailedTransfers(ctx context.Context, x sqlx.ExecerContext) error {
 	return nil
 }
 
-// Forget deletes files' registry rows; hash, plan and error rows cascade.
-// Irreversible: back up first if unsure.
-func Forget(ctx context.Context, tx *sqlx.Tx, fileIDs []int64) error {
+// Forget deletes the records of files the library no longer tracks: gone from
+// their source, gone from the library, or duplicates of a placed file. Hash,
+// plan and error rows cascade. The one way a file's record ends: a row means
+// a file that exists, so there is no backup or limit, only the caller's check
+// that the file really is gone.
+func (d *DB) Forget(ctx context.Context, fileIDs []int64) error {
 	if len(fileIDs) == 0 {
 		return nil
 	}
-	if err := ExecIn(ctx, tx, `DELETE FROM file_registry WHERE id IN (?)`, fileIDs); err != nil {
+	if err := d.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
+		return ExecIn(ctx, tx, `DELETE FROM file_registry WHERE id IN (?)`, fileIDs)
+	}); err != nil {
 		return fmt.Errorf("forget files: %w", err)
 	}
 	return nil

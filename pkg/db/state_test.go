@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 )
 
@@ -26,15 +25,7 @@ func TestForgetBeyondTheVariableLimit(t *testing.T) {
 		ids[i] = int64(i + 1)
 	}
 
-	tx, err := d.SQL.BeginTxx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Forget(ctx, tx, ids); err != nil {
-		tx.Rollback()
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
+	if err := d.Forget(ctx, ids); err != nil {
 		t.Fatal(err)
 	}
 

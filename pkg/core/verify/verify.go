@@ -74,7 +74,7 @@ func (r Report) Sound() bool {
 // Run checks every placed file against its record and the database against
 // itself. The caller holds the output lock. A failing file gets a VERIFY error
 // row and a passing one has it cleared, so the errors table holds only live
-// problems. Gone files are forgotten after a backup; damaged ones keep their
+// problems. Gone files are forgotten; damaged ones keep their
 // rows. Nothing is logged per file: the caller reports them.
 func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, o Options) (Report, error) {
 	var rows []struct {
@@ -134,7 +134,7 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		return rep, fmt.Errorf("record verify results: %w", err)
 	}
 
-	if err := forget(ctx, database, outputDir, gone); err != nil {
+	if err := database.Forget(ctx, gone); err != nil {
 		return rep, err
 	}
 
@@ -215,20 +215,6 @@ func record(database *db.DB, fileID int64, p *Problem) error {
 		return errors.New("database writer closed")
 	}
 	return nil
-}
-
-// forget deletes gone files' registry rows (dependants cascade), after a
-// backup: it is the one irreversible thing a check writes.
-func forget(ctx context.Context, database *db.DB, outputDir string, ids []int64) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	if err := database.Backup(ctx, filepath.Join(outputDir, db.BackupFileName)); err != nil {
-		return fmt.Errorf("back up the database before forgetting missing files: %w", err)
-	}
-	return database.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
-		return db.Forget(ctx, tx, ids)
-	})
 }
 
 // problemError turns a Problem back into an error with its sentinel, so

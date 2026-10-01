@@ -333,9 +333,7 @@ func cleanupPlacedDuplicates(ctx context.Context, database *db.DB, outputDir str
 		return nil
 	}
 
-	if err := database.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
-		return db.Forget(ctx, tx, ids)
-	}); err != nil {
+	if err := database.Forget(ctx, ids); err != nil {
 		return fmt.Errorf("clean up placed duplicates: %w", err)
 	}
 	return nil

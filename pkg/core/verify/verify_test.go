@@ -94,9 +94,6 @@ func TestVerifyForgetsAMissingFileWithoutReadingAnything(t *testing.T) {
 			t.Errorf("%s holds %d rows, want %d", table, n, want)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(out, db.BackupFileName)); err != nil {
-		t.Errorf("no backup before forgetting: %v", err)
-	}
 	if rep := run(t, d, out, false); len(rep.Forgotten) != 0 || rep.Checked != 1 {
 		t.Errorf("second check: %+v, want 1 file checked and nothing forgotten again", rep)
 	}

@@ -325,21 +325,15 @@ func (s *Scanner) sweep(ctx context.Context, scan int64, r sweptRoot, gaps walkG
 		}
 	}
 
-	// the registry rows alone: metadata, plan and error rows cascade
-	var swept int
-	if err := s.db.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
-		var ids []int64
-		if err := tx.SelectContext(ctx, &ids, query, args...); err != nil {
-			return err
-		}
-		swept = len(ids)
-		return db.Forget(ctx, tx, ids)
-	}); err != nil {
+	var gone []int64
+	if err := s.db.SQL.SelectContext(ctx, &gone, query, args...); err != nil {
 		return fmt.Errorf("sweep %q: %w", root, err)
 	}
-
-	if swept > 0 {
-		s.log.Info("Removed vanished files", "path", root, "filesRemoved", swept)
+	if err := s.db.Forget(ctx, gone); err != nil {
+		return fmt.Errorf("sweep %q: %w", root, err)
+	}
+	if len(gone) > 0 {
+		s.log.Info("Removed vanished files", "path", root, "filesRemoved", len(gone))
 	}
 	return nil
 }
