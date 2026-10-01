@@ -16,7 +16,7 @@ import (
 
 func execCmd(t *testing.T) *cobra.Command {
 	t.Helper()
-	cmd := &cobra.Command{Use: "execute"}
+	cmd := &cobra.Command{Use: "copy"}
 	cmd.Flags().Bool(flagDryRun, false, "")
 	return cmd
 }
@@ -49,7 +49,7 @@ func TestRunExecuteAppliesDraft(t *testing.T) {
 	seedDraft(t, dir, vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: day, From: "03", To: "Goa-Trip"})
 
 	a := &app{Log: logger.NewNoopLogger(), Config: cfg}
-	err = a.runExecute(execCmd(t))
+	err = a.runCopy(execCmd(t))
 	a.closeDBs()
 	if err != nil {
 		t.Fatal(err)

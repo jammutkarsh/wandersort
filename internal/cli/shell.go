@@ -359,7 +359,7 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 		// next, but only if there are any
 		m.refresh()
 		if m.lib.HasEdits() {
-			note = "Your edits are kept — run 'wandersort execute' to apply them and copy the files."
+			note = "Your edits are kept — run 'wandersort copy' to apply them and copy the files."
 			m.a.Log.Info(note, logger.UserKey, true)
 		}
 		m.screens[tabReview] = nil
@@ -405,7 +405,7 @@ func (m *shellModel) replan() tea.Cmd {
 		}
 		defer a.work.done()
 		if _, err := a.rebuildTree(ctx); err != nil {
-			a.Log.Warn("Could not re-plan the folders for the new settings — 'wandersort execute' would still copy the old plan. Open the settings and save again.",
+			a.Log.Warn("Could not re-plan the folders for the new settings — 'wandersort copy' would still copy the old plan. Open the settings and save again.",
 				logger.UserKey, true, "error", err)
 			return replanDoneMsg{err: err}
 		}

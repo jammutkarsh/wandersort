@@ -40,7 +40,7 @@ func (m Model) header() string {
 	for _, n := range m.draft.Tree() {
 		files += n.FileCount
 	}
-	left := "Edit the proposed folders — edits are kept as you go; nothing is copied until 'wandersort execute'."
+	left := "Edit the proposed folders — edits are kept as you go; nothing is copied until 'wandersort copy'."
 	return tui.Banner("review") + "\n" +
 		tui.Row(tui.DimText.Render(left),
 			tui.FaintTxt.Render(fmt.Sprintf("%d folders  %d files", len(m.rows), files)), m.width)
@@ -174,7 +174,7 @@ func (m Model) helpView() string {
 		}},
 		{"Leaving", []key{
 			{"p", "peek — copies a sample of the folder's files and opens them (read-only)"},
-			{"esc", "leave — your edits are kept; 'wandersort execute' applies them and copies the files"},
+			{"esc", "leave — your edits are kept; 'wandersort copy' applies them and copies the files"},
 			{"ctrl+c", "quit the program — your edits are kept here too"},
 		}},
 	}

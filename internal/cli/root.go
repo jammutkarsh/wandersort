@@ -30,7 +30,7 @@ video folders and it fingerprints every file, works out which are duplicates,
 and plans a folder tree you can read.
 
 Three verbs do the work: 'add' puts files into the plan, 'organise' lets you
-correct the plan, and 'execute' copies the files in. 'check'
+correct the plan, and 'copy' copies the files in. 'check'
 re-reads the library later to prove nothing has rotted. Run bare 'wandersort' to do all of it on screen —
 the first run asks for your settings, and ctrl+t switches between them after.`,
 		Example: `# Do everything on screen
@@ -41,7 +41,7 @@ wandersort add --paths ~/Pictures,/Volumes/SD
 
 # Correct the plan, then copy the files in
 wandersort organise
-wandersort execute
+wandersort copy
 
 # Check the library is still what was recorded
 wandersort check`,
@@ -79,7 +79,7 @@ wandersort check`,
 
 	rootCmd.AddCommand(a.newAddCmd())
 	rootCmd.AddCommand(a.newOrganiseCmd())
-	rootCmd.AddCommand(a.newExecuteCmd())
+	rootCmd.AddCommand(a.newCopyCmd())
 	rootCmd.AddCommand(a.newCheckCmd())
 	rootCmd.AddCommand(a.newAdminCmd())
 

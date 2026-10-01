@@ -47,7 +47,7 @@ func (a *app) newAddCmd() *cobra.Command {
 		Long: `Reads the given folders, fingerprints every photo and video in them, works
 out which are duplicates of each other, and plans where each one belongs.
 
-Nothing is copied — 'wandersort execute' does that. This only adds
+Nothing is copied — 'wandersort copy' does that. This only adds
 files to the plan.
 
 Opens WanderSort on the Add tab, the same app a bare 'wandersort' opens, so
@@ -149,7 +149,7 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 		return err
 	}
 	res.Unreadable = len(left)
-	a.Log.Info("next: wandersort organise to correct the plan, or wandersort execute to copy it in", logger.UserKey, true)
+	a.Log.Info("next: wandersort organise to correct the plan, or wandersort copy to copy it in", logger.UserKey, true)
 	if len(left) > 0 {
 		return withCode(exitPartial, fmt.Errorf("%d files could not be read; the next add tries them again", len(left)))
 	}

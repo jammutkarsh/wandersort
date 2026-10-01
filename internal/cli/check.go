@@ -95,7 +95,7 @@ func (a *app) check(full bool, res *checkResult) error {
 // grouped by kind of problem.
 func reportVerify(rep verify.Report, full bool) error {
 	if rep.Checked == 0 {
-		fmt.Fprintln(os.Stderr, "Nothing in the library yet — run 'wandersort execute' to put files in it.")
+		fmt.Fprintln(os.Stderr, "Nothing in the library yet — run 'wandersort copy' to put files in it.")
 		return nil
 	}
 	if len(rep.Forgotten) > 0 {

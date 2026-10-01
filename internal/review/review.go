@@ -24,7 +24,7 @@ type Options struct {
 }
 
 // Screen returns the review as a shell tab. It writes only the draft file;
-// `wandersort execute` applies the edits.
+// `wandersort copy` applies the edits.
 func Screen(ctx context.Context, o Options) tui.Tab {
 	return newModel(o.Draft, ctx, o.DB, o.Resolver, o.Log)
 }

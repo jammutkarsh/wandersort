@@ -9,9 +9,9 @@ Recorded 2026-09-25.
 
 ## One database backup, beside the library
 
-`execute` and `admin db --reset` keep a single backup,
+`copy` and `admin db --reset` keep a single backup,
 `.wandersort.db.zst`, in the library folder, overwritten each time. A logic
-bug that damages rows will be backed up by the next `execute`, and a failed
+bug that damages rows will be backed up by the next `copy`, and a failed
 drive takes the database and its backup together.
 
 **Accepted because:** one backup covers the common cases (a crash, a restore
@@ -44,7 +44,7 @@ with the database.
 
 ## Duplicates are hashed again on every `add`
 
-After `execute`, the duplicate cleanup forgets every other copy of a placed
+After `copy`, the duplicate cleanup forgets every other copy of a placed
 file. A card imported again is therefore re-read in full on every
 `add`, found to be duplicates, and forgotten again.
 
@@ -54,7 +54,7 @@ that are not in the library contradicts "only what is in the library matters".
 ## Records follow the files, with no backup or limit
 
 A row means a file that exists. The scanner's sweep (gone from a source),
-`check` (gone from the library) and `execute`'s duplicate cleanup all forget
+`check` (gone from the library) and `copy`'s duplicate cleanup all forget
 records the same way, through `db.Forget`, with no backup first and no limit
 on how many go at once. Renaming or moving a folder inside the library by hand
 makes its files look gone to `check`, and their records are forgotten.

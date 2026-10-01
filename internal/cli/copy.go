@@ -15,9 +15,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
-func (a *app) newExecuteCmd() *cobra.Command {
+func (a *app) newCopyCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "execute",
+		Use:   "copy",
 		Short: "Copy approved files into the output folder",
 		Long: `Applies your 'wandersort organise' edits to the plan and copies every file
 from its source into <output>/<planned folder>. Sources are never modified or
@@ -26,12 +26,12 @@ Stops before changing anything if the output has too little free space. Safe
 to re-run: a run interrupted partway picks up where it left off, and files that
 failed before are tried again.`,
 		Example: `# Copy every approved file (safe, default)
-wandersort execute
+wandersort copy
 
 # See what would happen without touching anything
-wandersort execute --dry-run`,
+wandersort copy --dry-run`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.runExecute(cmd)
+			return a.runCopy(cmd)
 		},
 	}
 
@@ -50,7 +50,7 @@ type copyResult struct {
 	Report  string `json:"report,omitempty"`
 }
 
-func (a *app) runExecute(cmd *cobra.Command) error {
+func (a *app) runCopy(cmd *cobra.Command) error {
 	dryRun, _ := cmd.Flags().GetBool(flagDryRun)
 	start := time.Now()
 	var res copyResult
@@ -88,7 +88,7 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	})
 	if errors.Is(err, context.Canceled) {
 		// every file not yet reached is still pending; nothing is half-placed
-		return fmt.Errorf("stopped after %d files — run 'wandersort execute' again to carry on from there", rep.Done)
+		return fmt.Errorf("stopped after %d files — run 'wandersort copy' again to carry on from there", rep.Done)
 	}
 	res.Copied, res.Failed, res.Bytes = rep.Done, rep.Failed, rep.Bytes
 	if err != nil {
@@ -105,7 +105,7 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	return nil
 }
 
-// maxLeftBehindShown bounds how many never-read files execute names on
+// maxLeftBehindShown bounds how many never-read files copy names on
 // screen; the log has every one.
 const maxLeftBehindShown = 10
 

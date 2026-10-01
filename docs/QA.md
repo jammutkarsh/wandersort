@@ -5,7 +5,7 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 
 ## 1. Smoke & help
 
-1. `[H]` `wandersort --help` → styled help listing add, organise, execute, check, admin; exit 0.
+1. `[H]` `wandersort --help` → styled help listing add, organise, copy, check, admin; exit 0.
 2. `[A]` `wandersort bogus-cmd` → unknown-command error, non-zero exit.
 3. `[A]` `wandersort add --help` → shows `--paths/-p` and `--force`; no `--workers`.
 4. `[A]` bare `wandersort --plain` (or piped stderr) → prints help instead of opening the app.
@@ -67,19 +67,19 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 48. `[H]` `u` repeatedly → each edit undone in reverse order, whatever its kind, then "nothing left to undo".
 49. `[H]` `R` → draft deleted, tree back to the proposed plan.
 50. `[H]` `p` → preview copy (≤ 250 MB) opens in the OS browser; a parent and its only-child leaf open the same copy; copies survive quitting.
-51. `[H]` edits, then `kill -9` and reopen → same tree; `esc` → home says the edits wait for `execute`.
+51. `[H]` edits, then `kill -9` and reopen → same tree; `esc` → home says the edits wait for `copy`.
 52. `[H]` narrow terminal (~50 cols) → key help wraps, last tree row still visible.
 
 ## 6. Execute
 
-53. `[A]` `execute` after review edits → files land under the edited folders, draft gone, `.wandersort.db.zst` written.
-54. `[A]` `execute --dry-run` → reports the edited target paths, writes nothing.
+53. `[A]` `copy` after review edits → files land under the edited folders, draft gone, `.wandersort.db.zst` written.
+54. `[A]` `copy --dry-run` → reports the edited target paths, writes nothing.
 55. `[A]` too little free space → refuses before changing anything; draft still there.
-56. `[A]` after `execute`, every source file is byte-identical and still in place; there is no `--move` flag.
+56. `[A]` after `copy`, every source file is byte-identical and still in place; there is no `--move` flag.
 57. `[A]` a source edited after the scan (same size) → `checksum-mismatch` error, nothing lands, source kept.
 58. `[A]` an occupied target name → lands at `_1`, nothing overwritten; the same file already there → recorded, not copied twice.
 59. `[A]` kill mid-run, run again → resumes; nothing copied twice; files that failed last run are tried again.
-60. `[A]` re-add the same card after execute → nothing proposed again.
+60. `[A]` re-add the same card after copy → nothing proposed again.
 
 ## 7. Check
 
