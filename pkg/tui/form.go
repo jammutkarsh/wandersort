@@ -891,9 +891,8 @@ type ConfirmModel struct {
 	YesLabel, NoLabel string
 	// Keys overrides the footer's "y / n" hints, for callers that drive the
 	// modal with other keys.
-	Keys    string
-	w, h    int
-	aborted bool
+	Keys string
+	w, h int
 }
 
 func (m ConfirmModel) yesLabel() string {
@@ -927,7 +926,6 @@ func (m ConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
-			m.aborted = true
 			return m, tea.Quit
 		case "y", "enter":
 			if m.Value != nil {
@@ -977,8 +975,4 @@ func (m ConfirmModel) View() string {
 		keys = fmt.Sprintf("%s / %s", KeyHint("y", yes), KeyHint("n", no))
 	}
 	return Screen(body, Footer(keys, m.w), m.h)
-}
-
-func (m ConfirmModel) IsAborted() bool {
-	return m.aborted
 }

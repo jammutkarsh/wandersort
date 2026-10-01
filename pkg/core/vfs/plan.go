@@ -497,6 +497,9 @@ func resolveLocations(ctx context.Context, masters []masterFile, cfg Config, geo
 	})
 }
 
+// fallbackDir is the folder for files with no date at all.
+const fallbackDir = "Unsorted"
+
 // UnknownLocation is the location folder a file with no resolvable place gets
 // when located siblings share its parent folder.
 const UnknownLocation = "Unknown"
@@ -789,7 +792,7 @@ func monthParts(m *masterFile) []string {
 func dirFor(m *masterFile, skip map[string]bool, cfg Config) string {
 	if m.takenAt.IsZero() {
 		m.dirLevels, m.dirBounds = []string{LevelFallback}, []Bounds{{{}}}
-		return path.SanitizeSegment(cfg.Fallback)
+		return fallbackDir
 	}
 
 	parts := monthParts(m)

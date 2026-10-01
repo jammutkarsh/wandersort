@@ -71,10 +71,6 @@ func NewHomeModel(cfg HomeConfig) HomeModel {
 	return m
 }
 
-// Paths is the folder list collected so far — the caller reads it back after
-// the program exits.
-func (m HomeModel) Paths() []string { return m.added }
-
 // Busy is never true for the folder input: it is where a session waits.
 func (m HomeModel) Busy() bool { return false }
 

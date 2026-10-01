@@ -48,7 +48,9 @@ type Workflow struct {
 
 type workflowPhase struct {
 	kind workflowPhaseKind
-	run  func(ctx context.Context) (int, error)
+	// starting is the phase's one user-facing start line
+	starting string
+	run      func(ctx context.Context) (int, error)
 	// summary is the phase's one user-facing success line; elapsed time is
 	// appended to it
 	summary func(count int) string
@@ -65,13 +67,6 @@ const (
 	// pure function of the rows the vfs phase already loads (see vfs/elect.go)
 	workflowPhaseVFS workflowPhaseKind = "vfs"
 )
-
-// phaseMessageByKind is the one user-facing line logged when a phase starts.
-var phaseMessageByKind = map[workflowPhaseKind]string{
-	workflowPhaseScan:     "Scanning your files…",
-	workflowPhaseMetadata: "Reading your files…",
-	workflowPhaseVFS:      "Proposing an organized folder structure…",
-}
 
 func NewWorkflow(db *db.DB, log logger.Logger, cfg *config.Configuration, deps Deps) *Workflow {
 	vfsCfg := vfs.ConfigFor(cfg)
@@ -167,14 +162,16 @@ func (wf *Workflow) runPhases(ctx context.Context, paths []string, force bool) e
 func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 	return []workflowPhase{
 		{
-			kind: workflowPhaseScan,
+			kind:     workflowPhaseScan,
+			starting: "Scanning your files…",
 			run: func(ctx context.Context) (int, error) {
 				return wf.scanner.Run(ctx, paths, force)
 			},
 			summary: func(count int) string { return fmt.Sprintf("Scanned %d files", count) },
 		},
 		{
-			kind: workflowPhaseMetadata,
+			kind:     workflowPhaseMetadata,
+			starting: "Reading your files…",
 			run: func(ctx context.Context) (int, error) {
 				// blocks here (not at construction) if exiftool is still
 				// downloading — the walk has already run meanwhile
@@ -191,7 +188,8 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 			summary: func(count int) string { return fmt.Sprintf("Read %d files", count) },
 		},
 		{
-			kind: workflowPhaseVFS,
+			kind:     workflowPhaseVFS,
+			starting: "Proposing an organized folder structure…",
 			run: func(ctx context.Context) (int, error) {
 				resolver, err := wf.deps.Location(ctx)
 				if err != nil {
@@ -207,12 +205,7 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 // run executes one phase and logs its start and end. The error names the
 // phase and wraps the cause, so context.Canceled stays visible to errors.Is.
 func (wf *Workflow) run(ctx context.Context, phase workflowPhase) (int, error) {
-	message := phaseMessageByKind[phase.kind]
-	if message == "" {
-		message = "Working…"
-	}
-
-	wf.log.Info(message, logger.UserKey, true,
+	wf.log.Info(phase.starting, logger.UserKey, true,
 		logger.PhaseKey, string(phase.kind), logger.EventKey, "start")
 	start := time.Now()
 	count, err := phase.run(ctx)
@@ -235,10 +228,7 @@ func (wf *Workflow) run(ctx context.Context, phase workflowPhase) (int, error) {
 	}
 
 	// one line per phase: what it did and how long it took
-	msg := fmt.Sprintf("%s phase took %s", phase.kind, elapsed.Round(time.Millisecond))
-	if phase.summary != nil {
-		msg = fmt.Sprintf("%s in %s", phase.summary(count), elapsed.Round(time.Millisecond))
-	}
+	msg := fmt.Sprintf("%s in %s", phase.summary(count), elapsed.Round(time.Millisecond))
 	wf.log.Info(msg, logger.UserKey, true,
 		logger.PhaseKey, string(phase.kind), logger.EventKey, "done",
 		logger.ElapsedKey, elapsed.Round(time.Millisecond).String())

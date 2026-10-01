@@ -33,7 +33,6 @@ const defaultClusterGap = 12 * time.Hour
 // Config controls the shape of the proposed hierarchy
 type Config struct {
 	Rules      []string      // ordered levels below <YEAR>/<MONTH>; see Rules* constants
-	Fallback   string        // last-resort path segment when nothing can be derived
 	ClusterGap time.Duration // capture-time gap that starts a new event cluster
 	// Drops a device/orientation/media level with one library-wide value.
 	// Date/location never drop. See assignTargetPaths step 3.
@@ -68,7 +67,6 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Rules:                 []string{RuleDate, RuleLocation},
-		Fallback:              "Unsorted",
 		ClusterGap:            defaultClusterGap,
 		CollapseLevels:        true,
 		SavedPlacesDateOnly:   true,

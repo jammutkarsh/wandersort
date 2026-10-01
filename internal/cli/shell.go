@@ -296,9 +296,6 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 		m.screens[tabReview] = nil
 	}
 
-	if l.Quit {
-		return m, tea.Batch(cmd, tea.Quit)
-	}
 	// Not a quit: the session goes on. A settled plan or a saved setting
 	// means "what next?", which is the scan tab's question.
 	if m.tab == tabSettings && m.reviewReady() {

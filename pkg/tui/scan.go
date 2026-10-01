@@ -79,10 +79,9 @@ type ScanModel struct {
 	loading    bool  // "Opening review…" — waiting on the prefetch below
 	reviewErr  error // building the review screen failed
 
-	// reviewModel/reviewFetching prefetch the review screen once the vfs phase
+	// reviewModel prefetches the review screen once the vfs phase
 	// flushes
-	reviewModel    Tab
-	reviewFetching bool
+	reviewModel Tab
 }
 
 // DepsFailure reports a dependency-download failure, if that ended the run.
@@ -143,7 +142,6 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.downloads = append(m.downloads, msg)
 		return m, nil
 	case reviewReadyMsg:
-		m.reviewFetching = false
 		if msg.err != nil {
 			m.reviewErr = msg.err
 			m.loading = false
@@ -225,7 +223,6 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 			elapsed, _ := e.Attrs[logger.ElapsedKey].(string)
 			m.sl.Done(p, strings.TrimSuffix(e.Message, " in "+elapsed), elapsed)
 			if p == "vfs" && m.cfg.ReviewNext != nil {
-				m.reviewFetching = true
 				return m, m.fetchReview()
 			}
 		}

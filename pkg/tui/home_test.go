@@ -30,11 +30,11 @@ func TestHome(t *testing.T) {
 			m := NewHomeModel(HomeConfig{})
 
 			m = typeHome(m, dir)
-			if got := m.Paths(); len(got) != 1 || got[0] != dir {
-				t.Fatalf("Paths() = %v, want [%s]", got, dir)
+			if got := m.added; len(got) != 1 || got[0] != dir {
+				t.Fatalf("added = %v, want [%s]", got, dir)
 			}
 			m = typeHome(m, dir) // same folder again
-			if got := m.Paths(); len(got) != 1 {
+			if got := m.added; len(got) != 1 {
 				t.Errorf("adding the same folder twice = %v, want it deduped", got)
 			}
 			if v := ansi.Strip(m.View()); !strings.Contains(v, dir) {
@@ -54,8 +54,8 @@ func TestHome(t *testing.T) {
 			}
 
 			m := typeHome(NewHomeModel(HomeConfig{}), "~/Raw_JPG")
-			if got := m.Paths(); len(got) != 1 || got[0] != sub {
-				t.Fatalf("Paths() = %v, want the expanded [%s]", got, sub)
+			if got := m.added; len(got) != 1 || got[0] != sub {
+				t.Fatalf("added = %v, want the expanded [%s]", got, sub)
 			}
 			v := ansi.Strip(m.View())
 			if !strings.Contains(v, "~/Raw_JPG") || strings.Contains(v, home+"/Raw_JPG") {
@@ -67,8 +67,8 @@ func TestHome(t *testing.T) {
 		{"RejectsAPathThatIsNotADirectory", func(t *testing.T) {
 			m := NewHomeModel(HomeConfig{})
 			m = typeHome(m, "/definitely/not/here")
-			if len(m.Paths()) != 0 {
-				t.Fatalf("Paths() = %v, want none added", m.Paths())
+			if len(m.added) != 0 {
+				t.Fatalf("added = %v, want none added", m.added)
 			}
 			if !strings.Contains(ansi.Strip(m.View()), "no such folder") {
 				t.Errorf("a missing folder should say so:\n%s", ansi.Strip(m.View()))
@@ -105,7 +105,7 @@ func TestHome(t *testing.T) {
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
 			m = next.(HomeModel)
-			if got := m.Paths(); len(got) != 1 || got[0] != a {
+			if got := m.added; len(got) != 1 || got[0] != a {
 				t.Fatalf("↑ should lift the last folder out of the list, got %v", got)
 			}
 			if m.ti.Value() != b || !m.ti.Focused() {
@@ -115,7 +115,7 @@ func TestHome(t *testing.T) {
 			// ctrl+x removes the last folder outright.
 			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
 			m = next.(HomeModel)
-			if got := m.Paths(); len(got) != 0 {
+			if got := m.added; len(got) != 0 {
 				t.Fatalf("ctrl+x should remove the remaining folder, got %v", got)
 			}
 		}},

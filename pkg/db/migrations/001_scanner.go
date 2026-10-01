@@ -39,8 +39,6 @@ CREATE TABLE IF NOT EXISTS file_registry (
     media_type     TEXT,
     file_extension TEXT NOT NULL,
 
-    file_origin TEXT NOT NULL DEFAULT 'SOURCE',
-
     -- Set once execute lands this file at its target.
     -- A fact about the file, not the plan: virtual_fs_entries rows are
     -- replaced on every scan and settings change, this flag never is. The

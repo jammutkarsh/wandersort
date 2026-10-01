@@ -61,7 +61,6 @@ func TestScanModel(t *testing.T) {
 		// when it does, rather than dropping back to a prompt.
 		{"WaitsForTheStillRunningPrefetch", func(t *testing.T) {
 			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
-			m.reviewFetching = true
 
 			next, cmd := m.Update(scanDoneMsg{})
 			if switchTarget(cmd) != nil {

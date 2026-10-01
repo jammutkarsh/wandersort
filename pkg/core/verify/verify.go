@@ -236,8 +236,6 @@ func forget(ctx context.Context, database *db.DB, outputDir string, ids []int64)
 func problemError(p Problem) error {
 	base := errors.New(p.Detail)
 	switch p.Kind {
-	case db.KindNotFound:
-		return fmt.Errorf("%s: %w", p.Detail, fs.ErrNotExist)
 	case db.KindChecksumMismatch:
 		return fmt.Errorf("%s: %w", p.Detail, db.ErrChecksumMismatch)
 	}

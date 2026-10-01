@@ -48,7 +48,7 @@ func TestWorkflowRunPhase(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			wf, _ := newTestWorkflow(t)
-			count, err := wf.run(context.Background(), workflowPhase{kind: workflowPhaseMetadata, run: tt.run})
+			count, err := wf.run(context.Background(), workflowPhase{kind: workflowPhaseMetadata, starting: "Reading…", run: tt.run, summary: func(int) string { return "Read" }})
 			if count != tt.wantCount {
 				t.Errorf("count = %d, want %d", count, tt.wantCount)
 			}
@@ -145,8 +145,8 @@ func TestWorkflowPhasesOrderAndMessages(t *testing.T) {
 		if phases[i].kind != k {
 			t.Errorf("phase %d: got kind %q, want %q", i, phases[i].kind, k)
 		}
-		if _, ok := phaseMessageByKind[phases[i].kind]; !ok {
-			t.Errorf("phase %q has no entry in phaseMessageByKind", phases[i].kind)
+		if phases[i].starting == "" {
+			t.Errorf("phase %q has no start line", phases[i].kind)
 		}
 		if phases[i].summary == nil {
 			t.Errorf("phase %q has no summary func", phases[i].kind)

@@ -22,8 +22,6 @@ type Leave struct {
 	Aborted bool
 	// Err is why the screen ended, when it ended badly.
 	Err error
-	// Note is one line for the home screen: what was saved, what was kept.
-	Note string
 }
 
 // Left is the command form of Leave, for a screen to return from Update.

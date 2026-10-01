@@ -355,13 +355,11 @@ func (s *Scanner) storeScan(file FileDiscovery, scan int64, force bool) db.DBOpe
 		INSERT INTO file_registry (
 			file_dir, file_name, file_size, file_modified_at,
 			volume_uuid, media_type, file_extension,
-			file_origin,
 			discovered_at, last_seen_at, last_seen_scan
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (file_dir, file_name) DO UPDATE SET
 			last_seen_at = excluded.last_seen_at,
 			last_seen_scan = excluded.last_seen_scan,
-			file_origin = excluded.file_origin,
 			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid)`
 
 	return func(ctx context.Context, tx *sqlx.Tx) error {
@@ -376,7 +374,7 @@ func (s *Scanner) storeScan(file FileDiscovery, scan int64, force bool) db.DBOpe
 		if _, err := tx.ExecContext(ctx, query,
 			file.Dir, file.Name, file.Size, modifiedAt,
 			db.StrOrNil(file.VolumeUUID), file.MediaType, file.Extension,
-			FileOriginSource, now, now, scan,
+			now, now, scan,
 		); err != nil {
 			return fmt.Errorf("upsert %s: %w", file.Name, err)
 		}
