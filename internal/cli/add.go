@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -32,13 +31,30 @@ func waitForDeps(ctx context.Context, deps *install.Coordinator) error {
 // depsFailure says which dependency could not be installed and what to do;
 // the full error is already in the log.
 func depsFailure(err error) error {
-	var de *install.DependencyError
-	if !errors.As(err, &de) {
+	failed := install.Failed(err)
+	if len(failed) == 0 {
 		return err
 	}
-	return fmt.Errorf("couldn't download %s after %d tries (%s) — check your connection and run wandersort again",
-		strings.ToLower(depLabels[de.Phase]), install.MaxTries, de.Reason())
+	names := make([]string, len(failed))
+	for i, de := range failed {
+		names[i] = strings.ToLower(depLabels[de.Phase]) + " (" + de.Reason() + ")"
+	}
+	return &shortError{
+		msg: fmt.Sprintf("couldn't download %s after %d tries — check your connection and run wandersort again",
+			strings.Join(names, " and "), install.MaxTries),
+		err: err,
+	}
 }
+
+// shortError says what to do on screen and keeps the full cause for the log
+// and errors.Is.
+type shortError struct {
+	msg string
+	err error
+}
+
+func (e *shortError) Error() string { return e.msg }
+func (e *shortError) Unwrap() error { return e.err }
 
 func (a *app) newAddCmd() *cobra.Command {
 	cmd := &cobra.Command{

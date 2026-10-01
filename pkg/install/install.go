@@ -69,6 +69,31 @@ type DependencyError struct {
 func (e *DependencyError) Error() string { return e.Phase + ": " + e.Err.Error() }
 func (e *DependencyError) Unwrap() error { return e.Err }
 
+// Failed lists every dependency err says could not be installed, in install
+// order.
+func Failed(err error) []*DependencyError {
+	var out []*DependencyError
+	var walk func(error)
+	walk = func(err error) {
+		if de, ok := err.(*DependencyError); ok {
+			out = append(out, de)
+			return
+		}
+		switch e := err.(type) {
+		case interface{ Unwrap() []error }:
+			for _, inner := range e.Unwrap() {
+				walk(inner)
+			}
+		case interface{ Unwrap() error }:
+			walk(e.Unwrap())
+		}
+	}
+	if err != nil {
+		walk(err)
+	}
+	return out
+}
+
 // Reason is the innermost cause, short enough for one line on screen.
 func (e *DependencyError) Reason() string {
 	err := e.Err

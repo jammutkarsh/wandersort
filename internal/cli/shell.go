@@ -92,6 +92,15 @@ var depLabels = map[string]string{
 	install.PhaseLocation: "Place names",
 }
 
+// failedDeps is why each dependency in err failed, by phase.
+func failedDeps(err error) map[string]string {
+	out := map[string]string{}
+	for _, de := range install.Failed(err) {
+		out[de.Phase] = de.Reason()
+	}
+	return out
+}
+
 // depsDoneMsg reports the dependency install ending, either way.
 type depsDoneMsg struct{ err error }
 
@@ -125,12 +134,8 @@ func (a *app) runShell(start shellStart) error {
 			prog.Send(tui.InstallProgressMsg{Phase: p.Phase, Done: p.Done, Total: p.Total, Ready: p.Ready})
 		},
 		func(ctx context.Context, next int, err error) error {
-			phase, reason := install.PhaseLocation, err.Error()
-			if de, ok := errors.AsType[*install.DependencyError](err); ok {
-				phase, reason = de.Phase, de.Reason()
-			}
 			retry := make(chan struct{})
-			prog.Send(tui.RetryMsg{Phase: phase, Reason: reason, Next: next, Tries: install.MaxTries, Go: retry})
+			prog.Send(tui.RetryMsg{Failed: failedDeps(err), Next: next, Tries: install.MaxTries, Go: retry})
 			select {
 			case <-retry:
 				return nil
@@ -210,11 +215,7 @@ func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 		m.depsErr = msg.err
-		failed := tui.DepsFailedMsg{Phase: install.PhaseLocation, Reason: msg.err.Error(), Tries: install.MaxTries}
-		if de, ok := errors.AsType[*install.DependencyError](msg.err); ok {
-			failed.Phase, failed.Reason = de.Phase, de.Reason()
-		}
-		next, cmd := m.gate.Update(failed)
+		next, cmd := m.gate.Update(tui.DepsFailedMsg{Failed: failedDeps(msg.err), Tries: install.MaxTries})
 		m.gate = next.(tui.Tab)
 		return m, cmd
 	case tui.Leave:

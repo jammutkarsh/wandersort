@@ -190,3 +190,16 @@ func TestDownloadCleansStaleTempFiles(t *testing.T) {
 		t.Errorf("stale temp file still exists after download, want it swept")
 	}
 }
+
+func TestFailedListsEveryDependency(t *testing.T) {
+	exif := &DependencyError{Phase: PhaseExiftool, Err: errors.New("refused")}
+	loc := &DependencyError{Phase: PhaseLocation, Err: errors.New("refused")}
+	err := fmt.Errorf("gave up after 3 tries: %w", errors.Join(exif, loc))
+	got := Failed(err)
+	if len(got) != 2 || got[0] != exif || got[1] != loc {
+		t.Errorf("Failed() = %v, want both dependencies in install order", got)
+	}
+	if Failed(errors.New("lock")) != nil {
+		t.Error("an error naming no dependency lists none")
+	}
+}

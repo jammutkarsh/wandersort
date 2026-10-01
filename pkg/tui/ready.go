@@ -18,10 +18,9 @@ type InstallProgressMsg struct {
 // RetryMsg says a try failed and the next one waits. The screen closes Go when
 // it is time to retry: after the countdown, or at once on enter.
 type RetryMsg struct {
-	Phase  string // the dependency that failed
-	Reason string // one short line on why
-	Next   int    // the try about to run
-	Tries  int    // tries allowed in all
+	Failed map[string]string // why each dependency that failed did, by phase
+	Next   int               // the try about to run
+	Tries  int               // tries allowed in all
 	Go     chan<- struct{}
 }
 
@@ -30,8 +29,7 @@ type DepsReadyMsg struct{}
 
 // DepsFailedMsg says the last try failed; the app ends on the next key.
 type DepsFailedMsg struct {
-	Phase  string
-	Reason string
+	Failed map[string]string // why each dependency that failed did, by phase
 	Tries  int
 }
 
@@ -102,9 +100,7 @@ func (m ReadyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case RetryMsg:
-		if r := m.row(msg.Phase); r != nil {
-			r.failed = msg.Reason
-		}
+		m.markFailed(msg.Failed)
 		m.waiting, m.next, m.tries, m.left = msg.Go, msg.Next, msg.Tries, retryCountdown
 		m.gen++
 		return m, m.tick()
@@ -120,9 +116,7 @@ func (m ReadyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.tick()
 	case DepsFailedMsg:
 		m.gaveUp, m.gaveUpMsg = true, msg
-		if r := m.row(msg.Phase); r != nil {
-			r.failed = msg.Reason
-		}
+		m.markFailed(msg.Failed)
 		return m, nil
 	case tea.KeyMsg:
 		switch {
@@ -150,6 +144,14 @@ func (m *ReadyModel) retryNow() {
 	}
 }
 
+func (m *ReadyModel) markFailed(failed map[string]string) {
+	for phase, reason := range failed {
+		if r := m.row(phase); r != nil {
+			r.failed = reason
+		}
+	}
+}
+
 func (m ReadyModel) tick() tea.Cmd {
 	gen := m.gen
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return retryTickMsg{gen: gen} })
@@ -168,7 +170,7 @@ func (m ReadyModel) View() string {
 	var b strings.Builder
 	b.WriteString(Brand() + "\n\n")
 	if m.gaveUp {
-		b.WriteString("  " + Bad.Render(fmt.Sprintf("✗ Couldn't download %s after %d tries", m.label(m.gaveUpMsg.Phase), m.gaveUpMsg.Tries)) + "\n\n")
+		b.WriteString("  " + Bad.Render(fmt.Sprintf("✗ Couldn't download %s after %d tries", m.failedLabels(), m.gaveUpMsg.Tries)) + "\n\n")
 	} else {
 		b.WriteString("  " + Text.Bold(true).Render("Getting ready") + "\n\n")
 	}
@@ -203,21 +205,26 @@ func (m ReadyModel) rowView(r readyRow) string {
 	case r.ready:
 		return row("  "+OK.Render("✓")+" "+Text.Render(name)+" "+DimText.Render("found"), "", m.w)
 	case r.total > 0:
-		left := "  " + m.sb.spin.View() + " " + Text.Render(name) + " " + m.sb.bar.View() + "  " +
+		left := "  " + m.sb.spin.View() + Text.Render(name) + " " + m.sb.bar.View() + "  " +
 			FaintTxt.Render(humanBytes(r.done)+" / "+humanBytes(r.total))
 		return row(left, FaintTxt.Render(liveElapsed(r.start)), m.w)
 	default:
-		return row("  "+m.sb.spin.View()+" "+Text.Render(name)+" "+DimText.Render("checking…"), FaintTxt.Render(liveElapsed(r.start)), m.w)
+		return row("  "+m.sb.spin.View()+Text.Render(name)+" "+DimText.Render("checking…"), FaintTxt.Render(liveElapsed(r.start)), m.w)
 	}
 }
 
-func (m ReadyModel) label(phase string) string {
+// failedLabels names the rows that failed: "exiftool and Place names".
+func (m ReadyModel) failedLabels() string {
+	var names []string
 	for _, r := range m.rows {
-		if r.Phase == phase {
-			return r.Label
+		if _, ok := m.gaveUpMsg.Failed[r.Phase]; ok {
+			names = append(names, r.Label)
 		}
 	}
-	return "a dependency"
+	if len(names) == 0 {
+		return "what WanderSort needs"
+	}
+	return strings.Join(names, " and ")
 }
 
 func humanBytes(n int64) string {

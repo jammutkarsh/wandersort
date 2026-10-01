@@ -28,7 +28,7 @@ func TestReadyRetryReleasesOnEnterOrCountdown(t *testing.T) {
 	t.Run("enter", func(t *testing.T) {
 		m := newTestReady()
 		retry := make(chan struct{})
-		next, _ := m.Update(RetryMsg{Phase: "location", Reason: "no connection", Next: 2, Tries: 3, Go: retry})
+		next, _ := m.Update(RetryMsg{Failed: map[string]string{"location": "no connection"}, Next: 2, Tries: 3, Go: retry})
 		view := ansi.Strip(next.View())
 		if !strings.Contains(view, "better network") || !strings.Contains(view, "try 2 of 3") || !strings.Contains(view, "no connection") {
 			t.Errorf("retry screen must ask for a better network and say which try:\n%s", view)
@@ -46,7 +46,7 @@ func TestReadyRetryReleasesOnEnterOrCountdown(t *testing.T) {
 	t.Run("countdown", func(t *testing.T) {
 		m := newTestReady()
 		retry := make(chan struct{})
-		next, _ := m.Update(RetryMsg{Phase: "location", Next: 2, Tries: 3, Go: retry})
+		next, _ := m.Update(RetryMsg{Failed: map[string]string{"location": "x"}, Next: 2, Tries: 3, Go: retry})
 		for range int(retryCountdown / time.Second) {
 			next, _ = next.Update(retryTickMsg{gen: next.(ReadyModel).gen})
 		}
@@ -58,7 +58,7 @@ func TestReadyRetryReleasesOnEnterOrCountdown(t *testing.T) {
 
 func TestReadyGaveUpQuitsOnAnyKey(t *testing.T) {
 	m := newTestReady()
-	next, _ := m.Update(DepsFailedMsg{Phase: "location", Reason: "no connection", Tries: 3})
+	next, _ := m.Update(DepsFailedMsg{Failed: map[string]string{"location": "no connection"}, Tries: 3})
 	if view := ansi.Strip(next.View()); !strings.Contains(view, "Couldn't download Place names after 3 tries") {
 		t.Errorf("give-up screen must name the dependency and the tries:\n%s", view)
 	}
