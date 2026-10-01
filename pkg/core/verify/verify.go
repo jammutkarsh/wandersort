@@ -15,6 +15,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 
+	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -242,9 +243,6 @@ func checkDatabase(ctx context.Context, database *db.DB) (string, error) {
 	return result, nil
 }
 
-// strayPrefix is the name atomicfile.Copy gives a copy in flight.
-const strayPrefix = ".copy-"
-
 // findStrays walks the library for temp files a crashed transfer left.
 func findStrays(outputDir string) ([]string, error) {
 	var strays []string
@@ -252,7 +250,7 @@ func findStrays(outputDir string) ([]string, error) {
 		if err != nil {
 			return nil // an unreadable corner costs the sweep, never the run
 		}
-		if !d.IsDir() && strings.HasPrefix(d.Name(), strayPrefix) {
+		if !d.IsDir() && strings.HasPrefix(d.Name(), atomicfile.CopyPrefix) {
 			if rel, relErr := filepath.Rel(outputDir, p); relErr == nil {
 				strays = append(strays, wspath.ToLibrary(rel))
 			}

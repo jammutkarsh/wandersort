@@ -21,6 +21,9 @@ import (
 // metadata phase's hash buffer.
 const copyBufferSize = 1 << 20
 
+// CopyPrefix starts the name of a copy in flight; check reports leftovers.
+const CopyPrefix = ".copy-"
+
 // Copy copies src to dest atomically (temp file in dest's directory, then a
 // no-replace Rename); a taken dest is fs.ErrExist and never touched. tee sees
 // every byte and check runs before linking: its error leaves dest untouched.
@@ -36,7 +39,7 @@ func Copy(src, dest string, tee io.Writer, check func() error) (int64, error) {
 	}
 	defer in.Close()
 
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".copy-*")
+	tmp, err := os.CreateTemp(filepath.Dir(dest), CopyPrefix+"*")
 	if err != nil {
 		return 0, fmt.Errorf("create temp file: %w", err)
 	}
