@@ -589,3 +589,18 @@ func TestOpeningTabIsSettingsOnlyOnAFirstRun(t *testing.T) {
 		t.Errorf("second run opened tab %d, want Add (%d)", got, tabScan)
 	}
 }
+
+// Cancelling one scan leaves the session's context alive for the next scan,
+// review and download.
+func TestScanCancelLeavesSessionAlive(t *testing.T) {
+	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
+	session, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	screen := a.newScanScreen(session, nil, false)
+	screen.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	if err := session.Err(); err != nil {
+		t.Errorf("session context = %v after a scan's ctrl+c, want alive", err)
+	}
+}

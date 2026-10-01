@@ -48,9 +48,8 @@ func msgCmd(msg tea.Msg) tea.Cmd { return func() tea.Msg { return msg } }
 // bar plus one live screen per tab, all kept alive so a scan keeps receiving
 // events while another tab is open.
 type shellModel struct {
-	a      *app
-	ctx    context.Context
-	cancel context.CancelFunc
+	a   *app
+	ctx context.Context
 
 	screens [numTabs]tui.Tab
 	tab     int
@@ -98,7 +97,7 @@ func (a *app) runShell(start shellStart) error {
 	a.Log = tuiLog
 	defer func() { a.Log = origLog }()
 
-	m := shellModel{a: a, ctx: ctx, cancel: cancel, start: start}
+	m := shellModel{a: a, ctx: ctx, start: start}
 	m.screens[tabScan] = a.newHomeScreen(nil)
 	m.lib = a.readState(ctx)
 
@@ -199,7 +198,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screens[tabReview] = nil
 		m.refresh() // the library is open now, so the counts are real
 		m.tab = tabScan
-		screen := m.a.newScanScreen(m.ctx, m.cancel, msg.paths, msg.force)
+		screen := m.a.newScanScreen(m.ctx, msg.paths, msg.force)
 		return m, m.place(tabScan, screen)
 
 	case replanDoneMsg:
@@ -510,7 +509,9 @@ func (a *app) newHomeScreen(lastScan []string) tui.HomeModel {
 }
 
 // newScanScreen wires a scan of paths into the shell.
-func (a *app) newScanScreen(ctx context.Context, cancel context.CancelFunc, paths []string, force bool) tui.ScanModel {
+func (a *app) newScanScreen(session context.Context, paths []string, force bool) tui.ScanModel {
+	// the scan's own context: its ctrl+c must not cancel the session's
+	ctx, cancel := context.WithCancel(session)
 	wf := workflow.NewWorkflow(a.AppDB, a.Log, a.Config, a.workflowDeps())
 	return tui.NewScanModel(tui.ScanConfig{
 		Pipeline: func() error {
