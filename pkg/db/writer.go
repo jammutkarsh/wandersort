@@ -31,15 +31,13 @@ type flushReq struct {
 // BulkWriter batches multiple database operations into single transactions
 // to minimize lock contention and improve write performance in SQLite
 type BulkWriter struct {
-	sqlDB         *sqlx.DB
-	log           logger.Logger
-	ops           chan DBOperation
-	flushReqs     chan flushReq
-	batchSize     int
-	flushInterval time.Duration
-	done          chan struct{}
-	mu            sync.RWMutex
-	closed        atomic.Bool
+	sqlDB     *sqlx.DB
+	log       logger.Logger
+	ops       chan DBOperation
+	flushReqs chan flushReq
+	done      chan struct{}
+	mu        sync.RWMutex
+	closed    atomic.Bool
 
 	errMu  sync.Mutex
 	failed error // first lost write since the last Flush
@@ -47,13 +45,11 @@ type BulkWriter struct {
 
 func NewBulkWriter(sqlDB *sqlx.DB, log logger.Logger) *BulkWriter {
 	bw := &BulkWriter{
-		sqlDB:         sqlDB,
-		log:           log,
-		ops:           make(chan DBOperation, writerBufferSize),
-		flushReqs:     make(chan flushReq, 1),
-		batchSize:     writerBatchSize,
-		flushInterval: writerFlushInterval,
-		done:          make(chan struct{}),
+		sqlDB:     sqlDB,
+		log:       log,
+		ops:       make(chan DBOperation, writerBufferSize),
+		flushReqs: make(chan flushReq, 1),
+		done:      make(chan struct{}),
 	}
 	go bw.start()
 	return bw
@@ -162,7 +158,7 @@ func (bw *BulkWriter) start() {
 	defer close(bw.done)
 
 	var batch []DBOperation
-	ticker := time.NewTicker(bw.flushInterval)
+	ticker := time.NewTicker(writerFlushInterval)
 	defer ticker.Stop()
 
 	flush := func() {
@@ -193,7 +189,7 @@ func (bw *BulkWriter) start() {
 				return
 			}
 			batch = append(batch, op)
-			if len(batch) >= bw.batchSize {
+			if len(batch) >= writerBatchSize {
 				bw.log.Debug("Flushing bulk writer batch", "size", len(batch))
 				flush()
 			}

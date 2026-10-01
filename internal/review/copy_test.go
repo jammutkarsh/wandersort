@@ -24,7 +24,7 @@ func TestCopyFilesStopsAtMaxBytes(t *testing.T) {
 
 	// 150 bytes admits the first file, then the second (the cap is checked
 	// before each copy, not after), and stops before the third
-	copied, err := copyFiles(context.Background(), paths, dest, 150, nil)
+	copied, err := copyFiles(context.Background(), paths, dest, 150)
 	if err != nil {
 		t.Fatalf("copyFiles: %v", err)
 	}
@@ -41,47 +41,12 @@ func TestCopyFilesStopsAtMaxBytes(t *testing.T) {
 	}
 }
 
-// TestCopyFilesNoCapCopiesEverything covers maxBytes=0: no cap at all, every
-// source file gets copied.
-func TestCopyFilesNoCapCopiesEverything(t *testing.T) {
-	src := t.TempDir()
-	dest := filepath.Join(t.TempDir(), "preview")
-
-	var paths []string
-	var progressCalls int
-	var lastTotal int64
-	for _, name := range []string{"a.jpg", "b.jpg", "c.jpg"} {
-		p := filepath.Join(src, name)
-		if err := os.WriteFile(p, make([]byte, 50), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		paths = append(paths, p)
-	}
-
-	copied, err := copyFiles(context.Background(), paths, dest, 0, func(_ string, _, total int64) {
-		progressCalls++
-		lastTotal = total
-	})
-	if err != nil {
-		t.Fatalf("copyFiles: %v", err)
-	}
-	if copied != 3 {
-		t.Errorf("copied = %d, want 3", copied)
-	}
-	if progressCalls != 3 {
-		t.Errorf("onProgress called %d times, want 3", progressCalls)
-	}
-	if lastTotal != 150 {
-		t.Errorf("final running total = %d, want 150", lastTotal)
-	}
-}
-
 // TestCopyFilesMissingSourceReturnsError covers a source that vanished between
 // listing and copying — copyFile's os.Open failure must surface, not panic or
 // silently skip.
 func TestCopyFilesMissingSourceReturnsError(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "preview")
-	_, err := copyFiles(context.Background(), []string{filepath.Join(t.TempDir(), "gone.jpg")}, dest, 0, nil)
+	_, err := copyFiles(context.Background(), []string{filepath.Join(t.TempDir(), "gone.jpg")}, dest, maxPreviewBytes)
 	if err == nil {
 		t.Fatal("expected an error for a missing source file")
 	}
@@ -99,7 +64,7 @@ func TestCopyFilesStopsOnCanceledContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	copied, err := copyFiles(ctx, []string{p}, dest, 0, nil)
+	copied, err := copyFiles(ctx, []string{p}, dest, maxPreviewBytes)
 	if err == nil {
 		t.Fatal("expected the canceled context's error")
 	}

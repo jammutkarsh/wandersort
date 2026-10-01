@@ -105,7 +105,7 @@ func peekCmd(ctx context.Context, database *db.DB, node *vfs.Node) tea.Cmd {
 			return previewDoneMsg{err: err}
 		}
 		defer os.RemoveAll(tmp) // no-op once the rename succeeded
-		if _, err := copyFiles(ctx, files, tmp, maxPreviewBytes, nil); err != nil {
+		if _, err := copyFiles(ctx, files, tmp, maxPreviewBytes); err != nil {
 			return previewDoneMsg{err: err}
 		}
 		if err := os.Rename(tmp, dir); err != nil {

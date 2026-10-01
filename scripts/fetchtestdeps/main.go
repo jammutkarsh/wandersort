@@ -23,7 +23,7 @@ func main() {
 		os.Exit(1)
 	}
 	ctx := context.Background()
-	log := logger.New("info", true, nil)
+	log := logger.New(nil)
 	dbPath := filepath.Join(dir, install.LocationDBFileName)
 
 	// location first, on its own Coordinator: it is the one tests depend on

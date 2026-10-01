@@ -2,49 +2,16 @@ package logger
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestGetSlogLevel(t *testing.T) {
-	tests := []struct {
-		input string
-		want  slog.Level
-	}{
-		{"local", slog.LevelDebug},
-		{"debug", slog.LevelDebug},
-		{"DEBUG", slog.LevelDebug},
-		{"info", slog.LevelInfo},
-		{"dev", slog.LevelWarn},
-		{"warn", slog.LevelWarn},
-		{"prod", slog.LevelError},
-		{"error", slog.LevelError},
-		{"garbage", slog.LevelDebug},
-		{"", slog.LevelDebug},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			if got := getSlogLevel(tt.input); got != tt.want {
-				t.Errorf("getSlogLevel(%q) = %v, want %v", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestNewReturnsNoopWithNoSinks(t *testing.T) {
-	l := New("info", false, nil)
-	if _, ok := l.(*nullLogger); !ok {
-		t.Errorf("New(false, \"\") should return a no-op logger, got %T", l)
-	}
-}
-
 func TestNewWithConsoleReturnsWorkingLogger(t *testing.T) {
-	l := New("info", true, nil)
+	l := New(nil)
 	if _, ok := l.(*SlogAdapter); !ok {
-		t.Fatalf("New(true, \"\") should return a *SlogAdapter, got %T", l)
+		t.Fatalf("New(nil) should return a *SlogAdapter, got %T", l)
 	}
 
 	out := captureStderr(t, func() {
@@ -72,7 +39,7 @@ func readOnlyLog(t *testing.T, dir string) string {
 func TestFileBuffersUntilPersist(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "logs")
 	f := NewFile(dir)
-	l := New("info", false, f)
+	l := New(f)
 	l.Debug("debug-only detail", "key", "value")
 
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -99,7 +66,7 @@ func TestFileBuffersUntilPersist(t *testing.T) {
 
 func TestFilePersistsOnWarning(t *testing.T) {
 	dir := t.TempDir()
-	l := New("info", false, NewFile(dir))
+	l := New(NewFile(dir))
 	l.Info("context before the problem")
 	if len(Recent(dir, 0)) != 0 {
 		t.Fatal("an info line must not persist the log")
@@ -165,7 +132,7 @@ func TestNewTUIRoutesToSinkAndFile(t *testing.T) {
 	var events []Event
 	sink := func(e Event) { events = append(events, e) }
 
-	l := NewTUI("info", f, sink)
+	l := NewTUI(f, sink)
 	l.Info("tui milestone", UserKey, true)
 	l.Debug("hidden from sink at info level")
 	f.Persist()

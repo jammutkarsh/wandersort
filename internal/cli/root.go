@@ -63,7 +63,7 @@ wandersort check`,
 			// Build the logger after the output folder is settled, so the
 			// startup line can name it.
 			a.logFile = logger.NewFile(a.Config.LogDir)
-			a.Log = logger.New(a.Config.LogLevel, a.Config.LogConsole, a.logFile)
+			a.Log = logger.New(a.logFile)
 			// The log no longer sits in the library, so say which one this run is about.
 			a.Log.Info("wandersort started", "command", cmd.CommandPath(), "output", a.Config.OutputDir())
 			return nil

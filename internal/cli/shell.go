@@ -96,7 +96,7 @@ func (a *app) runShell(start shellStart) error {
 	defer cancel()
 
 	events := make(chan logger.Event, 4096)
-	tuiLog := logger.NewTUI(a.Config.LogLevel, a.logFile, func(e logger.Event) { events <- e })
+	tuiLog := logger.NewTUI(a.logFile, func(e logger.Event) { events <- e })
 	origLog := a.Log
 	a.Log = tuiLog
 	defer func() { a.Log = origLog }()

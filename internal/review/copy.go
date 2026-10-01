@@ -11,13 +11,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 )
 
-// copyProgress reports a copyFiles run after each file: that file's path and
-// size, plus the batch's running total. nil if the caller doesn't care.
-type copyProgress func(srcPath string, fileBytes, totalBytes int64)
-
 // copyFiles copies srcPaths into destDir, stopping once maxBytes has been
-// copied (0 = no cap). Sources are never modified. Returns the files copied.
-func copyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes int64, onProgress copyProgress) (int, error) {
+// copied. Sources are never modified. Returns the files copied.
+func copyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes int64) (int, error) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return 0, fmt.Errorf("create dest dir %s: %w", destDir, err)
 	}
@@ -28,7 +24,7 @@ func copyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes 
 		if ctx.Err() != nil {
 			return copied, ctx.Err()
 		}
-		if maxBytes > 0 && total >= maxBytes {
+		if total >= maxBytes {
 			break
 		}
 
@@ -42,9 +38,6 @@ func copyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes 
 		}
 		total += n
 		copied++
-		if onProgress != nil {
-			onProgress(src, n, total)
-		}
 	}
 	return copied, nil
 }

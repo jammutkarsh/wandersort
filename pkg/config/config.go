@@ -19,7 +19,6 @@ const DefaultLibrary = "WandersortLibrary"
 const (
 	defaultDBFileName  = ".wandersort.db"
 	locationDBFileName = "location.db"
-	defaultLogLevel    = "info"
 )
 
 // Configuration is one run's settings: the library's own Settings (loaded once
@@ -35,8 +34,6 @@ type Configuration struct {
 	Workers        int
 	AppDBPath      string
 	LocationDBPath string
-	LogLevel       string
-	LogConsole     bool
 	// LogDir holds persisted run logs, apart from any library
 	LogDir         string
 	ExecutablePath string
@@ -55,8 +52,6 @@ func New() (*Configuration, error) {
 		Settings:       DefaultSettings(),
 		appDir:         appDir,
 		LocationDBPath: filepath.Join(appDir, locationDBFileName),
-		LogLevel:       defaultLogLevel,
-		LogConsole:     true,
 		LogDir:         filepath.Join(appDir, "logs"),
 		Workers:        runtime.NumCPU(),
 		ExecutablePath: filepath.Join(appDir, "bin"),
