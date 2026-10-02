@@ -23,7 +23,7 @@ func TestFormSelectAndSkip(t *testing.T) {
 	if got := next.(FormModel).Current; got != 2 {
 		t.Errorf("enter after a preset landed on step %d, want 2 (the rules step skipped)", got)
 	}
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if got := next.(FormModel).Current; got != 1 {
@@ -31,8 +31,8 @@ func TestFormSelectAndSkip(t *testing.T) {
 	}
 }
 
-// Enter edits a row; saving re-reads the list and tells the shell; leaving the
-// edit without saving does neither.
+// Enter edits a row; saving re-reads the list and tells the shell; esc saves
+// what's on screen without asking.
 func TestSettingsListEdit(t *testing.T) {
 	value, saves := "old", 0
 	rows := func() []SettingRow {
@@ -74,9 +74,9 @@ func TestSettingsListEdit(t *testing.T) {
 	}
 
 	m, _ = run(m, tea.KeyMsg{Type: tea.KeyEnter})
-	m, _ = run(m, tea.KeyMsg{Type: tea.KeyEsc})
-	m, msgs = run(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")}) // discard
-	if saves != 1 || len(msgs) != 0 || m.(SettingsModel).edit != nil {
-		t.Errorf("a discarded edit saved or stayed open: saves=%d msgs=%v", saves, msgs)
+	m, _ = run(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
+	m, msgs = run(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if saves != 2 || value != "older!" || len(msgs) != 1 || m.(SettingsModel).edit != nil {
+		t.Errorf("esc should save and close the edit: saves=%d value=%q msgs=%v", saves, value, msgs)
 	}
 }

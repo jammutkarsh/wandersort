@@ -26,7 +26,6 @@ var layoutPresets = []struct {
 	{"Year › Month › Day › Place", []string{vfs.RuleDate, vfs.RuleLocation}},
 	{"Year › Month › Place", []string{vfs.RuleLocation}},
 	{"Year › Month › Day", []string{vfs.RuleDate}},
-	{"Year › Month", []string{vfs.RuleNone}},
 }
 
 // customLayout is the layout choice that opens the full rule list.

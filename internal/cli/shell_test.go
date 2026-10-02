@@ -144,22 +144,22 @@ func TestShellModel(t *testing.T) {
 			m := testShell(t)
 			m.screens[tabSettings] = &probe{name: "config"}
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if m.tab != tabSettings {
-				t.Fatalf("first ctrl+t = tab %d, want config", m.tab)
+				t.Fatalf("first shift+tab = tab %d, want config", m.tab)
 			}
-			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if m.tab != tabScan {
-				t.Fatalf("ctrl+t past config with no proposal = tab %d, want scan", m.tab)
+				t.Fatalf("shift+tab past config with no proposal = tab %d, want scan", m.tab)
 			}
 
 			m.screens[tabReview] = &probe{name: "review"}
 			m.tab = tabScan
-			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			if got := next.(shellModel).tab; got != tabReview {
-				t.Errorf("ctrl+t with a ready review = tab %d, want review", got)
+				t.Errorf("shift+tab with a ready review = tab %d, want review", got)
 			}
 		}},
 		// The scan's prefetched review must never yank a user out of a
@@ -224,10 +224,10 @@ func TestShellModel(t *testing.T) {
 			m.screens[tabScan] = finishedScan(t, nil)
 			m.tab = tabSettings
 
-			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if m.tab != tabScan {
-				t.Fatalf("ctrl+t = tab %d, want scan", m.tab)
+				t.Fatalf("shift+tab = tab %d, want scan", m.tab)
 			}
 			if _, ok := m.screens[tabScan].(tui.HomeModel); !ok {
 				t.Fatalf("a finished scan's tab should offer a folder input, got %T", m.screens[tabScan])
@@ -247,7 +247,7 @@ func TestShellModel(t *testing.T) {
 			m.screens[tabScan] = finishedScan(t, errors.New("disk went away"))
 			m.tab = tabSettings
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if _, ok := m.screens[tabScan].(tui.HomeModel); ok {
 				t.Fatal("a failed scan's screen must survive, error and all")
@@ -280,7 +280,7 @@ func TestShellModel(t *testing.T) {
 			// An earlier run's database, no prefetched screen — exactly the
 			// state a relaunch (or a finished save) leaves behind. The library
 			// is read at the points where it can have changed rather than per
-			// frame, and ctrl+t is one of them.
+			// frame, and shift+tab is one of them.
 			seedProposal(t, m.a)
 			m.refresh()
 			if !m.canReview() {
@@ -292,10 +292,10 @@ func TestShellModel(t *testing.T) {
 				t.Errorf("tab bar should mark the proposal on disk: %q", v)
 			}
 
-			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if !m.opening || cmd == nil {
-				t.Fatalf("ctrl+t into an unprefetched review should build one, opening=%v", m.opening)
+				t.Fatalf("shift+tab into an unprefetched review should build one, opening=%v", m.opening)
 			}
 			// The tab only moves once the screen lands, so no blank frame.
 			if m.tab == tabReview {
@@ -313,16 +313,16 @@ func TestShellModel(t *testing.T) {
 				t.Error("review must stay closed while a scan is running")
 			}
 		}},
-		// ctrl+t builds the real wizard — the same form the config subcommand
+		// shift+tab builds the real wizard — the same form the config subcommand
 		// runs, only hosted here.
 		{"ConfigTabOpensTheWizard", func(t *testing.T) {
 			m := testShell(t)
 			m.a.Deps = m.a.newDeps(nil, nil) // the wizard's geonames peek; never started
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if m.tab != tabSettings || m.screens[tabSettings] == nil {
-				t.Fatalf("ctrl+t should build and open the wizard, got tab=%d screen=%v", m.tab, m.screens[tabSettings])
+				t.Fatalf("shift+tab should build and open the wizard, got tab=%d screen=%v", m.tab, m.screens[tabSettings])
 			}
 			if v := ansi.Strip(m.View()); !strings.Contains(v, "Set up your library") || !strings.Contains(v, "Where should your library go?") {
 				t.Errorf("the setup should be on screen:\n%s", v)
@@ -367,7 +367,7 @@ func TestShellModel(t *testing.T) {
 			t.Run("config", func(t *testing.T) {
 				m := testShell(t)
 				m.a.Deps = m.a.newDeps(nil, nil)
-				next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+				next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 				m = next.(shellModel)
 				_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 				_, cmd = m.Update(leaveFrom(t, cmd))
@@ -464,9 +464,9 @@ func TestShellModel(t *testing.T) {
 			m.start = shellStart{tab: tabSettings}
 			m.gate = tui.NewReadyModel()
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			if got := next.(shellModel); got.tab != tabScan || got.gate == nil {
-				t.Errorf("ctrl+t while getting ready moved to tab %d, want the gate kept", got.tab)
+				t.Errorf("shift+tab while getting ready moved to tab %d, want the gate kept", got.tab)
 			}
 			next, cmd := next.(shellModel).Update(depsDoneMsg{})
 			if next.(shellModel).gate != nil {
@@ -584,14 +584,14 @@ func TestConfigSavedReplansOnlyOnAChange(t *testing.T) {
 			// The Cmd is deliberately not run: it re-plans against the open
 			// library, which this shell has no Deps or database for. Dropping
 			// the stale review screen is the observable half, and the half a
-			// ctrl+t can race.
+			// shift+tab can race.
 			m.settingsSaved(before)
 			if v := ansi.Strip(m.screens[tabScan].View()); !strings.Contains(v, "Settings saved") {
 				t.Errorf("the save is only confirmed on the home screen, and it didn't say so:\n%s", v)
 			}
 			if tc.wantReplan {
 				// The drop happens in settingsSaved itself, not inside the Cmd:
-				// a ctrl+t before the re-plan finishes must not find a screen
+				// a shift+tab before the re-plan finishes must not find a screen
 				// built over folder IDs that no longer exist.
 				if m.screens[tabReview] != nil {
 					t.Error("the stale review screen must be dropped before the re-plan runs")

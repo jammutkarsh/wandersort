@@ -96,6 +96,9 @@ type FormModel struct {
 	// Then, when set, is what the form returns instead of Leave once it ends,
 	// for a host screen that keeps going afterwards.
 	Then func(Leave) tea.Cmd
+	// EscSaves makes esc save and leave without asking, for a one-setting
+	// edit where what's on screen is the answer.
+	EscSaves bool
 
 	showKeys bool // the ? overlay is up
 
@@ -129,7 +132,7 @@ var formKeys = []KeyGroup{
 	}},
 	{"Moving", []KeyLine{
 		{"enter", "next step"},
-		{"shift+tab", "previous step"},
+		{"ctrl+b", "previous step"},
 		{"esc", "save or discard, then leave"},
 		{"ctrl+c", "leave without saving"},
 	}},
@@ -232,6 +235,9 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.aborted, m.quitReq = true, true
 			return m.finish()
 		case "esc":
+			if m.EscSaves {
+				return m.saveAndExit()
+			}
 			// esc works whether or not an input is focused, and asks before
 			// leaving
 			m.askExit, m.exitChoice = true, true
@@ -249,7 +255,7 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m.moveNext()
-		case "shift+tab":
+		case "ctrl+b":
 			return m.movePrev()
 		case "tab":
 			// fill the picked (or top) completion
@@ -757,9 +763,13 @@ func (m FormModel) renderFooter() string {
 	}
 	hints = append(hints, KeyHint("enter", "next"))
 	if m.Current > 0 || m.subIdx > 0 {
-		hints = append(hints, KeyHint("shift+tab", "back"))
+		hints = append(hints, KeyHint("ctrl+b", "back"))
 	}
-	hints = append(hints, KeyHint("esc", "done"), MoreKeys())
+	esc := KeyHint("esc", "done")
+	if m.EscSaves {
+		esc = KeyHint("esc", "save & back")
+	}
+	hints = append(hints, esc, MoreKeys())
 	return Footer(strings.Join(hints, "   "), m.w)
 }
 

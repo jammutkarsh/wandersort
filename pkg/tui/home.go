@@ -77,7 +77,7 @@ var homeKeys = []KeyGroup{
 		{"ctrl+g", "plan again, re-reading every file"},
 	}},
 	{"App", []KeyLine{
-		{"ctrl+t", "next tab"},
+		{"shift+tab", "next tab"},
 		{"ctrl+c", "quit"},
 	}},
 }

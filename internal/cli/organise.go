@@ -28,7 +28,7 @@ wandersort organise`,
 			if !a.isTuiEnabled(cmd) {
 				return fmt.Errorf("organise needs an interactive terminal — 'wandersort copy' copies the plan as proposed")
 			}
-			// the shell on the Organise tab, so settings stay one ctrl+t away
+			// the shell on the Organise tab, so settings stay one shift+tab away
 			return a.runShell(shellStart{tab: tabReview})
 		},
 	}

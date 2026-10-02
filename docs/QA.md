@@ -12,12 +12,14 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 
 ## 2. Settings & dependencies
 
+4a. `[H]` `shift+tab` cycles Add → Organise → Copy → Settings, skipping tabs with nothing to do.
+
 5. `[H]` first-ever `wandersort` → getting-ready screen downloads exiftool and the place names with progress bars, then opens the three-step setup (library, layout, home).
 6. `[H]` dependencies already on disk → getting ready shows for a moment (`✓ found`), then the tabs; the last library opens without asking.
 6a. `[H]` network blocked (`HTTPS_PROXY=http://127.0.0.1:9`) → each failed dependency named, "Try switching to a better network", 10 s countdown, `enter` retries now; after try 3 any key quits with exit 1; the next launch tries 3 more times.
 7. `[H]` Settings → typing a town name lists full `<city>, <state>, <country>` names, never two identical rows; the saved choice resolves to the right city on the next scan.
-8. `[H]` setup → layouts are numbered, a digit picks one, the example tree follows the option under the cursor; `5) Custom…` adds the rule step.
-9. `[H]` Settings with a library open → a list of answers; enter changes one row and returns to the list with "Saved"; a changed setting re-plans at once, an unchanged save re-plans nothing; `esc` + Discard keeps the old value.
+8. `[H]` setup → layouts are numbered, a digit picks one, the example tree follows the option under the cursor; `4) Custom…` adds the rule step; `ctrl+b` goes back a step.
+9. `[H]` Settings with a library open → a list of answers; enter changes one row and returns to the list with "Saved"; `esc` saves what's on screen without asking; a changed setting re-plans at once, an unchanged save re-plans nothing; `ctrl+c` leaves without saving.
 10. `[A]` delete the exiftool binary, then `add` → it is downloaded again before the run starts.
 
 ## 3. Add (scan → metadata → vfs)

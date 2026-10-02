@@ -331,8 +331,8 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if k.String() == "ctrl+t" {
-		// ctrl+t is where "where can I go?" is asked, so refresh here
+	if k.String() == "shift+tab" {
+		// shift+tab is where "where can I go?" is asked, so refresh here
 		m.refresh()
 		next := m.nextTab()
 		if next == tabReview && m.screens[tabReview] == nil {
@@ -540,7 +540,7 @@ func (m *shellModel) openSettings() tea.Cmd {
 // DB open and BuildTree are slow).
 func (m *shellModel) openReview() tea.Cmd {
 	if m.opening {
-		return nil // a second ctrl+t while the first is still building
+		return nil // a second shift+tab while the first is still building
 	}
 	m.opening = true
 	a, ctx := m.a, m.ctx

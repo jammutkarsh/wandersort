@@ -93,7 +93,7 @@ var planChoices = []struct{ label, detail string }{
 // scanKeys is the plan screen's full key list, behind ?.
 var scanKeys = []KeyGroup{
 	{"While planning", []KeyLine{
-		{"ctrl+t", "next tab; planning keeps going"},
+		{"shift+tab", "next tab; planning keeps going"},
 		{"ctrl+c", "stop; the next run carries on"},
 	}},
 	{"When the plan is ready", []KeyLine{
@@ -383,9 +383,9 @@ func (m ScanModel) footer() string {
 	case scanFinished:
 		return Footer(KeyHint("1-3", "choose")+"   "+KeyHint("enter", "go")+"   "+MoreKeys(), m.w)
 	case scanRunning:
-		return Footer(KeyHint("ctrl+t", "switch tab")+"   "+KeyHint("ctrl+c", "stop")+"   "+MoreKeys(), m.w)
+		return Footer(KeyHint("shift+tab", "switch tab")+"   "+KeyHint("ctrl+c", "stop")+"   "+MoreKeys(), m.w)
 	}
-	return Footer(KeyHint("ctrl+t", "switch tab")+"   "+KeyHint("ctrl+c", "quit"), m.w)
+	return Footer(KeyHint("shift+tab", "switch tab")+"   "+KeyHint("ctrl+c", "quit"), m.w)
 }
 
 // --- small helpers ---

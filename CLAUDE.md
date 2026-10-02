@@ -16,7 +16,7 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 
 | Command | File | What |
 |---|---|---|
-| `wandersort` | `shell.go` | Full-screen shell: getting ready, then Add / Organise / Copy / Settings tabs, `ctrl+t` cycles |
+| `wandersort` | `shell.go` | Full-screen shell: getting ready, then Add / Organise / Copy / Settings tabs, `shift+tab` cycles |
 | `add -p …` | `add.go` | Runs the pipeline (shell on the Add tab, or plain with `--plain`/`--json`/no terminal) |
 | `organise` | `organise.go` | Shell on the Organise tab; also `rebuildTree`, `newReviewScreen` |
 | `copy` | `copy.go` | Applies the draft and copies files in (shell on the Copy tab, or plain; `--dry-run`, `--json`) |

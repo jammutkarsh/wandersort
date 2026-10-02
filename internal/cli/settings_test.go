@@ -116,7 +116,7 @@ func TestConfig(t *testing.T) {
 				{nil, layoutPresets[0].name + recommended, "Year › Month › Day › Place"},
 				{[]string{"date", "location"}, layoutPresets[0].name + recommended, "Year › Month › Day › Place"},
 				{[]string{"location"}, "Year › Month › Place", "Year › Month › Place"},
-				{[]string{"none"}, "Year › Month", "Year › Month"},
+				{[]string{"none"}, customLayout, "Custom: Year › Month"},
 				{[]string{"date", "device"}, customLayout, "Custom: Year › Month › Day › Camera"},
 			} {
 				if got := layoutChoice(tt.rules); got != tt.choice {

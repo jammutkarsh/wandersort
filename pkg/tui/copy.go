@@ -103,7 +103,7 @@ var copyKeys = []KeyGroup{
 		{"esc", "not now"},
 	}},
 	{"While copying", []KeyLine{
-		{"ctrl+t", "next tab; copying keeps going"},
+		{"shift+tab", "next tab; copying keeps going"},
 		{"ctrl+c", "stop between files; the next copy carries on"},
 	}},
 	{"After", []KeyLine{
@@ -396,7 +396,7 @@ func (m CopyModel) footer() string {
 		}
 		return hints(KeyHint("enter", "start"), KeyHint("esc", "not now"), MoreKeys())
 	case copyRunning, copyStopping:
-		return hints(KeyHint("ctrl+t", "switch tab"), KeyHint("ctrl+c", "stop"), MoreKeys())
+		return hints(KeyHint("shift+tab", "switch tab"), KeyHint("ctrl+c", "stop"), MoreKeys())
 	}
 	if m.res.Report != "" {
 		return hints(KeyHint("r", "open report"), KeyHint("1-2", "choose"), KeyHint("enter", "go"), MoreKeys())

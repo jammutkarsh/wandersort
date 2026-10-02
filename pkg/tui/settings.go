@@ -130,6 +130,7 @@ func (m SettingsModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		f := NewFormModel(fields, save)
 		f.Heading = "Settings › " + r.Label
 		f.Then = func(l Leave) tea.Cmd { return func() tea.Msg { return settingsEditDoneMsg{l} } }
+		f.EscSaves = true
 		sized, _ := f.Update(tea.WindowSizeMsg{Width: m.w, Height: m.h})
 		f = sized.(FormModel)
 		m.edit = &f
