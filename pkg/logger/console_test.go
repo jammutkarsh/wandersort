@@ -87,8 +87,7 @@ func TestPrettyHandlerShowsOnlyUserFacingAndWarnings(t *testing.T) {
 	}
 }
 
-// A milestone prints as its sentence alone; a phase's start line is left to
-// its done line; a warning keeps its tag and attrs.
+// A milestone prints alone, a phase's start line waits for its done line, a warning keeps its tag and attrs.
 func TestPrettyHandlerPlainLines(t *testing.T) {
 	h := NewPrettyHandler(&slog.HandlerOptions{Level: slog.LevelInfo})
 	tests := []struct {

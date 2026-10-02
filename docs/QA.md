@@ -80,7 +80,7 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 53. `[A]` `copy` after review edits → files land under the edited folders, draft gone, `.wandersort.db.zst` written.
 54. `[A]` `copy --dry-run` → reports the edited target paths, writes nothing.
 55. `[A]` too little free space → refuses before changing anything; draft still there.
-56. `[A]` after `copy`, every source file is byte-identical and still in place; there is no `--move` flag.
+56. `[A]` after `copy`, every source file is byte-identical and still in place.
 56a. `[H]` `copy` in a terminal → Copy tab: size, free space, edits; enter runs Check space / Apply edits / Back up / Copy & check with a byte bar; ends with "All done" or the files left out by reason.
 57. `[A]` a source edited after the scan (same size) → `checksum-mismatch` error, nothing lands, source kept; exit 3; `~/.wandersort/logs/<run>.html` lists it under its drive with what to do.
 58. `[A]` an occupied target name → lands at `_1`, nothing overwritten; the same file already there → recorded, not copied twice.

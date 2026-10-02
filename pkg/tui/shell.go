@@ -2,9 +2,7 @@ package tui
 
 import tea "github.com/charmbracelet/bubbletea"
 
-// SwitchMsg hands the container a screen for another tab (the scan's
-// prefetched review), to keep, or to open at once when Open is set. Screens
-// that are done use Leave.
+// SwitchMsg hands the shell a screen for another tab, kept or opened at once (Open); done screens use Leave.
 type SwitchMsg struct {
 	Next Tab
 	Open bool

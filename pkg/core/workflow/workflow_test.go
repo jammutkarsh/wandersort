@@ -224,11 +224,3 @@ func TestVFSPhaseWrapsLocationDepsError(t *testing.T) {
 		t.Errorf("got %v, want wrapped \"location resolver: download failed\"", err)
 	}
 }
-
-func TestFilesCount(t *testing.T) {
-	for n, want := range map[int]string{0: "0 files", 1: "1 file", 999: "999 files", 15481: "15,481 files", 1234567: "1,234,567 files"} {
-		if got := files(n); got != want {
-			t.Errorf("files(%d) = %q, want %q", n, got, want)
-		}
-	}
-}

@@ -102,15 +102,12 @@ func (l *File) Path() string {
 	return l.f.Name()
 }
 
-// PageExt is the extension of a page written beside a run's log under the
-// same name (Page).
+// PageExt is the extension of the page written beside a run's log (Page).
 const PageExt = ".html"
 
-// Page is where a page about this run goes: beside its log, same name, .html.
-// Keeps the log, since a run that writes a page is one worth keeping; "" if
-// file logging is off.
+// Page is where a page about this run goes, beside its log under the same name; "" if file logging is off.
 func (l *File) Page() string {
-	l.Persist()
+	l.Persist() // a run that writes a page is one worth keeping
 	if p := l.Path(); p != "" {
 		return strings.TrimSuffix(p, ".log") + PageExt
 	}

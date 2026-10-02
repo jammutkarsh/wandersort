@@ -44,7 +44,6 @@ type Options struct {
 	freeSpace func(path string) (free, total uint64, err error)
 }
 
-// Report is what a Run produced.
 // The steps of a run, in order, as OnStep names them.
 const (
 	StepSpace  = "space"
@@ -59,6 +58,7 @@ func (o Options) step(name string) {
 	}
 }
 
+// Report is what a Run produced.
 type Report struct {
 	Done, Failed int
 	Bytes        int64
@@ -199,25 +199,21 @@ func CheckFits(ctx context.Context, database *db.DB, outputDir string) error {
 	return checkFits(ctx, database, outputDir, volume.Space)
 }
 
-// Space is what copying the pending plan needs at the output and what is free
-// there. Known is false when the free space can't be read.
+// Space is what copying the pending plan needs at the output and what is free; Known is false if unreadable.
 type Space struct {
 	Needed, Files, Reserve, Free uint64
 	Known                        bool
 }
 
-// Fits reports whether the output can hold the plan; an unknown free space
-// counts as fitting.
+// Fits reports whether the output can hold the plan; an unknown free space counts as fitting.
 func (s Space) Fits() bool { return !s.Known || s.Needed <= s.Free }
 
-// SpaceFor is the space check Run makes, for a caller that wants the numbers
-// before starting.
+// SpaceFor is Run's space check, for a caller that wants the numbers before starting.
 func SpaceFor(ctx context.Context, database *db.DB, outputDir string) (Space, error) {
 	return spaceFor(ctx, database, outputDir, volume.Space)
 }
 
-// spaceFor sizes a transfer: every pending file, room for the backup (twice
-// the database's page size), and a reserve (volume.TransferNeeds).
+// spaceFor sizes a transfer: pending files, room for the backup and a reserve (volume.TransferNeeds).
 func spaceFor(ctx context.Context, database *db.DB, outputDir string, freeSpace func(string) (uint64, uint64, error)) (Space, error) {
 	_, pending, err := Pending(ctx, database)
 	if err != nil {
@@ -239,8 +235,7 @@ func spaceFor(ctx context.Context, database *db.DB, outputDir string, freeSpace 
 	return s, nil
 }
 
-// checkFits refuses a transfer the output volume can't hold. An unreadable
-// free-space figure lets it run.
+// checkFits refuses a transfer the output can't hold; an unreadable free space lets it run.
 func checkFits(ctx context.Context, database *db.DB, outputDir string, freeSpace func(string) (uint64, uint64, error)) error {
 	s, err := spaceFor(ctx, database, outputDir, freeSpace)
 	if err != nil || s.Fits() {

@@ -37,8 +37,7 @@ type DriveFailures struct {
 	Groups []FailureGroup
 }
 
-// FailureReport is every file not in the library that should be: transfers
-// that failed and files that were never read.
+// FailureReport is every file that should be in the library and isn't: failed transfers and never-read files.
 type FailureReport struct {
 	Drives    []DriveFailures
 	NotCopied int
@@ -48,11 +47,10 @@ type FailureReport struct {
 // Total is every file the report lists.
 func (r FailureReport) Total() int { return r.NotCopied + r.NotRead }
 
-// Reason says in plain words why a file is not in the library and what to do,
-// from its error row's stage, op and kind. An empty stage is a file never read.
-func Reason(stage, op, kind string) (reason, next string) {
+// Reason says in plain words why a file is not in the library and what to do.
+func Reason(stage, kind string) (reason, next string) {
 	switch {
-	case stage == "":
+	case stage == "": // a file never read
 		return "Not read yet", "Add its folder again."
 	case kind == db.KindChecksumMismatch:
 		return "Changed since it was read", "Add its folder again to pick up the change, then copy."
@@ -70,12 +68,11 @@ func Reason(stage, op, kind string) (reason, next string) {
 	return "Couldn't be copied", "Copy again; the log next to this page has the details."
 }
 
-// Failures reads every unplaced file with a failed transfer, and every file
-// never read, grouped by the drive its original is on and then by reason.
+// Failures reads every failed transfer and never-read file, grouped by the original's drive, then reason.
 func Failures(ctx context.Context, q Querier) (FailureReport, error) {
 	rows, err := q.QueryContext(ctx, `
 		SELECT f.file_dir, f.file_name, f.file_size,
-		       COALESCE(e.stage, ''), COALESCE(e.op, ''), COALESCE(e.kind, ''),
+		       COALESCE(e.stage, ''), COALESCE(e.kind, ''),
 		       TRIM(COALESCE(m.exif_make, '') || ' ' || COALESCE(m.exif_model, '')),
 		       COALESCE(v.target_path, '')
 		FROM file_registry f
@@ -94,9 +91,9 @@ func Failures(ctx context.Context, q Querier) (FailureReport, error) {
 	drives := map[string]int{}
 	groups := map[[2]string]int{}
 	for rows.Next() {
-		var dir, name, stage, op, kind, target string
+		var dir, name, stage, kind, target string
 		var file FailedFile
-		if err := rows.Scan(&dir, &name, &file.Size, &stage, &op, &kind, &file.Camera, &target); err != nil {
+		if err := rows.Scan(&dir, &name, &file.Size, &stage, &kind, &file.Camera, &target); err != nil {
 			return FailureReport{}, fmt.Errorf("read failed files: %w", err)
 		}
 		file.Source = filepath.Join(wspath.FromSourcePath(dir), name)
@@ -116,7 +113,7 @@ func Failures(ctx context.Context, q Querier) (FailureReport, error) {
 			drives[drive] = d
 			r.Drives = append(r.Drives, DriveFailures{Drive: drive})
 		}
-		reason, next := Reason(stage, op, kind)
+		reason, next := Reason(stage, kind)
 		key := [2]string{drive, reason}
 		g, ok := groups[key]
 		if !ok {
@@ -163,8 +160,7 @@ func WriteHTML(w io.Writer, r FailureReport, info PageInfo) error {
 	}{r, info})
 }
 
-// SaveHTML writes the page to path through a temp file, so a crash never
-// leaves half a page.
+// SaveHTML writes the page to path through a temp file, so a crash never leaves half a page.
 func SaveHTML(path string, r FailureReport, info PageInfo) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".report-*")
 	if err != nil {

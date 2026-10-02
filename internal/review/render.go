@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -39,12 +40,9 @@ func (m Model) header() string {
 	for _, n := range m.draft.Tree() {
 		files += n.FileCount
 	}
-	right := tui.Count(len(m.rows)) + " folders · " + tui.Count(files) + " files"
+	right := human.Plural(len(m.rows), "folder", "folders") + " · " + human.Plural(files, "file", "files")
 	if n := len(m.draft.Edits()); n > 0 {
-		right += fmt.Sprintf(" · %d edit", n)
-		if n > 1 {
-			right += "s"
-		}
+		right += " · " + human.Plural(n, "edit", "edits")
 	}
 	return tui.Row(tui.DimText.Render("  Nothing moves until you copy. Edits are saved as you go."),
 		tui.FaintTxt.Render(right), m.width) + "\n"
@@ -55,10 +53,7 @@ func (m Model) rowView(i int, inRange bool) string {
 	r := m.rows[i]
 
 	cursor := "  "
-	count := tui.Count(r.node.FileCount) + " files"
-	if r.node.FileCount == 1 {
-		count = "1 file"
-	}
+	count := human.Plural(r.node.FileCount, "file", "files")
 
 	if inRange || i == m.cursor {
 		// Plain, no per-segment colour — a nested ANSI reset would cut the highlight short.
@@ -106,6 +101,7 @@ func (m Model) footer() string {
 			tui.KeyHint("ctrl+e", "search wider"),
 			tui.KeyHint("enter", "rename"),
 			tui.KeyHint("esc", "cancel"),
+			tui.MoreKeys(),
 		}, "   "), m.width))
 	case m.previewing:
 		b.WriteString(m.spin.View())
@@ -131,8 +127,7 @@ func (m Model) footer() string {
 	return b.String()
 }
 
-// keyHelp is the key bar: the five keys a reviewer reaches for, or a
-// selection's actions while one is live. The rest are behind ?.
+// keyHelp is the footer: the reviewer's common keys, or a selection's actions; the rest are behind ?.
 func (m Model) keyHelp() string {
 	if m.visualMode {
 		return strings.Join([]string{
@@ -140,14 +135,15 @@ func (m Model) keyHelp() string {
 			tui.KeyHint("d", "drop"),
 			tui.KeyHint("D", "flatten"),
 			tui.KeyHint("esc", "cancel"),
+			tui.MoreKeys(),
 		}, "   ")
 	}
 	return strings.Join([]string{
 		tui.KeyHint("↑↓", "move"),
 		tui.KeyHint("r", "rename"),
 		tui.KeyHint("V", "select"),
-		tui.MoreKeys(),
 		tui.KeyHint("esc", "done"),
+		tui.MoreKeys(),
 	}, "   ")
 }
 

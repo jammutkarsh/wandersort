@@ -48,8 +48,7 @@ func TestStartOfflineHappyPath(t *testing.T) {
 	}
 }
 
-// TestStartGivesUpOnBadLocationDB: a database that never verifies fails every
-// try, BeforeRetry is asked before tries 2 and 3, and both getters report it.
+// A database that never verifies fails every try, BeforeRetry runs before tries 2 and 3, both getters report it.
 func TestStartGivesUpOnBadLocationDB(t *testing.T) {
 	dir := t.TempDir()
 	fakeExiftool(t, filepath.Join(dir, exiftoolBin()), exiftoolVersion)

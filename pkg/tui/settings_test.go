@@ -31,8 +31,7 @@ func TestFormSelectAndSkip(t *testing.T) {
 	}
 }
 
-// Enter edits a row; saving re-reads the list and tells the shell; esc saves
-// what's on screen without asking.
+// Enter edits a row; a save re-reads the list and tells the shell; esc saves without asking.
 func TestSettingsListEdit(t *testing.T) {
 	value, saves := "old", 0
 	rows := func() []SettingRow {

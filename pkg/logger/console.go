@@ -179,8 +179,7 @@ func (h *PrettyHandler) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 
-// stderrIsTerminal reports whether colour codes would reach a person rather
-// than a log file or pipe.
+// stderrIsTerminal reports whether colour codes would reach a person rather than a file or pipe.
 func stderrIsTerminal() bool {
 	st, err := os.Stderr.Stat()
 	return err == nil && st.Mode()&os.ModeCharDevice != 0

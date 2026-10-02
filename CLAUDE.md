@@ -56,6 +56,7 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 | `path` | Segment/file-name sanitizing, `ToLibrary` (NFC) vs `ToSourcePath` (bytes kept), root reduction |
 | `atomicfile` | Durable copy, no-replace rename, synced `MkdirAll` |
 | `volume` | Volume UUID, storage class, free space, drive name (`Label`) |
+| `human` | Counts in words: thousands separators, "1 file" vs "3 files" |
 | `logger` | slog fan-out: console (only `UserKey` lines + warnings), JSON file log, TUI events |
 | `lock` | OS advisory locks (output dir, installs) |
 | `report` | Scrubbed export of the `errors` table; the failure page a copy writes |
@@ -74,7 +75,7 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 - Every write goes through `db.Writer` (`Write` batched, `WriteSync` when the outcome matters); `DB.SQL` is for reads. `Flush` returns writes lost since the last flush.
 - `BulkWriter` ops must touch nothing outside their transaction (failed batches replay).
 - No tag yet: edit existing migrations in place; delete `.wandersort.db` after such an edit.
-- Imports point down. `pkg/path`, `pkg/logger`, `pkg/lock`, `pkg/atomicfile` import nothing else in the project.
+- Imports point down. `pkg/path`, `pkg/logger`, `pkg/lock`, `pkg/atomicfile`, `pkg/human` import nothing else in the project.
 - Run the CLI with `HOME` set to a scratch folder: `--output-path` becomes the default library.
 
 ## Build / test

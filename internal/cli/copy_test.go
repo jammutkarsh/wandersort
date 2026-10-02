@@ -21,8 +21,7 @@ func execCmd(t *testing.T) *cobra.Command {
 	return cmd
 }
 
-// TestRunExecuteAppliesDraft: the review draft reaches the plan only here, the
-// file lands under the renamed folder, and the draft is gone afterwards.
+// The draft reaches the plan only on copy: the file lands under the renamed folder and the draft is gone.
 func TestRunExecuteAppliesDraft(t *testing.T) {
 	cfg := testConfig(t)
 	dir := t.TempDir()

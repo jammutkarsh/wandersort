@@ -7,11 +7,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/jammutkarsh/wandersort/pkg/human"
 )
 
-// StageList is the step stack shared by every pipeline screen: one row per
-// stage (○ pending, ● running, ✓ done, ✗ failed), elapsed time right-aligned,
-// the running stage carrying its bar and the item it is on.
+// StageList is the stage stack every pipeline screen shares: status, elapsed time, and the running stage's bar.
 type StageList struct {
 	stages    []*Stage
 	idx       map[string]int
@@ -52,7 +52,7 @@ func NewStageList(fmtCounts func(cur, total int) string, stages ...*Stage) Stage
 		idx[s.Key] = i
 	}
 	if fmtCounts == nil {
-		fmtCounts = func(cur, total int) string { return Count(cur) + " / " + Count(total) }
+		fmtCounts = func(cur, total int) string { return human.Count(cur) + " / " + human.Count(total) }
 	}
 	return StageList{stages: stages, idx: idx, sb: newSpinnerBar(), fmtCounts: fmtCounts}
 }
@@ -125,8 +125,7 @@ func (sl *StageList) AddTail(line string) {
 // etaAfter is how long a stage runs before its time left is worth guessing.
 const etaAfter = 3 * time.Second
 
-// Remaining guesses the running stage's time left from its bar's rate so far;
-// 0 when there is nothing to go on yet.
+// Remaining guesses the running stage's time left from its bar's rate; 0 with nothing to go on.
 func (sl StageList) Remaining(key string) time.Duration {
 	s := sl.get(key)
 	if s == nil || s.state != stateRunning || s.cur <= 0 || s.total <= s.cur {
@@ -258,20 +257,4 @@ func nonEmpty(s, fallback string) string {
 		return fallback
 	}
 	return s
-}
-
-// Count writes n with thousands separators: 15,481.
-func Count(n int) string {
-	digits := fmt.Sprint(n)
-	if n < 0 {
-		return "-" + Count(-n)
-	}
-	var b strings.Builder
-	for i, d := range digits {
-		if i > 0 && (len(digits)-i)%3 == 0 {
-			b.WriteByte(',')
-		}
-		b.WriteRune(d)
-	}
-	return b.String()
 }

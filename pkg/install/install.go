@@ -29,28 +29,23 @@ const (
 	PhaseLocation = "location"
 )
 
-// MaxTries is how many times Start tries to install the dependencies before
-// giving up for this process.
+// MaxTries is how many times Start tries to install the dependencies in one process.
 const MaxTries = 3
 
 // RetryDelay is how long the default BeforeRetry waits between tries.
 const RetryDelay = 10 * time.Second
 
-// Progress is one report about a dependency: bytes downloaded so far, or Ready
-// once it is installed and verified.
+// Progress reports one dependency: bytes downloaded so far, or Ready once installed and verified.
 type Progress struct {
 	Phase       string
 	Done, Total int64
 	Ready       bool
 }
 
-// RetryFunc runs before try next (2..MaxTries) with the error that ended the
-// previous one, and blocks until it is time to retry. A non-nil return stops
-// trying.
+// RetryFunc runs before try next with the last try's error and blocks until retry time; an error stops trying.
 type RetryFunc func(ctx context.Context, next int, err error) error
 
-// Options configures a Coordinator. Log, OnProgress and BeforeRetry may be nil;
-// a nil BeforeRetry logs the failure and waits RetryDelay.
+// Options configures a Coordinator; any field may be nil, and a nil BeforeRetry logs and waits RetryDelay.
 type Options struct {
 	ExecutablePath string // directory exiftool installs into
 	LocationDBPath string // path to the location database file
@@ -69,8 +64,7 @@ type DependencyError struct {
 func (e *DependencyError) Error() string { return e.Phase + ": " + e.Err.Error() }
 func (e *DependencyError) Unwrap() error { return e.Err }
 
-// Failed lists every dependency err says could not be installed, in install
-// order.
+// Failed lists every dependency err says could not be installed, in install order.
 func Failed(err error) []*DependencyError {
 	var out []*DependencyError
 	var walk func(error)
@@ -138,8 +132,7 @@ func New(opts Options) *Coordinator {
 	}
 }
 
-// Start installs exiftool then the location database in the background, up to
-// MaxTries times. Only the first call does anything.
+// Start installs exiftool then the location database in the background, up to MaxTries; only the first call acts.
 func (c *Coordinator) Start(ctx context.Context) {
 	c.started.Do(func() { c.start(ctx) })
 }
@@ -167,9 +160,7 @@ func (c *Coordinator) start(ctx context.Context) {
 	}()
 }
 
-// installMissing is one try: each dependency not yet installed is installed,
-// exiftool first. One failing doesn't stop the other; a retry skips what an
-// earlier try finished.
+// installMissing is one try over the dependencies not yet installed, exiftool first; one failing doesn't stop the other.
 func (c *Coordinator) installMissing(ctx context.Context) error {
 	var errs []error
 	if c.exifPath == "" {
@@ -193,8 +184,7 @@ func (c *Coordinator) installMissing(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// tryUpTo runs try until it succeeds, ctx ends, beforeRetry refuses, or tries
-// runs out.
+// tryUpTo runs try until it succeeds, ctx ends, beforeRetry refuses, or tries run out.
 func tryUpTo(ctx context.Context, tries int, beforeRetry RetryFunc, try func(context.Context) error) error {
 	var err error
 	for n := 1; n <= tries; n++ {
@@ -247,8 +237,7 @@ func (c *Coordinator) report(p Progress) {
 	}
 }
 
-// progressFor adapts a download's byte callback to a throttled OnProgress for
-// one phase; nil when nobody listens.
+// progressFor throttles a download's byte callback into OnProgress for phase; nil when nobody listens.
 func (c *Coordinator) progressFor(phase string) func(done, total int64) {
 	if c.opts.OnProgress == nil {
 		return nil
@@ -268,8 +257,7 @@ func (c *Coordinator) progressFor(phase string) func(done, total int64) {
 // returns it — the blocking getters wait instead.
 var ErrPending = errors.New("dependency is still downloading")
 
-// Exiftool blocks until the install is done (or ctx ends) and returns the
-// binary's path.
+// Exiftool blocks until the install is done (or ctx ends) and returns the binary's path.
 func (c *Coordinator) Exiftool(ctx context.Context) (string, error) {
 	if err := await(ctx, c.exifReady); err != nil {
 		return "", err
@@ -277,8 +265,7 @@ func (c *Coordinator) Exiftool(ctx context.Context) (string, error) {
 	return c.exifPath, c.exifErr
 }
 
-// Location blocks until the install is done (or ctx ends) and returns the
-// location resolver.
+// Location blocks until the install is done (or ctx ends) and returns the location resolver.
 func (c *Coordinator) Location(ctx context.Context) (*location.Resolver, error) {
 	if err := await(ctx, c.locReady); err != nil {
 		return nil, err
@@ -320,13 +307,10 @@ func await(ctx context.Context, ch <-chan struct{}) error {
 	}
 }
 
-// downloadStallTimeout aborts a download with no new bytes this long (a dead
-// connection never errors itself). Armed before the request, so it also covers
-// DNS/TCP/TLS/first byte.
+// downloadStallTimeout aborts a download silent this long, DNS to last byte; a dead connection never errors itself.
 const downloadStallTimeout = 3 * time.Second
 
-// downloadFile fetches url to dest atomically, verifying wantSHA256 if set.
-// One attempt: retrying is the Coordinator's job.
+// downloadFile fetches url to dest atomically, verifying wantSHA256 if set; one attempt, the Coordinator retries.
 func downloadFile(ctx context.Context, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
 	cleanStaleDownloads(filepath.Dir(dest))
 	return terminalDownloadErr(ctx, downloadAttempt(ctx, dest, url, wantSHA256, onProgress))
@@ -362,8 +346,7 @@ func cleanStaleDownloads(dir string) {
 	}
 }
 
-// downloadAttempt is downloadFile's one try, cancelled when no bytes arrive
-// for downloadStallTimeout.
+// downloadAttempt is downloadFile's one try, cancelled when no bytes arrive for downloadStallTimeout.
 func downloadAttempt(ctx context.Context, dest, url, wantSHA256 string, onProgress func(done, total int64)) error {
 	attemptCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

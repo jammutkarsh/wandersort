@@ -8,7 +8,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/execute"
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/path"
+	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 // CopyPlan is what a copy would do, read before it starts.
@@ -52,8 +55,7 @@ type CopyFinishedMsg struct{}
 
 type copyStepMsg struct{ step string }
 
-// copyFileMsg is the running totals after a file; a dropped one is made up by
-// the next.
+// copyFileMsg is the running totals after a file; a dropped one is made up by the next.
 type copyFileMsg struct {
 	target string
 	copied int64
@@ -75,12 +77,10 @@ const (
 	copyFailed
 )
 
-// maxProblemPaths is how many files per reason the screen names; the page has
-// every one.
+// maxProblemPaths is how many files per reason the screen names; the page has every one.
 const maxProblemPaths = 3
 
-// CopyModel is the Copy tab: what a copy would do, the copy itself, and what
-// it did.
+// CopyModel is the Copy tab: what a copy would do, the copy itself, and what it did.
 type CopyModel struct {
 	cfg    CopyConfig
 	sl     StageList
@@ -115,11 +115,13 @@ var copyKeys = []KeyGroup{
 
 func NewCopyModel(cfg CopyConfig) CopyModel {
 	sl := NewStageList(
-		func(cur, total int) string { return humanBytes(int64(cur)) + " / " + humanBytes(int64(total)) },
-		&Stage{Key: "space", Name: "Check space"},
-		&Stage{Key: "apply", Name: "Apply edits"},
-		&Stage{Key: "backup", Name: "Back up library"},
-		&Stage{Key: "copy", Name: "Copy & check", HasBar: true},
+		func(cur, total int) string {
+			return volume.HumanBytes(uint64(cur)) + " / " + volume.HumanBytes(uint64(total))
+		},
+		&Stage{Key: execute.StepSpace, Name: "Check space"},
+		&Stage{Key: execute.StepApply, Name: "Apply edits"},
+		&Stage{Key: execute.StepBackup, Name: "Back up library"},
+		&Stage{Key: execute.StepCopy, Name: "Copy & check", HasBar: true},
 	)
 	return CopyModel{cfg: cfg, sl: sl, events: make(chan tea.Msg, 64)}
 }
@@ -169,7 +171,7 @@ func (m CopyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case copyFileMsg:
 		m.copied, m.files = msg.copied, msg.done
 		m.sl.AddTail(msg.target)
-		return m, tea.Batch(m.sl.SetProgress("copy", int(m.copied), int(m.cfg.Plan.Bytes)), m.next)
+		return m, tea.Batch(m.sl.SetProgress(execute.StepCopy, int(m.copied), int(m.cfg.Plan.Bytes)), m.next)
 	case copyDoneMsg:
 		m.res, m.err = msg.res, msg.err
 		switch {
@@ -180,7 +182,7 @@ func (m CopyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sl.FinishRemaining(true, "")
 			m.state = copyFailed
 		default:
-			m.sl.Done("copy", fmt.Sprintf("Copied and checked %s", countWord(msg.res.Copied, "file")), "")
+			m.sl.Done(execute.StepCopy, fmt.Sprintf("Copied and checked %s", human.Plural(msg.res.Copied, "file", "files")), "")
 			m.sl.FinishRemaining(false, "done")
 			m.state = copyDone
 		}
@@ -193,15 +195,15 @@ func (m CopyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *CopyModel) stepTo(step string) {
 	plan := m.cfg.Plan
 	done := map[string]string{
-		"space":  fmt.Sprintf("Enough space: %s free, %s needed", humanBytes(plan.Free), humanBytes(plan.Bytes)),
-		"apply":  "Applied " + countWord(plan.Edits, "edit"),
-		"backup": "Backed up the library",
+		execute.StepSpace:  fmt.Sprintf("Enough space: %s free, %s needed", volume.HumanBytes(uint64(plan.Free)), volume.HumanBytes(uint64(plan.Bytes))),
+		execute.StepApply:  "Applied " + human.Plural(plan.Edits, "edit", "edits"),
+		execute.StepBackup: "Backed up the library",
 	}
 	if !plan.FreeKnown {
-		done["space"] = "Free space unknown; copying anyway"
+		done[execute.StepSpace] = "Free space unknown; copying anyway"
 	}
 	if plan.Edits == 0 {
-		done["apply"] = "No edits to apply"
+		done[execute.StepApply] = "No edits to apply"
 	}
 	for _, s := range m.sl.stages {
 		if s.Key == step {
@@ -298,15 +300,15 @@ func (m CopyModel) askView() string {
 		b.WriteString(row("  "+DimText.Render("Every planned file is already in the library. Add folders to plan more."), "", m.w) + "\n")
 		return b.String()
 	}
-	b.WriteString(row("  "+Text.Bold(true).Render("Copy "+countWord(plan.Files, "file")+" into your library"), "", m.w) + "\n\n")
-	b.WriteString(row("  Size", humanBytes(plan.Bytes)+"  ", m.w) + "\n")
+	b.WriteString(row("  "+Text.Bold(true).Render("Copy "+human.Plural(plan.Files, "file", "files")+" into your library"), "", m.w) + "\n\n")
+	b.WriteString(row("  Size", volume.HumanBytes(uint64(plan.Bytes))+"  ", m.w) + "\n")
 	switch {
 	case !plan.FreeKnown:
 		b.WriteString(row("  Free on this drive  "+DimText.Render("couldn't be read"), "", m.w) + "\n")
 	case plan.Fits:
-		b.WriteString(row("  Free on this drive  "+OK.Render("✓ enough"), humanBytes(plan.Free)+"  ", m.w) + "\n")
+		b.WriteString(row("  Free on this drive  "+OK.Render("✓ enough"), volume.HumanBytes(uint64(plan.Free))+"  ", m.w) + "\n")
 	default:
-		b.WriteString(row("  Free on this drive  "+Bad.Render("✗ not enough"), humanBytes(plan.Free)+"  ", m.w) + "\n")
+		b.WriteString(row("  Free on this drive  "+Bad.Render("✗ not enough"), volume.HumanBytes(uint64(plan.Free))+"  ", m.w) + "\n")
 	}
 	if plan.Edits > 0 {
 		b.WriteString(row("  Your edits  "+DimText.Render("from Organise, applied first"), fmt.Sprint(plan.Edits)+"  ", m.w) + "\n")
@@ -325,13 +327,13 @@ func (m CopyModel) heading() string {
 	case m.state == copyDone && m.res.Failed+m.res.NotRead == 0:
 		return OK.Render("✓ All done")
 	case m.state == copyDone:
-		return Attn.Render("⚠ Done, but " + countWord(m.res.Failed+m.res.NotRead, "file") + " didn't make it in")
+		return Attn.Render("⚠ Done, but " + human.Plural(m.res.Failed+m.res.NotRead, "file", "files") + " didn't make it in")
 	case m.state == copyFailed && m.err != nil:
 		return Bad.Render("Copy stopped")
 	case m.state == copyStopping:
 		return Attn.Render("Stopping after this file…")
 	}
-	return Text.Bold(true).Render("Copying " + countWord(m.cfg.Plan.Files, "file"))
+	return Text.Bold(true).Render("Copying " + human.Plural(m.cfg.Plan.Files, "file", "files"))
 }
 
 func (m CopyModel) belowStages() string {
@@ -340,11 +342,11 @@ func (m CopyModel) belowStages() string {
 	switch m.state {
 	case copyRunning, copyStopping:
 		spent := time.Since(m.started).Seconds()
-		detail := countWord(m.files, "file") + " checked"
+		detail := human.Plural(m.files, "file", "files") + " checked"
 		if spent > 1 && m.copied > 0 {
-			detail += fmt.Sprintf(" · %s/s", humanBytes(int64(float64(m.copied)/spent)))
+			detail += fmt.Sprintf(" · %s/s", volume.HumanBytes(uint64(float64(m.copied)/spent)))
 		}
-		if left := TimeLeft(m.sl.Remaining("copy")); left != "" {
+		if left := TimeLeft(m.sl.Remaining(execute.StepCopy)); left != "" {
 			detail += " · " + strings.ToLower(left[:1]) + left[1:]
 		}
 		line(DimText.Render(detail))
@@ -356,7 +358,7 @@ func (m CopyModel) belowStages() string {
 			line(Bad.Render("✗ ") + Text.Render(m.err.Error()))
 		}
 		if m.res.Copied > 0 {
-			line(DimText.Render(countWord(m.res.Copied, "file") + " made it in before it stopped; the next copy carries on."))
+			line(DimText.Render(human.Plural(m.res.Copied, "file", "files") + " made it in before it stopped; the next copy carries on."))
 		}
 	case copyDone:
 		b.WriteString("\n")
@@ -402,12 +404,4 @@ func (m CopyModel) footer() string {
 		return hints(KeyHint("r", "open report"), KeyHint("1-2", "choose"), KeyHint("enter", "go"), MoreKeys())
 	}
 	return hints(KeyHint("1-2", "choose"), KeyHint("enter", "go"), MoreKeys())
-}
-
-// countWord is "1 file", "3 files", "15,481 files".
-func countWord(n int, word string) string {
-	if n == 1 {
-		return "1 " + word
-	}
-	return Count(n) + " " + word + "s"
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/scanner"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
@@ -101,9 +101,7 @@ type Result struct {
 	Planned int // files the plan proposes a place for
 }
 
-// RunScan canonicalizes and prunes nested roots, then runs the pipeline
-// synchronously. A stopped run's error wraps context.Canceled. force re-reads
-// every file even if unchanged.
+// RunScan runs the pipeline over paths (nested roots pruned); a stop wraps context.Canceled.
 func (wf *Workflow) RunScan(ctx context.Context, paths []string, force bool) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -184,7 +182,7 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 			run: func(ctx context.Context) (int, error) {
 				return wf.scanner.Run(ctx, paths, force)
 			},
-			summary: func(count int) string { return "Found " + files(count) },
+			summary: func(count int) string { return "Found " + human.Plural(count, "file", "files") },
 		},
 		{
 			kind:     workflowPhaseMetadata,
@@ -202,7 +200,7 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 				}
 				return extractor.Run(ctx)
 			},
-			summary: func(count int) string { return "Read " + files(count) },
+			summary: func(count int) string { return "Read " + human.Plural(count, "file", "files") },
 		},
 		{
 			kind:     workflowPhaseVFS,
@@ -214,7 +212,7 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 				}
 				return vfs.Propose(ctx, wf.db, resolver, wf.appCfg, wf.log)
 			},
-			summary: func(count int) string { return "Planned " + files(count) },
+			summary: func(count int) string { return "Planned " + human.Plural(count, "file", "files") },
 		},
 	}
 }
@@ -251,20 +249,4 @@ func (wf *Workflow) run(ctx context.Context, phase workflowPhase) (int, error) {
 		logger.ElapsedKey, elapsed.Round(time.Millisecond).String())
 
 	return count, nil
-}
-
-// files counts files in a sentence: "1 file", "15,481 files".
-func files(n int) string {
-	if n == 1 {
-		return "1 file"
-	}
-	digits := strconv.Itoa(n)
-	var b strings.Builder
-	for i, d := range digits {
-		if i > 0 && (len(digits)-i)%3 == 0 {
-			b.WriteByte(',')
-		}
-		b.WriteRune(d)
-	}
-	return b.String() + " files"
 }

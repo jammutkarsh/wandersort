@@ -94,9 +94,7 @@ func interruptible() (context.Context, context.CancelFunc) {
 	return ctx, stop
 }
 
-// newDeps builds a Coordinator wired to this app's config and log. Both
-// callbacks may be nil (every non-TUI path): no progress, and a failed try is
-// logged before the next.
+// newDeps builds a Coordinator for this app; nil callbacks mean no progress and a logged wait between tries.
 func (a *app) newDeps(onProgress func(install.Progress), beforeRetry install.RetryFunc) *install.Coordinator {
 	return install.New(install.Options{
 		ExecutablePath: a.Config.ExecutablePath,
@@ -208,11 +206,7 @@ func (a *app) closeLibrary() {
 	a.AppDB, a.outLock = nil, nil
 }
 
-// switchLibrary points the session at the library folder dir: one WanderSort
-// already organised opens with its own settings and plan; any other folder
-// starts a new library with the current settings and nothing planned. The old
-// library stays as it is on disk. If dir can't be opened, the old library is
-// opened again.
+// switchLibrary makes dir the session's library, reopening the old one if dir can't be opened.
 func (a *app) switchLibrary(ctx context.Context, dir string) error {
 	old := a.Config.OutputDir()
 	if dir == old {

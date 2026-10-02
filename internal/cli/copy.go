@@ -11,6 +11,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/report"
@@ -103,7 +104,7 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	case rep.Failed > 0:
 		return withCode(exitPartial, fmt.Errorf("%d of %d files were not copied — the report lists each one and why", rep.Failed, rep.Done+rep.Failed))
 	case len(left) > 0:
-		return withCode(exitPartial, fmt.Errorf("%s not be read, so not in the library", countFiles(len(left), "source file could", "source files could")))
+		return withCode(exitPartial, fmt.Errorf("%s not be read, so not in the library", human.Plural(len(left), "source file could", "source files could")))
 	case rep.Done == 0:
 		fmt.Fprintln(os.Stderr, "Nothing left to copy — run 'wandersort add' to plan more files.")
 	}
@@ -196,9 +197,7 @@ func (a *app) cleanPreviews() {
 	}
 }
 
-// saveFailurePage writes the page listing every file not in the library,
-// beside this run's log, and returns its path; "" if it could not be written
-// (the log still has every file).
+// saveFailurePage writes the failure page beside this run's log and returns its path; "" if it couldn't.
 func (a *app) saveFailurePage(ctx context.Context) string {
 	page := a.logFile.Page()
 	if page == "" {
@@ -218,12 +217,10 @@ func (a *app) saveFailurePage(ctx context.Context) string {
 	return page
 }
 
-// maxLeftBehindShown bounds how many never-read files copy names on
-// screen; the log has every one.
+// maxLeftBehindShown bounds the never-read files copy names on screen; the log has every one.
 const maxLeftBehindShown = 10
 
-// reportLeftBehind names source files no transfer will bring in because they
-// were never read. Printed last, whatever the outcome.
+// reportLeftBehind names the never-read source files no copy brings in; printed last, whatever the outcome.
 func (a *app) reportLeftBehind(left []string) {
 	if len(left) == 0 {
 		return

@@ -113,8 +113,8 @@ func TestConfig(t *testing.T) {
 				choice string
 				label  string
 			}{
-				{nil, layoutPresets[0].name + recommended, "Year › Month › Day › Place"},
-				{[]string{"date", "location"}, layoutPresets[0].name + recommended, "Year › Month › Day › Place"},
+				{nil, layoutPresets[0].name, "Year › Month › Day › Place"},
+				{[]string{"date", "location"}, layoutPresets[0].name, "Year › Month › Day › Place"},
 				{[]string{"location"}, "Year › Month › Place", "Year › Month › Place"},
 				{[]string{"none"}, customLayout, "Custom: Year › Month"},
 				{[]string{"date", "device"}, customLayout, "Custom: Year › Month › Day › Camera"},

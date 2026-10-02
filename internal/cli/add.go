@@ -11,6 +11,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
@@ -28,8 +29,7 @@ func waitForDeps(ctx context.Context, deps *install.Coordinator) error {
 	return nil
 }
 
-// depsFailure says which dependency could not be installed and what to do;
-// the full error is already in the log.
+// depsFailure says which dependency could not be installed and what to do.
 func depsFailure(err error) error {
 	failed := install.Failed(err)
 	if len(failed) == 0 {
@@ -46,8 +46,7 @@ func depsFailure(err error) error {
 	}
 }
 
-// shortError says what to do on screen and keeps the full cause for the log
-// and errors.Is.
+// shortError is the on-screen message; the full cause stays for the log and errors.Is.
 type shortError struct {
 	msg string
 	err error
@@ -122,9 +121,7 @@ type addResult struct {
 	Unreadable int `json:"unreadable"`
 }
 
-// runAddPlain is the non-TUI path (--plain, --json or non-terminal stderr):
-// runs the pipeline synchronously with one line per stage. force re-reads
-// every file.
+// runAddPlain runs the pipeline without the TUI (--plain, --json, no terminal), one line per stage.
 func (a *app) runAddPlain(paths []string, force bool) error {
 	start := time.Now()
 	var res addResult
@@ -167,15 +164,7 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 	res.Unreadable = len(left)
 	a.Log.Info("next: wandersort organise to correct the plan, or wandersort copy to copy it in", logger.UserKey, true)
 	if len(left) > 0 {
-		return withCode(exitPartial, fmt.Errorf("%s not be read; the next add tries again", countFiles(len(left), "file could", "files could")))
+		return withCode(exitPartial, fmt.Errorf("%s not be read; the next add tries again", human.Plural(len(left), "file could", "files could")))
 	}
 	return nil
-}
-
-// countFiles puts n in front of the singular or plural phrase.
-func countFiles(n int, one, many string) string {
-	if n == 1 {
-		return "1 " + one
-	}
-	return fmt.Sprintf("%d %s", n, many)
 }

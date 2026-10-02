@@ -137,7 +137,7 @@ func (a *app) runShell(start shellStart) error {
 		func(ctx context.Context, next int, err error) error {
 			a.Log.Warn("Download failed, asking for a better network", "try", next-1, "error", err)
 			retry := make(chan struct{})
-			prog.Send(tui.RetryMsg{Failed: failedDeps(err), Next: next, Tries: install.MaxTries, Go: retry})
+			prog.Send(tui.RetryMsg{Failed: failedDeps(err), Next: next, Tries: install.MaxTries, Wait: install.RetryDelay, Go: retry})
 			select {
 			case <-retry:
 				return nil
@@ -197,8 +197,7 @@ func (m shellModel) exitStatus() error {
 // Init shows the getting-ready screen; the tabs start once it lifts.
 func (m shellModel) Init() tea.Cmd { return m.gate.Init() }
 
-// updateGate routes everything to the getting-ready screen until the
-// dependencies are in.
+// updateGate routes everything to the getting-ready screen until the dependencies are in.
 func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -228,9 +227,9 @@ func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// startCmd asks for the starting tab by message (Init runs on a copy, so
-// placing a screen there would be lost).
+// startCmd asks for the starting tab by message.
 func (m shellModel) startCmd() tea.Cmd {
+	// Init runs on a copy of the model, so a screen placed there would be lost
 	switch {
 	case len(m.start.paths) > 0:
 		// `wandersort add -p …`: paths already given, start the run
@@ -440,10 +439,7 @@ func (m *shellModel) settingsSaved(before config.Settings) tea.Cmd {
 // replanDoneMsg reports a settings re-plan; only a failure says anything.
 type replanDoneMsg struct{ err error }
 
-// replan re-proposes the whole library under the saved settings, off the UI
-// goroutine. A failure is logged as well as shown: otherwise execute would copy
-// files under settings the user already changed, with only a home-screen line
-// (not drawn during a scan) saying so.
+// replan re-proposes the whole library under the saved settings, off the UI goroutine.
 func (m *shellModel) replan() tea.Cmd {
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
@@ -452,6 +448,7 @@ func (m *shellModel) replan() tea.Cmd {
 		}
 		defer a.work.done()
 		if _, err := a.rebuildTree(ctx); err != nil {
+			// logged as well as shown: a failed re-plan leaves copy with the old settings' plan
 			a.Log.Warn("Could not re-plan the folders for the new settings — 'wandersort copy' would still copy the old plan. Open the settings and save again.",
 				logger.UserKey, true, "error", err)
 			return replanDoneMsg{err: err}
@@ -498,9 +495,7 @@ func (m *shellModel) homeAgain(note string) tea.Cmd {
 	return m.place(tabScan, m.a.newHomeScreen(history))
 }
 
-// nextTab cycles through the tabs, skipping what can't be used now: Organise
-// with nothing to review, Copy with nothing to copy, and anything that would
-// start new work or change settings under a running scan or copy.
+// nextTab cycles the tabs, skipping any that can't be used now.
 func (m shellModel) nextTab() int {
 	for i := 1; i <= numTabs; i++ {
 		t := (m.tab + i) % numTabs
@@ -631,8 +626,7 @@ func (m shellModel) View() string {
 	return m.tabBar() + "\n" + s.View()
 }
 
-// tabBar is the one line the container owns: the app's name, the tabs (a ●
-// where something waits), and the library on the right.
+// tabBar is the shell's one line: the app's name, the tabs (● where something waits) and the library.
 func (m shellModel) tabBar() string {
 	parts := []string{tui.Brand()}
 	for i, name := range tabNames {

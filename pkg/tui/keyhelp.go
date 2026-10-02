@@ -17,16 +17,13 @@ type KeyGroup struct {
 // KeyLine is one key and what it does, in a few words.
 type KeyLine struct{ Key, What string }
 
-// MoreKeys is the footer hint every screen ends on: the rest of its keys are
-// one ? away.
+// MoreKeys is the hint every footer ends on: the rest of the keys are one ? away.
 func MoreKeys() string { return KeyHint("?", "more keys") }
 
 // keyHelpBox is the bordered key list the overlay draws.
 var keyHelpBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(Primary).Padding(0, 2)
 
-// KeyHelp draws groups in a bordered box over base, centred in a w×h screen,
-// so the screen stays visible around it. Groups go side by side when one
-// column would not fit the height.
+// KeyHelp draws groups in a box centred over base, side by side when one column is too tall.
 func KeyHelp(base string, groups []KeyGroup, w, h int) string {
 	blocks := make([]string, len(groups))
 	for i, g := range groups {

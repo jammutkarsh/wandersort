@@ -21,8 +21,7 @@ func seedError(t *testing.T, d *db.DB, fileID int64, stage, op, kind string) {
 	}
 }
 
-// Failed transfers and never-read files are listed by drive, then reason; a
-// copied file, a placed file's old error and an unplanned duplicate are not.
+// Failed transfers and never-read files are listed by drive and reason; copied, placed and duplicate files aren't.
 func TestFailures(t *testing.T) {
 	ctx := context.Background()
 	d := dbtest.New(t)

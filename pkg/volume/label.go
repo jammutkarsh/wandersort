@@ -8,8 +8,7 @@ import (
 // ThisComputer is the name Label gives a path on the machine's own disk.
 const ThisComputer = "This computer"
 
-// mountRoots are the folders removable and network drives mount under, and
-// how many segments below them name the drive (/media/<user>/<drive>).
+// mountRoots are where removable and network drives mount, and how many segments below name the drive.
 var mountRoots = []struct {
 	prefix string
 	skip   int
@@ -20,13 +19,9 @@ var mountRoots = []struct {
 	{"/mnt/", 0},
 }
 
-// Label names the drive a path lives on, for a person: the mount's folder name
-// for a removable or network drive, the drive letter on Windows, and
-// ThisComputer otherwise. It reads only the path, so it works for a drive
-// that is no longer plugged in.
-// ponytail: a drive mounted anywhere else reads as ThisComputer; ask the OS
-// for the mount point if that misleads.
+// Label names a path's drive from the path alone: mount folder, Windows drive letter, or ThisComputer.
 func Label(path string) string {
+	// ponytail: a drive mounted anywhere else reads as ThisComputer; ask the OS for the mount point if that misleads
 	if v := filepath.VolumeName(path); v != "" {
 		return v
 	}

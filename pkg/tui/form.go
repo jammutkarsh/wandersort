@@ -52,6 +52,7 @@ type Field struct {
 	Value       *string         // for Input
 	BoolValue   *bool           // for Confirm
 	Options     []string        // for MultiSelect and Select
+	Recommended string          // for Select: the option marked "(recommended)"
 	Selected    map[string]bool // for MultiSelect
 	// Skip leaves the step out while it reports true (a follow-up question
 	// whose answer doesn't matter yet).
@@ -660,12 +661,16 @@ func (m FormModel) controlView(f *Field, label string) string {
 	case FieldSelect:
 		for i, opt := range f.Options {
 			num := fmt.Sprintf("%d) ", i+1)
+			note := ""
+			if opt == f.Recommended {
+				note = DimText.Render("  (recommended)")
+			}
 			b.WriteString("\n")
 			if i == m.multiCursor {
-				b.WriteString("    " + Title.Render("❯ "+num) + Text.Bold(true).Render(opt))
+				b.WriteString("    " + Title.Render("❯ "+num) + Text.Bold(true).Render(opt) + note)
 				continue
 			}
-			b.WriteString("      " + DimText.Render(num) + Text.Render(opt))
+			b.WriteString("      " + DimText.Render(num) + Text.Render(opt) + note)
 		}
 	}
 	return b.String()

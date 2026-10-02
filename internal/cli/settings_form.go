@@ -17,8 +17,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
-// layoutPresets are the ready-made folder layouts; any other rule list is
-// Custom.
+// layoutPresets are the ready-made folder layouts; any other rule list is Custom.
 var layoutPresets = []struct {
 	name  string
 	rules []string
@@ -31,20 +30,13 @@ var layoutPresets = []struct {
 // customLayout is the layout choice that opens the full rule list.
 const customLayout = "Custom…"
 
-// recommended marks the default layout in the list.
-const recommended = "  (recommended)"
-
-// layoutChoice is the layout option that stands for rules: a preset's name,
-// or customLayout. No rules at all is the default, the first preset.
+// layoutChoice is the option for rules: a preset's name (no rules = the first), or customLayout.
 func layoutChoice(rules []string) string {
 	if len(rules) == 0 {
-		return layoutPresets[0].name + recommended
+		return layoutPresets[0].name
 	}
-	for i, p := range layoutPresets {
+	for _, p := range layoutPresets {
 		if slices.Equal(p.rules, rules) {
-			if i == 0 {
-				return p.name + recommended
-			}
 			return p.name
 		}
 	}
@@ -54,14 +46,12 @@ func layoutChoice(rules []string) string {
 // layoutLabel is how the settings list shows a rule list.
 func layoutLabel(rules []string) string {
 	if c := layoutChoice(rules); c != customLayout {
-		return strings.TrimSuffix(c, recommended)
+		return c
 	}
 	return "Custom: " + layoutName(rules, " › ")
 }
 
-// settingsForm is one edit of a library's settings: a working copy, the
-// fields that change it, and the save that writes it. Built fresh per edit, so
-// leaving without saving leaves nothing behind.
+// settingsForm is one edit of a library's settings, built fresh so leaving without saving changes nothing.
 type settingsForm struct {
 	a        *app
 	ctx      context.Context
@@ -108,7 +98,7 @@ func (a *app) newSettingsForm(ctx context.Context, geonames func() (*location.Re
 // rules is the folder levels the form's answers stand for.
 func (f *settingsForm) rules() []string {
 	for _, p := range layoutPresets {
-		if strings.TrimSuffix(f.layout, recommended) == p.name {
+		if f.layout == p.name {
 			return p.rules
 		}
 	}
@@ -158,12 +148,8 @@ func (f *settingsForm) libraryField() *tui.Field {
 
 func (f *settingsForm) layoutFields() []*tui.Field {
 	options := make([]string, 0, len(layoutPresets)+1)
-	for i, p := range layoutPresets {
-		name := p.name
-		if i == 0 {
-			name += recommended
-		}
-		options = append(options, name)
+	for _, p := range layoutPresets {
+		options = append(options, p.name)
 	}
 	options = append(options, customLayout)
 	return []*tui.Field{{
@@ -171,13 +157,13 @@ func (f *settingsForm) layoutFields() []*tui.Field {
 		Title:       "How should folders be laid out?",
 		Description: "You can change this later. Files already copied stay where they are.",
 		Options:     options,
+		Recommended: layoutPresets[0].name,
 		Value:       &f.layout,
 		Example:     f.ex.Rules,
 	}, f.rulesField}
 }
 
-// townField is a town input that completes from the locationDB and saves
-// their spelling.
+// townField is a town input that completes from the locationDB.
 func (f *settingsForm) townField(title, description string, value *string) *tui.Field {
 	return &tui.Field{
 		Kind: tui.FieldInput, Title: title, Description: description,
@@ -226,8 +212,7 @@ func (f *settingsForm) fineTuning() *tui.Field {
 	}
 }
 
-// validateTown rejects a typo (close candidates exist) but accepts an unknown
-// name, or any name when the locationDB failed to open.
+// validateTown rejects a typo but accepts an unknown name, or any name when the locationDB failed to open.
 func (f *settingsForm) validateTown(s string) error {
 	if strings.TrimSpace(s) == "" {
 		return nil // blank = skip
@@ -265,8 +250,7 @@ func (f *settingsForm) canonicalTown(typed string) string {
 	}
 }
 
-// save writes the answers to their library, opening (or creating) it if this
-// form asked where it goes; quitting before save writes nothing.
+// save writes the answers, opening or creating the library if the form asked where it goes.
 func (f *settingsForm) save() error {
 	work := f.work
 	if strings.TrimSpace(work) == "" {
@@ -286,9 +270,7 @@ func (f *settingsForm) save() error {
 	return nil
 }
 
-// buildSettingsForm is the first-run setup: where the library goes (only
-// while none is open, since an open library's folder never moves), the
-// layout, and home. The save creates the library.
+// buildSettingsForm is the first-run setup: library folder (while none is open), layout and home.
 func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
 	f := a.newSettingsForm(ctx, geonames)
 	var fields []*tui.Field
@@ -300,8 +282,7 @@ func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.
 	return fields, f.save
 }
 
-// settingsRows is an open library's settings, one row each; each edit starts
-// from the settings as saved.
+// settingsRows is an open library's settings, one row each; every edit starts from the saved settings.
 func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resolver, error)) func() []tui.SettingRow {
 	edit := func(fields func(*settingsForm) []*tui.Field) func() ([]*tui.Field, func() error) {
 		return func() ([]*tui.Field, func() error) {
@@ -317,14 +298,15 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 			}
 			return v
 		}
+		toggles := []bool{s.CollapseLevels, s.SavedPlacesDateOnly, s.MergeSameLocationDays}
 		on := 0
-		for _, b := range []bool{s.CollapseLevels, s.SavedPlacesDateOnly, s.MergeSameLocationDays} {
+		for _, b := range toggles {
 			if b {
 				on++
 			}
 		}
-		tuning := fmt.Sprintf("%d of 3 on", on)
-		if on == 3 {
+		tuning := fmt.Sprintf("%d of %d on", on, len(toggles))
+		if on == len(toggles) {
 			tuning = "all on"
 		}
 		work := s.WorkTown

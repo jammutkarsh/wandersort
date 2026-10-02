@@ -63,8 +63,7 @@ func (o *jsonOutcome) outcome() *jsonOutcome { return o }
 // jsonResult is a command's --json result.
 type jsonResult interface{ outcome() *jsonOutcome }
 
-// emitJSON prints res to stdout with err's exit code, once per process, when
-// --json is set. err passes through, so callers return emitJSON(…, err).
+// emitJSON prints res with err's exit code once per process when --json is set, and returns err.
 func (a *app) emitJSON(res jsonResult, start time.Time, err error) error {
 	if !a.jsonOut || a.jsonPrinted {
 		return err

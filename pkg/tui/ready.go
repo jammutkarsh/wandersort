@@ -6,6 +6,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 // InstallProgressMsg reports one dependency: bytes so far, or Ready.
@@ -15,17 +17,14 @@ type InstallProgressMsg struct {
 	Ready       bool
 }
 
-// RetryMsg says a try failed and the next one waits. The screen closes Go when
-// it is time to retry: after the countdown, or at once on enter.
+// RetryMsg says a try failed; the screen closes Go to retry, after Wait or at once on enter.
 type RetryMsg struct {
 	Failed map[string]string // why each dependency that failed did, by phase
 	Next   int               // the try about to run
 	Tries  int               // tries allowed in all
+	Wait   time.Duration     // how long before the next try starts on its own
 	Go     chan<- struct{}
 }
-
-// DepsReadyMsg says every dependency is installed.
-type DepsReadyMsg struct{}
 
 // DepsFailedMsg says the last try failed; the app ends on the next key.
 type DepsFailedMsg struct {
@@ -39,9 +38,6 @@ type ReadyItem struct {
 	Label string
 }
 
-// retryCountdown is how long the screen waits before retrying on its own.
-const retryCountdown = 10 * time.Second
-
 type retryTickMsg struct{ gen int }
 
 type readyRow struct {
@@ -52,9 +48,7 @@ type readyRow struct {
 	failed      string // why the last try failed; empty while checking
 }
 
-// ReadyModel is the first screen of a session: it lists the downloadable
-// dependencies, shows their downloads, and asks for a better network between
-// tries.
+// ReadyModel is a session's first screen: the dependencies, their downloads, and a wait between tries.
 type ReadyModel struct {
 	rows []readyRow
 	sb   spinnerBar
@@ -101,7 +95,7 @@ func (m ReadyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case RetryMsg:
 		m.markFailed(msg.Failed)
-		m.waiting, m.next, m.tries, m.left = msg.Go, msg.Next, msg.Tries, retryCountdown
+		m.waiting, m.next, m.tries, m.left = msg.Go, msg.Next, msg.Tries, msg.Wait
 		m.gen++
 		return m, m.tick()
 	case retryTickMsg:
@@ -201,12 +195,12 @@ func (m ReadyModel) rowView(r readyRow) string {
 	case r.failed != "":
 		return row("  "+Bad.Render("✗")+" "+Text.Render(name)+" "+DimText.Render(r.failed), "", m.w)
 	case r.ready && r.total > 0:
-		return row("  "+OK.Render("✓")+" "+Text.Render(name)+" "+DimText.Render("downloaded, "+humanBytes(r.total)), "", m.w)
+		return row("  "+OK.Render("✓")+" "+Text.Render(name)+" "+DimText.Render("downloaded, "+volume.HumanBytes(uint64(r.total))), "", m.w)
 	case r.ready:
 		return row("  "+OK.Render("✓")+" "+Text.Render(name)+" "+DimText.Render("found"), "", m.w)
 	case r.total > 0:
 		left := "  " + m.sb.spin.View() + Text.Render(name) + " " + m.sb.bar.View() + "  " +
-			FaintTxt.Render(humanBytes(r.done)+" / "+humanBytes(r.total))
+			FaintTxt.Render(volume.HumanBytes(uint64(r.done))+" / "+volume.HumanBytes(uint64(r.total)))
 		return row(left, FaintTxt.Render(liveElapsed(r.start)), m.w)
 	default:
 		return row("  "+m.sb.spin.View()+Text.Render(name)+" "+DimText.Render("checking…"), FaintTxt.Render(liveElapsed(r.start)), m.w)
@@ -225,17 +219,4 @@ func (m ReadyModel) failedLabels() string {
 		return "what WanderSort needs"
 	}
 	return strings.Join(names, " and ")
-}
-
-func humanBytes(n int64) string {
-	switch {
-	case n >= 1<<30:
-		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
-	case n >= 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
-	case n >= 1<<10:
-		return fmt.Sprintf("%.0f KB", float64(n)/(1<<10))
-	default:
-		return fmt.Sprintf("%d B", n)
-	}
 }

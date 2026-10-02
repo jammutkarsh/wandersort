@@ -19,8 +19,7 @@ type LogEventMsg struct{ Event logger.Event }
 // scanDoneMsg reports the pipeline goroutine returned.
 type scanDoneMsg struct{ err error }
 
-// reviewReadyMsg reports ReviewNext (BuildTree + DB work) finished off the UI
-// goroutine.
+// reviewReadyMsg reports ReviewNext (BuildTree and DB work) finished off the UI goroutine.
 type reviewReadyMsg struct {
 	model Tab
 	err   error
@@ -43,8 +42,7 @@ type ScanConfig struct {
 	ReviewNext func() (Tab, error)
 }
 
-// ScanModel plans folders: a stage per pipeline phase while it runs, then
-// what to do next.
+// ScanModel plans folders: a stage per pipeline phase while it runs, then what to do next.
 type ScanModel struct {
 	cfg  ScanConfig
 	sl   StageList

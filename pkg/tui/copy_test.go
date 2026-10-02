@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 )
 
 func newTestCopy(plan CopyPlan, run func(func(string), func(string, int64, int, int)) (CopyResult, error)) CopyModel {
@@ -31,7 +33,7 @@ var fits = CopyPlan{Files: 2, Bytes: 200, Free: 1 << 30, FreeKnown: true, Fits: 
 
 func TestCopyRunsStepsInOrder(t *testing.T) {
 	m := newTestCopy(fits, func(step func(string), file func(string, int64, int, int)) (CopyResult, error) {
-		for _, s := range []string{"space", "apply", "backup", "copy"} {
+		for _, s := range []string{execute.StepSpace, execute.StepApply, execute.StepBackup, execute.StepCopy} {
 			step(s)
 		}
 		file("2024/a.jpg", 100, 1, 2)
@@ -49,7 +51,7 @@ func TestCopyRunsStepsInOrder(t *testing.T) {
 
 func TestCopyNamesWhatWasLeftOut(t *testing.T) {
 	m := newTestCopy(fits, func(step func(string), _ func(string, int64, int, int)) (CopyResult, error) {
-		step("copy")
+		step(execute.StepCopy)
 		return CopyResult{Copied: 1, Failed: 1, Report: "/logs/run.html", Problems: []CopyProblem{
 			{Reason: "Original is gone", Next: "Plug in the drive it was on.", Paths: []string{"/Volumes/SD/IMG_1.JPG"}},
 		}}, nil
@@ -85,7 +87,7 @@ func TestCopyCtrlCStopsBetweenFiles(t *testing.T) {
 	m := NewCopyModel(CopyConfig{
 		Plan: fits, Cancel: func() { cancelled++; close(release) },
 		Run: func(step func(string), _ func(string, int64, int, int)) (CopyResult, error) {
-			step("copy")
+			step(execute.StepCopy)
 			<-release
 			return CopyResult{Copied: 1}, errors.New("context canceled")
 		},

@@ -6,8 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// SettingRow is one line of the settings list: what it is, its current value,
-// and how to change it.
+// SettingRow is one line of the settings list: what it is, its value, and how to change it.
 type SettingRow struct {
 	Label, Value string
 	// Edit builds the one-step form that changes this setting, over a fresh
@@ -20,8 +19,7 @@ type SettingsSavedMsg struct{}
 
 type settingsEditDoneMsg struct{ leave Leave }
 
-// SettingsModel lists a library's settings; enter changes one, and the list
-// comes back with the new value.
+// SettingsModel lists a library's settings; enter changes one, and the list comes back updated.
 type SettingsModel struct {
 	rows     func() []SettingRow
 	list     []SettingRow
@@ -43,8 +41,7 @@ var settingsKeys = []KeyGroup{
 	}},
 }
 
-// NewSettingsModel lists rows(), re-read after every save; note sits under the
-// list.
+// NewSettingsModel lists rows(), re-read after every save, with note under the list.
 func NewSettingsModel(rows func() []SettingRow, note string) SettingsModel {
 	m := SettingsModel{rows: rows, note: note, list: rows()}
 	m.cursor = m.firstEditable()
