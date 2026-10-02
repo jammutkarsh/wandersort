@@ -213,7 +213,7 @@ func (m ReadyModel) rowView(r readyRow) string {
 	}
 }
 
-// failedLabels names the rows that failed: "exiftool and Place names".
+// failedLabels names the rows that failed: "exiftool and locationDB".
 func (m ReadyModel) failedLabels() string {
 	var names []string
 	for _, r := range m.rows {

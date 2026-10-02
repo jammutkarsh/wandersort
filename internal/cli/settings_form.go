@@ -176,7 +176,7 @@ func (f *settingsForm) layoutFields() []*tui.Field {
 	}, f.rulesField}
 }
 
-// townField is a town input that completes from the place names and saves
+// townField is a town input that completes from the locationDB and saves
 // their spelling.
 func (f *settingsForm) townField(title, description string, value *string) *tui.Field {
 	return &tui.Field{
@@ -227,7 +227,7 @@ func (f *settingsForm) fineTuning() *tui.Field {
 }
 
 // validateTown rejects a typo (close candidates exist) but accepts an unknown
-// name, or any name when the place names failed to open.
+// name, or any name when the locationDB failed to open.
 func (f *settingsForm) validateTown(s string) error {
 	if strings.TrimSpace(s) == "" {
 		return nil // blank = skip
@@ -243,7 +243,7 @@ func (f *settingsForm) validateTown(s string) error {
 	return err
 }
 
-// canonicalTown is the place names' spelling when they can give one, else
+// canonicalTown is the locationDB's spelling when they can give one, else
 // what was typed: dropping a town the user already had is data loss.
 func (f *settingsForm) canonicalTown(typed string) string {
 	typed = strings.TrimSpace(typed)

@@ -25,7 +25,7 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 
 - Settings live in the library (`library_settings`), not a global file. The only per-run choice is which library: `--output-path`, else the most recent (`~/.wandersort/libraries`).
 - `openLibrary` is the one way to open a library: check folder, take lock, open DB, load settings, remember it. A session that never opens one writes nothing.
-- The shell opens on the getting-ready screen (`tui.ReadyModel`) until exiftool and the place names are installed: `install.MaxTries` tries, asking for a better network between them; giving up exits 1. Then it opens the last library, if there is one.
+- The shell opens on the getting-ready screen (`tui.ReadyModel`) until exiftool and the locationDB are installed: `install.MaxTries` tries, asking for a better network between them; giving up exits 1. Then it opens the last library, if there is one.
 - Settings is a shell tab (`settings_form.go`, `settings_examples.go`): a three-step setup (library, layout, home) when no library is open, else a list of rows edited one at a time. Saving a changed setting re-plans at once.
 - Exit codes (`exit.go`): 0 done, 1 error, 2 bad usage, 3 finished with failed files, 4 library busy. `--json` prints one result object on stdout at the end.
 - A copy that leaves files out writes an HTML page (`report.Failures`, `report.SaveHTML`) beside the run's log, same name, `.html` (`logger.File.Page`).

@@ -74,7 +74,7 @@ make install         installs to $GOPATH/bin/wandersort (requires Go 1.27.1 or a
 # Do everything on screen: settings, adding folders, correcting the plan.
 wandersort
 
-# Or step by step. Dependencies (ExifTool + place names) download on first
+# Or step by step. Dependencies (ExifTool + locationDB) download on first
 # use, in up to three tries.
 wandersort add --paths ~/Pictures,/Volumes/SD   # plan where every file goes
 wandersort organise                              # correct the plan

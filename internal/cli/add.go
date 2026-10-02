@@ -37,7 +37,7 @@ func depsFailure(err error) error {
 	}
 	names := make([]string, len(failed))
 	for i, de := range failed {
-		names[i] = strings.ToLower(depLabels[de.Phase]) + " (" + de.Reason() + ")"
+		names[i] = depLabels[de.Phase] + " (" + de.Reason() + ")"
 	}
 	return &shortError{
 		msg: fmt.Sprintf("couldn't download %s after %d tries — check your connection and run wandersort again",

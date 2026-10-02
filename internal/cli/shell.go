@@ -89,7 +89,7 @@ type reviewOpenMsg struct {
 // depLabels names each dependency on screen.
 var depLabels = map[string]string{
 	install.PhaseExiftool: "exiftool",
-	install.PhaseLocation: "Place names",
+	install.PhaseLocation: "locationDB",
 }
 
 // failedDeps is why each dependency in err failed, by phase.

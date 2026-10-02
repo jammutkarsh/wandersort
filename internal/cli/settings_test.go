@@ -83,7 +83,7 @@ func TestConfig(t *testing.T) {
 			}
 			*homeField.Value = "Indore"
 			if err := homeField.Validator("Indore"); err != nil {
-				t.Errorf("unusable place names must let a town through, got %v", err)
+				t.Errorf("an unusable locationDB must let a town through, got %v", err)
 			}
 			if err := save(); err != nil {
 				t.Fatalf("save: %v", err)

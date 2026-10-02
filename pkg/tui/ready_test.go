@@ -10,7 +10,7 @@ import (
 )
 
 func newTestReady() ReadyModel {
-	m := NewReadyModel(ReadyItem{Phase: "exiftool", Label: "exiftool"}, ReadyItem{Phase: "location", Label: "Place names"})
+	m := NewReadyModel(ReadyItem{Phase: "exiftool", Label: "exiftool"}, ReadyItem{Phase: "location", Label: "locationDB"})
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
 	return next.(ReadyModel)
 }
@@ -59,7 +59,7 @@ func TestReadyRetryReleasesOnEnterOrCountdown(t *testing.T) {
 func TestReadyGaveUpQuitsOnAnyKey(t *testing.T) {
 	m := newTestReady()
 	next, _ := m.Update(DepsFailedMsg{Failed: map[string]string{"location": "no connection"}, Tries: 3})
-	if view := ansi.Strip(next.View()); !strings.Contains(view, "Couldn't download Place names after 3 tries") {
+	if view := ansi.Strip(next.View()); !strings.Contains(view, "Couldn't download locationDB after 3 tries") {
 		t.Errorf("give-up screen must name the dependency and the tries:\n%s", view)
 	}
 	_, cmd := next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})

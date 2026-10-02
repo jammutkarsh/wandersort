@@ -14,7 +14,7 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 
 4a. `[H]` `shift+tab` cycles Add → Organise → Copy → Settings, skipping tabs with nothing to do.
 
-5. `[H]` first-ever `wandersort` → getting-ready screen downloads exiftool and the place names with progress bars, then opens the three-step setup (library, layout, home).
+5. `[H]` first-ever `wandersort` → getting-ready screen downloads exiftool and the locationDB with progress bars, then opens the three-step setup (library, layout, home).
 6. `[H]` dependencies already on disk → getting ready shows for a moment (`✓ found`), then the tabs; the last library opens without asking.
 6a. `[H]` network blocked (`HTTPS_PROXY=http://127.0.0.1:9`) → each failed dependency named, "Try switching to a better network", 10 s countdown, `enter` retries now; after try 3 any key quits with exit 1; the next launch tries 3 more times.
 7. `[H]` Settings → typing a town name lists full `<city>, <state>, <country>` names, never two identical rows; the saved choice resolves to the right city on the next scan.

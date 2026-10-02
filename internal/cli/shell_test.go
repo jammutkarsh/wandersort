@@ -478,7 +478,7 @@ func TestShellModel(t *testing.T) {
 
 			failed := testShell(t)
 			failed.gate = tui.NewReadyModel()
-			giveUp := errors.New("couldn't download place names")
+			giveUp := errors.New("couldn't download locationDB")
 			next, _ = failed.Update(depsDoneMsg{err: giveUp})
 			if err := next.(shellModel).exitStatus(); !errors.Is(err, giveUp) {
 				t.Errorf("exitStatus() = %v, want the dependency failure", err)
