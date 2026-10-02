@@ -70,6 +70,7 @@ type shellModel struct {
 	// settingsBefore is the library's settings as the wizard opened on them,
 	// so a save that changes nothing costs nothing (see settingsSaved).
 	settingsBefore config.Settings
+	libraryBefore  string // the library folder the settings tab opened on
 }
 
 // scanReadyMsg reports whether the library opened for a scan.
@@ -283,6 +284,15 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.openCopy()
 
 	case tui.SettingsSavedMsg:
+		if dir := m.a.Config.OutputDir(); dir != m.libraryBefore {
+			// another library: screens built over the old one are stale, and
+			// its plan is already its own
+			m.libraryBefore, m.settingsBefore = dir, m.a.Config.Settings
+			m.screens[tabReview] = nil
+			m.screens[tabCopy] = nil
+			m.refresh()
+			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: "Now using the library in " + path.New().RelativeToHome(dir)})
+		}
 		// a row of the settings list saved: re-plan if it changed anything
 		cmd := m.settingsSaved(m.settingsBefore)
 		m.settingsBefore = m.a.Config.Settings
@@ -531,7 +541,7 @@ func (m *shellModel) openSettings() tea.Cmd {
 	if err != nil {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: err})
 	}
-	m.settingsBefore = m.a.Config.Settings
+	m.settingsBefore, m.libraryBefore = m.a.Config.Settings, m.a.Config.OutputDir()
 	m.tab = tabSettings
 	return m.place(tabSettings, screen)
 }

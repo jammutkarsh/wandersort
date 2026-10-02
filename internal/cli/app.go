@@ -192,7 +192,8 @@ func (a *app) saveSettings(ctx context.Context, outputDir string, s config.Setti
 	return nil
 }
 
-func (a *app) closeDBs() {
+// closeLibrary flushes and closes the open library and releases its lock.
+func (a *app) closeLibrary() {
 	// a failed Close can leave WAL/SHM locked (locking_mode=EXCLUSIVE); log it
 	if a.AppDB != nil {
 		if err := a.AppDB.Writer.Flush(); err != nil {
@@ -204,6 +205,40 @@ func (a *app) closeDBs() {
 		}
 	}
 	a.outLock.Unlock() // nil-safe; after Close, so no other process opens the database mid-close
+	a.AppDB, a.outLock = nil, nil
+}
+
+// switchLibrary points the session at the library folder dir: one WanderSort
+// already organised opens with its own settings and plan; any other folder
+// starts a new library with the current settings and nothing planned. The old
+// library stays as it is on disk. If dir can't be opened, the old library is
+// opened again.
+func (a *app) switchLibrary(ctx context.Context, dir string) error {
+	old := a.Config.OutputDir()
+	if dir == old {
+		return nil
+	}
+	if err := config.CheckLibrary(dir); err != nil {
+		return err
+	}
+	_, statErr := os.Stat(filepath.Join(dir, filepath.Base(a.Config.AppDBPath)))
+	isNew := statErr != nil
+	carry := a.Config.Settings
+
+	a.closeLibrary()
+	a.Config.SetOutput(dir)
+	if err := a.openLibrary(ctx); err != nil {
+		a.Config.SetOutput(old)
+		return errors.Join(err, a.openLibrary(ctx))
+	}
+	if isNew {
+		return a.saveSettings(ctx, dir, carry)
+	}
+	return nil
+}
+
+func (a *app) closeDBs() {
+	a.closeLibrary()
 	if a.Deps != nil {
 		if err := a.Deps.Close(); err != nil {
 			a.Log.Error("failed to close location database", "error", err)

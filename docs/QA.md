@@ -20,6 +20,7 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 7. `[H]` Settings → typing a town name lists full `<city>, <state>, <country>` names, never two identical rows; the saved choice resolves to the right city on the next scan.
 8. `[H]` setup → layouts are numbered, a digit picks one, the example tree follows the option under the cursor; `4) Custom…` adds the rule step; `ctrl+b` goes back a step.
 9. `[H]` Settings with a library open → a list of answers; enter changes one row and returns to the list with "Saved"; `esc` saves what's on screen without asking; a changed setting re-plans at once, an unchanged save re-plans nothing; `ctrl+c` leaves without saving.
+9a. `[H]` Settings → Library folder → an empty folder starts a new library with the same settings and nothing planned; a folder WanderSort organised opens with its own; the old library is untouched and opens again when chosen.
 10. `[A]` delete the exiftool binary, then `add` → it is downloaded again before the run starts.
 
 ## 3. Add (scan → metadata → vfs)

@@ -155,8 +155,8 @@ func TestConfig(t *testing.T) {
 			if want := []string{"Library folder", "Folder layout", "Home", "Work", "Fine-tuning"}; !reflect.DeepEqual(labels, want) {
 				t.Fatalf("rows = %v, want %v", labels, want)
 			}
-			if rows[0].Edit != nil {
-				t.Error("an open library's folder can't change")
+			if rows[0].Edit == nil {
+				t.Error("the library folder must be changeable")
 			}
 
 			fields, _ := rows[4].Edit()

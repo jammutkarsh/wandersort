@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/spf13/cobra"
@@ -259,5 +261,51 @@ func TestWorkGroupShutdown(t *testing.T) {
 	}
 	if g.start() {
 		t.Error("work started after shutdown")
+	}
+}
+
+// Changing the library folder: a new folder starts a library with the same
+// settings and nothing planned, leaving the old one as it was; a folder that
+// already holds a library opens with its own settings.
+func TestSwitchLibrary(t *testing.T) {
+	ctx := context.Background()
+	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+	if err := a.openLibrary(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer a.closeDBs()
+	first := a.Config.OutputDir()
+	s := a.Config.Settings
+	s.Rules = []string{"date"}
+	if err := a.saveSettings(ctx, first, s); err != nil {
+		t.Fatal(err)
+	}
+	dbtest.SeedFile(t, a.AppDB, 1, "/src", "a.jpg", 1)
+
+	second := filepath.Join(t.TempDir(), "second")
+	if err := a.switchLibrary(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	var files int
+	if err := a.AppDB.SQL.GetContext(ctx, &files, `SELECT COUNT(*) FROM file_registry`); err != nil {
+		t.Fatal(err)
+	}
+	if a.Config.OutputDir() != second || files != 0 || !slices.Equal(a.Config.Rules, []string{"date"}) {
+		t.Errorf("new library at %q: files=%d rules=%v, want empty with the old rules", a.Config.OutputDir(), files, a.Config.Rules)
+	}
+
+	s = a.Config.Settings
+	s.Rules = []string{"location"}
+	if err := a.saveSettings(ctx, second, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.switchLibrary(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.AppDB.SQL.GetContext(ctx, &files, `SELECT COUNT(*) FROM file_registry`); err != nil {
+		t.Fatal(err)
+	}
+	if files != 1 || !slices.Equal(a.Config.Rules, []string{"date"}) {
+		t.Errorf("back in the first library: files=%d rules=%v, want its own file and rules", files, a.Config.Rules)
 	}
 }

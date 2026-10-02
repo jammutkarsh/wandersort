@@ -332,7 +332,15 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 			work = ""
 		}
 		return []tui.SettingRow{
-			{Label: "Library folder", Value: path.New().RelativeToHome(a.Config.OutputDir())},
+			{Label: "Library folder", Value: path.New().RelativeToHome(a.Config.OutputDir()), Edit: func() ([]*tui.Field, func() error) {
+				f := a.newSettingsForm(ctx, geonames)
+				field := f.libraryField()
+				field.Title = "Which library?"
+				field.Description = "A folder WanderSort has organised opens as it is. Any other folder starts a new library with these settings. Files planned here don't come along; add their folders again there. This library stays as it is."
+				return []*tui.Field{field}, func() error {
+					return a.switchLibrary(ctx, f.paths.ExpandPath(strings.TrimSpace(f.out)))
+				}
+			}},
 			{Label: "Folder layout", Value: layoutLabel(s.Rules), Edit: edit((*settingsForm).layoutFields)},
 			{Label: "Home", Value: orNotSet(s.HomeTown), Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.homeField()} })},
 			{Label: "Work", Value: orNotSet(work), Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.workField()} })},
