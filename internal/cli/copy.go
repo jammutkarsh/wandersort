@@ -89,11 +89,11 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 		DryRun:    dryRun,
 		OnApplied: a.cleanPreviews,
 	})
+	res.Copied, res.Failed, res.Bytes = rep.Done, rep.Failed, rep.Bytes
 	if errors.Is(err, context.Canceled) {
 		// every file not yet reached is still pending; nothing is half-placed
 		return fmt.Errorf("stopped after %d files — run 'wandersort copy' again to carry on from there", rep.Done)
 	}
-	res.Copied, res.Failed, res.Bytes = rep.Done, rep.Failed, rep.Bytes
 	if err != nil {
 		return err
 	}
@@ -111,20 +111,19 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	return nil
 }
 
-// newCopyScreen opens the library and builds the Copy tab over what is
-// waiting to be copied.
-func (a *app) newCopyScreen(session context.Context) (tui.Tab, error) {
+// newCopyScreen opens the library and builds the Copy tab over what waits to be copied; stop ends its context.
+func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop context.CancelFunc, err error) {
 	if err := a.openLibrary(session); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	outputDir := a.Config.OutputDir()
 	files, bytes, err := execute.Pending(session, a.AppDB)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	space, err := execute.SpaceFor(session, a.AppDB, outputDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	plan := tui.CopyPlan{
 		Files: files, Bytes: bytes, Edits: a.readState(session).Edits,
@@ -133,15 +132,15 @@ func (a *app) newCopyScreen(session context.Context) (tui.Tab, error) {
 
 	// the copy's own context: its ctrl+c must not end the session
 	ctx, cancel := context.WithCancel(session)
-	return tui.NewCopyModel(tui.CopyConfig{
+	screen = tui.NewCopyModel(tui.CopyConfig{
 		Library: outputDir,
 		Plan:    plan,
 		Cancel:  cancel,
 		Run: func(onStep func(string), onProgress func(string, int64, int, int)) (tui.CopyResult, error) {
-			if !a.work.start() {
+			if !a.work.startOnLibrary() {
 				return tui.CopyResult{}, context.Canceled
 			}
-			defer a.work.done()
+			defer a.work.doneOnLibrary()
 			rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{
 				OnApplied:  a.cleanPreviews,
 				OnStep:     onStep,
@@ -162,7 +161,8 @@ func (a *app) newCopyScreen(session context.Context) (tui.Tab, error) {
 			}
 			return res, nil
 		},
-	}), nil
+	})
+	return screen, cancel, nil
 }
 
 // copyProblems groups the files a copy left out by reason, for the screen.

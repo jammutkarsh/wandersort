@@ -264,9 +264,36 @@ func TestWorkGroupShutdown(t *testing.T) {
 	}
 }
 
-// Changing the library folder: a new folder starts a library with the same
-// settings and nothing planned, leaving the old one as it was; a folder that
-// already holds a library opens with its own settings.
+// The library can't be switched while work runs on it, and work waits out a switch.
+func TestWorkGroupHoldLibrary(t *testing.T) {
+	var g workGroup
+	if !g.startOnLibrary() {
+		t.Fatal("startOnLibrary refused")
+	}
+	if _, ok := g.holdLibrary(); ok {
+		t.Fatal("library held while work ran on it")
+	}
+	g.doneOnLibrary()
+	release, ok := g.holdLibrary()
+	if !ok {
+		t.Fatal("library not held once the work finished")
+	}
+	started := make(chan struct{})
+	go func() {
+		g.startOnLibrary()
+		close(started)
+		g.doneOnLibrary()
+	}()
+	select {
+	case <-started:
+		t.Fatal("work started on a library being switched")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	<-started
+}
+
+// A new folder starts an empty library with the same settings; an organised one opens with its own.
 func TestSwitchLibrary(t *testing.T) {
 	ctx := context.Background()
 	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}

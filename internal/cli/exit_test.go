@@ -28,3 +28,16 @@ func TestExitCode(t *testing.T) {
 		})
 	}
 }
+
+// Unknown commands and stray arguments are bad usage, refused before anything runs.
+func TestStrayArgumentsAreUsageErrors(t *testing.T) {
+	for _, args := range [][]string{{"execute"}, {"check", "extra"}, {"admin", "db", "extra"}} {
+		t.Run(fmt.Sprint(args), func(t *testing.T) {
+			cmd := (&app{}).newRootCmd()
+			cmd.SetArgs(args)
+			if got := ExitCode(cmd.Execute()); got != exitUsage {
+				t.Errorf("exit = %d, want %d", got, exitUsage)
+			}
+		})
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -52,6 +53,8 @@ type workGroup struct {
 	mu     sync.Mutex
 	closed bool
 	wg     sync.WaitGroup
+	// library is read-held by work on the open library and write-held while it is swapped
+	library sync.RWMutex
 }
 
 // start registers one piece of work, or reports false once shutdown began.
@@ -67,6 +70,28 @@ func (g *workGroup) start() bool {
 
 func (g *workGroup) done() { g.wg.Done() }
 
+// startOnLibrary is start for work on the open library; the library can't be switched while it runs.
+func (g *workGroup) startOnLibrary() bool {
+	if !g.start() {
+		return false
+	}
+	g.library.RLock()
+	return true
+}
+
+func (g *workGroup) doneOnLibrary() {
+	g.library.RUnlock()
+	g.done()
+}
+
+// holdLibrary takes the library from all work, or reports false while any runs on it.
+func (g *workGroup) holdLibrary() (release func(), ok bool) {
+	if !g.library.TryLock() {
+		return nil, false
+	}
+	return g.library.Unlock, true
+}
+
 // closeAndWait refuses new work and waits for what is running.
 func (g *workGroup) closeAndWait() {
 	g.mu.Lock()
@@ -78,7 +103,13 @@ func (g *workGroup) closeAndWait() {
 func Execute() error {
 	a := &app{}
 	err := a.newRootCmd().Execute()
-	// a failure before the command printed its own result still gets one
+	// a failure before the command printed its own result still gets one; a
+	// bad flag or argument fails before PersistentPreRunE reads --json
+	if err != nil && !a.jsonOut {
+		a.jsonOut = slices.ContainsFunc(os.Args[1:], func(arg string) bool {
+			return arg == "--"+flagJSON || arg == "--"+flagJSON+"=true"
+		})
+	}
 	return a.emitJSON(&jsonOutcome{}, time.Time{}, err)
 }
 
@@ -215,6 +246,12 @@ func (a *app) switchLibrary(ctx context.Context, dir string) error {
 	if err := config.CheckLibrary(dir); err != nil {
 		return err
 	}
+	release, ok := a.work.holdLibrary()
+	if !ok {
+		return errors.New("WanderSort is still working on this library; change the folder once it is done")
+	}
+	defer release()
+	// an organised folder keeps its own settings; any other starts a new library with these
 	_, statErr := os.Stat(filepath.Join(dir, filepath.Base(a.Config.AppDBPath)))
 	isNew := statErr != nil
 	carry := a.Config.Settings

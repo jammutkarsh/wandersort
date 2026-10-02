@@ -97,9 +97,20 @@ Where to ideally store the generated scripts:
 		}
 	}
 
+	refuseArgs(rootCmd)
 	setCustomHelp(rootCmd)
 
 	return rootCmd
+}
+
+// refuseArgs makes cmd and every command under it that takes no arguments refuse them.
+func refuseArgs(cmd *cobra.Command) {
+	if cmd.Args == nil {
+		cmd.Args = noArgs
+	}
+	for _, sub := range cmd.Commands() {
+		refuseArgs(sub)
+	}
 }
 
 func flagStr(cmd *cobra.Command, name string) string {

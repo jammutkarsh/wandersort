@@ -102,6 +102,10 @@ wandersort add -p ~/Pictures -o ~/wandersort-out`,
 // runAdd opens the shell on the Add tab; paths given on the command line skip
 // the folder question.
 func (a *app) runAdd(cmd *cobra.Command, paths []string, force bool) error {
+	// refuse a bad folder before a library is created or a download waited on
+	if _, err := path.ReduceRoots(path.New(), paths); err != nil {
+		return withCode(exitUsage, err)
+	}
 	if a.isTuiEnabled(cmd) {
 		return a.runShell(shellStart{tab: tabScan, paths: paths, force: force})
 	}

@@ -61,8 +61,9 @@ type shellModel struct {
 	gate    tui.Tab
 	depsErr error // why the dependencies gave up; the session's exit error
 
-	opening bool // a review is being built off the UI goroutine
-	w, h    int
+	opening  bool               // a review is being built off the UI goroutine
+	stopCopy context.CancelFunc // ends the Copy tab's context once a fresh one replaces it
+	w, h     int
 
 	// lib is the library's state, refreshed where it can change, never per frame
 	lib libraryState
@@ -220,6 +221,9 @@ func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.gate = next.(tui.Tab)
 		return m, cmd
 	case tui.Leave:
+		if m.depsErr == nil {
+			m.depsErr = errors.New("quit before WanderSort was ready")
+		}
 		return m, tea.Quit
 	}
 	next, cmd := m.gate.Update(msg)
@@ -443,10 +447,10 @@ type replanDoneMsg struct{ err error }
 func (m *shellModel) replan() tea.Cmd {
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
-		if !a.work.start() {
+		if !a.work.startOnLibrary() {
 			return nil
 		}
-		defer a.work.done()
+		defer a.work.doneOnLibrary()
 		if _, err := a.rebuildTree(ctx); err != nil {
 			// logged as well as shown: a failed re-plan leaves copy with the old settings' plan
 			a.Log.Warn("Could not re-plan the folders for the new settings — 'wandersort copy' would still copy the old plan. Open the settings and save again.",
@@ -555,10 +559,10 @@ func (m *shellModel) openReview() tea.Cmd {
 		return msgCmd(reviewOpenMsg{err: err})
 	}
 	return func() tea.Msg {
-		if !a.work.start() {
+		if !a.work.startOnLibrary() {
 			return nil
 		}
-		defer a.work.done()
+		defer a.work.doneOnLibrary()
 		model, err := a.newReviewScreen(ctx)
 		return reviewOpenMsg{model: model, err: err}
 	}
@@ -576,10 +580,14 @@ func (m *shellModel) openCopy() tea.Cmd {
 		m.tab = tabCopy
 		return nil
 	}
-	screen, err := m.a.newCopyScreen(m.ctx)
+	screen, stop, err := m.a.newCopyScreen(m.ctx)
 	if err != nil {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: err})
 	}
+	if m.stopCopy != nil {
+		m.stopCopy() // the screen it belonged to is not running and never runs again
+	}
+	m.stopCopy = stop
 	m.tab = tabCopy
 	return m.place(tabCopy, screen)
 }
@@ -673,19 +681,19 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 	return tui.NewScanModel(tui.ScanConfig{
 		Paths: paths,
 		Pipeline: func() error {
-			if !a.work.start() {
+			if !a.work.startOnLibrary() {
 				return context.Canceled
 			}
-			defer a.work.done()
+			defer a.work.doneOnLibrary()
 			_, err := wf.RunScan(ctx, paths, force)
 			return err
 		},
 		Cancel: cancel,
 		ReviewNext: func() (tui.Tab, error) {
-			if !a.work.start() {
+			if !a.work.startOnLibrary() {
 				return nil, context.Canceled
 			}
-			defer a.work.done()
+			defer a.work.doneOnLibrary()
 			return a.newReviewScreen(ctx)
 		},
 	})

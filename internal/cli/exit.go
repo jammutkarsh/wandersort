@@ -50,6 +50,14 @@ func ExitCode(err error) int {
 // usageError marks cobra's flag-parsing failures as exit 2.
 func usageError(_ *cobra.Command, err error) error { return withCode(exitUsage, err) }
 
+// noArgs refuses positional arguments, an unknown command among them, as exit 2.
+func noArgs(cmd *cobra.Command, args []string) error {
+	if err := cobra.NoArgs(cmd, args); err != nil {
+		return withCode(exitUsage, err)
+	}
+	return nil
+}
+
 // jsonOutcome is what every --json result carries.
 type jsonOutcome struct {
 	Library   string `json:"library"`
