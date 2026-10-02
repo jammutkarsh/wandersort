@@ -4,15 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
-
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
 func (m Model) View() string {
-	if m.showHelp {
-		return m.helpView()
-	}
 	var b strings.Builder
 	b.WriteString(m.header())
 
@@ -30,7 +26,11 @@ func (m Model) View() string {
 		b.WriteString(m.rowView(i, selLo != -1 && i >= selLo && i <= selHi))
 	}
 
-	return tui.Screen(b.String(), m.footer(), m.height)
+	view := tui.Screen(b.String(), m.footer(), m.height)
+	if m.showHelp {
+		return tui.KeyHelp(view, reviewKeys, m.width, m.height)
+	}
+	return view
 }
 
 // header is the banner plus one summary line: what this screen is on the left,
@@ -40,10 +40,12 @@ func (m Model) header() string {
 	for _, n := range m.draft.Tree() {
 		files += n.FileCount
 	}
-	left := "Edit the proposed folders — edits are kept as you go; nothing is copied until 'wandersort execute'."
-	return tui.Banner("review") + "\n" +
-		tui.Row(tui.DimText.Render(left),
-			tui.FaintTxt.Render(fmt.Sprintf("%d folders  %d files", len(m.rows), files)), m.width)
+	right := human.Plural(len(m.rows), "folder", "folders") + " · " + human.Plural(files, "file", "files")
+	if n := len(m.draft.Edits()); n > 0 {
+		right += " · " + human.Plural(n, "edit", "edits")
+	}
+	return tui.Row(tui.DimText.Render("  Nothing moves until you copy. Edits are saved as you go."),
+		tui.FaintTxt.Render(right), m.width) + "\n"
 }
 
 // rowView renders one tree line: guide + name, file count right-aligned.
@@ -51,7 +53,7 @@ func (m Model) rowView(i int, inRange bool) string {
 	r := m.rows[i]
 
 	cursor := "  "
-	count := fmt.Sprintf("%d files", r.node.FileCount)
+	count := human.Plural(r.node.FileCount, "file", "files")
 
 	if inRange || i == m.cursor {
 		// Plain, no per-segment colour — a nested ANSI reset would cut the highlight short.
@@ -94,11 +96,12 @@ func (m Model) footer() string {
 			fmt.Fprintln(&b, tui.Row(line, "", m.width))
 		}
 		b.WriteString(tui.Footer(strings.Join([]string{
-			tui.KeyHint("enter", "apply"),
 			tui.KeyHint("↑↓", "pick a place"),
-			tui.KeyHint("tab", "use top match"),
-			tui.KeyHint("ctrl+e", "wider search"),
+			tui.KeyHint("tab", "use match"),
+			tui.KeyHint("ctrl+e", "search wider"),
+			tui.KeyHint("enter", "rename"),
 			tui.KeyHint("esc", "cancel"),
+			tui.MoreKeys(),
 		}, "   "), m.width))
 	case m.previewing:
 		b.WriteString(m.spin.View())
@@ -108,86 +111,60 @@ func (m Model) footer() string {
 			fmt.Fprintln(&b, tui.Bad.Render("Preview failed: ")+tui.Text.Render(m.previewErr.Error()))
 		}
 		if m.visualMode {
-			fmt.Fprintln(&b, tui.Title.Render(fmt.Sprintf("-- SELECT -- %d folders", len(m.selectedRows()))))
+			fmt.Fprintln(&b, tui.Title.Render("-- SELECT --")+" "+tui.DimText.Render(fmt.Sprintf("%d folders", len(m.selectedRows()))))
 		}
-		if m.statusMsg != "" {
-			if m.statusIsErr {
-				fmt.Fprintln(&b, tui.Attn.Render("⚠ "+m.statusMsg))
-			} else {
-				fmt.Fprintln(&b, m.wrapDim(m.statusMsg))
-			}
+		switch {
+		case m.statusMsg == "":
+		case m.statusIsErr:
+			fmt.Fprintln(&b, tui.Attn.Render("⚠ "+m.statusMsg))
+		case m.statusUndo:
+			fmt.Fprintln(&b, tui.OK.Render("✓ ")+tui.Text.Render(m.statusMsg)+tui.FaintTxt.Render(" · ")+tui.KeyHint("u", "undo"))
+		default:
+			fmt.Fprintln(&b, m.wrapDim(m.statusMsg))
 		}
 		b.WriteString(tui.Footer(m.keyHelp(), m.width))
 	}
 	return b.String()
 }
 
-// keyHelp is the key bar, ordered move, name, reshape, leave.
+// keyHelp is the footer: the reviewer's common keys, or a selection's actions; the rest are behind ?.
 func (m Model) keyHelp() string {
-	hints := []string{
-		tui.KeyHint("↑↓", "move"),
-		tui.KeyHint("n/N", "same level"),
-		tui.KeyHint("r", "rename"),
-		tui.KeyHint("p", "peek"),
-	}
 	if m.visualMode {
-		hints = append(hints,
+		return strings.Join([]string{
 			tui.KeyHint("m", "merge"),
 			tui.KeyHint("d", "drop"),
 			tui.KeyHint("D", "flatten"),
-			tui.KeyHint("esc", "clear selection"))
-	} else {
-		hints = append(hints,
-			tui.KeyHint("V", "select"),
-			tui.KeyHint("d", "drop"),
-			tui.KeyHint("D", "flatten"))
+			tui.KeyHint("esc", "cancel"),
+			tui.MoreKeys(),
+		}, "   ")
 	}
-	hints = append(hints, tui.KeyHint("u", "undo"), tui.KeyHint("R", "reset plan"))
-	hints = append(hints, tui.KeyHint("esc", "leave"), tui.KeyHint("ctrl+c", "quit"))
-	hints = append(hints, tui.KeyHint("?", "help"))
-	return strings.Join(hints, "   ")
+	return strings.Join([]string{
+		tui.KeyHint("↑↓", "move"),
+		tui.KeyHint("r", "rename"),
+		tui.KeyHint("V", "select"),
+		tui.KeyHint("esc", "done"),
+		tui.MoreKeys(),
+	}, "   ")
 }
 
-// helpView is the full-screen key reference behind [?] — the footer names the
-// keys, this explains them. Any key returns to the tree.
-func (m Model) helpView() string {
-	type key struct{ k, what string }
-	sections := []struct {
-		title string
-		keys  []key
-	}{
-		{"Moving", []key{
-			{"↑/↓", "move one row"},
-			{"n / N", "next / previous folder at the same depth — crosses into other branches"},
-		}},
-		{"Naming", []key{
-			{"r", "rename — type a name, or ↑/↓ to a nearby place; tab fills the top match"},
-			{"", "year and month folders are fixed — no rename, merge or drop, and a year can't be flattened"},
-		}},
-		{"Reshaping", []key{
-			{"V", "start selecting folders; move the cursor to extend, esc to clear"},
-			{"m", "merge the selected folders into one, under their common parent"},
-			{"d", "drop the folder — its contents move up one level, the folder goes away"},
-			{"D", "flatten — everything below moves directly into the folder"},
-			{"u", "undo the last reshape; press again to walk further back"},
-			{"R", "reset — discard every edit and go back to the plan as proposed"},
-		}},
-		{"Leaving", []key{
-			{"p", "peek — copies a sample of the folder's files and opens them (read-only)"},
-			{"esc", "leave — your edits are kept; 'wandersort execute' applies them and copies the files"},
-			{"ctrl+c", "quit the program — your edits are kept here too"},
-		}},
-	}
-
-	var b strings.Builder
-	b.WriteString(tui.Banner("review · help"))
-	for _, s := range sections {
-		fmt.Fprintf(&b, "\n\n %s", tui.Title.Render(s.title))
-		for _, k := range s.keys {
-			// pad by display width, not bytes — the arrow keys are multibyte
-			pad := strings.Repeat(" ", max(12-lipgloss.Width(k.k), 2))
-			fmt.Fprintf(&b, "\n%s", tui.Row("   "+tui.Text.Render(k.k)+pad+tui.DimText.Render(k.what), "", m.width))
-		}
-	}
-	return tui.Screen(b.String(), tui.Footer(tui.KeyHint("any key", "back to the tree"), m.width), m.height)
+// reviewKeys is every key, behind ?.
+var reviewKeys = []tui.KeyGroup{
+	{Title: "Move", Keys: []tui.KeyLine{
+		{Key: "↑ ↓", What: "one folder"},
+		{Key: "n N", What: "next / previous at this level"},
+		{Key: "p", What: "peek at a few of its photos"},
+	}},
+	{Title: "Change", Keys: []tui.KeyLine{
+		{Key: "r", What: "rename"},
+		{Key: "V", What: "select a run of folders, then:"},
+		{Key: "  m", What: "merge them into one"},
+		{Key: "  d", What: "drop: contents move up a level"},
+		{Key: "  D", What: "flatten: everything below moves in"},
+	}},
+	{Title: "Go back", Keys: []tui.KeyLine{
+		{Key: "u", What: "undo; again to keep going back"},
+		{Key: "R", What: "start over from the plan"},
+		{Key: "esc", What: "done; edits are kept for copy"},
+	}},
+	{Title: "Years and months stay fixed.", Keys: nil},
 }

@@ -22,12 +22,13 @@ import (
 // a run.
 const (
 	tabScan = iota
-	tabSettings
 	tabReview
+	tabCopy
+	tabSettings
 	numTabs
 )
 
-var tabNames = [numTabs]string{"Add", "Settings", "Organise"}
+var tabNames = [numTabs]string{"Add", "Organise", "Copy", "Settings"}
 
 // shellStart is which tab a session opens on, and with what. Every
 // full-screen command is the same shell opened on its own tab.
@@ -55,8 +56,14 @@ type shellModel struct {
 	tab     int
 	start   shellStart
 
-	opening bool // a review is being built off the UI goroutine
-	w, h    int
+	// gate is the getting-ready screen, shown alone until both dependencies
+	// are installed; nil after
+	gate    tui.Tab
+	depsErr error // why the dependencies gave up; the session's exit error
+
+	opening  bool               // a review is being built off the UI goroutine
+	stopCopy context.CancelFunc // ends the Copy tab's context once a fresh one replaces it
+	w, h     int
 
 	// lib is the library's state, refreshed where it can change, never per frame
 	lib libraryState
@@ -64,6 +71,7 @@ type shellModel struct {
 	// settingsBefore is the library's settings as the wizard opened on them,
 	// so a save that changes nothing costs nothing (see settingsSaved).
 	settingsBefore config.Settings
+	libraryBefore  string // the library folder the settings tab opened on
 }
 
 // scanReadyMsg reports whether the library opened for a scan.
@@ -80,11 +88,23 @@ type reviewOpenMsg struct {
 	err   error
 }
 
-// downloadLabels names each install phase for the progress rows.
-var downloadLabels = map[string]string{
+// depLabels names each dependency on screen.
+var depLabels = map[string]string{
 	install.PhaseExiftool: "exiftool",
-	install.PhaseLocation: "Location database",
+	install.PhaseLocation: "locationDB",
 }
+
+// failedDeps is why each dependency in err failed, by phase.
+func failedDeps(err error) map[string]string {
+	out := map[string]string{}
+	for _, de := range install.Failed(err) {
+		out[de.Phase] = de.Reason()
+	}
+	return out
+}
+
+// depsDoneMsg reports the dependency install ending, either way.
+type depsDoneMsg struct{ err error }
 
 // runShell is the one full-screen program hosting scan, settings and review.
 // start says which tab it opens on.
@@ -101,29 +121,40 @@ func (a *app) runShell(start shellStart) error {
 	a.Log = tuiLog
 	defer func() { a.Log = origLog }()
 
-	m := shellModel{a: a, ctx: ctx, start: start}
+	gate := tui.NewReadyModel(
+		tui.ReadyItem{Phase: install.PhaseExiftool, Label: depLabels[install.PhaseExiftool]},
+		tui.ReadyItem{Phase: install.PhaseLocation, Label: depLabels[install.PhaseLocation]},
+	)
+	m := shellModel{a: a, ctx: ctx, start: start, gate: gate}
 	m.screens[tabScan] = a.newHomeScreen(nil)
 	m.lib = a.readState(ctx)
 
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
-	// started once for the whole session; every scan reuses it
-	a.Deps = a.newDeps(func(phase string, done, total int64) {
-		label := downloadLabels[phase]
-		prog.Send(tui.InstallProgressMsg{Phase: phase, Label: label, Done: done, Total: total})
-		// the settings wizard gets the location download as its own progress
-		// row
-		if phase == install.PhaseLocation {
-			prog.Send(tui.DownloadMsg{Label: label, Done: done, Total: total})
-		}
-	})
+	// started once for the whole session; nothing else shows until it is done
+	a.Deps = a.newDeps(
+		func(p install.Progress) {
+			prog.Send(tui.InstallProgressMsg{Phase: p.Phase, Done: p.Done, Total: p.Total, Ready: p.Ready})
+		},
+		func(ctx context.Context, next int, err error) error {
+			a.Log.Warn("Download failed, asking for a better network", "try", next-1, "error", err)
+			retry := make(chan struct{})
+			prog.Send(tui.RetryMsg{Failed: failedDeps(err), Next: next, Tries: install.MaxTries, Wait: install.RetryDelay, Go: retry})
+			select {
+			case <-retry:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	)
 	a.Deps.Start(ctx)
 	// both goroutines end with the session context; shutdown waits for them
 	if a.work.start() {
 		go func() {
 			defer a.work.done()
-			// the database resolving is when the wizard's progress row settles
-			if _, err := a.Deps.Location(ctx); !errors.Is(err, context.Canceled) {
-				prog.Send(tui.DownloadMsg{Finished: true})
+			err := waitForDeps(ctx, a.Deps)
+			if !errors.Is(err, context.Canceled) {
+				prog.Send(depsDoneMsg{err: err})
 			}
 		}()
 	}
@@ -153,10 +184,10 @@ func (a *app) runShell(start shellStart) error {
 
 // exitStatus is how the session ended, read off the screens it kept.
 func (m shellModel) exitStatus() error {
+	if m.depsErr != nil {
+		return m.depsErr
+	}
 	if s, ok := m.screens[tabScan].(tui.ScanModel); ok {
-		if err := s.DepsFailure(); err != nil {
-			return err
-		}
 		if s.Cancelled() {
 			return errors.New("scan cancelled")
 		}
@@ -164,23 +195,63 @@ func (m shellModel) exitStatus() error {
 	return nil
 }
 
-// Init boots the home screen, then asks for the starting tab by message (Init
-// runs on a copy, so placing a screen here would be lost).
-func (m shellModel) Init() tea.Cmd {
-	cmd := m.screens[tabScan].Init()
+// Init shows the getting-ready screen; the tabs start once it lifts.
+func (m shellModel) Init() tea.Cmd { return m.gate.Init() }
+
+// updateGate routes everything to the getting-ready screen until the dependencies are in.
+func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.w, m.h = msg.Width, msg.Height
+	case depsDoneMsg:
+		if msg.err == nil {
+			m.gate = nil
+			cmds := []tea.Cmd{m.place(tabScan, m.screens[tabScan]), m.startCmd()}
+			// the last run's library opens straight away, so nothing asks for it
+			if m.a.AppDB == nil && m.a.libraryExists() {
+				if err := m.a.openLibrary(m.ctx); err != nil {
+					cmds = append(cmds, m.forward(tabScan, tui.HomeErrMsg{Err: err}))
+				}
+				m.refresh()
+			}
+			return m, tea.Batch(cmds...)
+		}
+		m.depsErr = msg.err
+		next, cmd := m.gate.Update(tui.DepsFailedMsg{Failed: failedDeps(msg.err), Tries: install.MaxTries})
+		m.gate = next.(tui.Tab)
+		return m, cmd
+	case tui.Leave:
+		if m.depsErr == nil {
+			m.depsErr = errors.New("quit before WanderSort was ready")
+		}
+		return m, tea.Quit
+	}
+	next, cmd := m.gate.Update(msg)
+	m.gate = next.(tui.Tab)
+	return m, cmd
+}
+
+// startCmd asks for the starting tab by message.
+func (m shellModel) startCmd() tea.Cmd {
+	// Init runs on a copy of the model, so a screen placed there would be lost
 	switch {
 	case len(m.start.paths) > 0:
 		// `wandersort add -p …`: paths already given, start the run
-		return tea.Batch(cmd, msgCmd(tui.StartScanMsg{Paths: m.start.paths, Force: m.start.force}))
+		return msgCmd(tui.StartScanMsg{Paths: m.start.paths, Force: m.start.force})
 	case m.start.tab == tabSettings:
-		return tea.Batch(cmd, msgCmd(openSettingsMsg{}))
+		return msgCmd(openSettingsMsg{})
 	case m.start.tab == tabReview:
-		return tea.Batch(cmd, msgCmd(tui.OpenReviewMsg{}))
+		return msgCmd(tui.OpenReviewMsg{})
+	case m.start.tab == tabCopy:
+		return msgCmd(tui.OpenCopyMsg{})
 	}
-	return cmd
+	return nil
 }
 
 func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.gate != nil {
+		return m.updateGate(msg)
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
@@ -203,10 +274,41 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, msgCmd(scanReadyMsg{paths: msg.Paths, force: msg.Force, err: err})
 
 	case tui.OpenReviewMsg:
+		if m.reviewReady() {
+			m.tab = tabReview
+			return m, nil
+		}
 		return m, m.openReview()
 
 	case openSettingsMsg:
 		return m, m.openSettings()
+
+	case tui.OpenCopyMsg:
+		return m, m.openCopy()
+
+	case tui.SettingsSavedMsg:
+		if dir := m.a.Config.OutputDir(); dir != m.libraryBefore {
+			// another library: screens built over the old one are stale, and
+			// its plan is already its own
+			m.libraryBefore, m.settingsBefore = dir, m.a.Config.Settings
+			m.screens[tabReview] = nil
+			m.screens[tabCopy] = nil
+			m.refresh()
+			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: "Now using the library in " + path.New().RelativeToHome(dir)})
+		}
+		// a row of the settings list saved: re-plan if it changed anything
+		cmd := m.settingsSaved(m.settingsBefore)
+		m.settingsBefore = m.a.Config.Settings
+		return m, cmd
+
+	case tui.CopyFinishedMsg:
+		// files moved into the library: the counts changed and a kept review
+		// would show folders that are now placed
+		m.refresh()
+		if m.tab != tabReview {
+			m.screens[tabReview] = nil
+		}
+		return m, nil
 
 	case scanReadyMsg:
 		if msg.err != nil {
@@ -242,8 +344,8 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if k.String() == "ctrl+t" {
-		// ctrl+t is where "where can I go?" is asked, so refresh here
+	if k.String() == "shift+tab" {
+		// shift+tab is where "where can I go?" is asked, so refresh here
 		m.refresh()
 		next := m.nextTab()
 		if next == tabReview && m.screens[tabReview] == nil {
@@ -255,6 +357,8 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case m.tab == tabSettings && m.screens[tabSettings] == nil:
 			return m, m.openSettings()
+		case m.tab == tabCopy && !m.copyRunning():
+			return m, m.openCopy() // fresh numbers every visit
 		case m.tab == tabScan:
 			if cmd := m.scanTabHome(); cmd != nil {
 				return m, cmd
@@ -265,8 +369,13 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// ctrl+c goes to a running scan first (warn once, then cancel). Other
 	// screens answer it with a tui.Leave, handled below.
-	if k.String() == "ctrl+c" && m.scanRunning() {
-		m.tab = tabScan
+	if k.String() == "ctrl+c" {
+		switch {
+		case m.scanRunning():
+			m.tab = tabScan
+		case m.copyRunning():
+			m.tab = tabCopy
+		}
 	}
 	return m, m.forward(m.tab, k)
 }
@@ -297,10 +406,13 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 		// next, but only if there are any
 		m.refresh()
 		if m.lib.HasEdits() {
-			note = "Your edits are kept — run 'wandersort execute' to apply them and copy the files."
+			note = "Your edits are kept; Copy applies them."
 			m.a.Log.Info(note, logger.UserKey, true)
 		}
 		m.screens[tabReview] = nil
+	case tabCopy:
+		m.screens[tabCopy] = nil
+		m.refresh()
 	}
 
 	// Not a quit: the session goes on. A settled plan or a saved setting
@@ -331,19 +443,17 @@ func (m *shellModel) settingsSaved(before config.Settings) tea.Cmd {
 // replanDoneMsg reports a settings re-plan; only a failure says anything.
 type replanDoneMsg struct{ err error }
 
-// replan re-proposes the whole library under the saved settings, off the UI
-// goroutine. A failure is logged as well as shown: otherwise execute would copy
-// files under settings the user already changed, with only a home-screen line
-// (not drawn during a scan) saying so.
+// replan re-proposes the whole library under the saved settings, off the UI goroutine.
 func (m *shellModel) replan() tea.Cmd {
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
-		if !a.work.start() {
+		if !a.work.startOnLibrary() {
 			return nil
 		}
-		defer a.work.done()
+		defer a.work.doneOnLibrary()
 		if _, err := a.rebuildTree(ctx); err != nil {
-			a.Log.Warn("Could not re-plan the folders for the new settings — 'wandersort execute' would still copy the old plan. Open the settings and save again.",
+			// logged as well as shown: a failed re-plan leaves copy with the old settings' plan
+			a.Log.Warn("Could not re-plan the folders for the new settings — 'wandersort copy' would still copy the old plan. Open the settings and save again.",
 				logger.UserKey, true, "error", err)
 			return replanDoneMsg{err: err}
 		}
@@ -357,11 +467,10 @@ func (m shellModel) handleSwitch(msg tui.SwitchMsg) (tea.Model, tea.Cmd) {
 	if msg.Next == nil {
 		return m, nil // a screen leaving says so with tui.Leave, not with this
 	}
-	// open it only if the user is watching the scan, never out of a form; the
-	// tab bar says it's ready otherwise
+	// kept, and the tab bar marks it; opened only when the user picked it
 	m.refresh() // the scan that produced it is done
 	cmd := m.place(tabReview, msg.Next)
-	if m.tab == tabScan {
+	if msg.Open {
 		m.tab = tabReview
 	}
 	return m, cmd
@@ -390,18 +499,18 @@ func (m *shellModel) homeAgain(note string) tea.Cmd {
 	return m.place(tabScan, m.a.newHomeScreen(history))
 }
 
-// nextTab cycles scan → settings → review → scan, skipping review when there is
-// nothing to review and settings while a scan runs.
+// nextTab cycles the tabs, skipping any that can't be used now.
 func (m shellModel) nextTab() int {
 	for i := 1; i <= numTabs; i++ {
 		t := (m.tab + i) % numTabs
-		if t == tabReview && !m.canReview() {
-			continue
+		switch {
+		case t == tabReview && !m.canReview():
+		case t == tabCopy && (m.scanRunning() || (m.screens[tabCopy] == nil && m.lib.Planned == 0)):
+		case t == tabSettings && (m.scanRunning() || m.copyRunning()):
+		case t == tabScan && m.copyRunning():
+		default:
+			return t
 		}
-		if t == tabSettings && m.scanRunning() {
-			continue
-		}
-		return t
 	}
 	return m.tab
 }
@@ -431,7 +540,7 @@ func (m *shellModel) openSettings() tea.Cmd {
 	if err != nil {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: err})
 	}
-	m.settingsBefore = m.a.Config.Settings
+	m.settingsBefore, m.libraryBefore = m.a.Config.Settings, m.a.Config.OutputDir()
 	m.tab = tabSettings
 	return m.place(tabSettings, screen)
 }
@@ -440,7 +549,7 @@ func (m *shellModel) openSettings() tea.Cmd {
 // DB open and BuildTree are slow).
 func (m *shellModel) openReview() tea.Cmd {
 	if m.opening {
-		return nil // a second ctrl+t while the first is still building
+		return nil // a second shift+tab while the first is still building
 	}
 	m.opening = true
 	a, ctx := m.a, m.ctx
@@ -450,13 +559,37 @@ func (m *shellModel) openReview() tea.Cmd {
 		return msgCmd(reviewOpenMsg{err: err})
 	}
 	return func() tea.Msg {
-		if !a.work.start() {
+		if !a.work.startOnLibrary() {
 			return nil
 		}
-		defer a.work.done()
+		defer a.work.doneOnLibrary()
 		model, err := a.newReviewScreen(ctx)
 		return reviewOpenMsg{model: model, err: err}
 	}
+}
+
+// copyRunning asks the copy tab whether it is busy.
+func (m shellModel) copyRunning() bool {
+	s := m.screens[tabCopy]
+	return s != nil && s.Busy()
+}
+
+// openCopy places a fresh Copy tab, unless a copy is already running there.
+func (m *shellModel) openCopy() tea.Cmd {
+	if m.copyRunning() {
+		m.tab = tabCopy
+		return nil
+	}
+	screen, stop, err := m.a.newCopyScreen(m.ctx)
+	if err != nil {
+		return m.forward(tabScan, tui.HomeErrMsg{Err: err})
+	}
+	if m.stopCopy != nil {
+		m.stopCopy() // the screen it belonged to is not running and never runs again
+	}
+	m.stopCopy = stop
+	m.tab = tabCopy
+	return m.place(tabCopy, screen)
 }
 
 // scanRunning asks the scan tab whether it is busy.
@@ -491,6 +624,9 @@ func (m *shellModel) broadcast(msg tea.Msg) tea.Cmd {
 }
 
 func (m shellModel) View() string {
+	if m.gate != nil {
+		return m.gate.View()
+	}
 	s := m.screens[m.tab]
 	if s == nil {
 		return m.tabBar()
@@ -498,26 +634,32 @@ func (m shellModel) View() string {
 	return m.tabBar() + "\n" + s.View()
 }
 
-// tabBar is the one line the container owns; it is how ctrl+t is discovered.
+// tabBar is the shell's one line: the app's name, the tabs (● where something waits) and the library.
 func (m shellModel) tabBar() string {
-	parts := make([]string, 0, numTabs)
+	parts := []string{tui.Brand()}
 	for i, name := range tabNames {
 		switch {
 		case i == m.tab:
-			parts = append(parts, tui.Selected.Render(" "+name+" "))
+			parts = append(parts, tui.Selected.Bold(true).Render(" "+name+" "))
 		case i == tabReview && m.opening:
-			parts = append(parts, tui.DimText.Render(" "+name+" — opening… "))
-		case i == tabReview && !m.canReview():
-			parts = append(parts, tui.FaintTxt.Render(" "+name+" — waiting for scan "))
+			parts = append(parts, tui.DimText.Render(" "+name+"… "))
+		case i == tabReview && m.canReview():
+			parts = append(parts, tui.Text.Render(" "+name+" ")+tui.Title.Render("●"))
 		case i == tabReview:
-			// a plan on disk is as ready as a prefetched one
-			parts = append(parts, tui.OK.Render(" "+name+" ✓ ready "))
+			parts = append(parts, tui.FaintTxt.Render(" "+name+" "))
+		case i == tabCopy && (m.copyRunning() || m.lib.Planned > 0):
+			parts = append(parts, tui.Text.Render(" "+name+" ")+tui.Title.Render("●"))
+		case i == tabCopy:
+			parts = append(parts, tui.FaintTxt.Render(" "+name+" "))
 		default:
 			parts = append(parts, tui.DimText.Render(" "+name+" "))
 		}
 	}
-	return tui.Row(strings.Join(parts, tui.FaintTxt.Render("·")),
-		tui.KeyHint("ctrl+t", "switch"), m.w)
+	library := ""
+	if m.a.AppDB != nil || m.lib.Exists {
+		library = path.New().RelativeToHome(m.a.Config.OutputDir())
+	}
+	return tui.Row(strings.Join(parts, "  "), tui.FaintTxt.Render(library), m.w)
 }
 
 /* --- screen constructors --- */
@@ -537,23 +679,21 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 	ctx, cancel := context.WithCancel(session)
 	wf := workflow.NewWorkflow(a.AppDB, a.Log, a.Config, a.workflowDeps())
 	return tui.NewScanModel(tui.ScanConfig{
+		Paths: paths,
 		Pipeline: func() error {
-			if !a.work.start() {
+			if !a.work.startOnLibrary() {
 				return context.Canceled
 			}
-			defer a.work.done()
-			if err := waitForDeps(ctx, a.Deps); err != nil {
-				return &tui.DepsErr{Err: err}
-			}
+			defer a.work.doneOnLibrary()
 			_, err := wf.RunScan(ctx, paths, force)
 			return err
 		},
 		Cancel: cancel,
 		ReviewNext: func() (tui.Tab, error) {
-			if !a.work.start() {
+			if !a.work.startOnLibrary() {
 				return nil, context.Canceled
 			}
-			defer a.work.done()
+			defer a.work.doneOnLibrary()
 			return a.newReviewScreen(ctx)
 		},
 	})
@@ -569,10 +709,15 @@ func (a *app) newSettingsScreen(ctx context.Context) (tui.Tab, error) {
 			return nil, err
 		}
 	}
-	fields, save := a.buildSettingsForm(ctx, func() (*location.Resolver, error) {
-		return a.Deps.LocationNow()
-	})
-	return tui.NewFormModel(fields, save), nil
+	geonames := func() (*location.Resolver, error) { return a.Deps.LocationNow() }
+	if a.AppDB != nil {
+		return tui.NewSettingsModel(a.settingsRows(ctx, geonames),
+			"A change re-plans the files not yet copied. Copied files don't move."), nil
+	}
+	fields, save := a.buildSettingsForm(ctx, geonames)
+	form := tui.NewFormModel(fields, save)
+	form.Heading = "Set up your library"
+	return form, nil
 }
 
 // runRoot is bare `wandersort`: the shell, or help with --plain or a piped

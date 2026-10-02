@@ -16,13 +16,12 @@ import (
 
 func execCmd(t *testing.T) *cobra.Command {
 	t.Helper()
-	cmd := &cobra.Command{Use: "execute"}
+	cmd := &cobra.Command{Use: "copy"}
 	cmd.Flags().Bool(flagDryRun, false, "")
 	return cmd
 }
 
-// TestRunExecuteAppliesDraft: the review draft reaches the plan only here, the
-// file lands under the renamed folder, and the draft is gone afterwards.
+// The draft reaches the plan only on copy: the file lands under the renamed folder and the draft is gone.
 func TestRunExecuteAppliesDraft(t *testing.T) {
 	cfg := testConfig(t)
 	dir := t.TempDir()
@@ -49,7 +48,7 @@ func TestRunExecuteAppliesDraft(t *testing.T) {
 	seedDraft(t, dir, vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: day, From: "03", To: "Goa-Trip"})
 
 	a := &app{Log: logger.NewNoopLogger(), Config: cfg}
-	err = a.runExecute(execCmd(t))
+	err = a.runCopy(execCmd(t))
 	a.closeDBs()
 	if err != nil {
 		t.Fatal(err)

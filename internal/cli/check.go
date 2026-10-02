@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -36,12 +37,36 @@ wandersort check --full`,
 	}
 
 	cmd.Flags().Bool(flagFull, false, "Re-read every file and compare its contents with the hash from the scan")
+	cmd.Flags().Bool(flagJSON, false, "Print one JSON result on stdout at the end (implies --plain)")
 	return cmd
+}
+
+// checkProblem is one damaged file in check's --json result.
+type checkProblem struct {
+	Kind   string `json:"kind"`
+	Path   string `json:"path"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// checkResult is check's --json result.
+type checkResult struct {
+	jsonOutcome
+	Checked        int            `json:"checked"`
+	Full           bool           `json:"full"`
+	Problems       []checkProblem `json:"problems"`
+	Forgotten      []string       `json:"forgotten"`
+	Strays         []string       `json:"strays"`
+	DatabaseDamage string         `json:"databaseDamage,omitempty"`
 }
 
 func (a *app) runCheck(cmd *cobra.Command) error {
 	full, _ := cmd.Flags().GetBool(flagFull)
+	start := time.Now()
+	res := checkResult{Full: full, Problems: []checkProblem{}, Forgotten: []string{}, Strays: []string{}}
+	return a.emitJSON(&res, start, a.check(full, &res))
+}
 
+func (a *app) check(full bool, res *checkResult) error {
 	if !a.libraryExists() {
 		return fmt.Errorf("no library found at %s — run 'wandersort add' first", a.Config.OutputDir())
 	}
@@ -57,6 +82,12 @@ func (a *app) runCheck(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	res.Checked, res.DatabaseDamage = rep.Checked, rep.DatabaseDamage
+	res.Forgotten = append(res.Forgotten, rep.Forgotten...)
+	res.Strays = append(res.Strays, rep.Strays...)
+	for _, p := range rep.Problems {
+		res.Problems = append(res.Problems, checkProblem{Kind: p.Kind, Path: p.Path, Detail: p.Detail})
+	}
 	return reportVerify(rep, full)
 }
 
@@ -64,7 +95,7 @@ func (a *app) runCheck(cmd *cobra.Command) error {
 // grouped by kind of problem.
 func reportVerify(rep verify.Report, full bool) error {
 	if rep.Checked == 0 {
-		fmt.Fprintln(os.Stderr, "Nothing in the library yet — run 'wandersort execute' to put files in it.")
+		fmt.Fprintln(os.Stderr, "Nothing in the library yet — run 'wandersort copy' to put files in it.")
 		return nil
 	}
 	if len(rep.Forgotten) > 0 {
@@ -108,12 +139,15 @@ func reportVerify(rep verify.Report, full bool) error {
 		}
 	}
 	if len(rep.Problems) == 0 {
+		if rep.DatabaseDamage != "" {
+			return withCode(exitPartial, fmt.Errorf("the library database is damaged"))
+		}
 		return nil // strays alone are untidy, not a failure
 	}
 	if !full {
 		fmt.Fprintln(os.Stderr, "\nRun 'wandersort check --full' to check the contents of the rest.")
 	}
-	return fmt.Errorf("%d of %d files do not match the library's records", len(rep.Problems), rep.Checked)
+	return withCode(exitPartial, fmt.Errorf("%d of %d files do not match the library's records", len(rep.Problems), rep.Checked))
 }
 
 // problemGroup is every problem of one kind. detail says whether each file's

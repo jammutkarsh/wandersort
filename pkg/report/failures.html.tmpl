@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WanderSort — {{.Total}} {{plural .Total "file" "files"}} not in the library</title>
+<style>
+:root {
+  --bg: #fbfaff; --card: #ffffff; --fg: #1b1828; --muted: #5f5a73; --faint: #9a95ad;
+  --line: #e4e0ef; --brand: #6d34e0; --warn: #b45309; --bad: #c62828;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14121c; --card: #1c1927; --fg: #e9e6f3; --muted: #a8a3bb; --faint: #6c6780;
+    --line: #2d2939; --brand: #b39bfb; --warn: #fbbf24; --bad: #f87171;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 40px 20px 64px; display: grid; gap: 28px; }
+.brand { font: 600 13px ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--brand); }
+h1 { font-size: 28px; line-height: 1.2; margin: 6px 0 8px; }
+h2 { font-size: 19px; margin: 0; display: flex; gap: 10px; align-items: baseline; }
+h3 { font-size: 15px; margin: 0; }
+.count { font-size: 13px; font-weight: 500; color: var(--muted); }
+.muted { color: var(--muted); }
+.meta { display: grid; gap: 2px; color: var(--muted); font-size: 14px; }
+code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; }
+section.drive { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; display: grid; gap: 18px; }
+.group { display: grid; gap: 8px; }
+.group h3::before { content: "✗ "; color: var(--bad); }
+.next { margin: 0; color: var(--warn); font-size: 14px; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 7px 10px 7px 0; border-top: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; border-top: 0; }
+td.size { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); }
+th.size { text-align: right; }
+.name { font-weight: 600; word-break: break-all; }
+.path { color: var(--muted); word-break: break-all; }
+footer { color: var(--faint); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="brand">◆ wandersort</div>
+    <h1>{{if .NotCopied}}{{.NotCopied}} {{plural .NotCopied "file wasn't" "files weren't"}} copied{{if .NotRead}}, {{.NotRead}} {{plural .NotRead "wasn't" "weren't"}} read{{end}}{{else}}{{.NotRead}} {{plural .NotRead "file wasn't" "files weren't"}} read{{end}}</h1>
+    <div class="meta">
+      <span>Library: <code>{{.Library}}</code></span>
+      <span>Run: {{.When.Format "2 Jan 2006, 15:04"}}</span>
+      <span>Every other file was copied and checked against its original.</span>
+    </div>
+  </header>
+  {{range .Drives}}
+  <section class="drive">
+    <h2>{{.Drive}} <span class="count">{{.Count}} {{plural .Count "file" "files"}}</span></h2>
+    {{range .Groups}}
+    <div class="group">
+      <h3>{{.Reason}} <span class="count">{{len .Files}}</span></h3>
+      <p class="next">{{.Next}}</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>File</th><th>Camera</th><th class="size">Size</th><th>Planned folder</th></tr></thead>
+          <tbody>
+          {{range .Files}}
+            <tr>
+              <td><div class="name">{{base .Source}}</div><div class="path mono">{{dir .Source}}</div></td>
+              <td>{{if .Camera}}{{.Camera}}{{else}}<span class="muted">—</span>{{end}}</td>
+              <td class="size">{{size .Size}}</td>
+              <td class="mono">{{if .Target}}{{.Target}}{{else}}<span class="muted">not planned yet</span>{{end}}</td>
+            </tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {{end}}
+  </section>
+  {{end}}
+  <footer>{{if .LogPath}}The full details are in the log beside this page: <code>{{.LogPath}}</code>{{end}}</footer>
+</main>
+</body>
+</html>

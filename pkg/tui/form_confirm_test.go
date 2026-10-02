@@ -138,18 +138,6 @@ func TestFormSaveAndExitBlockedByValidator(t *testing.T) {
 	}
 }
 
-func TestFormSaveAndExitBlockedWhileAwaiting(t *testing.T) {
-	fields := []*Field{
-		{Kind: FieldInput, Title: "Town", Value: new(string), Await: func() string { return "still waiting" }},
-	}
-	m := NewFormModel(fields, nil)
-
-	_, cmd := m.saveAndExit()
-	if cmd != nil {
-		t.Errorf("saveAndExit must not quit while the active field is held, got cmd %v", cmd)
-	}
-}
-
 func TestFormMovePrevWalksBackThroughGroupSubs(t *testing.T) {
 	fields := []*Field{
 		{Kind: FieldInput, Title: "First", Value: new(string)},

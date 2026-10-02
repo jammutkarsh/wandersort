@@ -23,8 +23,7 @@ type Options struct {
 	Log      logger.Logger
 }
 
-// Screen returns the review as a shell tab. It writes only the draft file;
-// `wandersort execute` applies the edits.
+// Screen returns the review as a shell tab; it writes only the draft, which `wandersort copy` applies.
 func Screen(ctx context.Context, o Options) tui.Tab {
 	return newModel(o.Draft, ctx, o.DB, o.Resolver, o.Log)
 }
@@ -102,6 +101,7 @@ type Model struct {
 	draft       *vfs.Draft
 	statusMsg   string
 	statusIsErr bool // rejection, not confirmation: rendered in a warning colour
+	statusUndo  bool // an edit landed: the line offers [u]
 
 	// async preview copy ([p])
 	previewing bool

@@ -117,9 +117,26 @@ func (h *PrettyHandler) Handle(_ context.Context, r slog.Record) error {
 		if !userFacing && r.Level < slog.LevelWarn {
 			return nil
 		}
+		// a phase's done line says what its start line would; plain output
+		// keeps one line per stage
+		if r.Level < slog.LevelWarn && attrs[EventKey] == "start" {
+			return nil
+		}
 		for _, k := range consoleHiddenKeys {
 			delete(attrs, k)
 		}
+		// a milestone is a sentence for a person; its attrs are in the file log
+		if r.Level < slog.LevelWarn {
+			fmt.Fprintln(os.Stderr, r.Message)
+			return nil
+		}
+	}
+	colour := stderrIsTerminal()
+	paint := func(code int, v string) string {
+		if !colour {
+			return v
+		}
+		return colorize(code, v)
 	}
 
 	levelColor := ansiCyan
@@ -132,9 +149,8 @@ func (h *PrettyHandler) Handle(_ context.Context, r slog.Record) error {
 		levelColor = ansiLightRed
 	}
 
-	// fixed-width level tag keeps message columns aligned
 	var line strings.Builder
-	line.WriteString(colorize(levelColor, fmt.Sprintf("%-5s", r.Level.String())))
+	line.WriteString(paint(levelColor, fmt.Sprintf("%-5s", strings.ToLower(r.Level.String()))))
 	line.WriteString(" ")
 	line.WriteString(r.Message)
 
@@ -156,9 +172,15 @@ func (h *PrettyHandler) Handle(_ context.Context, r slog.Record) error {
 			valStr = fmt.Sprintf("%v", val)
 		}
 		line.WriteString(" ")
-		line.WriteString(colorize(ansiDarkGray, k+"="+valStr))
+		line.WriteString(paint(ansiDarkGray, k+"="+valStr))
 	}
 
 	fmt.Fprintln(os.Stderr, line.String())
 	return nil
+}
+
+// stderrIsTerminal reports whether colour codes would reach a person rather than a file or pipe.
+func stderrIsTerminal() bool {
+	st, err := os.Stderr.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
 }

@@ -41,15 +41,8 @@ func (sb spinnerBar) update(msg tea.Msg) (spinnerBar, tea.Cmd) {
 	return sb, nil
 }
 
-// Banner renders the branded title bar shown at the top of every screen:
-// "WanderSort" + a subtitle (e.g. "scan", "setup", "review").
-func Banner(subtitle string) string {
-	title := Title.Render("WanderSort")
-	if subtitle != "" {
-		return Box.Render(title + "  " + DimText.Render(subtitle))
-	}
-	return Box.Render(title)
-}
+// Brand is the app's name as the first thing on every screen's top line.
+func Brand() string { return Title.Render("◆ wandersort") }
 
 // Footer renders a dim key-help bar wrapped to width; callers measure its
 // height with lipgloss.Height.

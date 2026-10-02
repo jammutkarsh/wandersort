@@ -35,10 +35,27 @@ type Options struct {
 	OnApplied func()
 	// OnProgress reports after each row: target, source size, done/total.
 	OnProgress func(target string, bytes int64, done, total int)
+	// OnStep reports each step as it starts (StepSpace … StepCopy); never on a
+	// dry run.
+	OnStep func(step string)
 
 	// freeSpace reports the output volume's free and total bytes; nil means
 	// volume.Space. Tests set it to run out of room.
 	freeSpace func(path string) (free, total uint64, err error)
+}
+
+// The steps of a run, in order, as OnStep names them.
+const (
+	StepSpace  = "space"
+	StepApply  = "apply"
+	StepBackup = "backup"
+	StepCopy   = "copy"
+)
+
+func (o Options) step(name string) {
+	if o.OnStep != nil && !o.DryRun {
+		o.OnStep(name)
+	}
 }
 
 // Report is what a Run produced.
@@ -161,9 +178,11 @@ func prepare(ctx context.Context, database *db.DB, outputDir string, o Options) 
 	if freeSpace == nil {
 		freeSpace = volume.Space
 	}
+	o.step(StepSpace)
 	if err := checkFits(ctx, database, outputDir, freeSpace); err != nil {
 		return nil, err
 	}
+	o.step(StepApply)
 	if err := vfs.ApplyDraft(ctx, database, outputDir); err != nil {
 		return nil, fmt.Errorf("apply review edits: %w", err)
 	}
@@ -180,30 +199,49 @@ func CheckFits(ctx context.Context, database *db.DB, outputDir string) error {
 	return checkFits(ctx, database, outputDir, volume.Space)
 }
 
-// checkFits refuses a transfer the output volume can't hold: every pending file,
-// room for the backup (twice the database's page size), and a reserve
-// (volume.TransferNeeds). An unreadable free-space figure lets it run.
-func checkFits(ctx context.Context, database *db.DB, outputDir string, freeSpace func(string) (uint64, uint64, error)) error {
+// Space is what copying the pending plan needs at the output and what is free; Known is false if unreadable.
+type Space struct {
+	Needed, Files, Reserve, Free uint64
+	Known                        bool
+}
+
+// Fits reports whether the output can hold the plan; an unknown free space counts as fitting.
+func (s Space) Fits() bool { return !s.Known || s.Needed <= s.Free }
+
+// SpaceFor is Run's space check, for a caller that wants the numbers before starting.
+func SpaceFor(ctx context.Context, database *db.DB, outputDir string) (Space, error) {
+	return spaceFor(ctx, database, outputDir, volume.Space)
+}
+
+// spaceFor sizes a transfer: pending files, room for the backup and a reserve (volume.TransferNeeds).
+func spaceFor(ctx context.Context, database *db.DB, outputDir string, freeSpace func(string) (uint64, uint64, error)) (Space, error) {
 	_, pending, err := Pending(ctx, database)
 	if err != nil {
-		return err
+		return Space{}, err
 	}
 	var dbBytes int64
 	if err := database.SQL.GetContext(ctx, &dbBytes,
 		`SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()`); err != nil {
-		return fmt.Errorf("size the database: %w", err)
+		return Space{}, fmt.Errorf("size the database: %w", err)
 	}
+	s := Space{Files: uint64(pending)}
 	free, total, err := freeSpace(outputDir)
 	if err != nil {
-		return nil
+		return s, nil
 	}
-	if needed := volume.TransferNeeds(uint64(pending), uint64(dbBytes), total); needed > free {
-		return &NotEnoughSpaceError{
-			Needed: needed, Files: uint64(pending), Free: free,
-			Reserve: needed - uint64(pending) - 2*uint64(dbBytes),
-		}
+	s.Needed = volume.TransferNeeds(uint64(pending), uint64(dbBytes), total)
+	s.Reserve = s.Needed - uint64(pending) - 2*uint64(dbBytes)
+	s.Free, s.Known = free, true
+	return s, nil
+}
+
+// checkFits refuses a transfer the output can't hold; an unreadable free space lets it run.
+func checkFits(ctx context.Context, database *db.DB, outputDir string, freeSpace func(string) (uint64, uint64, error)) error {
+	s, err := spaceFor(ctx, database, outputDir, freeSpace)
+	if err != nil || s.Fits() {
+		return err
 	}
-	return nil
+	return &NotEnoughSpaceError{Needed: s.Needed, Files: s.Files, Free: s.Free, Reserve: s.Reserve}
 }
 
 func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, o Options, xfer transfer) (Report, error) {
@@ -215,12 +253,14 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		return Report{}, nil
 	}
 	// back up first: the database is the only record of the plan
+	o.step(StepBackup)
 	if !o.DryRun {
 		if err := database.Backup(ctx, filepath.Join(outputDir, db.BackupFileName)); err != nil {
 			return Report{}, fmt.Errorf("back up database: %w", err)
 		}
 	}
 
+	o.step(StepCopy)
 	start := time.Now()
 	var rep Report
 	for i, r := range rows {

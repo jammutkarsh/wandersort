@@ -43,11 +43,10 @@ func TestConfig(t *testing.T) {
 		name string
 		fn   func(t *testing.T)
 	}{
-		// TestConfigFormSavesEverySetting covers the wizard's write path: submitting
-		// the form must persist every setting it collects, and a town typed before the
-		// location database finished downloading must be rejected rather than saved
-		// unvalidated.
-		{"ConfigFormSavesEverySetting", func(t *testing.T) {
+		// The first-run setup asks library, layout (a custom rule list opens the
+		// rule step) and home, and its save writes every setting and creates
+		// the library.
+		{"SetupSavesEverySetting", func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
@@ -58,111 +57,133 @@ func TestConfig(t *testing.T) {
 			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
 			defer a.closeDBs()
 
-			fields, save := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
-
-			// The two folder questions belong to the saved-place step, after the towns:
-			// their examples read off the town typed one field earlier.
-			group := fieldByTitle(t, fields, "Saved places")
-			var subTitles []string
-			for _, sub := range group.Subs {
-				subTitles = append(subTitles, sub.Title)
+			// a place-name database that never opened must not trap the user
+			// on the town, nor drop it
+			broken := errors.New("location db: database is locked")
+			fields, save := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, broken })
+			var titles []string
+			for _, f := range fields {
+				titles = append(titles, f.Title)
 			}
-			wantSubs := []string{"Home town", "Work town", "Collapse uninformative levels?", "Group saved-place photos by date only?", "Merge consecutive same-location days?"}
-			if !reflect.DeepEqual(subTitles, wantSubs) {
-				t.Errorf("saved-place step = %v, want %v", subTitles, wantSubs)
+			want := []string{"Where should your library go?", "How should folders be laid out?", "Which folders, in order?", "Where's home?"}
+			if !reflect.DeepEqual(titles, want) {
+				t.Errorf("setup steps = %v, want %v", titles, want)
 			}
-
-			// Collapse always demonstrates all three collapsible levels, regardless
-			// of whether Rules currently has device/orientation/media ticked — this
-			// test's cfg.Rules is only date+device, so location/orientation/media
-			// would otherwise be silently skipped.
-			collapseField := group.Subs[2]
-			*collapseField.BoolValue = false
-			if ex := collapseField.Example(); !strings.Contains(ex, "iPhone-13") || !strings.Contains(ex, "Vertical") || !strings.Contains(ex, "Photos") {
-				t.Errorf("collapse example must show all three collapsible levels even when unticked in Rules, got %q", ex)
+			layout := fieldByTitle(t, fields, "How should folders be laid out?")
+			if *layout.Value != customLayout {
+				t.Errorf("rules %v should open as Custom, got %q", cfg.Rules, *layout.Value)
 			}
-			*collapseField.BoolValue = true
-			if ex := collapseField.Example(); strings.Contains(ex, "iPhone 13") {
-				t.Errorf("collapsed example must drop the collapsible levels, got %q", ex)
-			}
-			*collapseField.BoolValue = false // restore: cfg.CollapseLevels started false
-
-			// The step holds while the database downloads — the wizard says so instead
-			// of failing a validation the user can't fix.
-			if group.Await == nil || group.Await() == "" {
-				t.Error("saved-place step must wait while the location database downloads")
+			if fieldByTitle(t, fields, "Which folders, in order?").Skip() {
+				t.Error("a custom layout must ask which folders")
 			}
 
-			// Examples live outside the description, and only the active choice's.
-			dateOnly := group.Subs[3]
-			if strings.Contains(dateOnly.Description, "2024/") {
-				t.Errorf("example must not be inside the description: %q", dateOnly.Description)
-			}
-			*dateOnly.BoolValue = true
-			if ex := dateOnly.Example(); strings.Contains(ex, "Indore") {
-				t.Errorf("date-only example must drop the town folder, got %q", ex)
-			}
-			*dateOnly.BoolValue = false
-			if ex := dateOnly.Example(); !strings.Contains(ex, "Indore") {
-				t.Errorf("date-off example must show the town folder, got %q", ex)
-			}
-
-			townField := group.Subs[0]
-			if err := townField.Validator("  "); err != nil {
+			homeField := fieldByTitle(t, fields, "Where's home?")
+			if err := homeField.Validator("  "); err != nil {
 				t.Errorf("blank town must stay skippable, got %v", err)
 			}
-
-			// A geonames database that never opened (failed download, database busy) must not
-			// trap the user on the field — nor drop the town they already had.
-			broken := errors.New("location db: database is locked")
-			brokenFields, brokenSave := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, broken })
-			brokenGroup := fieldByTitle(t, brokenFields, "Saved places")
-			*brokenGroup.Subs[0].Value = "Indore"
-			if err := brokenGroup.Subs[0].Validator("Indore"); err != nil {
-				t.Errorf("unusable geonames must let a town through, got %v", err)
+			*homeField.Value = "Indore"
+			if err := homeField.Validator("Indore"); err != nil {
+				t.Errorf("an unusable locationDB must let a town through, got %v", err)
 			}
-			if err := brokenSave(); err != nil {
-				t.Fatalf("save (broken geonames): %v", err)
-			}
-			g, err := config.LoadSettings(context.Background(), a.AppDB)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if g.HomeTown != "Indore" || g.WorkTown != "Indore" {
-				t.Errorf("home/work = %q/%q, want the typed town kept (work defaults to home)", g.HomeTown, g.WorkTown)
-			}
-
 			if err := save(); err != nil {
 				t.Fatalf("save: %v", err)
 			}
 			got, err := config.LoadSettings(context.Background(), a.AppDB)
 			if err != nil {
-				t.Fatalf("LoadSettings: %v", err)
+				t.Fatal(err)
 			}
-			want := config.Settings{
+			wantSettings := config.Settings{
 				Rules:                 []string{"date", "device"},
 				CollapseLevels:        false,
-				SavedPlacesDateOnly:   false, // the example checks above left it off
+				SavedPlacesDateOnly:   cfg.SavedPlacesDateOnly,
 				MergeSameLocationDays: cfg.MergeSameLocationDays,
-				HomeTown:              got.HomeTown, // covered above
-				WorkTown:              got.WorkTown,
+				HomeTown:              "Indore",
+				WorkTown:              "Indore", // blank work = same as home
 			}
-			if !got.Equal(want) {
-				t.Fatalf("saved settings = %+v, want %+v", got, want)
+			if !got.Equal(wantSettings) {
+				t.Fatalf("saved settings = %+v, want %+v", got, wantSettings)
 			}
-			// The save is what created the library, and it landed in the
-			// folder the form named.
 			if _, err := os.Stat(cfg.AppDBPath); err != nil {
 				t.Errorf("the save must create the library it writes to: %v", err)
 			}
 		}},
-		// once the library is open its folder is fixed, so the wizard stops
-		// asking for it
+		{"LayoutPresetsMapToRules", func(t *testing.T) {
+			for _, tt := range []struct {
+				rules  []string
+				choice string
+				label  string
+			}{
+				{nil, layoutPresets[0].name, "Year › Month › Day › Place"},
+				{[]string{"date", "location"}, layoutPresets[0].name, "Year › Month › Day › Place"},
+				{[]string{"location"}, "Year › Month › Place", "Year › Month › Place"},
+				{[]string{"none"}, customLayout, "Custom: Year › Month"},
+				{[]string{"date", "device"}, customLayout, "Custom: Year › Month › Day › Camera"},
+			} {
+				if got := layoutChoice(tt.rules); got != tt.choice {
+					t.Errorf("layoutChoice(%v) = %q, want %q", tt.rules, got, tt.choice)
+				}
+				if got := layoutLabel(tt.rules); got != tt.label {
+					t.Errorf("layoutLabel(%v) = %q, want %q", tt.rules, got, tt.label)
+				}
+			}
+
+			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
+			f := a.newSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
+			f.layout = "Year › Month › Place"
+			if got := f.rules(); !reflect.DeepEqual(got, []string{"location"}) {
+				t.Errorf("preset rules = %v, want [location]", got)
+			}
+			f.layout = customLayout
+			f.rulesField.Selected = map[string]bool{}
+			if got := f.rules(); !reflect.DeepEqual(got, []string{"none"}) {
+				t.Errorf("a custom layout with nothing ticked = %v, want [none]", got)
+			}
+		}},
+		// An open library's settings are a list; each row edits a fresh copy, so
+		// leaving an edit unsaved changes nothing.
+		{"SettingsListEditsOneRow", func(t *testing.T) {
+			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+			if err := a.openLibrary(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			defer a.closeDBs()
+			rows := a.settingsRows(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })()
+			var labels []string
+			for _, r := range rows {
+				labels = append(labels, r.Label)
+			}
+			if want := []string{"Library folder", "Folder layout", "Home", "Work", "Fine-tuning"}; !reflect.DeepEqual(labels, want) {
+				t.Fatalf("rows = %v, want %v", labels, want)
+			}
+			if rows[0].Edit == nil {
+				t.Error("the library folder must be changeable")
+			}
+
+			fields, _ := rows[4].Edit()
+			group := fields[0]
+			// the collapse example shows all three collapsible levels when off
+			*group.Subs[0].BoolValue = false
+			if ex := group.Subs[0].Example(); !strings.Contains(ex, "iPhone-13") || !strings.Contains(ex, "Vertical") {
+				t.Errorf("collapse-off example must show the collapsible levels, got %q", ex)
+			}
+			// edited but never saved: the next edit starts from the saved settings
+			again, save := rows[4].Edit()
+			if !*again[0].Subs[0].BoolValue {
+				t.Error("an unsaved edit leaked into the next one")
+			}
+			*again[0].Subs[2].BoolValue = false
+			if err := save(); err != nil {
+				t.Fatal(err)
+			}
+			if a.Config.MergeSameLocationDays {
+				t.Error("saving the fine-tuning row must write the new answer")
+			}
+		}},
 		{"OutputPathAskedOnlyBeforeTheLibraryIsOpen", func(t *testing.T) {
 			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
 			fields, _ := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
-			if f := findField(fields, "Output path"); f == nil {
-				t.Error("a session with no library open must be asked for the output folder")
+			if f := findField(fields, "Where should your library go?"); f == nil {
+				t.Error("a session with no library open must be asked for the library folder")
 			}
 
 			if err := a.openLibrary(context.Background()); err != nil {
@@ -170,8 +191,8 @@ func TestConfig(t *testing.T) {
 			}
 			defer a.closeDBs()
 			fields, _ = a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
-			if f := findField(fields, "Output path"); f != nil {
-				t.Error("an open library's folder is fixed — the wizard must not offer to change it")
+			if f := findField(fields, "Where should your library go?"); f != nil {
+				t.Error("an open library's folder is fixed — the setup must not offer to change it")
 			}
 		}},
 		// TestTownFieldsRoundTripARealTown exercises the real geonames path that
@@ -192,8 +213,7 @@ func TestConfig(t *testing.T) {
 			defer a.closeDBs()
 
 			fields, save := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return resolver, nil })
-			group := fieldByTitle(t, fields, "Saved places")
-			homeField := group.Subs[0]
+			homeField := fieldByTitle(t, fields, "Where's home?")
 
 			// A partial real city name must surface a real geonames entry — the
 			// full "city, state, country" form the picker always lists.

@@ -52,14 +52,13 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 		return nil
 	}
 
-	log.Info("Downloading location database", logger.UserKey, true,
-		logger.PhaseKey, "location", logger.EventKey, "start",
+	log.Info("Downloading locationDB (first run only)…", logger.UserKey, true,
 		"dir", path.New().RelativeToHome(dbPath))
 
 	// metadata first, and required: without it the database fails
 	// verification forever while never being re-downloaded
 	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
-	if err := downloadFile(ctx, log, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
+	if err := downloadFile(ctx, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
 		return fmt.Errorf("download %s: %w", LocationMetaFileName, err)
 	}
 
@@ -67,12 +66,11 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 	archivePath := dbPath + locationDBArchiveSuffix
 	// no digest here: the expected hash is of the decompressed db and ships
 	// in the metadata file above, which verifyLocationDB checks against
-	if err := downloadFile(ctx, log, archivePath, LocationDownloadBaseURL+"/"+archiveName, "", onProgress); err != nil {
+	if err := downloadFile(ctx, archivePath, LocationDownloadBaseURL+"/"+archiveName, "", onProgress); err != nil {
 		return fmt.Errorf("download %s: %w", archiveName, err)
 	}
 	// logged: nothing else reports progress during decompression
-	log.Info("Decompressing location database", logger.UserKey, true,
-		logger.PhaseKey, "location", logger.EventKey, "decompress")
+	log.Info("Unpacking locationDB…", logger.UserKey, true)
 	if err := decompressZstd(archivePath, dbPath); err != nil {
 		os.Remove(archivePath)
 		return fmt.Errorf("decompress %s: %w", archiveName, err)
@@ -81,8 +79,7 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 		log.Warn("failed to remove downloaded archive", "path", archivePath, "error", err)
 	}
 
-	log.Info("location database downloaded", logger.UserKey, true,
-		logger.PhaseKey, "location", logger.EventKey, "done")
+	log.Info("location database downloaded")
 	return nil
 }
 

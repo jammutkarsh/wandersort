@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync/atomic"
+	"slices"
 	"testing"
 )
 
@@ -77,7 +77,7 @@ func TestDownloadVerifiesChecksum(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dest := filepath.Join(t.TempDir(), "payload.bin")
 
-			err := downloadFile(context.Background(), nil, dest, srv.URL, tt.want, nil)
+			err := downloadFile(context.Background(), dest, srv.URL, tt.want, nil)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Download error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -100,35 +100,67 @@ func TestDownloadVerifiesChecksum(t *testing.T) {
 	}
 }
 
-// TestDownloadRetriesOnTransportFailure: a dropped connection (no response) is a
-// transport error, so the download retries rather than failing or hanging.
-func TestDownloadRetriesOnTransportFailure(t *testing.T) {
-	body := []byte("wandersort dependency payload")
-	var attempts atomic.Int32
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if attempts.Add(1) == 1 {
-			conn, _, err := w.(http.Hijacker).Hijack()
-			if err != nil {
-				t.Fatal(err)
+func TestTryUpTo(t *testing.T) {
+	errNet := errors.New("connection reset")
+	errQuit := errors.New("user quit")
+	tests := []struct {
+		name      string
+		failFirst int   // tries that fail before one succeeds
+		stopAt    int   // BeforeRetry refuses before this try (0 = never)
+		wantTries int   // tries run
+		wantAsked []int // tries BeforeRetry was asked about
+		wantErr   error
+	}{
+		{"first try works", 0, 0, 1, nil, nil},
+		{"second try works", 1, 0, 2, []int{2}, nil},
+		{"third try works", 2, 0, 3, []int{2, 3}, nil},
+		{"gives up after three", 5, 0, 3, []int{2, 3}, errNet},
+		{"user stops the retry", 5, 2, 1, []int{2}, errQuit},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tries := 0
+			var asked []int
+			err := tryUpTo(context.Background(), MaxTries,
+				func(_ context.Context, next int, prev error) error {
+					asked = append(asked, next)
+					if !errors.Is(prev, errNet) {
+						t.Errorf("BeforeRetry got %v, want the previous try's error", prev)
+					}
+					if next == tt.stopAt {
+						return errQuit
+					}
+					return nil
+				},
+				func(context.Context) error {
+					tries++
+					if tries <= tt.failFirst {
+						return errNet
+					}
+					return nil
+				})
+			if !errors.Is(err, tt.wantErr) || (tt.wantErr == nil && err != nil) {
+				t.Errorf("tryUpTo() = %v, want %v", err, tt.wantErr)
 			}
-			conn.Close() // simulate a dropped connection on the first attempt
-			return
-		}
-		w.Write(body)
-	}))
-	defer srv.Close()
+			if tries != tt.wantTries {
+				t.Errorf("ran %d tries, want %d", tries, tt.wantTries)
+			}
+			if !slices.Equal(asked, tt.wantAsked) {
+				t.Errorf("BeforeRetry asked %v, want %v", asked, tt.wantAsked)
+			}
+		})
+	}
+}
 
-	dest := filepath.Join(t.TempDir(), "payload.bin")
-	if err := downloadFile(context.Background(), nil, dest, srv.URL, "", nil); err != nil {
-		t.Fatalf("downloadFile() = %v, want nil after retrying past the dropped connection", err)
-	}
-	if got := attempts.Load(); got < 2 {
-		t.Errorf("server saw %d request(s), want at least 2 (a retry after the drop)", got)
-	}
-	got, err := os.ReadFile(dest)
-	if err != nil || string(got) != string(body) {
-		t.Errorf("dest = %q, %v, want %q, nil", got, err, body)
+// A cancelled context ends the tries at once, without asking to retry.
+func TestTryUpToStopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tries := 0
+	err := tryUpTo(ctx, MaxTries,
+		func(context.Context, int, error) error { t.Error("BeforeRetry called after cancel"); return nil },
+		func(context.Context) error { tries++; cancel(); return context.Canceled })
+	if !errors.Is(err, context.Canceled) || tries != 1 {
+		t.Errorf("tryUpTo() = %v after %d tries, want context.Canceled after 1", err, tries)
 	}
 }
 
@@ -151,10 +183,23 @@ func TestDownloadCleansStaleTempFiles(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(dir, "payload.bin")
-	if err := downloadFile(context.Background(), nil, dest, srv.URL, "", nil); err != nil {
+	if err := downloadFile(context.Background(), dest, srv.URL, "", nil); err != nil {
 		t.Fatalf("downloadFile() = %v", err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Errorf("stale temp file still exists after download, want it swept")
+	}
+}
+
+func TestFailedListsEveryDependency(t *testing.T) {
+	exif := &DependencyError{Phase: PhaseExiftool, Err: errors.New("refused")}
+	loc := &DependencyError{Phase: PhaseLocation, Err: errors.New("refused")}
+	err := fmt.Errorf("gave up after 3 tries: %w", errors.Join(exif, loc))
+	got := Failed(err)
+	if len(got) != 2 || got[0] != exif || got[1] != loc {
+		t.Errorf("Failed() = %v, want both dependencies in install order", got)
+	}
+	if Failed(errors.New("lock")) != nil {
+		t.Error("an error naming no dependency lists none")
 	}
 }

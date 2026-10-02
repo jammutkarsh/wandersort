@@ -56,7 +56,7 @@ func TestNewRootCmdWiresSubcommands(t *testing.T) {
 	want := [][]string{
 		{"add"},
 		{"organise"},
-		{"execute"},
+		{"copy"},
 		{"check"},
 		{"admin"},
 		{"admin", "clear"},

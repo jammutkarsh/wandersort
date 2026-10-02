@@ -26,7 +26,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.previewing = false
 		m.previewErr = msg.err
 		if msg.err == nil {
-			openInViewer(msg.dir)
+			tui.OpenInViewer(msg.dir)
 		}
 		return m, nil
 	case tea.KeyMsg:
@@ -93,6 +93,8 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = false
 		return m, nil
 	}
+	// the last edit's receipt lasts one key
+	m.statusMsg, m.statusIsErr, m.statusUndo = "", false, false
 
 	var cmd tea.Cmd
 	switch key.String() {

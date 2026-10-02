@@ -87,6 +87,34 @@ func TestPrettyHandlerShowsOnlyUserFacingAndWarnings(t *testing.T) {
 	}
 }
 
+// A milestone prints alone, a phase's start line waits for its done line, a warning keeps its tag and attrs.
+func TestPrettyHandlerPlainLines(t *testing.T) {
+	h := NewPrettyHandler(&slog.HandlerOptions{Level: slog.LevelInfo})
+	tests := []struct {
+		name string
+		rec  slog.Record
+		want string
+	}{
+		{"milestone is the sentence", newRecord(slog.LevelInfo, "Found 3 files in 1ms",
+			slog.Bool(UserKey, true), slog.String(EventKey, "done"), slog.String("paths", "/a")), "Found 3 files in 1ms\n"},
+		{"phase start hidden", newRecord(slog.LevelInfo, "Finding your files…",
+			slog.Bool(UserKey, true), slog.String(EventKey, "start")), ""},
+		{"warning tagged with attrs", newRecord(slog.LevelWarn, "low disk", slog.String("free", "1 GB")), "warn  low disk free=1 GB\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := captureStderr(t, func() {
+				if err := h.Handle(context.Background(), tt.rec); err != nil {
+					t.Fatalf("Handle: %v", err)
+				}
+			})
+			if out != tt.want {
+				t.Errorf("console = %q, want %q", out, tt.want)
+			}
+		})
+	}
+}
+
 func TestPrettyHandlerHidesRoutingKeysInNonVerboseMode(t *testing.T) {
 	h := NewPrettyHandler(&slog.HandlerOptions{Level: slog.LevelInfo})
 	rec := newRecord(slog.LevelWarn, "phase transition",

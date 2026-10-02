@@ -164,22 +164,14 @@ func TestForm(t *testing.T) {
 				t.Errorf("tab should fill top suggestion, got %q", v)
 			}
 		}},
-		// Examples render outside the description (only for the choice under the
-		// cursor), and a field can hold on a background download instead of letting
-		// the user answer it.
-		{"FormExampleAwait", func(t *testing.T) {
+		// Examples render outside the description, only for the choice under the
+		// cursor.
+		{"FormExample", func(t *testing.T) {
 			dateOnly := true
 			town := ""
-			pending := true
 			fields := []*Field{{
 				Kind:  FieldGroup,
 				Title: "Saved places",
-				Await: func() string {
-					if pending {
-						return "Waiting for the location database"
-					}
-					return ""
-				},
 				Subs: []*Field{
 					{Kind: FieldInput, Title: "Home town", Value: &town},
 					{
@@ -196,21 +188,7 @@ func TestForm(t *testing.T) {
 			}}
 			m := NewFormModel(fields, nil)
 
-			// Held: the reason shows and enter can't get past it.
-			view := ansi.Strip(m.View())
-			if !strings.Contains(view, "Waiting for the location database") {
-				t.Errorf("held field must say what it waits for:\n%s", view)
-			}
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			if m2 := next.(FormModel); m2.subIdx != 0 {
-				t.Errorf("enter must not advance a held field, subIdx=%d", m2.subIdx)
-			}
-
-			// Released by the download finishing.
-			pending = false
-			next, _ = m.Update(DownloadMsg{Finished: true})
-			m = next.(FormModel)
-			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			m = next.(FormModel)
 			if m.subIdx != 1 {
 				t.Fatalf("enter should reach the confirm sub, subIdx=%d", m.subIdx)
@@ -223,7 +201,7 @@ func TestForm(t *testing.T) {
 			if dateOnly {
 				t.Error("down should select no")
 			}
-			view = ansi.Strip(m.View())
+			view := ansi.Strip(m.View())
 			if !strings.Contains(view, "2024/08/12/Indore/IMG.jpg") || strings.Contains(view, "2024/08/12/IMG.jpg\n") {
 				t.Errorf("only the selected option's example should render:\n%s", view)
 			}
@@ -267,27 +245,6 @@ func TestForm(t *testing.T) {
 				t.Errorf("digit must not jump steps: Current=%d", m.Current)
 			}
 		}},
-		// The download row shows progress under the banner and disappears when done.
-		{"FormDownloadRow", func(t *testing.T) {
-			v := ""
-			m := NewFormModel([]*Field{{Kind: FieldInput, Title: "Output path", Value: &v}}, nil)
-			m.w, m.h = 80, 24
-
-			if strings.Contains(ansi.Strip(m.View()), "Location database") {
-				t.Error("nothing should render before the first download report")
-			}
-			next, _ := m.Update(DownloadMsg{Label: "Location database", Done: 5, Total: 10})
-			m = next.(FormModel)
-			if view := ansi.Strip(m.View()); !strings.Contains(view, "Location database") || !strings.Contains(view, "50%") {
-				t.Errorf("download row missing progress:\n%s", view)
-			}
-			// Finished carries no label of its own; the done line must keep the
-			// one from the byte reports rather than vanishing mid-glance.
-			next, _ = m.Update(DownloadMsg{Finished: true})
-			if view := ansi.Strip(next.(FormModel).View()); !strings.Contains(view, "Location database · done") {
-				t.Errorf("finished download should persist as a done line:\n%s", view)
-			}
-		}},
 		// FormExampleSidePanel: on a wide terminal the example renders as a
 		// right-hand column (bordered box); on a narrow one it falls back to the
 		// block above the footer. Same content either way.
@@ -313,17 +270,6 @@ func TestForm(t *testing.T) {
 			}
 			if narrow := ansi.Strip(m.View()); !strings.Contains(narrow, "└─ 08_August") {
 				t.Errorf("footer example block missing:\n%s", narrow)
-			}
-		}},
-		// FormDownloadAlreadyInstalled: a dependency already on disk sends only
-		// the Finished message — the form must never mention it at all.
-		{"FormDownloadAlreadyInstalled", func(t *testing.T) {
-			v := ""
-			m := NewFormModel([]*Field{{Kind: FieldInput, Title: "Output path", Value: &v}}, nil)
-			m.w, m.h = 80, 24
-			next, _ := m.Update(DownloadMsg{Finished: true})
-			if view := ansi.Strip(next.(FormModel).View()); strings.Contains(view, "done") {
-				t.Errorf("an install that never reported bytes must stay invisible:\n%s", view)
 			}
 		}},
 		// Embedded in the app shell, the form never quits the program — the

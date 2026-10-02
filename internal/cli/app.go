@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jammutkarsh/wandersort/pkg/config"
@@ -36,6 +38,10 @@ type app struct {
 	// logFile is this process's log, shared by the startup and TUI loggers.
 	// Buffered in memory until openLibrary (or a warning) persists it.
 	logFile *logger.File
+
+	// jsonOut is --json: plain output, plus one result object on stdout;
+	// jsonPrinted makes sure it is only one
+	jsonOut, jsonPrinted bool
 	// work is background work on the library; shutdown waits for it before
 	// closing the database.
 	work workGroup
@@ -47,6 +53,8 @@ type workGroup struct {
 	mu     sync.Mutex
 	closed bool
 	wg     sync.WaitGroup
+	// library is read-held by work on the open library and write-held while it is swapped
+	library sync.RWMutex
 }
 
 // start registers one piece of work, or reports false once shutdown began.
@@ -62,6 +70,28 @@ func (g *workGroup) start() bool {
 
 func (g *workGroup) done() { g.wg.Done() }
 
+// startOnLibrary is start for work on the open library; the library can't be switched while it runs.
+func (g *workGroup) startOnLibrary() bool {
+	if !g.start() {
+		return false
+	}
+	g.library.RLock()
+	return true
+}
+
+func (g *workGroup) doneOnLibrary() {
+	g.library.RUnlock()
+	g.done()
+}
+
+// holdLibrary takes the library from all work, or reports false while any runs on it.
+func (g *workGroup) holdLibrary() (release func(), ok bool) {
+	if !g.library.TryLock() {
+		return nil, false
+	}
+	return g.library.Unlock, true
+}
+
 // closeAndWait refuses new work and waits for what is running.
 func (g *workGroup) closeAndWait() {
 	g.mu.Lock()
@@ -72,7 +102,15 @@ func (g *workGroup) closeAndWait() {
 
 func Execute() error {
 	a := &app{}
-	return a.newRootCmd().Execute()
+	err := a.newRootCmd().Execute()
+	// a failure before the command printed its own result still gets one; a
+	// bad flag or argument fails before PersistentPreRunE reads --json
+	if err != nil && !a.jsonOut {
+		a.jsonOut = slices.ContainsFunc(os.Args[1:], func(arg string) bool {
+			return arg == "--"+flagJSON || arg == "--"+flagJSON+"=true"
+		})
+	}
+	return a.emitJSON(&jsonOutcome{}, time.Time{}, err)
 }
 
 // interruptible is the context for plain commands that touch the library. The
@@ -87,14 +125,14 @@ func interruptible() (context.Context, context.CancelFunc) {
 	return ctx, stop
 }
 
-// newDeps builds a Coordinator wired to this app's config and log.
-// onProgress may be nil (every non-TUI path).
-func (a *app) newDeps(onProgress func(phase string, done, total int64)) *install.Coordinator {
+// newDeps builds a Coordinator for this app; nil callbacks mean no progress and a logged wait between tries.
+func (a *app) newDeps(onProgress func(install.Progress), beforeRetry install.RetryFunc) *install.Coordinator {
 	return install.New(install.Options{
 		ExecutablePath: a.Config.ExecutablePath,
 		LocationDBPath: a.Config.LocationDBPath,
 		Log:            a.Log,
 		OnProgress:     onProgress,
+		BeforeRetry:    beforeRetry,
 	})
 }
 
@@ -117,9 +155,9 @@ func (a *app) lockOutput() (*lock.Lock, error) {
 	l, err := lock.AcquireOutput(filepath.Dir(a.Config.AppDBPath))
 	var running *lock.AlreadyRunningError
 	if errors.As(err, &running) {
-		return nil, fmt.Errorf("%s", tui.Bad.Render(fmt.Sprintf("Another wandersort process is already running (PID %d).", running.PID))+"\n\n"+
+		return nil, withCode(exitBusy, fmt.Errorf("%s", tui.Bad.Render(fmt.Sprintf("Another wandersort process is already running (PID %d).", running.PID))+"\n\n"+
 			tui.FaintTxt.Render("Only one scan or review can use the same output directory at a time.")+"\n"+
-			tui.FaintTxt.Render("Stop the other process, then try again."))
+			tui.FaintTxt.Render("Stop the other process, then try again.")))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("acquire lock: %w", err)
@@ -183,7 +221,8 @@ func (a *app) saveSettings(ctx context.Context, outputDir string, s config.Setti
 	return nil
 }
 
-func (a *app) closeDBs() {
+// closeLibrary flushes and closes the open library and releases its lock.
+func (a *app) closeLibrary() {
 	// a failed Close can leave WAL/SHM locked (locking_mode=EXCLUSIVE); log it
 	if a.AppDB != nil {
 		if err := a.AppDB.Writer.Flush(); err != nil {
@@ -195,6 +234,42 @@ func (a *app) closeDBs() {
 		}
 	}
 	a.outLock.Unlock() // nil-safe; after Close, so no other process opens the database mid-close
+	a.AppDB, a.outLock = nil, nil
+}
+
+// switchLibrary makes dir the session's library, reopening the old one if dir can't be opened.
+func (a *app) switchLibrary(ctx context.Context, dir string) error {
+	old := a.Config.OutputDir()
+	if dir == old {
+		return nil
+	}
+	if err := config.CheckLibrary(dir); err != nil {
+		return err
+	}
+	release, ok := a.work.holdLibrary()
+	if !ok {
+		return errors.New("WanderSort is still working on this library; change the folder once it is done")
+	}
+	defer release()
+	// an organised folder keeps its own settings; any other starts a new library with these
+	_, statErr := os.Stat(filepath.Join(dir, filepath.Base(a.Config.AppDBPath)))
+	isNew := statErr != nil
+	carry := a.Config.Settings
+
+	a.closeLibrary()
+	a.Config.SetOutput(dir)
+	if err := a.openLibrary(ctx); err != nil {
+		a.Config.SetOutput(old)
+		return errors.Join(err, a.openLibrary(ctx))
+	}
+	if isNew {
+		return a.saveSettings(ctx, dir, carry)
+	}
+	return nil
+}
+
+func (a *app) closeDBs() {
+	a.closeLibrary()
 	if a.Deps != nil {
 		if err := a.Deps.Close(); err != nil {
 			a.Log.Error("failed to close location database", "error", err)
@@ -203,7 +278,7 @@ func (a *app) closeDBs() {
 }
 
 func (a *app) isTuiEnabled(cmd *cobra.Command) bool {
-	if plain, _ := cmd.Flags().GetBool(flagPlain); plain {
+	if plain, _ := cmd.Flags().GetBool(flagPlain); plain || a.jsonOut {
 		return false
 	}
 	return term.IsTerminal(int(os.Stderr.Fd()))

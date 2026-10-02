@@ -100,9 +100,23 @@ func TestFilePersistPrunes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// a page beside a pruned log goes with it; one beside a kept log stays
+	prunedPage := filepath.Join(dir, "2026-01-01T10-00-00Z_1"+PageExt)
+	keptPage := filepath.Join(dir, "2026-01-01T10-00-10Z_1"+PageExt)
+	for _, p := range []string{prunedPage, keptPage} {
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	f := NewFile(dir)
 	f.Persist()
+	if _, err := os.Stat(prunedPage); !os.IsNotExist(err) {
+		t.Errorf("the pruned log's page is still there: %v", err)
+	}
+	if _, err := os.Stat(keptPage); err != nil {
+		t.Errorf("a kept log's page was removed: %v", err)
+	}
 
 	got := Recent(dir, 0)
 	if len(got) != keepLogs {

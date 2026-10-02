@@ -276,7 +276,7 @@ func (e *Extractor) pendingVolumes(ctx context.Context) ([]pendingVolume, error)
 		sampleDir = wspath.FromSourcePath(sampleDir)
 		class := e.classOf(uuid, sampleDir)
 		cost := readCost(class, e.budget)
-		e.log.Info("Storage detected", logger.UserKey, true,
+		e.log.Info("Storage detected",
 			"path", sampleDir, "class", class.String(), "concurrentReads", e.budget/cost)
 		volumes = append(volumes, pendingVolume{uuid: uuid, cost: cost})
 	}

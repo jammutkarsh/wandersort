@@ -74,15 +74,34 @@ make install         installs to $GOPATH/bin/wandersort (requires Go 1.27.1 or a
 # Do everything on screen: settings, adding folders, correcting the plan.
 wandersort
 
-# Or step by step. Dependencies (ExifTool + location database) download
-# automatically on first use.
+# Or step by step. Dependencies (ExifTool + locationDB) download on first
+# use, in up to three tries.
 wandersort add --paths ~/Pictures,/Volumes/SD   # plan where every file goes
 wandersort organise                              # correct the plan
-wandersort execute                               # copy the files in
+wandersort copy                                  # copy the files in
 wandersort check                                 # later: verify the library
 ```
 
-> Settings (output folder, folder rules, saved places) live in the library itself, so each library keeps its own. `wandersort` opens the one you used last; `--output-path` picks another.
+> Settings (folder layout, home and work, fine-tuning) live in the library itself, so each library keeps its own. `wandersort` opens the one you used last; `--output-path` picks another.
+
+### Running unattended
+
+`add`, `copy` and `check` need no terminal. Without one they never prompt and print one line per stage. With no library yet, `add` creates `~/WandersortLibrary` with default settings.
+
+```bash
+# every night: plan new uploads, then copy them in
+0 2 * * *  wandersort add -p /mnt/uploads -o /mnt/photos && wandersort copy -o /mnt/photos
+```
+
+| Exit | Meaning |
+|---|---|
+| 0 | Finished (also when there was nothing new) |
+| 1 | Stopped by an error; the next run carries on |
+| 2 | Couldn't start: bad flags or arguments |
+| 3 | Finished, but some files failed; each is named |
+| 4 | Another wandersort is using the library |
+
+`--json` prints one result object on stdout at the end, failures included; progress stays on stderr. A copy that leaves files out writes an HTML page listing each one, grouped by the drive it came from, beside that run's log in `~/.wandersort/logs/`.
 
 Run `wandersort --help`, or `wandersort <command> --help`, for the full command and flag reference.
 

@@ -5,23 +5,28 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 
 ## 1. Smoke & help
 
-1. `[H]` `wandersort --help` → styled help listing add, organise, execute, check, admin; exit 0.
+1. `[H]` `wandersort --help` → styled help listing add, organise, copy, check, admin; exit 0.
 2. `[A]` `wandersort bogus-cmd` → unknown-command error, non-zero exit.
 3. `[A]` `wandersort add --help` → shows `--paths/-p` and `--force`; no `--workers`.
 4. `[A]` bare `wandersort --plain` (or piped stderr) → prints help instead of opening the app.
 
 ## 2. Settings & dependencies
 
-5. `[H]` first-ever `wandersort` → opens on the Settings tab; the location database downloads in a progress row while earlier steps are answerable; the Saved places step waits for it, then unblocks.
-6. `[A]` dependencies already on disk → no download row, no checksum line on the console (still in the log).
+4a. `[H]` `shift+tab` cycles Add → Organise → Copy → Settings, skipping tabs with nothing to do.
+
+5. `[H]` first-ever `wandersort` → getting-ready screen downloads exiftool and the locationDB with progress bars, then opens the three-step setup (library, layout, home).
+6. `[H]` dependencies already on disk → getting ready shows for a moment (`✓ found`), then the tabs; the last library opens without asking.
+6a. `[H]` network blocked (`HTTPS_PROXY=http://127.0.0.1:9`) → each failed dependency named, "Try switching to a better network", 10 s countdown, `enter` retries now; after try 3 any key quits with exit 1; the next launch tries 3 more times.
 7. `[H]` Settings → typing a town name lists full `<city>, <state>, <country>` names, never two identical rows; the saved choice resolves to the right city on the next scan.
-8. `[H]` Settings → option lists are numbered; the example tree beside each question changes with the option under the cursor; turning off the `location` rule drops the city level from later examples.
-9. `[H]` change a setting and save → the plan is re-proposed at once; an unchanged save re-plans nothing.
+8. `[H]` setup → layouts are numbered, a digit picks one, the example tree follows the option under the cursor; `4) Custom…` adds the rule step; `ctrl+b` goes back a step.
+9. `[H]` Settings with a library open → a list of answers; enter changes one row and returns to the list with "Saved"; `esc` saves what's on screen without asking; a changed setting re-plans at once, an unchanged save re-plans nothing; `ctrl+c` leaves without saving.
+9a. `[H]` Settings → Library folder → an empty folder starts a new library with the same settings and nothing planned; a folder WanderSort organised opens with its own; the old library is untouched and opens again when chosen.
 10. `[A]` delete the exiftool binary, then `add` → it is downloaded again before the run starts.
 
 ## 3. Add (scan → metadata → vfs)
 
-11. `[A]` `add -p <dir>` → one line per phase with count and time (`Scanned N files in 1.9s`); first line names workers, output and rules.
+11. `[A]` `add -p <dir>` without a terminal → first line names library and layout, then one sentence per stage (`Found 15,481 files in 1.9s`), then `next:`; `--json` adds one result object on stdout; unreadable files exit 3.
+11a. `[H]` `add` in the app → Find / Read / Plan with the file being read and a time-left guess; then "Plan ready" with 1) look over the folders 2) copy as planned 3) add more.
 12. `[A]` `add -p ./a -p ./b` and `-p ./a,./b` → identical result; nested roots (`/x` and `/x/y`) walked once.
 13. `[A]` `add -p /does/not/exist` → clear error, non-zero exit, nothing written.
 14. `[A]` `add --plain` with no `-p` → error asking for paths.
@@ -57,7 +62,7 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 ## 5. Organise (review)
 
 40. `[H]` no plan yet → home screen says so; the app stays open.
-41. `[H]` tree renders with box-drawing guides, file counts right-aligned, scrolls; `?` shows the key reference.
+41. `[H]` tree renders with box-drawing guides, file counts right-aligned, scrolls; footer shows five keys; `?` draws the full list over the tree, any key closes it; an edit shows "✓ … · u undo" until the next key.
 42. `[H]` `n`/`N` → next/previous row at the same depth across branches; stops at the ends.
 43. `[H]` `r` → rename with ranked place suggestions; `↑/↓` pick, `tab` fills, `ctrl+e` widens the radius; names typed in earlier reviews are offered.
 44. `[H]` `r`, `m`, `d` on a Year or Month folder → refused with a ⚠ status line.
@@ -67,19 +72,20 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 48. `[H]` `u` repeatedly → each edit undone in reverse order, whatever its kind, then "nothing left to undo".
 49. `[H]` `R` → draft deleted, tree back to the proposed plan.
 50. `[H]` `p` → preview copy (≤ 250 MB) opens in the OS browser; a parent and its only-child leaf open the same copy; copies survive quitting.
-51. `[H]` edits, then `kill -9` and reopen → same tree; `esc` → home says the edits wait for `execute`.
+51. `[H]` edits, then `kill -9` and reopen → same tree; `esc` → home says the edits wait for `copy`.
 52. `[H]` narrow terminal (~50 cols) → key help wraps, last tree row still visible.
 
-## 6. Execute
+## 6. Copy
 
-53. `[A]` `execute` after review edits → files land under the edited folders, draft gone, `.wandersort.db.zst` written.
-54. `[A]` `execute --dry-run` → reports the edited target paths, writes nothing.
+53. `[A]` `copy` after review edits → files land under the edited folders, draft gone, `.wandersort.db.zst` written.
+54. `[A]` `copy --dry-run` → reports the edited target paths, writes nothing.
 55. `[A]` too little free space → refuses before changing anything; draft still there.
-56. `[A]` after `execute`, every source file is byte-identical and still in place; there is no `--move` flag.
-57. `[A]` a source edited after the scan (same size) → `checksum-mismatch` error, nothing lands, source kept.
+56. `[A]` after `copy`, every source file is byte-identical and still in place.
+56a. `[H]` `copy` in a terminal → Copy tab: size, free space, edits; enter runs Check space / Apply edits / Back up / Copy & check with a byte bar; ends with "All done" or the files left out by reason.
+57. `[A]` a source edited after the scan (same size) → `checksum-mismatch` error, nothing lands, source kept; exit 3; `~/.wandersort/logs/<run>.html` lists it under its drive with what to do.
 58. `[A]` an occupied target name → lands at `_1`, nothing overwritten; the same file already there → recorded, not copied twice.
 59. `[A]` kill mid-run, run again → resumes; nothing copied twice; files that failed last run are tried again.
-60. `[A]` re-add the same card after execute → nothing proposed again.
+60. `[A]` re-add the same card after copy → nothing proposed again.
 
 ## 7. Check
 
@@ -98,6 +104,6 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 
 ## 9. Concurrency & logs
 
-70. `[A]` a second process against the same library → "already running (PID …)".
+70. `[A]` a second process against the same library → "already running (PID …)", exit 4.
 71. `[A]` a session that only looks around → no log file, nothing written into the library.
 72. `[A]` `--plain` → plain line log on the console; the JSON log in `~/.wandersort/logs/` has full detail either way.

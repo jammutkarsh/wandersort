@@ -47,21 +47,6 @@ func TestRowShortLeftPadsToRight(t *testing.T) {
 	}
 }
 
-func TestBannerWithAndWithoutSubtitle(t *testing.T) {
-	withSub := ansi.Strip(Banner("scan"))
-	if !strings.Contains(withSub, "WanderSort") || !strings.Contains(withSub, "scan") {
-		t.Errorf("Banner(%q) = %q, want both title and subtitle", "scan", withSub)
-	}
-
-	bare := ansi.Strip(Banner(""))
-	if !strings.Contains(bare, "WanderSort") {
-		t.Errorf("Banner(\"\") = %q, want the title", bare)
-	}
-	if strings.Contains(bare, "scan") {
-		t.Errorf("Banner(\"\") must not carry over a subtitle")
-	}
-}
-
 func TestFooterWrapsToWidth(t *testing.T) {
 	got := Footer("[c] save & exit  [q] quit", 0)
 	if !strings.Contains(ansi.Strip(got), "save & exit") {

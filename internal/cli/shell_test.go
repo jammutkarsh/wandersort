@@ -144,22 +144,22 @@ func TestShellModel(t *testing.T) {
 			m := testShell(t)
 			m.screens[tabSettings] = &probe{name: "config"}
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if m.tab != tabSettings {
-				t.Fatalf("first ctrl+t = tab %d, want config", m.tab)
+				t.Fatalf("first shift+tab = tab %d, want config", m.tab)
 			}
-			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if m.tab != tabScan {
-				t.Fatalf("ctrl+t past config with no proposal = tab %d, want scan", m.tab)
+				t.Fatalf("shift+tab past config with no proposal = tab %d, want scan", m.tab)
 			}
 
 			m.screens[tabReview] = &probe{name: "review"}
-			m.tab = tabSettings
-			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			m.tab = tabScan
+			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			if got := next.(shellModel).tab; got != tabReview {
-				t.Errorf("ctrl+t with a ready review = tab %d, want review", got)
+				t.Errorf("shift+tab with a ready review = tab %d, want review", got)
 			}
 		}},
 		// The scan's prefetched review must never yank a user out of a
@@ -177,15 +177,23 @@ func TestShellModel(t *testing.T) {
 			if !m.reviewReady() {
 				t.Error("the review should be marked ready")
 			}
-			if v := ansi.Strip(m.tabBar()); !strings.Contains(v, "ready") {
-				t.Errorf("tab bar should announce the ready review: %q", v)
+			if v := ansi.Strip(m.tabBar()); !strings.Contains(v, "Organise ●") {
+				t.Errorf("tab bar should mark the ready review: %q", v)
 			}
 
-			// Same message with the scan tab active does switch.
+			// A plain handover never moves the user; one they picked does.
 			m.tab = tabScan
 			next, _ = m.Update(tui.SwitchMsg{Next: &probe{name: "review"}})
+			if got := next.(shellModel).tab; got != tabScan {
+				t.Errorf("a handover moved the user to tab %d", got)
+			}
+			next, _ = m.Update(tui.SwitchMsg{Next: &probe{name: "review"}, Open: true})
 			if got := next.(shellModel).tab; got != tabReview {
-				t.Errorf("with the scan on screen the review should open, got tab %d", got)
+				t.Errorf("a picked review should open, got tab %d", got)
+			}
+			next, _ = m.Update(tui.OpenReviewMsg{})
+			if got := next.(shellModel).tab; got != tabReview {
+				t.Errorf("OpenReviewMsg with a kept review should open it, got tab %d", got)
 			}
 		}},
 		// Unlike tui.Shell, a nil Next is not "quit": one plan is settled, the
@@ -216,10 +224,10 @@ func TestShellModel(t *testing.T) {
 			m.screens[tabScan] = finishedScan(t, nil)
 			m.tab = tabSettings
 
-			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if m.tab != tabScan {
-				t.Fatalf("ctrl+t = tab %d, want scan", m.tab)
+				t.Fatalf("shift+tab = tab %d, want scan", m.tab)
 			}
 			if _, ok := m.screens[tabScan].(tui.HomeModel); !ok {
 				t.Fatalf("a finished scan's tab should offer a folder input, got %T", m.screens[tabScan])
@@ -227,7 +235,7 @@ func TestShellModel(t *testing.T) {
 			if cmd == nil {
 				t.Error("the new home screen needs its Init")
 			}
-			if v := ansi.Strip(m.View()); !strings.Contains(v, "Add more folders to scan") {
+			if v := ansi.Strip(m.View()); !strings.Contains(v, "Add more photos from") {
 				t.Errorf("the finished run should be summarized above the input:\n%s", v)
 			}
 		}},
@@ -239,7 +247,7 @@ func TestShellModel(t *testing.T) {
 			m.screens[tabScan] = finishedScan(t, errors.New("disk went away"))
 			m.tab = tabSettings
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if _, ok := m.screens[tabScan].(tui.HomeModel); ok {
 				t.Fatal("a failed scan's screen must survive, error and all")
@@ -265,14 +273,14 @@ func TestShellModel(t *testing.T) {
 			if m.canReview() {
 				t.Fatal("no database yet — nothing to review")
 			}
-			if v := ansi.Strip(m.tabBar()); !strings.Contains(v, "waiting for scan") {
-				t.Errorf("tab bar should say why review is closed: %q", v)
+			if v := ansi.Strip(m.tabBar()); strings.Contains(v, "●") {
+				t.Errorf("tab bar marks a review with nothing to review: %q", v)
 			}
 
 			// An earlier run's database, no prefetched screen — exactly the
 			// state a relaunch (or a finished save) leaves behind. The library
 			// is read at the points where it can have changed rather than per
-			// frame, and ctrl+t is one of them.
+			// frame, and shift+tab is one of them.
 			seedProposal(t, m.a)
 			m.refresh()
 			if !m.canReview() {
@@ -280,15 +288,14 @@ func TestShellModel(t *testing.T) {
 			}
 			// The tab bar is the only thing that tells the user the plan is
 			// there — saying nothing (a plain dim tab) reads as "not yet".
-			if v := ansi.Strip(m.tabBar()); !strings.Contains(v, "ready") {
-				t.Errorf("tab bar should announce the proposal on disk: %q", v)
+			if v := ansi.Strip(m.tabBar()); !strings.Contains(v, "Organise ●") {
+				t.Errorf("tab bar should mark the proposal on disk: %q", v)
 			}
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-			next, cmd := next.(shellModel).Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if !m.opening || cmd == nil {
-				t.Fatalf("ctrl+t into an unprefetched review should build one, opening=%v", m.opening)
+				t.Fatalf("shift+tab into an unprefetched review should build one, opening=%v", m.opening)
 			}
 			// The tab only moves once the screen lands, so no blank frame.
 			if m.tab == tabReview {
@@ -306,19 +313,19 @@ func TestShellModel(t *testing.T) {
 				t.Error("review must stay closed while a scan is running")
 			}
 		}},
-		// ctrl+t builds the real wizard — the same form the config subcommand
+		// shift+tab builds the real wizard — the same form the config subcommand
 		// runs, only hosted here.
 		{"ConfigTabOpensTheWizard", func(t *testing.T) {
 			m := testShell(t)
-			m.a.Deps = m.a.newDeps(nil) // the wizard's geonames peek; never started
+			m.a.Deps = m.a.newDeps(nil, nil) // the wizard's geonames peek; never started
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if m.tab != tabSettings || m.screens[tabSettings] == nil {
-				t.Fatalf("ctrl+t should build and open the wizard, got tab=%d screen=%v", m.tab, m.screens[tabSettings])
+				t.Fatalf("shift+tab should build and open the wizard, got tab=%d screen=%v", m.tab, m.screens[tabSettings])
 			}
-			if v := ansi.Strip(m.View()); !strings.Contains(v, "Output path") {
-				t.Errorf("the wizard should be on screen:\n%s", v)
+			if v := ansi.Strip(m.View()); !strings.Contains(v, "Set up your library") || !strings.Contains(v, "Where should your library go?") {
+				t.Errorf("the setup should be on screen:\n%s", v)
 			}
 		}},
 		// A saved wizard hands the tab back instead of taking the program (and
@@ -359,8 +366,8 @@ func TestShellModel(t *testing.T) {
 			// remembering that a quit was asked for.
 			t.Run("config", func(t *testing.T) {
 				m := testShell(t)
-				m.a.Deps = m.a.newDeps(nil)
-				next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+				m.a.Deps = m.a.newDeps(nil, nil)
+				next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 				m = next.(shellModel)
 				_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 				_, cmd = m.Update(leaveFrom(t, cmd))
@@ -442,12 +449,39 @@ func TestShellModel(t *testing.T) {
 			} {
 				m := testShell(t)
 				m.start = tc.start
-				msgs := flattenTeaCmd(m.Init())
+				msgs := flattenTeaCmd(m.startCmd())
 				if !slices.ContainsFunc(msgs, func(got tea.Msg) bool {
 					return reflect.DeepEqual(got, tc.want)
 				}) {
-					t.Errorf("%s: Init() = %v, want it to ask for %#v", tc.name, msgs, tc.want)
+					t.Errorf("%s: startCmd() = %v, want it to ask for %#v", tc.name, msgs, tc.want)
 				}
+			}
+		}},
+		// the getting-ready screen holds everything until the dependencies are
+		// in, then the session starts on its tab; a give-up is the exit error
+		{"GateHoldsUntilDepsReady", func(t *testing.T) {
+			m := testShell(t)
+			m.start = shellStart{tab: tabSettings}
+			m.gate = tui.NewReadyModel()
+
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+			if got := next.(shellModel); got.tab != tabScan || got.gate == nil {
+				t.Errorf("shift+tab while getting ready moved to tab %d, want the gate kept", got.tab)
+			}
+			next, cmd := next.(shellModel).Update(depsDoneMsg{})
+			if next.(shellModel).gate != nil {
+				t.Error("gate still up after the dependencies are ready")
+			}
+			if !slices.ContainsFunc(flattenTeaCmd(cmd), func(got tea.Msg) bool { return got == openSettingsMsg{} }) {
+				t.Error("lifting the gate must ask for the starting tab")
+			}
+
+			failed := testShell(t)
+			failed.gate = tui.NewReadyModel()
+			giveUp := errors.New("couldn't download locationDB")
+			next, _ = failed.Update(depsDoneMsg{err: giveUp})
+			if err := next.(shellModel).exitStatus(); !errors.Is(err, giveUp) {
+				t.Errorf("exitStatus() = %v, want the dependency failure", err)
 			}
 		}},
 		// …and the tab it asks for is the tab it lands on. Config is the one
@@ -474,7 +508,7 @@ func TestShellModel(t *testing.T) {
 		// A bare `wandersort` opens on the folder input and asks for nothing.
 		{"BareStartOpensTheHomeScreenOnly", func(t *testing.T) {
 			m := testShell(t)
-			for _, msg := range flattenTeaCmd(m.Init()) {
+			for _, msg := range flattenTeaCmd(m.startCmd()) {
 				switch msg.(type) {
 				case tui.StartScanMsg, openSettingsMsg, tui.OpenReviewMsg:
 					t.Errorf("a bare start should open no tab, got %#v", msg)
@@ -550,14 +584,14 @@ func TestConfigSavedReplansOnlyOnAChange(t *testing.T) {
 			// The Cmd is deliberately not run: it re-plans against the open
 			// library, which this shell has no Deps or database for. Dropping
 			// the stale review screen is the observable half, and the half a
-			// ctrl+t can race.
+			// shift+tab can race.
 			m.settingsSaved(before)
 			if v := ansi.Strip(m.screens[tabScan].View()); !strings.Contains(v, "Settings saved") {
 				t.Errorf("the save is only confirmed on the home screen, and it didn't say so:\n%s", v)
 			}
 			if tc.wantReplan {
 				// The drop happens in settingsSaved itself, not inside the Cmd:
-				// a ctrl+t before the re-plan finishes must not find a screen
+				// a shift+tab before the re-plan finishes must not find a screen
 				// built over folder IDs that no longer exist.
 				if m.screens[tabReview] != nil {
 					t.Error("the stale review screen must be dropped before the re-plan runs")
