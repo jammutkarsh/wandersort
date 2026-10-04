@@ -84,3 +84,26 @@ func TestStageList(t *testing.T) {
 		t.Run(tt.name, tt.fn)
 	}
 }
+
+func TestTruncateMiddle(t *testing.T) {
+	long := "~/Pictures/trips/2025/winter/day-two/IMG_0042.HEIC"
+	tests := []struct {
+		name, in, want string
+		w              int
+	}{
+		{"fits", "~/a/b.jpg", "~/a/b.jpg", 20},
+		{"no width", long, long, 0},
+		{"keeps both ends", long, "~/Pictures…ay-two/IMG_0042.HEIC", 31},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateMiddle(tt.in, tt.w)
+			if got != tt.want {
+				t.Errorf("truncateMiddle(%q, %d) = %q, want %q", tt.in, tt.w, got, tt.want)
+			}
+			if tt.w > 0 && ansi.StringWidth(got) > tt.w {
+				t.Errorf("width %d > %d", ansi.StringWidth(got), tt.w)
+			}
+		})
+	}
+}

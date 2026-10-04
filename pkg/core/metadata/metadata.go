@@ -71,6 +71,7 @@ type Extractor struct {
 	db      *db.DB
 	log     logger.Logger
 	pool    *exiftool.Pool
+	path    *wspath.Resolver
 	workers int
 
 	// reads admits byte reads by storage class: a spinning disk charges the
@@ -99,6 +100,7 @@ func New(database *db.DB, log logger.Logger, exiftoolPath string, workers int) (
 		db:      database,
 		log:     log,
 		pool:    pool,
+		path:    wspath.New(),
 		workers: workers,
 		reads:   semaphore.NewWeighted(budget),
 		budget:  budget,
@@ -430,7 +432,7 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 
 	// StreamKey: feeds the TUI progress bar, stripped from the plain console.
 	e.log.Info("Reading", logger.StreamKey, true,
-		"file", filepath.Base(file.absPath), "extracted", extracted.Add(1), "total", total)
+		"file", e.path.RelativeToHome(file.absPath), "extracted", extracted.Add(1), "total", total)
 
 	if !e.db.Writer.Write(e.store(file.id, sum, meta)) {
 		e.log.Warn("Bulk writer closed; dropping metadata write", "fileId", file.id)

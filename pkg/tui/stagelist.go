@@ -208,7 +208,7 @@ func (sl StageList) View(width int) string {
 			}
 			rows = append(rows, row(left, FaintTxt.Render(liveElapsed(s.start)), width))
 			if s.tail != "" {
-				rows = append(rows, row(under+FaintTxt.Render(s.tail), "", width))
+				rows = append(rows, row(under+FaintTxt.Render(truncateMiddle(s.tail, width-len(under))), "", width))
 			}
 		case stateDone:
 			rows = append(rows, row("  "+OK.Render("✓")+" "+Text.Render(nonEmpty(s.label, s.Name)), FaintTxt.Render(s.dur), width))
@@ -229,6 +229,17 @@ func (sl *StageList) get(key string) *Stage {
 
 // row lays out one full-width line: left content truncated to fit, right
 // suffix (the elapsed time) aligned to the terminal edge — the Docker look.
+// truncateMiddle fits s in w cells by cutting from its middle, keeping the
+// start of a path and, ahead of it, the file name and its folder.
+func truncateMiddle(s string, w int) string {
+	sw := ansi.StringWidth(s)
+	if w <= 0 || sw <= w {
+		return s
+	}
+	head := w / 3
+	return ansi.Truncate(s, head, "") + "…" + ansi.TruncateLeft(s, sw-(w-head-1), "")
+}
+
 func row(left, right string, width int) string {
 	if width <= 0 {
 		if right == "" {
