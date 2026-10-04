@@ -223,6 +223,11 @@ func (f *folderIndex) ensure(ctx context.Context, tx *sqlx.Tx, dir []segment) ([
 	return chain, nil
 }
 
+// PruneFolders deletes every folder no planned or placed file sits in.
+func PruneFolders(ctx context.Context, database *db.DB) error {
+	return database.Writer.WriteSync(ctx, pruneFolders)
+}
+
 // pruneFolders deletes every folder no entry sits in, directly or below. A
 // folder with a file in it is never deleted, so a placed file's folder stays.
 func pruneFolders(ctx context.Context, tx *sqlx.Tx) error {

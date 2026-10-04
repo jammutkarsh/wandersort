@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
@@ -19,6 +20,21 @@ import (
 type StartScanMsg struct {
 	Paths []string
 	Force bool
+}
+
+// DiscardPlanMsg asks the shell to forget every file not yet copied, so the
+// folders can be added again from scratch.
+type DiscardPlanMsg struct{}
+
+// DiscardPlanView is the ask before a DiscardPlanMsg: enter discards, esc cancels.
+func DiscardPlanView(files, w, h int) string {
+	yes := true
+	cm := NewConfirmModel(fmt.Sprintf("Discard the plan for %s?", human.Plural(files, "file", "files")),
+		"WanderSort forgets every file not yet copied: what was scanned, the plan and your edits. "+
+			"Files already in the library stay. Adding the folders again reads them from scratch.", &yes)
+	cm.Keys = fmt.Sprintf("%s / %s", KeyHint("enter", "discard"), KeyHint("esc", "cancel"))
+	cm.w, cm.h = w, h
+	return cm.View()
 }
 
 // OpenReviewMsg asks the shell to review the proposal already in the database.
@@ -39,7 +55,14 @@ type HomeConfig struct {
 	// LastScan is the finished scan's summary, rendered dim above the input —
 	// empty on the first run, filled once a scan in this session has completed.
 	LastScan []string
+	// History is the folders scanned before, newest first; ↑ on an empty line
+	// walks it.
+	History []string
 }
+
+// HomePlannedMsg tells the home screen how many files wait to be copied;
+// ctrl+d discards them.
+type HomePlannedMsg struct{ Files int }
 
 // maxHomeSuggestions caps the completion list under the input; it renders above
 // the footer, so an unbounded list would push the folder list off screen.
@@ -55,13 +78,17 @@ type HomeModel struct {
 	added      []string
 	sugg       []string
 	suggCursor int // ↑/↓-picked completion; -1 = none picked
+	histIdx    int // History entry in the input; -1 = not walking it
+	planned    int // files waiting to be copied, from HomePlannedMsg
 	err        error
 	note       string // a success line; cleared by an error
 	w, h       int
 
 	// confirmForce is the full-screen ask before a force re-scan
 	confirmForce bool
-	showKeys     bool // the ? overlay is up
+	// confirmDiscard is the full-screen ask before discarding the plan
+	confirmDiscard bool
+	showKeys       bool // the ? overlay is up
 }
 
 // homeKeys is the Add tab's full key list, behind ?.
@@ -69,12 +96,13 @@ var homeKeys = []KeyGroup{
 	{"Folders", []KeyLine{
 		{"enter", "add the folder typed"},
 		{"tab", "complete the folder name"},
-		{"↑", "take the last folder back to edit"},
+		{"↑ ↓", "on an empty line: folders scanned before"},
 		{"ctrl+x", "remove the last folder"},
 	}},
 	{"Planning", []KeyLine{
 		{"enter", "on an empty line: plan the folders listed"},
 		{"ctrl+g", "plan again, re-reading every file"},
+		{"ctrl+d", "discard the plan: forget every file not yet copied"},
 	}},
 	{"App", []KeyLine{
 		{"shift+tab", "next tab"},
@@ -90,7 +118,7 @@ func NewHomeModel(cfg HomeConfig) HomeModel {
 	// equivalent lives under its own user profile drive, never "~/Pictures".
 	ti.Placeholder = paths.RelativeToHome(filepath.Join(paths.HomeDir, "Pictures"))
 	ti.Focus()
-	m := HomeModel{cfg: cfg, ti: ti, paths: paths, suggCursor: -1}
+	m := HomeModel{cfg: cfg, ti: ti, paths: paths, suggCursor: -1, histIdx: -1}
 	m.refresh()
 	return m
 }
@@ -111,6 +139,9 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case HomeNoteMsg:
 		m.note, m.err = msg.Text, nil
 		return m, nil
+	case HomePlannedMsg:
+		m.planned = msg.Files
+		return m, nil
 	case tea.KeyMsg:
 		if m.confirmForce {
 			// Only esc/enter here — no y/n, no arrows: a decision this
@@ -124,6 +155,18 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg { return StartScanMsg{Paths: paths, Force: true} }
 			case "esc":
 				m.confirmForce = false
+			}
+			return m, nil
+		}
+		if m.confirmDiscard {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, Left(Leave{Quit: true})
+			case "enter":
+				m.confirmDiscard = false
+				return m, func() tea.Msg { return DiscardPlanMsg{} }
+			case "esc":
+				m.confirmDiscard = false
 			}
 			return m, nil
 		}
@@ -147,6 +190,11 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirmForce = true
 			}
 			return m, nil
+		case "ctrl+d":
+			if m.planned > 0 {
+				m.confirmDiscard = true
+			}
+			return m, nil
 		case "ctrl+x":
 			m.drop(len(m.added) - 1)
 			return m, nil
@@ -154,13 +202,15 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch {
 			case m.suggCursor > -1: // walking the completion list
 				m.suggCursor--
-			case len(m.sugg) == 0 && len(m.added) > 0:
-				// only once completions are closed (↑ is theirs first)
-				return m, m.editLast()
+			case m.histIdx >= 0 || m.ti.Value() == "":
+				m.walkHistory(1)
 			}
 			return m, nil
 		case "down":
-			if m.suggCursor < len(m.sugg)-1 {
+			switch {
+			case m.histIdx >= 0:
+				m.walkHistory(-1)
+			case m.suggCursor < len(m.sugg)-1:
 				m.suggCursor++
 			}
 			return m, nil
@@ -187,14 +237,19 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// editLast pulls the most recently added folder back into the input.
-func (m *HomeModel) editLast() tea.Cmd {
-	i := len(m.added) - 1
-	m.ti.SetValue(m.paths.RelativeToHome(m.added[i]))
+// walkHistory steps through the folders scanned before, like a shell: 1 is
+// older, -1 newer, and past the newest the line empties. Enter adds the one shown.
+func (m *HomeModel) walkHistory(step int) {
+	i := min(m.histIdx+step, len(m.cfg.History)-1)
+	if i < 0 {
+		m.ti.SetValue("")
+		m.refresh()
+		return
+	}
+	m.ti.SetValue(m.paths.RelativeToHome(m.cfg.History[i]))
 	m.ti.CursorEnd()
-	m.drop(i)
-	m.refresh()
-	return m.ti.Focus()
+	// no completions while walking: ↑/↓ stay the history's
+	m.sugg, m.suggCursor, m.histIdx = nil, -1, i
 }
 
 // drop removes one folder.
@@ -246,6 +301,7 @@ func (m *HomeModel) fill(i int) {
 }
 
 func (m *HomeModel) refresh() {
+	m.histIdx = -1
 	m.suggCursor = -1
 	m.sugg = nil
 	if m.cfg.Suggest != nil {
@@ -264,6 +320,9 @@ func (m HomeModel) View() string {
 		cm.Keys = fmt.Sprintf("%s / %s", KeyHint("enter", "confirm"), KeyHint("esc", "cancel"))
 		cm.w, cm.h = m.w, m.h
 		return cm.View()
+	}
+	if m.confirmDiscard {
+		return DiscardPlanView(m.planned, m.w, m.h)
 	}
 
 	var b strings.Builder
@@ -336,8 +395,11 @@ func (m HomeModel) footer() string {
 		hints = append(hints, KeyHint("tab", "complete"))
 	}
 	hints = append(hints, KeyHint("enter", "add"))
-	if len(m.added) > 0 && len(m.sugg) == 0 {
-		hints = append(hints, KeyHint("↑", "edit last"))
+	if len(m.cfg.History) > 0 && (m.histIdx >= 0 || m.ti.Value() == "") {
+		hints = append(hints, KeyHint("↑↓", "earlier folders"))
+	}
+	if m.planned > 0 {
+		hints = append(hints, KeyHint("ctrl+d", "discard plan"))
 	}
 	hints = append(hints, MoreKeys())
 	b.WriteString(Footer(strings.Join(hints, "   "), m.w))

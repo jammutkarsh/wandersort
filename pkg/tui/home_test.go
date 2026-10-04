@@ -96,27 +96,40 @@ func TestHome(t *testing.T) {
 				t.Errorf("StartScanMsg.Paths = %v, want [%s]", msg.Paths, dir)
 			}
 		}},
-		// ↑ pulls the most recently added folder straight back into the input
-		// to edit — one key, not select-then-enter. ctrl+x drops the last
-		// folder outright.
-		{"UpArrowEditsTheLastAddedFolder", func(t *testing.T) {
-			a, b := t.TempDir(), t.TempDir()
-			m := typeHome(typeHome(NewHomeModel(HomeConfig{}), a), b)
-
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
-			m = next.(HomeModel)
-			if got := m.added; len(got) != 1 || got[0] != a {
-				t.Fatalf("↑ should lift the last folder out of the list, got %v", got)
-			}
-			if m.ti.Value() != b || !m.ti.Focused() {
-				t.Errorf("↑ should refocus the input on %q, got %q focused=%v", b, m.ti.Value(), m.ti.Focused())
+		// ↑/↓ on an empty line walk the folders scanned before, newest first,
+		// like a shell; enter adds the one shown. ctrl+x drops the last folder.
+		{"ArrowsWalkScannedFolders", func(t *testing.T) {
+			older, newer := t.TempDir(), t.TempDir()
+			m := NewHomeModel(HomeConfig{History: []string{newer, older}})
+			press := func(k tea.KeyType) {
+				next, _ := m.Update(tea.KeyMsg{Type: k})
+				m = next.(HomeModel)
 			}
 
-			// ctrl+x removes the last folder outright.
-			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
-			m = next.(HomeModel)
+			for _, step := range []struct {
+				key  tea.KeyType
+				want string
+			}{
+				{tea.KeyUp, newer},
+				{tea.KeyUp, older},
+				{tea.KeyUp, older}, // the oldest stays
+				{tea.KeyDown, newer},
+				{tea.KeyDown, ""}, // past the newest the line empties
+				{tea.KeyUp, newer},
+			} {
+				press(step.key)
+				if got := m.ti.Value(); got != step.want {
+					t.Fatalf("after %v: input = %q, want %q", step.key, got, step.want)
+				}
+			}
+
+			press(tea.KeyEnter)
+			if got := m.added; len(got) != 1 || got[0] != newer {
+				t.Fatalf("enter on a history entry: added = %v, want [%s]", got, newer)
+			}
+			press(tea.KeyCtrlX)
 			if got := m.added; len(got) != 0 {
-				t.Fatalf("ctrl+x should remove the remaining folder, got %v", got)
+				t.Fatalf("ctrl+x should remove the folder, got %v", got)
 			}
 		}},
 		// Completions come from the injected Suggest; tab fills the top one.

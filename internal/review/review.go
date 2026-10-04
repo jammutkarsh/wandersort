@@ -97,6 +97,8 @@ type Model struct {
 	visualMode   bool
 	visualAnchor int
 	showHelp     bool // [?] — full-screen key reference; any key closes it
+	// confirmDiscard is the full-screen ask before [ctrl+d] discards the plan
+	confirmDiscard bool
 	// draft owns the base plan, the journal and the tree they make
 	draft       *vfs.Draft
 	statusMsg   string

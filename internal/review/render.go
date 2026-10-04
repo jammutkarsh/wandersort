@@ -9,6 +9,13 @@ import (
 )
 
 func (m Model) View() string {
+	if m.confirmDiscard {
+		files := 0
+		for _, n := range m.draft.Tree() {
+			files += n.FileCount
+		}
+		return tui.DiscardPlanView(files, m.width, m.height)
+	}
 	var b strings.Builder
 	b.WriteString(m.header())
 
@@ -164,6 +171,7 @@ var reviewKeys = []tui.KeyGroup{
 	{Title: "Go back", Keys: []tui.KeyLine{
 		{Key: "u", What: "undo; again to keep going back"},
 		{Key: "R", What: "start over from the plan"},
+		{Key: "ctrl+d", What: "discard the plan: forget every file not yet copied"},
 		{Key: "esc", What: "done; edits are kept for copy"},
 	}},
 	{Title: "Years and months stay fixed.", Keys: nil},

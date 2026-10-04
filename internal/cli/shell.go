@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -10,7 +11,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -325,6 +328,24 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		screen := m.a.newScanScreen(m.ctx, msg.paths, msg.force)
 		return m, m.place(tabScan, screen)
 
+	case tui.DiscardPlanMsg:
+		return m, m.discardPlan()
+
+	case discardDoneMsg:
+		if msg.err != nil {
+			m.tab = tabScan
+			return m, m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})
+		}
+		// the plan is gone: a kept review shows it, and the finished scan's
+		// summary counts it
+		m.screens[tabReview] = nil
+		m.refresh()
+		m.tab = tabScan
+		cmd := m.place(tabScan, m.a.newHomeScreen(nil))
+		m.forward(tabScan, tui.HomePlannedMsg{Files: m.lib.Planned})
+		note := "Discarded the plan: " + human.Plural(msg.files, "file", "files") + " forgotten. Add folders to plan again."
+		return m, tea.Batch(cmd, m.forward(tabScan, tui.HomeNoteMsg{Text: note}))
+
 	case replanDoneMsg:
 		m.refresh() // the plan was just rewritten
 		if msg.err != nil {
@@ -444,6 +465,32 @@ func (m *shellModel) settingsSaved(before config.Settings) tea.Cmd {
 	return tea.Batch(cmd, m.replan())
 }
 
+// discardDoneMsg reports a discarded plan: how many files were forgotten.
+type discardDoneMsg struct {
+	files int
+	err   error
+}
+
+// discardPlan forgets every file not yet copied, off the UI goroutine.
+func (m *shellModel) discardPlan() tea.Cmd {
+	a, ctx := m.a, m.ctx
+	return func() tea.Msg {
+		release, ok := a.work.holdLibrary()
+		if !ok {
+			return discardDoneMsg{err: errors.New("WanderSort is still working on this library; discard the plan once it is done")}
+		}
+		defer release()
+		if a.AppDB == nil {
+			return discardDoneMsg{err: errors.New("no library is open")}
+		}
+		n, err := library.Discard(ctx, a.AppDB, a.Config.OutputDir())
+		if err != nil {
+			return discardDoneMsg{err: fmt.Errorf("discard the plan: %w", err)}
+		}
+		return discardDoneMsg{files: n}
+	}
+}
+
 // replanDoneMsg reports a settings re-plan; only a failure says anything.
 type replanDoneMsg struct{ err error }
 
@@ -500,7 +547,9 @@ func (m *shellModel) homeAgain(note string) tea.Cmd {
 	if note != "" {
 		history = append(history, note)
 	}
-	return m.place(tabScan, m.a.newHomeScreen(history))
+	cmd := m.place(tabScan, m.a.newHomeScreen(history))
+	m.forward(tabScan, tui.HomePlannedMsg{Files: m.lib.Planned})
+	return cmd
 }
 
 // nextTab cycles the tabs, skipping any that can't be used now.
@@ -535,6 +584,7 @@ func (m shellModel) canReview() bool {
 // scan opening it, a review closing, a re-plan).
 func (m *shellModel) refresh() {
 	m.lib = m.a.readState(m.ctx)
+	m.forward(tabScan, tui.HomePlannedMsg{Files: m.lib.Planned})
 }
 
 // openSettings places the settings wizard, seeded from the library's own
@@ -674,6 +724,7 @@ func (a *app) newHomeScreen(lastScan []string) tui.HomeModel {
 	return tui.NewHomeModel(tui.HomeConfig{
 		Suggest:  func(typed string) []string { return suggestDirs(paths, typed) },
 		LastScan: lastScan,
+		History:  a.Config.SourceHistory(),
 	})
 }
 
@@ -689,7 +740,8 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 				return context.Canceled
 			}
 			defer a.work.doneOnLibrary()
-			_, err := wf.RunScan(ctx, paths, force)
+			res, err := wf.RunScan(ctx, paths, force)
+			a.rememberSources(res.Roots)
 			return err
 		},
 		Cancel: cancel,
