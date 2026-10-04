@@ -466,3 +466,50 @@ func TestReviewConfirmKeepsPairSuffix(t *testing.T) {
 		}
 	}
 }
+
+// Day folders either side of a year end merge into the earlier month, and
+// Confirm files both days there.
+func TestReviewConfirmMergesAcrossYearEnd(t *testing.T) {
+	h := newHarness(t)
+	dec := h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2025:12:31 14:00:00", 0, 0, 3024, 4032))
+	jan := h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2026:01:02 14:00:00", 0, 0, 3024, 4032))
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleDate}
+	h.build(t, cfg, installtest.Resolver(t))
+
+	ctx := context.Background()
+	tree, err := BuildTree(ctx, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var days []int64
+	for _, l := range leafNodes(tree) {
+		days = append(days, l.ID)
+	}
+	if len(days) != 2 {
+		t.Fatalf("leaves = %d, want one day folder per year", len(days))
+	}
+	tree, _, name, _, err := mergeNodes(tree, days)
+	if err != nil {
+		t.Fatalf("mergeNodes: %v", err)
+	}
+	if name != "Dec_31-Jan_02" {
+		t.Errorf("name = %q, want Dec_31-Jan_02", name)
+	}
+	if err := Confirm(ctx, h.d, tree); err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+
+	for id, want := range map[int64]string{
+		dec: "2025/12_December/Dec_31-Jan_02/A.HEIC",
+		jan: "2025/12_December/Dec_31-Jan_02/B.HEIC",
+	} {
+		var got string
+		if err := h.d.SQL.Get(&got, `SELECT target_path FROM virtual_fs_entries WHERE file_id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("file %d: target_path = %q, want %q", id, got, want)
+		}
+	}
+}

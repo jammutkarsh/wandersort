@@ -565,3 +565,60 @@ func TestLevelsCoverEveryField(t *testing.T) {
 		}
 	}
 }
+
+// TestMergeNodesAcrossYearEnd covers a trip split at a year end: a planned
+// cross-month run in December and a January day merge into the December
+// month, and that month and its year admit the January dates moving in.
+func TestMergeNodesAcrossYearEnd(t *testing.T) {
+	day := func(y, m, d int) Constraint { return Constraint{Year: []int{y}, Month: []int{m}, Date: []int{d}} }
+	tree := []Node{
+		{ID: pid("2025"), Name: "2025", Level: LevelYear, Bounds: Bounds{{Year: []int{2025}}, day(2026, 1, 1)}, Children: []Node{
+			{ID: pid("2025/12"), Name: "12_December", Level: LevelMonth, Bounds: Bounds{{Month: []int{12}}, day(2026, 1, 1)}, Children: []Node{
+				{
+					ID: pid("2025/12/run"), Name: "Dec_30-Jan_01", Level: RuleDate, FileCount: 2,
+					Bounds: Bounds{{Date: []int{30, 31}}, day(2026, 1, 1)}, Children: []Node{
+						{ID: pid("2025/12/run/<city>"), Name: "<city>", Level: RuleLocation, FileCount: 2, Bounds: Bounds{{Location: []string{"<city>"}}}},
+					},
+				},
+			}},
+		}},
+		{ID: pid("2026"), Name: "2026", Level: LevelYear, Bounds: Bounds{{Year: []int{2026}}}, Children: []Node{
+			{ID: pid("2026/01"), Name: "01_January", Level: LevelMonth, Bounds: Bounds{{Month: []int{1}}}, Children: []Node{
+				{ID: pid("2026/01/02"), Name: "02", Level: RuleDate, FileCount: 1, Bounds: Bounds{{Date: []int{2}}}, Children: []Node{
+					{ID: pid("2026/01/02/<city>"), Name: "<city>", Level: RuleLocation, FileCount: 1, Bounds: Bounds{{Location: []string{"<city>"}}}},
+				}},
+			}},
+		}},
+	}
+
+	// the January day is the anchor; the December month still takes the merge
+	newTree, mergedID, name, ancestor, err := mergeNodes(tree, pids("2026/01/02", "2025/12/run"))
+	if err != nil {
+		t.Fatalf("mergeNodes: %v", err)
+	}
+	if name != "Dec_30-Jan_02" || ancestor != "12_December" {
+		t.Fatalf("name=%q ancestor=%q, want Dec_30-Jan_02 under 12_December", name, ancestor)
+	}
+	if FindNode(newTree, pid("2026")) != nil {
+		t.Error("2026 should be pruned: nothing is left under it")
+	}
+	merged := FindNode(newTree, mergedID)
+	if merged == nil || merged.FileCount != 3 || len(merged.Children) != 1 {
+		t.Fatalf("merged = %+v, want 3 files in one <city> folder", merged)
+	}
+
+	jan2 := Constraint{Year: []int{2026}, Month: []int{1}, Date: []int{2}, Location: []string{"<city>"}}
+	dec31 := Constraint{Year: []int{2025}, Month: []int{12}, Date: []int{31}, Location: []string{"<city>"}}
+	dec2 := Constraint{Year: []int{2025}, Month: []int{12}, Date: []int{2}, Location: []string{"<city>"}}
+	for _, id := range append(pids("2025", "2025/12"), mergedID) {
+		n := FindNode(newTree, id)
+		for _, f := range []Constraint{jan2, dec31} {
+			if !n.Bounds.Matches(f) {
+				t.Errorf("%s bounds %+v refuse %+v", n.Name, n.Bounds, f)
+			}
+		}
+	}
+	if merged.Bounds.Matches(dec2) {
+		t.Errorf("merged bounds %+v admit December 2nd, a day it never held", merged.Bounds)
+	}
+}

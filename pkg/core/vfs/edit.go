@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
+	"time"
 )
 
 // Review tree edits (merge/drop/flatten) as plain []Node functions.
@@ -406,6 +408,78 @@ func combinedDayRange(picks []mergePick) (lo, hi int, ok bool) {
 	return lo, hi, true
 }
 
+// crossMonth, for day folders in more than one month folder, is the earliest
+// one's month, the days they span, and each pick's bounds ANDed with its
+// ancestors'. ok is false for any other selection, or days it can't date.
+func crossMonth(tree []Node, picks []mergePick) (month *Node, first, last time.Time, bounds []Bounds, ok bool) {
+	months := map[int64]bool{}
+	for _, p := range picks {
+		if p.value.Level != RuleDate || p.parent == nil || p.parent.Level != LevelMonth {
+			return nil, first, last, nil, false
+		}
+		months[p.parent.ID] = true
+	}
+	if len(months) < 2 {
+		return nil, first, last, nil, false
+	}
+	bounds = make([]Bounds, len(picks))
+	for i, p := range picks {
+		bounds[i] = p.value.Bounds
+		chain := chainTo(tree, p.id)
+		for _, a := range chain[:len(chain)-1] {
+			bounds[i] = bounds[i].Intersect(FindNode(tree, a).Bounds)
+		}
+		lo, hi, dated := dateSpan(bounds[i])
+		if !dated {
+			return nil, first, last, nil, false
+		}
+		if i == 0 || lo.Before(first) {
+			first, month = lo, p.parent
+		}
+		if i == 0 || hi.After(last) {
+			last = hi
+		}
+	}
+	return month, first, last, bounds, true
+}
+
+// dateSpan is the first and last date b admits; ok is false unless every
+// alternative pins year, month and day.
+func dateSpan(b Bounds) (first, last time.Time, ok bool) {
+	for _, c := range b {
+		if len(c.Year) == 0 || len(c.Month) == 0 || len(c.Date) == 0 {
+			return time.Time{}, time.Time{}, false
+		}
+		// sets are sorted, so each alternative's ends are its sets' ends
+		lo := time.Date(c.Year[0], time.Month(c.Month[0]), c.Date[0], 0, 0, 0, 0, time.UTC)
+		hi := time.Date(c.Year[len(c.Year)-1], time.Month(c.Month[len(c.Month)-1]), c.Date[len(c.Date)-1], 0, 0, 0, 0, time.UTC)
+		if !ok || lo.Before(first) {
+			first = lo
+		}
+		if !ok || hi.After(last) {
+			last = hi
+		}
+		ok = true
+	}
+	return first, last, ok
+}
+
+// allDateNames reports whether every pick still has a name the plan gives a
+// day folder ("03", "01_02", "Jan_02", "Dec_30-Jan_02"), not a typed one.
+func allDateNames(picks []mergePick) bool {
+	for _, p := range picks {
+		if _, _, ok := parseDayRange(p.value.Name); ok {
+			continue
+		}
+		for part := range strings.SplitSeq(p.value.Name, "-") {
+			if _, err := time.Parse("Jan_02", part); err != nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // mergePick is one selected row resolved to its node, its parent (for the
 // splice), and the raw value the merge absorbs.
 type mergePick struct {
@@ -415,7 +489,7 @@ type mergePick struct {
 }
 
 // mergeNodes folds every node in ids into one, under their lowest common
-// ancestor. Returns the surviving node's ID, its name, and the
+// ancestor (day folders in different months: under the earliest's month). Returns the surviving node's ID, its name, and the
 // ancestor's name for the caller's status line.
 func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name, ancestorName string, err error) {
 	// no id is an ancestor of another: the TUI selects one depth only
@@ -435,46 +509,73 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 		picks = append(picks, mergePick{id: id, parent: parentOf(tree, id), value: *n})
 	}
 
-	// the picks' lowest common ancestor, found by walking the tree
-	shared := chainTo(tree, picks[0].id)
-	for _, p := range picks[1:] {
-		shared = commonChain(shared, chainTo(tree, p.id))
-	}
-	if len(shared) == 0 {
-		return tree, 0, "", "", fmt.Errorf("selected folders share no common ancestor to merge under")
-	}
-	lca := FindNode(tree, shared[len(shared)-1])
-	if lca == nil {
-		return tree, 0, "", "", fmt.Errorf("internal error locating merge destination")
-	}
+	var dest *Node
+	var target string
+	if month, first, last, bounds, ok := crossMonth(tree, picks); ok {
+		// Day folders in different months: the merged folder joins the
+		// earliest one's month, as a day run crossing a month end does in the
+		// plan. Each pick carries its whole chain's bounds (full dates, which
+		// no one month covers) and the month and year admit the dates moving in.
+		dest = month
+		for _, a := range chainTo(tree, dest.ID) {
+			n := FindNode(tree, a)
+			for i, p := range picks {
+				if p.parent != dest {
+					n.Bounds = n.Bounds.Union(bounds[i])
+				}
+			}
+		}
+		for i := range picks {
+			picks[i].value.Bounds = bounds[i]
+			picks[i].value.Children = cloneTree(picks[i].value.Children)
+			pushDown(&picks[i].value)
+		}
+		target = picks[0].value.Name
+		if allDateNames(picks) {
+			target = dayRange(first, last)
+		}
+	} else {
+		// the picks' lowest common ancestor, found by walking the tree
+		shared := chainTo(tree, picks[0].id)
+		for _, p := range picks[1:] {
+			shared = commonChain(shared, chainTo(tree, p.id))
+		}
+		if len(shared) == 0 {
+			return tree, 0, "", "", fmt.Errorf("selected folders share no common ancestor to merge under")
+		}
+		dest = FindNode(tree, shared[len(shared)-1])
+		if dest == nil {
+			return tree, 0, "", "", fmt.Errorf("internal error locating merge destination")
+		}
 
-	// each pick takes the bounds of the folders between it and the LCA, and
-	// pushes its own into its subtree, since the merged parent is looser
-	for i := range picks {
-		chain := chainTo(tree, picks[i].id)
-		if len(chain) == len(shared) {
-			// this pick is the LCA itself: another pick sits inside it
-			return tree, 0, "", "", fmt.Errorf("can't merge a folder with a folder inside it")
+		// each pick takes the bounds of the folders between it and the LCA, and
+		// pushes its own into its subtree, since the merged parent is looser
+		for i := range picks {
+			chain := chainTo(tree, picks[i].id)
+			if len(chain) == len(shared) {
+				// this pick is the LCA itself: another pick sits inside it
+				return tree, 0, "", "", fmt.Errorf("can't merge a folder with a folder inside it")
+			}
+			for _, between := range chain[len(shared) : len(chain)-1] {
+				picks[i].value.Bounds = picks[i].value.Bounds.Intersect(FindNode(tree, between).Bounds)
+			}
+			picks[i].value.Children = cloneTree(picks[i].value.Children)
+			pushDown(&picks[i].value)
 		}
-		for _, between := range chain[len(shared) : len(chain)-1] {
-			picks[i].value.Bounds = picks[i].value.Bounds.Intersect(FindNode(tree, between).Bounds)
+
+		// the first id's own name (already the reviewer's rename, if any)
+		target = picks[0].value.Name
+
+		// unless every pick is a plain Date folder: then the day range they span
+		if lo, hi, ok := combinedDayRange(picks); ok {
+			target = formatDayRange(lo, hi)
 		}
-		picks[i].value.Children = cloneTree(picks[i].value.Children)
-		pushDown(&picks[i].value)
 	}
 
 	// leaves *before* the splice — afterwards a childless node is either one of
 	// these or an ancestor the merge emptied out
 	leafIDs := map[int64]bool{}
 	collectLeafIDs(tree, leafIDs)
-
-	// the first id's own name (already the reviewer's rename, if any)
-	target := picks[0].value.Name
-
-	// unless every pick is a plain Date folder: then the day range they span
-	if lo, hi, ok := combinedDayRange(picks); ok {
-		target = formatDayRange(lo, hi)
-	}
 
 	// absorb the rest; same-named children merge recursively
 	merged := picks[0].value
@@ -490,10 +591,10 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 			removeChildByID(p.parent, p.id)
 		}
 	}
-	lca.Children = append(lca.Children, merged)
+	dest.Children = append(dest.Children, merged)
 	tree = pruneEmptied(tree, leafIDs)
 
-	return tree, merged.ID, target, lca.Name, nil
+	return tree, merged.ID, target, dest.Name, nil
 }
 
 // dropNodes removes each node in ids, lifting its children onto its parent.
