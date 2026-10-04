@@ -125,8 +125,9 @@ func (f *settingsForm) libraryField() *tui.Field {
 		filepath.Join(homeDir, "Pictures", "WanderSort"),
 		filepath.Join(homeDir, config.DefaultLibrary),
 	} {
-		if st, err := os.Stat(filepath.Dir(c)); err == nil && st.IsDir() {
-			suggestions = append(suggestions, f.paths.RelativeToHome(c))
+		rel := f.paths.RelativeToHome(c)
+		if st, err := os.Stat(filepath.Dir(c)); err == nil && st.IsDir() && !slices.Contains(suggestions, rel) {
+			suggestions = append(suggestions, rel)
 		}
 	}
 	return &tui.Field{
