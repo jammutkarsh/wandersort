@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -117,33 +118,48 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 		return nil
 	}
 
-	// placed files stay on disk but untracked, so re-importing a card copies
-	// them again: say so in the question
-	placed, err := a.AppDB.PlacedCount(ctx)
+	title, detail, err := a.resetQuestion(ctx)
 	if err != nil {
 		return err
-	}
-	title := "Delete everything in the library database?"
-	detail := "What was scanned, the duplicates found, the plan and your edits. Your settings stay. 'wandersort admin db --restore' brings the rest back until the next transfer or reset."
-	if placed > 0 {
-		title = fmt.Sprintf("Forget the %d files already in the library?", placed)
-		detail = fmt.Sprintf("They stay in the library folder, but WanderSort stops knowing them: importing the same photos again copies them in a second time, and 'wandersort check' no longer looks at them. %s", detail)
 	}
 	yes, _ := cmd.Flags().GetBool(flagYes)
 	if !yes && !a.confirm(cmd, title, detail) {
 		return fmt.Errorf("reset cancelled")
 	}
 
-	if err := library.Reset(ctx, a.AppDB, a.Config.OutputDir(), a.Log); err != nil {
+	if err := a.resetLibrary(ctx); err != nil {
 		return err
-	}
-
-	// Preview copies outlive a session, so a wipe has to take them too.
-	if err := review.CleanPreviews(); err != nil {
-		a.Log.Warn("could not remove the preview copies", "error", err)
 	}
 
 	fmt.Fprintln(os.Stderr, tui.OK.Render("Library database cleared."))
 	fmt.Fprintln(os.Stderr, tui.FaintTxt.Render("Changed your mind? 'wandersort admin db --restore' brings it back."))
+	return nil
+}
+
+// resetQuestion asks before a reset; placed files stay on disk but untracked,
+// so re-importing a card copies them again, and the question says so.
+func (a *app) resetQuestion(ctx context.Context) (title, detail string, err error) {
+	placed, err := a.AppDB.PlacedCount(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	title = "Delete everything in the library database?"
+	detail = "What was scanned, the duplicates found, the plan and your edits. Your settings stay. 'wandersort admin db --restore' brings the rest back until the next transfer or reset."
+	if placed > 0 {
+		title = fmt.Sprintf("Forget the %d files already in the library?", placed)
+		detail = fmt.Sprintf("They stay in the library folder, but WanderSort stops knowing them: importing the same photos again copies them in a second time, and 'wandersort check' no longer looks at them. %s", detail)
+	}
+	return title, detail, nil
+}
+
+// resetLibrary empties the open library's database (settings kept) and the preview copies.
+func (a *app) resetLibrary(ctx context.Context) error {
+	if err := library.Reset(ctx, a.AppDB, a.Config.OutputDir(), a.Log); err != nil {
+		return err
+	}
+	// preview copies outlive a session, so a wipe has to take them too
+	if err := review.CleanPreviews(); err != nil {
+		a.Log.Warn("could not remove the preview copies", "error", err)
+	}
 	return nil
 }

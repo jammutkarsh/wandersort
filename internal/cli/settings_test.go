@@ -152,7 +152,7 @@ func TestConfig(t *testing.T) {
 			for _, r := range rows {
 				labels = append(labels, r.Label)
 			}
-			if want := []string{"Library folder", "Folder layout", "Home", "Work", "Fine-tuning"}; !reflect.DeepEqual(labels, want) {
+			if want := []string{"Library folder", "Folder layout", "Home", "Work", "Fine-tuning", "Start over"}; !reflect.DeepEqual(labels, want) {
 				t.Fatalf("rows = %v, want %v", labels, want)
 			}
 			if rows[0].Edit == nil {

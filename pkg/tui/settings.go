@@ -12,6 +12,8 @@ type SettingRow struct {
 	// Edit builds the one-step form that changes this setting, over a fresh
 	// copy of the settings, and the save that writes them. nil: shown, fixed.
 	Edit func() ([]*Field, func() error)
+	// Receipt is what a save says, read once it is done; nil: the default.
+	Receipt func() string
 }
 
 // SettingsSavedMsg tells the shell a setting was saved.
@@ -27,7 +29,7 @@ type SettingsModel struct {
 	cursor   int
 	edit     *FormModel
 	err      error
-	saved    bool
+	saved    string // the last save's receipt
 	w, h     int
 	showKeys bool
 }
@@ -73,7 +75,10 @@ func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msg.leave.Err != nil:
 			m.err = msg.leave.Err
 		case !msg.leave.Aborted:
-			m.err, m.saved = nil, true
+			m.err, m.saved = nil, "Saved. Files not yet copied are planned again."
+			if r := m.list[m.cursor]; r.Receipt != nil {
+				m.saved = r.Receipt()
+			}
 			m.list = m.rows()
 			return m, func() tea.Msg { return SettingsSavedMsg{} }
 		}
@@ -96,7 +101,7 @@ func (m SettingsModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showKeys = false
 		return m, nil
 	}
-	m.saved = false
+	m.saved = ""
 	switch k.String() {
 	case "?":
 		m.showKeys = true
@@ -166,8 +171,8 @@ func (m SettingsModel) View() string {
 	switch {
 	case m.err != nil:
 		b.WriteString(row("  "+Bad.Render("✗ ")+Text.Render(m.err.Error()), "", m.w) + "\n")
-	case m.saved:
-		b.WriteString(row("  "+OK.Render("✓ ")+Text.Render("Saved. Files not yet copied are planned again."), "", m.w) + "\n")
+	case m.saved != "":
+		b.WriteString(row("  "+OK.Render("✓ ")+Text.Render(m.saved), "", m.w) + "\n")
 	case m.note != "":
 		b.WriteString(row("  "+FaintTxt.Render(m.note), "", m.w) + "\n")
 	}

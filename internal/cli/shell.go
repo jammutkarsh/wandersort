@@ -299,6 +299,10 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// a row of the settings list saved: re-plan if it changed anything
 		cmd := m.settingsSaved(m.settingsBefore)
 		m.settingsBefore = m.a.Config.Settings
+		// a start-over left nothing to review: a kept review shows the old plan
+		if m.refresh(); !m.lib.CanReview() {
+			m.screens[tabReview] = nil
+		}
 		return m, cmd
 
 	case tui.CopyFinishedMsg:

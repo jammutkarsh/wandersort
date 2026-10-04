@@ -314,6 +314,7 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 		if work == s.HomeTown {
 			work = ""
 		}
+		reset := false
 		return []tui.SettingRow{
 			{Label: "Library folder", Value: path.New().RelativeToHome(a.Config.OutputDir()), Edit: func() ([]*tui.Field, func() error) {
 				f := a.newSettingsForm(ctx, geonames)
@@ -328,6 +329,32 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 			{Label: "Home", Value: orNotSet(s.HomeTown), Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.homeField()} })},
 			{Label: "Work", Value: orNotSet(work), Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.workField()} })},
 			{Label: "Fine-tuning", Value: tuning, Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.fineTuning()} })},
+			{Label: "Start over", Value: "clear what was scanned and planned", Edit: func() ([]*tui.Field, func() error) {
+				reset = false
+				title, detail, err := a.resetQuestion(ctx)
+				field := &tui.Field{Kind: tui.FieldConfirm, Title: title, Description: detail, BoolValue: &reset}
+				return []*tui.Field{field}, func() error {
+					if err != nil || !reset {
+						return err
+					}
+					release, ok := a.work.holdLibrary()
+					if !ok {
+						reset = false
+						return errors.New("WanderSort is still working on this library; start over once it is done")
+					}
+					defer release()
+					if err := a.resetLibrary(ctx); err != nil {
+						reset = false
+						return err
+					}
+					return nil
+				}
+			}, Receipt: func() string {
+				if !reset {
+					return "Nothing was cleared."
+				}
+				return "Cleared. Your settings stay; 'wandersort admin db --restore' brings the rest back."
+			}},
 		}
 	}
 }
