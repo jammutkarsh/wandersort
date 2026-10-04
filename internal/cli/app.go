@@ -205,6 +205,16 @@ func (a *app) openLibrary(ctx context.Context) error {
 	return nil
 }
 
+// rememberSources records the folders a scan walked; the first given ends up newest.
+func (a *app) rememberSources(roots []string) {
+	for _, root := range slices.Backward(roots) {
+		if err := a.Config.RememberSource(root); err != nil {
+			a.Log.Warn("could not record a scanned folder as recently used", "error", err)
+			return
+		}
+	}
+}
+
 // saveSettings writes the wizard's settings into their library, opening it
 // first if needed; a settings-first session picks its output folder here.
 func (a *app) saveSettings(ctx context.Context, outputDir string, s config.Settings) error {

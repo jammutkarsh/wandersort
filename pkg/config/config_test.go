@@ -131,12 +131,21 @@ func TestHistory(t *testing.T) {
 	}
 
 	// A library that isn't there any more (unplugged drive, deleted folder)
-	// is dropped as the list is read.
+	// is left out as the list is read, but kept for when it comes back.
 	if err := os.Remove(second); err != nil {
 		t.Fatal(err)
 	}
 	if got := cfg.History(); !slices.Equal(got, []string{first}) {
-		t.Errorf("history = %v, want the missing folder dropped", got)
+		t.Errorf("history = %v, want the missing folder left out", got)
+	}
+	if err := cfg.Remember(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(second, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.History(); !slices.Equal(got, []string{first, second}) {
+		t.Errorf("history = %v, want the folder back once it exists again", got)
 	}
 }
 
