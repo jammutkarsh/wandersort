@@ -26,15 +26,35 @@ type StartScanMsg struct {
 // folders can be added again from scratch.
 type DiscardPlanMsg struct{}
 
-// DiscardPlanView is the ask before a DiscardPlanMsg: enter discards, esc cancels.
-func DiscardPlanView(files, w, h int) string {
-	yes := true
-	cm := NewConfirmModel(fmt.Sprintf("Discard the plan for %s?", human.Plural(files, "file", "files")),
-		"WanderSort forgets every file not yet copied: what was scanned, the plan and your edits. "+
-			"Files already in the library stay. Adding the folders again reads them from scratch.", &yes)
-	cm.Keys = fmt.Sprintf("%s / %s", KeyHint("enter", "discard"), KeyHint("esc", "cancel"))
-	cm.w, cm.h = w, h
-	return cm.View()
+// StartOverMsg asks the shell to empty the library database, settings kept.
+type StartOverMsg struct{}
+
+// DiscardPlanAsk is the question before a DiscardPlanMsg.
+func DiscardPlanAsk(planned int) Ask {
+	return Ask{
+		Title: fmt.Sprintf("Discard the plan for %s?", human.Plural(planned, "file", "files")),
+		Detail: "WanderSort forgets every file not yet copied: what was scanned, the plan and your edits. " +
+			"Files already in the library stay. Adding the folders again reads them from scratch.",
+		Action: "discard",
+		Msg:    DiscardPlanMsg{},
+	}
+}
+
+// StartOverAsk is the question before a StartOverMsg, and before
+// `admin db --reset`. Placed files stay on disk but untracked, so re-importing
+// a card copies them again: the question says so.
+func StartOverAsk(placed int) Ask {
+	a := Ask{
+		Title:  "Delete everything in the library database?",
+		Detail: "What was scanned, the duplicates found, the plan and your edits. Your settings stay. 'wandersort admin db --restore' brings the rest back until the next transfer or reset.",
+		Action: "delete",
+		Msg:    StartOverMsg{},
+	}
+	if placed > 0 {
+		a.Title = fmt.Sprintf("Forget the %s already in the library?", human.Plural(placed, "file", "files"))
+		a.Detail = "They stay in the library folder, but WanderSort stops knowing them: importing the same photos again copies them in a second time, and 'wandersort check' no longer looks at them. " + a.Detail
+	}
+	return a
 }
 
 // OpenReviewMsg asks the shell to review the proposal already in the database.
@@ -60,9 +80,10 @@ type HomeConfig struct {
 	History []string
 }
 
-// HomePlannedMsg tells the home screen how many files wait to be copied;
-// ctrl+d discards them.
-type HomePlannedMsg struct{ Files int }
+// HomeLibraryMsg is where the open library's files stand, for the status above
+// the input: Planned wait to be copied (ctrl+d discards them), Placed are in
+// the library, Edits wait in Organise's draft.
+type HomeLibraryMsg struct{ Planned, Placed, Edits int }
 
 // maxHomeSuggestions caps the completion list under the input; it renders above
 // the footer, so an unbounded list would push the folder list off screen.
@@ -79,16 +100,13 @@ type HomeModel struct {
 	sugg       []string
 	suggCursor int // ↑/↓-picked completion; -1 = none picked
 	histIdx    int // History entry in the input; -1 = not walking it
-	planned    int // files waiting to be copied, from HomePlannedMsg
+	lib        HomeLibraryMsg
 	err        error
 	note       string // a success line; cleared by an error
 	w, h       int
 
-	// confirmForce is the full-screen ask before a force re-scan
-	confirmForce bool
-	// confirmDiscard is the full-screen ask before discarding the plan
-	confirmDiscard bool
-	showKeys       bool // the ? overlay is up
+	ask      *Ask // a full-screen question before something hard to undo
+	showKeys bool // the ? overlay is up
 }
 
 // homeKeys is the Add tab's full key list, behind ?.
@@ -103,6 +121,7 @@ var homeKeys = []KeyGroup{
 		{"enter", "on an empty line: plan the folders listed"},
 		{"ctrl+g", "plan again, re-reading every file"},
 		{"ctrl+d", "discard the plan: forget every file not yet copied"},
+		{"ctrl+r", "start over: empty the library database"},
 	}},
 	{"App", []KeyLine{
 		{"shift+tab", "next tab"},
@@ -139,36 +158,16 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case HomeNoteMsg:
 		m.note, m.err = msg.Text, nil
 		return m, nil
-	case HomePlannedMsg:
-		m.planned = msg.Files
+	case HomeLibraryMsg:
+		m.lib = msg
 		return m, nil
 	case tea.KeyMsg:
-		if m.confirmForce {
-			// Only esc/enter here — no y/n, no arrows: a decision this
-			// consequential (re-reading every file) gets exactly two keys.
-			switch msg.String() {
-			case "ctrl+c":
-				return m, Left(Leave{Quit: true})
-			case "enter":
-				m.confirmForce = false
-				paths := slices.Clone(m.added)
-				return m, func() tea.Msg { return StartScanMsg{Paths: paths, Force: true} }
-			case "esc":
-				m.confirmForce = false
+		if m.ask != nil {
+			done, cmd := m.ask.Key(msg)
+			if done {
+				m.ask = nil
 			}
-			return m, nil
-		}
-		if m.confirmDiscard {
-			switch msg.String() {
-			case "ctrl+c":
-				return m, Left(Leave{Quit: true})
-			case "enter":
-				m.confirmDiscard = false
-				return m, func() tea.Msg { return DiscardPlanMsg{} }
-			case "esc":
-				m.confirmDiscard = false
-			}
-			return m, nil
+			return m, cmd
 		}
 		if m.showKeys {
 			m.showKeys = false
@@ -187,12 +186,28 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, Left(Leave{Quit: true})
 		case "ctrl+g":
 			if len(m.added) > 0 {
-				m.confirmForce = true
+				// a decision this consequential (re-reading every file) gets
+				// exactly two keys: enter or esc
+				m.ask = &Ask{
+					Title: "Force re-scan?",
+					Detail: "Re-reads every already-scanned file from disk instead of skipping " +
+						"unchanged ones. Slower — use after upgrading WanderSort, or if " +
+						"a file's metadata looks wrong.",
+					Action: "confirm",
+					Msg:    StartScanMsg{Paths: slices.Clone(m.added), Force: true},
+				}
 			}
 			return m, nil
 		case "ctrl+d":
-			if m.planned > 0 {
-				m.confirmDiscard = true
+			if m.lib.Planned > 0 {
+				a := DiscardPlanAsk(m.lib.Planned)
+				m.ask = &a
+			}
+			return m, nil
+		case "ctrl+r":
+			if m.lib.Planned > 0 || m.lib.Placed > 0 {
+				a := StartOverAsk(m.lib.Placed)
+				m.ask = &a
 			}
 			return m, nil
 		case "ctrl+x":
@@ -310,19 +325,8 @@ func (m *HomeModel) refresh() {
 }
 
 func (m HomeModel) View() string {
-	if m.confirmForce {
-		// built per frame; this screen's own keys drive it
-		yes := true
-		cm := NewConfirmModel("Force re-scan?",
-			"Re-reads every already-scanned file from disk instead of skipping "+
-				"unchanged ones. Slower — use after upgrading WanderSort, or if "+
-				"a file's metadata looks wrong.", &yes)
-		cm.Keys = fmt.Sprintf("%s / %s", KeyHint("enter", "confirm"), KeyHint("esc", "cancel"))
-		cm.w, cm.h = m.w, m.h
-		return cm.View()
-	}
-	if m.confirmDiscard {
-		return DiscardPlanView(m.planned, m.w, m.h)
+	if m.ask != nil {
+		return m.ask.View(m.w, m.h)
 	}
 
 	var b strings.Builder
@@ -332,6 +336,12 @@ func (m HomeModel) View() string {
 		b.WriteString("\n")
 	}
 	if len(m.cfg.LastScan) > 0 {
+		b.WriteString("\n")
+	}
+	if lines := m.libraryLines(); len(lines) > 0 {
+		for _, l := range lines {
+			b.WriteString(row(l, "", m.w) + "\n")
+		}
 		b.WriteString("\n")
 	}
 
@@ -376,6 +386,25 @@ func (m HomeModel) View() string {
 	return view
 }
 
+// libraryLines is where the library's files stand: planned (and edited in
+// Organise) but not copied, and copied in. Empty for an empty library.
+func (m HomeModel) libraryLines() []string {
+	if m.lib.Planned == 0 && m.lib.Placed == 0 {
+		return nil
+	}
+	planned := "nothing"
+	if m.lib.Planned > 0 {
+		planned = human.Plural(m.lib.Planned, "file", "files") + " waiting to be copied"
+		if m.lib.Edits > 0 {
+			planned += ", " + human.Plural(m.lib.Edits, "edit", "edits") + " from Organise"
+		}
+	}
+	return []string{
+		"  " + DimText.Render("Planned          ") + Text.Render(planned),
+		"  " + DimText.Render("In the library   ") + Text.Render(human.Plural(m.lib.Placed, "file", "files")),
+	}
+}
+
 func (m HomeModel) footer() string {
 	var b strings.Builder
 	if m.note != "" {
@@ -398,8 +427,11 @@ func (m HomeModel) footer() string {
 	if len(m.cfg.History) > 0 && (m.histIdx >= 0 || m.ti.Value() == "") {
 		hints = append(hints, KeyHint("↑↓", "earlier folders"))
 	}
-	if m.planned > 0 {
+	if m.lib.Planned > 0 {
 		hints = append(hints, KeyHint("ctrl+d", "discard plan"))
+	}
+	if m.lib.Planned > 0 || m.lib.Placed > 0 {
+		hints = append(hints, KeyHint("ctrl+r", "start over"))
 	}
 	hints = append(hints, MoreKeys())
 	b.WriteString(Footer(strings.Join(hints, "   "), m.w))

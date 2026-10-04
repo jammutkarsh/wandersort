@@ -118,12 +118,13 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 		return nil
 	}
 
-	title, detail, err := a.resetQuestion(ctx)
+	placed, err := a.AppDB.PlacedCount(ctx)
 	if err != nil {
 		return err
 	}
+	ask := tui.StartOverAsk(placed)
 	yes, _ := cmd.Flags().GetBool(flagYes)
-	if !yes && !a.confirm(cmd, title, detail) {
+	if !yes && !a.confirm(cmd, ask.Title, ask.Detail) {
 		return fmt.Errorf("reset cancelled")
 	}
 
@@ -134,22 +135,6 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 	fmt.Fprintln(os.Stderr, tui.OK.Render("Library database cleared."))
 	fmt.Fprintln(os.Stderr, tui.FaintTxt.Render("Changed your mind? 'wandersort admin db --restore' brings it back."))
 	return nil
-}
-
-// resetQuestion asks before a reset; placed files stay on disk but untracked,
-// so re-importing a card copies them again, and the question says so.
-func (a *app) resetQuestion(ctx context.Context) (title, detail string, err error) {
-	placed, err := a.AppDB.PlacedCount(ctx)
-	if err != nil {
-		return "", "", err
-	}
-	title = "Delete everything in the library database?"
-	detail = "What was scanned, the duplicates found, the plan and your edits. Your settings stay. 'wandersort admin db --restore' brings the rest back until the next transfer or reset."
-	if placed > 0 {
-		title = fmt.Sprintf("Forget the %d files already in the library?", placed)
-		detail = fmt.Sprintf("They stay in the library folder, but WanderSort stops knowing them: importing the same photos again copies them in a second time, and 'wandersort check' no longer looks at them. %s", detail)
-	}
-	return title, detail, nil
 }
 
 // resetLibrary empties the open library's database (settings kept) and the preview copies.

@@ -93,17 +93,12 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = false
 		return m, nil
 	}
-	if m.confirmDiscard {
-		switch key.String() {
-		case "ctrl+c":
-			return m.leave(true)
-		case "enter":
-			m.confirmDiscard = false
-			return m, func() tea.Msg { return tui.DiscardPlanMsg{} }
-		case "esc":
-			m.confirmDiscard = false
+	if m.ask != nil {
+		done, cmd := m.ask.Key(key)
+		if done {
+			m.ask = nil
 		}
-		return m, nil
+		return m, cmd
 	}
 	// the last edit's receipt lasts one key
 	m.statusMsg, m.statusIsErr, m.statusUndo = "", false, false
@@ -167,7 +162,16 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "R":
 		m = m.reset()
 	case "ctrl+d":
-		m.confirmDiscard = true
+		a := tui.DiscardPlanAsk(m.plannedFiles())
+		m.ask = &a
+	case "ctrl+r":
+		placed, err := m.db.PlacedCount(m.ctx)
+		if err != nil {
+			m.statusMsg, m.statusIsErr = err.Error(), true
+			break
+		}
+		a := tui.StartOverAsk(placed)
+		m.ask = &a
 	case "u":
 		m.undo()
 	}

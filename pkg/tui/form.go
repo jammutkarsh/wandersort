@@ -1000,3 +1000,33 @@ func (m ConfirmModel) View() string {
 	}
 	return Screen(body, Footer(keys, m.w), m.h)
 }
+
+// Ask is a full-screen yes/no before something hard to undo: enter sends Msg,
+// esc cancels.
+type Ask struct {
+	Title, Detail string
+	Action        string // what enter does, for the footer
+	Msg           tea.Msg
+}
+
+// Key answers k: done reports whether the ask is over, cmd what it sends.
+func (a Ask) Key(k tea.KeyMsg) (done bool, cmd tea.Cmd) {
+	switch k.String() {
+	case "ctrl+c":
+		return true, Left(Leave{Quit: true})
+	case "enter":
+		msg := a.Msg
+		return true, func() tea.Msg { return msg }
+	case "esc":
+		return true, nil
+	}
+	return false, nil
+}
+
+func (a Ask) View(w, h int) string {
+	yes := true
+	cm := NewConfirmModel(a.Title, a.Detail, &yes)
+	cm.Keys = fmt.Sprintf("%s / %s", KeyHint("enter", a.Action), KeyHint("esc", "cancel"))
+	cm.w, cm.h = w, h
+	return cm.View()
+}

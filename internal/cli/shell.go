@@ -302,10 +302,6 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// a row of the settings list saved: re-plan if it changed anything
 		cmd := m.settingsSaved(m.settingsBefore)
 		m.settingsBefore = m.a.Config.Settings
-		// a start-over left nothing to review: a kept review shows the old plan
-		if m.refresh(); !m.lib.CanReview() {
-			m.screens[tabReview] = nil
-		}
 		return m, cmd
 
 	case tui.CopyFinishedMsg:
@@ -329,9 +325,23 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.place(tabScan, screen)
 
 	case tui.DiscardPlanMsg:
-		return m, m.discardPlan()
+		a := m.a
+		return m, m.onLibrary("discard the plan", func(ctx context.Context) (string, error) {
+			n, err := library.Discard(ctx, a.AppDB, a.Config.OutputDir())
+			return "Discarded the plan: " + human.Plural(n, "file", "files") + " forgotten. Add folders to plan again.", err
+		})
 
-	case discardDoneMsg:
+	case tui.StartOverMsg:
+		a := m.a
+		return m, m.onLibrary("start over", func(ctx context.Context) (string, error) {
+			err := a.resetLibrary(ctx)
+			if errors.Is(err, library.ErrNothingToReset) {
+				return "Nothing to clear: the library database is already empty.", nil
+			}
+			return "Cleared. Your settings stay; 'wandersort admin db --restore' brings the rest back.", err
+		})
+
+	case libraryEmptiedMsg:
 		if msg.err != nil {
 			m.tab = tabScan
 			return m, m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})
@@ -342,9 +352,8 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh()
 		m.tab = tabScan
 		cmd := m.place(tabScan, m.a.newHomeScreen(nil))
-		m.forward(tabScan, tui.HomePlannedMsg{Files: m.lib.Planned})
-		note := "Discarded the plan: " + human.Plural(msg.files, "file", "files") + " forgotten. Add folders to plan again."
-		return m, tea.Batch(cmd, m.forward(tabScan, tui.HomeNoteMsg{Text: note}))
+		m.forward(tabScan, m.lib.home())
+		return m, tea.Batch(cmd, m.forward(tabScan, tui.HomeNoteMsg{Text: msg.note}))
 
 	case replanDoneMsg:
 		m.refresh() // the plan was just rewritten
@@ -465,29 +474,31 @@ func (m *shellModel) settingsSaved(before config.Settings) tea.Cmd {
 	return tea.Batch(cmd, m.replan())
 }
 
-// discardDoneMsg reports a discarded plan: how many files were forgotten.
-type discardDoneMsg struct {
-	files int
-	err   error
+// libraryEmptiedMsg reports a discarded plan or a start-over: what to tell
+// the user, or why it failed.
+type libraryEmptiedMsg struct {
+	note string
+	err  error
 }
 
-// discardPlan forgets every file not yet copied, off the UI goroutine.
-func (m *shellModel) discardPlan() tea.Cmd {
+// onLibrary runs a discard or a start-over off the UI goroutine, with the
+// library held from all other work.
+func (m *shellModel) onLibrary(what string, run func(context.Context) (string, error)) tea.Cmd {
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
 		release, ok := a.work.holdLibrary()
 		if !ok {
-			return discardDoneMsg{err: errors.New("WanderSort is still working on this library; discard the plan once it is done")}
+			return libraryEmptiedMsg{err: fmt.Errorf("WanderSort is still working on this library; %s once it is done", what)}
 		}
 		defer release()
 		if a.AppDB == nil {
-			return discardDoneMsg{err: errors.New("no library is open")}
+			return libraryEmptiedMsg{err: errors.New("no library is open")}
 		}
-		n, err := library.Discard(ctx, a.AppDB, a.Config.OutputDir())
+		note, err := run(ctx)
 		if err != nil {
-			return discardDoneMsg{err: fmt.Errorf("discard the plan: %w", err)}
+			return libraryEmptiedMsg{err: fmt.Errorf("%s: %w", what, err)}
 		}
-		return discardDoneMsg{files: n}
+		return libraryEmptiedMsg{note: note}
 	}
 }
 
@@ -548,7 +559,7 @@ func (m *shellModel) homeAgain(note string) tea.Cmd {
 		history = append(history, note)
 	}
 	cmd := m.place(tabScan, m.a.newHomeScreen(history))
-	m.forward(tabScan, tui.HomePlannedMsg{Files: m.lib.Planned})
+	m.forward(tabScan, m.lib.home())
 	return cmd
 }
 
@@ -584,7 +595,7 @@ func (m shellModel) canReview() bool {
 // scan opening it, a review closing, a re-plan).
 func (m *shellModel) refresh() {
 	m.lib = m.a.readState(m.ctx)
-	m.forward(tabScan, tui.HomePlannedMsg{Files: m.lib.Planned})
+	m.forward(tabScan, m.lib.home())
 }
 
 // openSettings places the settings wizard, seeded from the library's own

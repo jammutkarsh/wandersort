@@ -6,6 +6,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
 // libraryState answers "what can the user do next?" in one place. Exists and
@@ -24,6 +25,8 @@ type libraryState struct {
 	Open bool
 	// Planned is how many files are proposed and not yet placed.
 	Planned int
+	// Placed is how many files are in the library.
+	Placed int
 }
 
 // CanReview reports whether there is a plan worth reviewing: "probably" while
@@ -33,6 +36,11 @@ func (s libraryState) CanReview() bool {
 		return s.Planned > 0
 	}
 	return s.Exists
+}
+
+// home is the state as the Add tab shows it.
+func (s libraryState) home() tui.HomeLibraryMsg {
+	return tui.HomeLibraryMsg{Planned: s.Planned, Placed: s.Placed, Edits: s.Edits}
 }
 
 // HasEdits reports whether review edits are waiting.
@@ -61,6 +69,9 @@ func (a *app) readState(ctx context.Context) libraryState {
 		// and the screen behind it reports the real error.
 		a.Log.Warn("could not count the planned files", "error", err)
 		s.Planned = 1
+	}
+	if s.Placed, err = a.AppDB.PlacedCount(ctx); err != nil {
+		a.Log.Warn("could not count the placed files", "error", err)
 	}
 	return s
 }

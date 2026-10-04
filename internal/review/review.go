@@ -96,9 +96,8 @@ type Model struct {
 	// Structural edits: [V] selects, [m] merges, [d]/[D] remove nesting.
 	visualMode   bool
 	visualAnchor int
-	showHelp     bool // [?] — full-screen key reference; any key closes it
-	// confirmDiscard is the full-screen ask before [ctrl+d] discards the plan
-	confirmDiscard bool
+	showHelp     bool     // [?] — full-screen key reference; any key closes it
+	ask          *tui.Ask // [ctrl+d]/[ctrl+r]'s full-screen question
 	// draft owns the base plan, the journal and the tree they make
 	draft       *vfs.Draft
 	statusMsg   string
