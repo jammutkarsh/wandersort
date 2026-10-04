@@ -41,15 +41,15 @@ type locationMeta struct {
 }
 
 // downloadLocationDB fetches the location database and its metadata if
-// missing. onProgress may be nil.
-func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) error {
+// missing, reporting whether it did. onProgress may be nil.
+func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) (fresh bool, err error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return fmt.Errorf("create dir %q: %w", dbPath, err)
+		return false, fmt.Errorf("create dir %q: %w", dbPath, err)
 	}
 
 	if _, err := os.Stat(dbPath); err == nil {
 		log.Info("location db found", "path", dbPath)
-		return nil
+		return false, nil
 	}
 
 	log.Info("Downloading locationDB (first run only)…", logger.UserKey, true,
@@ -59,7 +59,7 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 	// verification forever while never being re-downloaded
 	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
 	if err := downloadFile(ctx, metaPath, LocationDownloadBaseURL+"/"+LocationMetaFileName, "", nil); err != nil {
-		return fmt.Errorf("download %s: %w", LocationMetaFileName, err)
+		return false, fmt.Errorf("download %s: %w", LocationMetaFileName, err)
 	}
 
 	archiveName := config.LocationDBFileName + locationDBArchiveSuffix
@@ -67,20 +67,20 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 	// no digest here: the expected hash is of the decompressed db and ships
 	// in the metadata file above, which verifyLocationDB checks against
 	if err := downloadFile(ctx, archivePath, LocationDownloadBaseURL+"/"+archiveName, "", onProgress); err != nil {
-		return fmt.Errorf("download %s: %w", archiveName, err)
+		return false, fmt.Errorf("download %s: %w", archiveName, err)
 	}
 	// logged: nothing else reports progress during decompression
 	log.Info("Unpacking locationDB…", logger.UserKey, true)
 	if err := decompressZstd(archivePath, dbPath); err != nil {
 		os.Remove(archivePath)
-		return fmt.Errorf("decompress %s: %w", archiveName, err)
+		return false, fmt.Errorf("decompress %s: %w", archiveName, err)
 	}
 	if err := os.Remove(archivePath); err != nil {
 		log.Warn("failed to remove downloaded archive", "path", archivePath, "error", err)
 	}
 
 	log.Info("location database downloaded")
-	return nil
+	return true, nil
 }
 
 // decompressZstd streams archivePath into dest via a temp file and rename, so
@@ -114,9 +114,10 @@ func decompressZstd(archivePath, dest string) error {
 	return nil
 }
 
-// verifyLocationDB checks a database's checksum and the row count of every
-// table its metadata names.
-func verifyLocationDB(dbPath string, locationDB *db.ReadOnly, log logger.Logger) error {
+// verifyLocationDB checks the row count of every table its metadata names and,
+// with checkHash, the database's checksum (a full read of a large file, so
+// only after a download; a later start trusts the file it verified).
+func verifyLocationDB(dbPath string, locationDB *db.ReadOnly, log logger.Logger, checkHash bool) error {
 	metaPath := filepath.Join(filepath.Dir(dbPath), LocationMetaFileName)
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
@@ -130,14 +131,16 @@ func verifyLocationDB(dbPath string, locationDB *db.ReadOnly, log logger.Logger)
 		return fmt.Errorf("unable to parse location meta: %w", err)
 	}
 
-	sum, err := fileSHA256(dbPath)
-	if err != nil {
-		return fmt.Errorf("checksum location db: %w", err)
+	if checkHash {
+		sum, err := fileSHA256(dbPath)
+		if err != nil {
+			return fmt.Errorf("checksum location db: %w", err)
+		}
+		if sum != meta.Hash {
+			return fmt.Errorf("location db checksum mismatch: got %s, want %s", sum, meta.Hash)
+		}
+		log.Info("location db checksum verified", "path", dbPath, "hash", sum)
 	}
-	if sum != meta.Hash {
-		return fmt.Errorf("location db checksum mismatch: got %s, want %s", sum, meta.Hash)
-	}
-	log.Info("location db checksum verified", "path", dbPath, "hash", sum)
 
 	// every table meta.Rows names is checked
 	for table, want := range meta.Rows {
@@ -164,7 +167,8 @@ func removeIfExists(p string) error {
 // OpenLocationResolver downloads (if missing), verifies and opens the location
 // database. The caller owns closing the returned *db.ReadOnly.
 func OpenLocationResolver(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) (*location.Resolver, *db.ReadOnly, error) {
-	if err := downloadLocationDB(ctx, log, dbPath, onProgress); err != nil {
+	fresh, err := downloadLocationDB(ctx, log, dbPath, onProgress)
+	if err != nil {
 		return nil, nil, fmt.Errorf("location db: %w", err)
 	}
 
@@ -173,7 +177,7 @@ func OpenLocationResolver(ctx context.Context, log logger.Logger, dbPath string,
 		return nil, nil, fmt.Errorf("location db: %w", err)
 	}
 
-	if err := verifyLocationDB(dbPath, locationDB, log); err != nil {
+	if err := verifyLocationDB(dbPath, locationDB, log, fresh); err != nil {
 		locationDB.Close()
 		// remove a database that fails verification, or every later start
 		// fails the same way (the download is skipped while it exists)

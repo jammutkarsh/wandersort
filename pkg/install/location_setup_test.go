@@ -75,28 +75,28 @@ func TestVerifyLocationDB(t *testing.T) {
 
 	t.Run("checksum and row count match", func(t *testing.T) {
 		writeLocationMeta(t, dir, hash, 3)
-		if err := verifyLocationDB(dbPath, openRO(), logger.NewNoopLogger()); err != nil {
+		if err := verifyLocationDB(dbPath, openRO(), logger.NewNoopLogger(), true); err != nil {
 			t.Errorf("verifyLocationDB() = %v, want nil", err)
 		}
 	})
 
 	t.Run("checksum mismatch", func(t *testing.T) {
 		writeLocationMeta(t, dir, "0000000000000000000000000000000000000000000000000000000000000000", 3)
-		if err := verifyLocationDB(dbPath, openRO(), logger.NewNoopLogger()); err == nil {
+		if err := verifyLocationDB(dbPath, openRO(), logger.NewNoopLogger(), true); err == nil {
 			t.Error("verifyLocationDB() = nil, want a checksum mismatch error")
 		}
 	})
 
 	t.Run("row count mismatch", func(t *testing.T) {
 		writeLocationMeta(t, dir, hash, 99)
-		if err := verifyLocationDB(dbPath, openRO(), logger.NewNoopLogger()); err == nil {
+		if err := verifyLocationDB(dbPath, openRO(), logger.NewNoopLogger(), true); err == nil {
 			t.Error("verifyLocationDB() = nil, want a row count mismatch error")
 		}
 	})
 
 	t.Run("missing meta file", func(t *testing.T) {
 		os.Remove(filepath.Join(dir, LocationMetaFileName))
-		if err := verifyLocationDB(dbPath, openRO(), logger.NewNoopLogger()); err == nil {
+		if err := verifyLocationDB(dbPath, openRO(), logger.NewNoopLogger(), true); err == nil {
 			t.Error("verifyLocationDB() with no meta file = nil, want an error")
 		}
 	})
@@ -111,7 +111,7 @@ func TestDownloadLocationDBSkipsExisting(t *testing.T) {
 	buildLocationDB(t, dbPath, 1)
 	before := fileSHA256Helper(t, dbPath)
 
-	if err := downloadLocationDB(context.Background(), logger.NewNoopLogger(), dbPath, nil); err != nil {
+	if _, err := downloadLocationDB(context.Background(), logger.NewNoopLogger(), dbPath, nil); err != nil {
 		t.Fatalf("downloadLocationDB() = %v, want nil (file already exists)", err)
 	}
 	if after := fileSHA256Helper(t, dbPath); after != before {

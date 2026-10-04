@@ -90,24 +90,23 @@ func setupExiftool(ctx context.Context, log logger.Logger, binDir string, onProg
 }
 
 func findExiftool(log logger.Logger, binDir string) (string, error) {
-	// Check PATH — only accept if version meets requirement
-	if path, err := exec.LookPath(exiftoolBin()); err == nil {
-		if ok, _ := checkVersion(path, log); ok {
-			log.Info("exiftool found on PATH", "path", path)
-			return path, nil
-		}
-		log.Info("exiftool on PATH is outdated; installing bundled version")
-	}
-
+	// bundled first: a PATH copy is often too old, and probing it costs a start
 	binaryPath := filepath.Join(binDir, exiftoolBin())
-
-	// Check binDir install — only accept if version meets requirement
 	if _, err := os.Stat(binaryPath); err == nil {
 		if ok, _ := checkVersion(binaryPath, log); ok {
 			log.Info("exiftool found", "path", binaryPath)
 			return binaryPath, nil
 		}
 		log.Info("exiftool is outdated; installing bundled version", "path", binaryPath)
+		return "", fmt.Errorf("exiftool at %s is outdated", binaryPath)
+	}
+
+	if path, err := exec.LookPath(exiftoolBin()); err == nil {
+		if ok, _ := checkVersion(path, log); ok {
+			log.Info("exiftool found on PATH", "path", path)
+			return path, nil
+		}
+		log.Info("exiftool on PATH is outdated; installing bundled version")
 	}
 
 	return "", fmt.Errorf("exiftool not found at %s", binaryPath)
