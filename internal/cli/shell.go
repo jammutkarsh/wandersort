@@ -770,6 +770,13 @@ func (a *app) newHomeScreen(lastScan []string) tui.HomeModel {
 		Suggest:  func(typed string) []string { return suggestDirs(paths, typed) },
 		LastScan: lastScan,
 		History:  a.Config.SourceHistory(),
+		// only the library overlap: anything else is the scan's to report
+		Check: func(dir string) error {
+			if _, err := workflow.CheckRoots(paths, a.Config.OutputDir(), []string{dir}); errors.Is(err, workflow.ErrOverlapsLibrary) {
+				return err
+			}
+			return nil
+		},
 	})
 }
 

@@ -76,8 +76,11 @@ type HomeConfig struct {
 	// empty on the first run, filled once a scan in this session has completed.
 	LastScan []string
 	// History is the folders scanned before, newest first; ↑ on an empty line
-	// walks it.
+	// walks it, after the folders added here.
 	History []string
+	// Check refuses a folder as it is added (one inside the library, say);
+	// nil accepts every folder.
+	Check func(dir string) error
 }
 
 // HomeLibraryMsg is where the open library's files stand, for the status above
@@ -99,11 +102,16 @@ type HomeModel struct {
 	added      []string
 	sugg       []string
 	suggCursor int // ↑/↓-picked completion; -1 = none picked
-	histIdx    int // History entry in the input; -1 = not walking it
-	lib        HomeLibraryMsg
-	err        error
-	note       string // a success line; cleared by an error
-	w, h       int
+	// ↑/↓ walk: the folders added here (newest first), then History. The
+	// added one on screen is lifted out of the list while shown, so editing
+	// it replaces it.
+	walk    []string
+	histIdx int // walk entry in the input; -1 = not walking
+	lifted  int // where the shown entry sat in added; -1 = it wasn't there
+	lib     HomeLibraryMsg
+	err     error
+	note    string // a success line; cleared by an error
+	w, h    int
 
 	ask      *Ask // a full-screen question before something hard to undo
 	showKeys bool // the ? overlay is up
@@ -114,7 +122,7 @@ var homeKeys = []KeyGroup{
 	{"Folders", []KeyLine{
 		{"enter", "add the folder typed"},
 		{"tab", "complete the folder name"},
-		{"↑ ↓", "on an empty line: folders scanned before"},
+		{"↑ ↓", "on an empty line: folders added, then scanned before"},
 		{"ctrl+x", "remove the last folder"},
 	}},
 	{"Planning", []KeyLine{
@@ -137,7 +145,7 @@ func NewHomeModel(cfg HomeConfig) HomeModel {
 	// equivalent lives under its own user profile drive, never "~/Pictures".
 	ti.Placeholder = paths.RelativeToHome(filepath.Join(paths.HomeDir, "Pictures"))
 	ti.Focus()
-	m := HomeModel{cfg: cfg, ti: ti, paths: paths, suggCursor: -1, histIdx: -1}
+	m := HomeModel{cfg: cfg, ti: ti, paths: paths, suggCursor: -1, histIdx: -1, lifted: -1}
 	m.refresh()
 	return m
 }
@@ -252,18 +260,37 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// walkHistory steps through the folders scanned before, like a shell: 1 is
-// older, -1 newer, and past the newest the line empties. Enter adds the one shown.
+// walkHistory steps like a shell history, 1 older and -1 newer: first the
+// folders added here, then the ones scanned before. Past the newest the line
+// empties. Enter adds the one shown; an added one shown is out of the list
+// until the walk moves on, so it can be edited.
 func (m *HomeModel) walkHistory(step int) {
-	i := min(m.histIdx+step, len(m.cfg.History)-1)
+	if m.histIdx < 0 {
+		m.walk = slices.Clone(m.added)
+		slices.Reverse(m.walk)
+		for _, d := range m.cfg.History {
+			if !slices.Contains(m.walk, d) {
+				m.walk = append(m.walk, d)
+			}
+		}
+	}
+	if m.lifted >= 0 {
+		m.added = slices.Insert(m.added, m.lifted, m.walk[m.histIdx])
+		m.lifted = -1
+	}
+	i := min(m.histIdx+step, len(m.walk)-1)
 	if i < 0 {
 		m.ti.SetValue("")
 		m.refresh()
 		return
 	}
-	m.ti.SetValue(m.paths.RelativeToHome(m.cfg.History[i]))
+	if j := slices.Index(m.added, m.walk[i]); j >= 0 {
+		m.added = slices.Delete(m.added, j, j+1)
+		m.lifted = j
+	}
+	m.ti.SetValue(m.paths.RelativeToHome(m.walk[i]))
 	m.ti.CursorEnd()
-	// no completions while walking: ↑/↓ stay the history's
+	// no completions while walking: ↑/↓ stay the walk's
 	m.sugg, m.suggCursor, m.histIdx = nil, -1, i
 }
 
@@ -307,6 +334,13 @@ func (m HomeModel) enter() (tea.Model, tea.Cmd) {
 		m.err = fmt.Errorf("%s is not a folder", typed)
 		return m, nil
 	}
+	// refused here, while it is still in the input to change
+	if m.cfg.Check != nil {
+		if err := m.cfg.Check(dir); err != nil {
+			m.err = err
+			return m, nil
+		}
+	}
 	m.err = nil
 	if !slices.Contains(m.added, dir) {
 		m.added = append(m.added, dir)
@@ -325,7 +359,8 @@ func (m *HomeModel) fill(i int) {
 }
 
 func (m *HomeModel) refresh() {
-	m.histIdx = -1
+	// typing ends a walk; a lifted folder stays out, being edited
+	m.histIdx, m.walk, m.lifted = -1, nil, -1
 	m.suggCursor = -1
 	m.sugg = nil
 	if m.cfg.Suggest != nil {
@@ -433,7 +468,7 @@ func (m HomeModel) footer() string {
 		hints = append(hints, KeyHint("tab", "complete"))
 	}
 	hints = append(hints, KeyHint("enter", "add"))
-	if len(m.cfg.History) > 0 && (m.histIdx >= 0 || m.ti.Value() == "") {
+	if len(m.added)+len(m.cfg.History) > 0 && (m.histIdx >= 0 || m.ti.Value() == "") {
 		hints = append(hints, KeyHint("↑↓", "earlier folders"))
 	}
 	if m.lib.Planned > 0 {

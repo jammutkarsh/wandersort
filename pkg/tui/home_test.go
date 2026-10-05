@@ -132,6 +132,42 @@ func TestHome(t *testing.T) {
 				t.Fatalf("ctrl+x should remove the folder, got %v", got)
 			}
 		}},
+		// ↑ reaches the folders added here first, newest first, lifted out of
+		// the list while shown so editing one replaces it; then the history.
+		{"ArrowsReachAddedFoldersFirst", func(t *testing.T) {
+			added, scanned := t.TempDir(), t.TempDir()
+			m := typeHome(NewHomeModel(HomeConfig{History: []string{scanned, added}}), added)
+			press := func(k tea.KeyType) {
+				next, _ := m.Update(tea.KeyMsg{Type: k})
+				m = next.(HomeModel)
+			}
+
+			press(tea.KeyUp)
+			if m.ti.Value() != added || len(m.added) != 0 {
+				t.Fatalf("↑: input %q, list %v; want the added folder lifted out", m.ti.Value(), m.added)
+			}
+			press(tea.KeyUp)
+			if m.ti.Value() != scanned || len(m.added) != 1 || m.added[0] != added {
+				t.Fatalf("↑↑: input %q, list %v; want history, the added folder back", m.ti.Value(), m.added)
+			}
+			press(tea.KeyUp) // the history's copy of the added folder isn't shown twice
+			if m.ti.Value() != scanned {
+				t.Errorf("↑↑↑: input %q, want the walk to stop at its end", m.ti.Value())
+			}
+			press(tea.KeyDown)
+			press(tea.KeyDown)
+			if m.ti.Value() != "" || len(m.added) != 1 {
+				t.Errorf("↓ past the newest: input %q, list %v; want empty, list whole", m.ti.Value(), m.added)
+			}
+		}},
+		// A refused folder stays in the input with the reason, not in the list.
+		{"CheckRefusesBeforeAdding", func(t *testing.T) {
+			dir := t.TempDir()
+			m := typeHome(NewHomeModel(HomeConfig{Check: func(string) error { return errBadValue }}), dir)
+			if len(m.added) != 0 || m.ti.Value() != dir || m.err == nil {
+				t.Errorf("list %v, input %q, err %v; want nothing added, the folder still typed, the reason shown", m.added, m.ti.Value(), m.err)
+			}
+		}},
 		// Completions come from the injected Suggest; tab fills the top one.
 		{"TabFillsTheTopCompletion", func(t *testing.T) {
 			m := NewHomeModel(HomeConfig{Suggest: func(string) []string { return []string{"~/Pictures", "~/Public"} }})
