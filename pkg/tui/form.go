@@ -824,7 +824,7 @@ func (m FormModel) moveNext() (tea.Model, tea.Cmd) {
 func (m FormModel) exitAskView() string {
 	choice := m.exitChoice
 	c := NewConfirmModel("Save your changes?",
-		"Keep what you've entered so far, or leave without saving it.", &choice)
+		"Keep what you entered, or leave without it.", &choice)
 	c.YesLabel, c.NoLabel = "Save", "Discard"
 	sized, _ := c.Update(tea.WindowSizeMsg{Width: m.w, Height: m.h})
 	return sized.View()

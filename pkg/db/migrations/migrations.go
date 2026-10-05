@@ -25,7 +25,7 @@ type Migration struct {
 var schemas = []Migration{schema001, schema002, schema003}
 
 // ErrNewerSchema means a newer WanderSort wrote this database.
-var ErrNewerSchema = errors.New("the library was written by a newer version of WanderSort; update WanderSort to open it")
+var ErrNewerSchema = errors.New("this library is from a newer version; update to open it")
 
 // Pending reports how many migrations Run would apply, and how many are
 // already applied (0 means a fresh database). It fails with ErrNewerSchema

@@ -26,7 +26,7 @@ func (a *app) newAdminReportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "report",
 		Short: "Package logs into a zip you can attach to a bug report",
-		Long: `Collects the most recent WanderSort logs into a single zip you can share when
+		Long: `Collects the most recent logs into a single zip you can share when
 something goes wrong — send it to the maintainer, or paste a log into any AI
 assistant to diagnose the problem yourself.
 

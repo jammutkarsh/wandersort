@@ -65,7 +65,7 @@ out which are duplicates of each other, and plans where each one belongs.
 Nothing is copied — 'wandersort copy' does that. This only adds
 files to the plan.
 
-Opens WanderSort on the Add tab, the same app a bare 'wandersort' opens, so
+Opens the app on the Add tab, the same app a bare 'wandersort' opens, so
 shift+tab still reaches the settings and the plan. With --paths (-p) the run
 starts straight away; without it you are asked which folders to add.
 

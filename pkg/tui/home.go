@@ -34,8 +34,8 @@ type ResetMsg struct{}
 func DiscardPlanAsk(planned int) Ask {
 	return Ask{
 		Title: fmt.Sprintf("Discard the current plan for %s?", human.Plural(planned, "file", "files")),
-		Detail: "WanderSort forgets every file not yet copied: what was scanned, the plan and your edits. " +
-			"Files already in the library stay. Adding the folders again reads them from scratch.",
+		Detail: "Forgets files not yet copied and your edits. Copied files stay. " +
+			"Add the folders again to re-plan.",
 		Action: "discard",
 		Msg:    DiscardPlanMsg{},
 	}
@@ -46,14 +46,14 @@ func DiscardPlanAsk(planned int) Ask {
 // a card copies them again: the question says so.
 func ResetAsk(placed int) Ask {
 	a := Ask{
-		Title:  "Delete everything in the library database?",
-		Detail: "What was scanned, the duplicates found, the plan and your edits. Your settings stay. 'wandersort admin db --restore' brings the rest back until the next transfer or reset.",
-		Action: "delete",
+		Title:  "Reset the library?",
+		Detail: "Forgets everything scanned, planned and edited. Settings stay. Undo with admin db --restore until the next copy or reset.",
+		Action: "reset",
 		Msg:    ResetMsg{},
 	}
 	if placed > 0 {
 		a.Title = fmt.Sprintf("Forget the %s already in the library?", human.Plural(placed, "file", "files"))
-		a.Detail = "They stay in the library folder, but WanderSort stops knowing them: importing the same photos again copies them in a second time, and 'wandersort check' no longer looks at them. " + a.Detail
+		a.Detail = "They stay on disk, but adding them again copies them twice, and check skips them. " + a.Detail
 	}
 	return a
 }
@@ -209,9 +209,8 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// exactly two keys: enter or esc
 				m.ask = &Ask{
 					Title: "Force re-scan?",
-					Detail: "Re-reads every already-scanned file from disk instead of skipping " +
-						"unchanged ones. Slower — use after upgrading WanderSort, or if " +
-						"a file's metadata looks wrong.",
+					Detail: "Re-reads every file, unchanged ones too. Slower; use after an " +
+						"update or if a file's details look wrong.",
 					Action: "confirm",
 					Msg:    StartScanMsg{Paths: slices.Clone(m.added), Force: true},
 				}

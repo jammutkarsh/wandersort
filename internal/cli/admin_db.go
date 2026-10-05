@@ -19,7 +19,7 @@ func (a *app) newAdminDBCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "db",
 		Short: "Restore or reset the library database",
-		Long: `The library database holds everything WanderSort knows: which files it has
+		Long: `The library database holds everything the library knows: which files it has
 seen, which are duplicates, where each one is planned to go, and the edits you
 made while organising. Your photos are not in it — they survive its loss, but
 the structure you gave them does not.
@@ -71,7 +71,7 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 
 	yes, _ := cmd.Flags().GetBool(flagYes)
 	if !yes && !a.confirm(cmd, "Restore the database from the backup of "+taken+"?",
-		"The plan and your edits go back to that point. Files already in the library stay where they are, and the current database is kept as "+db.BeforeRestoreFileName+" in case you want it back.") {
+		"Plan and edits go back to then. Copied files stay. The current database is kept as "+db.BeforeRestoreFileName+".") {
 		return fmt.Errorf("restore cancelled")
 	}
 

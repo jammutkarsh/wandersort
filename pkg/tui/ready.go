@@ -216,7 +216,7 @@ func (m ReadyModel) failedLabels() string {
 		}
 	}
 	if len(names) == 0 {
-		return "what WanderSort needs"
+		return "what's needed"
 	}
 	return strings.Join(names, " and ")
 }

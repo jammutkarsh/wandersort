@@ -203,7 +203,7 @@ func TestConfirmModelWrapsLongDetail(t *testing.T) {
 				t.Errorf("width %d: line is %d cells wide: %q", width, got, line)
 			}
 		}
-		if flat := strings.Join(strings.Fields(v), " "); !strings.Contains(flat, "until the next transfer or reset.") {
+		if flat := strings.Join(strings.Fields(v), " "); !strings.Contains(flat, "until the next copy or reset.") {
 			t.Errorf("width %d: the end of the explanation is missing:\n%s", width, v)
 		}
 	}

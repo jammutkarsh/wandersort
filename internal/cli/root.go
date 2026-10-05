@@ -72,7 +72,7 @@ wandersort check`,
 		},
 	}
 
-	rootCmd.PersistentFlags().StringP(flagOutputPath, "o", "", "Library folder: empty, or one WanderSort already organized")
+	rootCmd.PersistentFlags().StringP(flagOutputPath, "o", "", "Library folder: empty, or an existing library")
 	rootCmd.PersistentFlags().Bool(flagPlain, false, "Disable the full-screen TUI; use plain line logging")
 
 	rootCmd.SetFlagErrorFunc(usageError)

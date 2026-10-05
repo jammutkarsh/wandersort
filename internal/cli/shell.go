@@ -229,7 +229,7 @@ func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tui.Leave:
 		if m.depsErr == nil {
-			m.depsErr = errors.New("quit before WanderSort was ready")
+			m.depsErr = errors.New("quit before setup finished")
 		}
 		return m, tea.Quit
 	}
@@ -367,7 +367,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if errors.Is(err, library.ErrNothingToReset) {
 				return "Library is already empty.", nil
 			}
-			return "Library reset. 'wandersort admin db --restore' undoes it.", err
+			return "Library reset. Undo with admin db --restore.", err
 		})
 
 	case libraryEmptiedMsg:

@@ -133,7 +133,7 @@ func (f *settingsForm) libraryField() *tui.Field {
 	return &tui.Field{
 		Kind:        tui.FieldInput,
 		Title:       "Where should your library go?",
-		Description: "An empty folder, or one WanderSort has organised before.",
+		Description: "An empty folder, or an existing library.",
 		Value:       &f.out,
 		Suggest: func(typed string) []string {
 			if strings.TrimSpace(typed) == "" {
@@ -319,7 +319,7 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 				f := a.newSettingsForm(ctx, geonames)
 				field := f.libraryField()
 				field.Title = "Which library?"
-				field.Description = "A folder WanderSort has organised opens as it is. Any other folder starts a new library with these settings. Files planned here don't come along; add their folders again there. This library stays as it is."
+				field.Description = "An existing library opens as it is; any other folder starts a new one with these settings. Planned files don't move over."
 				return []*tui.Field{field}, func() error {
 					return a.switchLibrary(ctx, f.paths.ExpandPath(strings.TrimSpace(f.out)))
 				}

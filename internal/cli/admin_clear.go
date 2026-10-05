@@ -14,7 +14,7 @@ func (a *app) newAdminClearCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "clear",
 		Short: "Delete the cached preview copies",
-		Long: `Deletes the preview copies WanderSort makes when you peek into a folder
+		Long: `Deletes the preview copies made when you peek into a folder
 while organising. They are only a cache — peeking again re-creates them — so
 nothing here asks, and nothing in your library is touched.
 
