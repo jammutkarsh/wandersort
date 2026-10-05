@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -88,6 +89,12 @@ type HomeConfig struct {
 // the library, Edits wait in Organise's draft.
 type HomeLibraryMsg struct{ Planned, Placed, Edits int }
 
+// messageFor is how long a warning or note stays above the footer.
+const messageFor = 5 * time.Second
+
+// messageExpiredMsg ends the message numbered shown, if it is still up.
+type messageExpiredMsg struct{ shown int }
+
 // maxHomeSuggestions caps the completion list under the input; it renders above
 // the footer, so an unbounded list would push the folder list off screen.
 const maxHomeSuggestions = 5
@@ -111,6 +118,7 @@ type HomeModel struct {
 	lib     HomeLibraryMsg
 	err     error
 	note    string // a success line; cleared by an error
+	shown   int    // which err/note is up, so only its own timer clears it
 	w, h    int
 
 	ask      *Ask // a full-screen question before something hard to undo
@@ -161,10 +169,13 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 		return m, nil
 	case HomeErrMsg:
-		m.err, m.note = msg.Err, ""
-		return m, nil
+		return m, m.show(msg.Err, "")
 	case HomeNoteMsg:
-		m.note, m.err = msg.Text, nil
+		return m, m.show(nil, msg.Text)
+	case messageExpiredMsg:
+		if msg.shown == m.shown {
+			m.err, m.note = nil, ""
+		}
 		return m, nil
 	case HomeLibraryMsg:
 		m.lib = msg
@@ -317,8 +328,7 @@ func (m HomeModel) enter() (tea.Model, tea.Cmd) {
 	typed := strings.TrimSpace(m.ti.Value())
 	if typed == "" {
 		if len(m.added) == 0 {
-			m.err = fmt.Errorf("type a folder first")
-			return m, nil
+			return m, m.show(fmt.Errorf("type a folder first"), "")
 		}
 		paths := slices.Clone(m.added)
 		return m, func() tea.Msg { return StartScanMsg{Paths: paths} }
@@ -328,17 +338,14 @@ func (m HomeModel) enter() (tea.Model, tea.Cmd) {
 	st, err := os.Stat(dir)
 	switch {
 	case err != nil:
-		m.err = fmt.Errorf("%s: no such folder", typed)
-		return m, nil
+		return m, m.show(fmt.Errorf("%s: no such folder", typed), "")
 	case !st.IsDir():
-		m.err = fmt.Errorf("%s is not a folder", typed)
-		return m, nil
+		return m, m.show(fmt.Errorf("%s is not a folder", typed), "")
 	}
 	// refused here, while it is still in the input to change
 	if m.cfg.Check != nil {
 		if err := m.cfg.Check(dir); err != nil {
-			m.err = err
-			return m, nil
+			return m, m.show(err, "")
 		}
 	}
 	m.err = nil
@@ -348,6 +355,14 @@ func (m HomeModel) enter() (tea.Model, tea.Cmd) {
 	m.ti.SetValue("")
 	m.refresh()
 	return m, nil
+}
+
+// show puts up a warning or a note (one replaces the other) for messageFor.
+func (m *HomeModel) show(err error, note string) tea.Cmd {
+	m.err, m.note = err, note
+	m.shown++
+	shown := m.shown
+	return tea.Tick(messageFor, func(time.Time) tea.Msg { return messageExpiredMsg{shown} })
 }
 
 // fill writes the picked completion into the input with a trailing "/" (every

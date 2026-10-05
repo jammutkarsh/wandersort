@@ -78,8 +78,9 @@ func TestHome(t *testing.T) {
 		// to scan.
 		{"EmptyEnterStartsTheScan", func(t *testing.T) {
 			m := NewHomeModel(HomeConfig{})
-			if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
-				t.Fatal("enter with no folders should not start a scan")
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if !strings.Contains(ansi.Strip(next.(HomeModel).View()), "type a folder first") {
+				t.Fatal("enter with no folders should ask for one, not start a scan")
 			}
 
 			dir := t.TempDir()
@@ -183,12 +184,24 @@ func TestHome(t *testing.T) {
 		// renders — it must never take the app down.
 		{"ShowsShellErrorsWithoutQuitting", func(t *testing.T) {
 			m := NewHomeModel(HomeConfig{})
-			next, cmd := m.Update(HomeErrMsg{Err: errAlreadyRunning})
-			if cmd != nil {
-				t.Error("an error message should not quit")
-			}
+			next, _ := m.Update(HomeErrMsg{Err: errAlreadyRunning})
 			if !strings.Contains(ansi.Strip(next.(HomeModel).View()), "already running") {
 				t.Errorf("the error should render:\n%s", ansi.Strip(next.(HomeModel).View()))
+			}
+		}},
+		// A warning clears when its own timer ends, never when an older one
+		// does after a newer message replaced it.
+		{"MessagesExpire", func(t *testing.T) {
+			m := NewHomeModel(HomeConfig{})
+			next, _ := m.Update(HomeErrMsg{Err: errAlreadyRunning})
+			next, _ = next.Update(HomeNoteMsg{Text: "saved"})
+			next, _ = next.Update(messageExpiredMsg{shown: 1}) // the warning's timer
+			if v := ansi.Strip(next.(HomeModel).View()); !strings.Contains(v, "saved") {
+				t.Fatalf("an older timer cleared the newer note:\n%s", v)
+			}
+			next, _ = next.Update(messageExpiredMsg{shown: 2})
+			if v := ansi.Strip(next.(HomeModel).View()); strings.Contains(v, "saved") {
+				t.Errorf("the note should be gone after its time:\n%s", v)
 			}
 		}},
 	}
