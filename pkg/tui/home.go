@@ -81,7 +81,7 @@ type HomeConfig struct {
 }
 
 // HomeLibraryMsg is where the open library's files stand, for the status above
-// the input: Planned wait to be copied (ctrl+d discards them), Placed are in
+// the input: Planned wait to be copied (ctrl+r discards them), Placed are in
 // the library, Edits wait in Organise's draft.
 type HomeLibraryMsg struct{ Planned, Placed, Edits int }
 
@@ -120,8 +120,8 @@ var homeKeys = []KeyGroup{
 	{"Planning", []KeyLine{
 		{"enter", "on an empty line: plan the folders listed"},
 		{"ctrl+g", "plan again, re-reading every file"},
-		{"ctrl+d", "discard the current plan: forget every file not yet copied"},
-		{"ctrl+r", "reset: empty the library database"},
+		{"ctrl+r", "discard the current plan: forget every file not yet copied"},
+		{"ctrl+d", "reset: empty the library database"},
 	}},
 	{"App", []KeyLine{
 		{"shift+tab", "next tab"},
@@ -198,13 +198,13 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
-		case "ctrl+d":
+		case "ctrl+r":
 			if m.lib.Planned > 0 {
 				a := DiscardPlanAsk(m.lib.Planned)
 				m.ask = &a
 			}
 			return m, nil
-		case "ctrl+r":
+		case "ctrl+d":
 			if m.lib.Planned > 0 || m.lib.Placed > 0 {
 				a := ResetAsk(m.lib.Placed)
 				m.ask = &a
@@ -428,7 +428,7 @@ func (m HomeModel) footer() string {
 		hints = append(hints, KeyHint("↑↓", "earlier folders"))
 	}
 	if m.lib.Planned > 0 {
-		hints = append(hints, KeyHint("ctrl+d", "discard current plan"))
+		hints = append(hints, KeyHint("ctrl+r", "discard current plan"))
 	}
 	hints = append(hints, MoreKeys())
 	b.WriteString(Footer(strings.Join(hints, "   "), m.w))

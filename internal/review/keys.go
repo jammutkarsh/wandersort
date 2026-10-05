@@ -161,10 +161,10 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = true
 	case "R":
 		m = m.reset()
-	case "ctrl+d":
+	case "ctrl+r":
 		a := tui.DiscardPlanAsk(m.plannedFiles())
 		m.ask = &a
-	case "ctrl+r":
+	case "ctrl+d":
 		placed, err := m.db.PlacedCount(m.ctx)
 		if err != nil {
 			m.statusMsg, m.statusIsErr = err.Error(), true
