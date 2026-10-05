@@ -107,12 +107,9 @@ func (wf *Workflow) RunScan(ctx context.Context, paths []string, force bool) (Re
 		return Result{}, err
 	}
 
-	roots, err := path.ReduceRoots(wf.path, paths)
+	roots, err := CheckRoots(wf.path, wf.outputDir, paths)
 	if err != nil {
 		wf.log.Warn("Invalid scan roots", "error", err)
-		return Result{}, err
-	}
-	if err := wf.checkOverlap(roots); err != nil {
 		return Result{}, err
 	}
 
@@ -131,20 +128,25 @@ func (wf *Workflow) RunScan(ctx context.Context, paths []string, force bool) (Re
 	return res, nil
 }
 
-// checkOverlap refuses any root that is the library, holds it, or sits in it.
-// The library folder always exists by now (the database was opened in it).
-func (wf *Workflow) checkOverlap(roots []string) error {
-	library, err := wf.path.RealPath(wf.outputDir)
+// CheckRoots is the folders a scan of paths walks (nested ones pruned), or why
+// it can't: a folder that is the library, holds it, or sits in it. The library
+// folder exists by now (the database was opened in it).
+func CheckRoots(r *path.Resolver, outputDir string, paths []string) ([]string, error) {
+	roots, err := path.ReduceRoots(r, paths)
 	if err != nil {
-		return fmt.Errorf("resolve library folder: %w", err)
+		return nil, err
+	}
+	library, err := r.RealPath(outputDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve library folder: %w", err)
 	}
 	for _, root := range roots {
 		if path.Overlaps(root, library) {
-			return fmt.Errorf("cannot scan %s: it %w at %s — pick folders outside it",
-				wf.path.RelativeToHome(root), ErrOverlapsLibrary, wf.path.RelativeToHome(library))
+			return nil, fmt.Errorf("cannot scan %s: it %w at %s — pick folders outside it",
+				r.RelativeToHome(root), ErrOverlapsLibrary, r.RelativeToHome(library))
 		}
 	}
-	return nil
+	return roots, nil
 }
 
 // runPhases runs the phases in order and stops at the first that fails.

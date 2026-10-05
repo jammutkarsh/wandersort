@@ -256,6 +256,61 @@ func TestShellModel(t *testing.T) {
 				t.Errorf("the failure should still be readable:\n%s", v)
 			}
 		}},
+		// esc on a failed run goes back to its folders, listed again to fix.
+		{"EscFromAFailedScanKeepsItsFolders", func(t *testing.T) {
+			m := testShell(t)
+			scan := tui.NewScanModel(tui.ScanConfig{Paths: []string{"/pics"}, Pipeline: func() error { return errors.New("disk went away") }})
+			for _, msg := range flattenTeaCmd(scan.Init()) {
+				next, _ := scan.Update(msg)
+				scan = next.(tui.ScanModel)
+			}
+			m.screens[tabScan] = scan
+
+			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			m = next.(shellModel)
+			next, _ = m.Update(leaveFrom(t, cmd))
+			m = next.(shellModel)
+			if _, ok := m.screens[tabScan].(tui.HomeModel); !ok {
+				t.Fatalf("esc should bring the folder input back, got %T", m.screens[tabScan])
+			}
+			if v := ansi.Strip(m.View()); !strings.Contains(v, "/pics") {
+				t.Errorf("the failed run's folders should be listed again:\n%s", v)
+			}
+		}},
+		// A folder overlapping the library is refused before the scan screen,
+		// and a switch to another library runs that scan there.
+		{"AnOverlappingScanRunsInTheNextLibrary", func(t *testing.T) {
+			m := testShell(t)
+			t.Cleanup(m.a.closeLibrary)
+			lib := m.a.Config.OutputDir()
+
+			next, cmd := m.Update(tui.StartScanMsg{Paths: []string{lib}})
+			m = next.(shellModel)
+			next, _ = m.Update(cmd())
+			m = next.(shellModel)
+			if _, ok := m.screens[tabScan].(tui.HomeModel); !ok {
+				t.Fatalf("a refused scan must leave the folder input, got %T", m.screens[tabScan])
+			}
+			if v := ansi.Strip(m.View()); !strings.Contains(v, "overlaps the library") {
+				t.Errorf("want the overlap on screen:\n%s", v)
+			}
+
+			m.libraryBefore = lib
+			if err := m.a.switchLibrary(context.Background(), filepath.Join(t.TempDir(), "other")); err != nil {
+				t.Fatal(err)
+			}
+			next, cmd = m.Update(tui.SettingsSavedMsg{})
+			m = next.(shellModel)
+			var retried bool
+			for _, msg := range flattenTeaCmd(cmd) {
+				if s, ok := msg.(tui.StartScanMsg); ok && len(s.Paths) == 1 && s.Paths[0] == lib {
+					retried = true
+				}
+			}
+			if !retried {
+				t.Error("switching library should run the refused scan")
+			}
+		}},
 		// A lock held by another process is not fatal: it renders on the home
 		// screen and the app stays up.
 		{"LockFailureRendersOnHome", func(t *testing.T) {

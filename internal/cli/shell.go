@@ -75,6 +75,10 @@ type shellModel struct {
 	// so a save that changes nothing costs nothing (see settingsSaved).
 	settingsBefore config.Settings
 	libraryBefore  string // the library folder the settings tab opened on
+
+	// pendingScan is a scan refused for overlapping the library; a switch to
+	// another library runs it
+	pendingScan *tui.StartScanMsg
 }
 
 // scanReadyMsg reports whether the library opened for a scan.
@@ -279,8 +283,21 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tui.StartScanMsg:
 		// opened here, on the UI goroutine, which is the only one that writes
 		// the app's library fields; opening is quick (the lock never waits)
-		err := m.a.openLibrary(m.ctx)
-		return m, msgCmd(scanReadyMsg{paths: msg.Paths, force: msg.Force, err: err})
+		if err := m.a.openLibrary(m.ctx); err != nil {
+			return m, msgCmd(scanReadyMsg{err: err})
+		}
+		// a folder overlapping the library is refused before the scan screen
+		// replaces the folder list, so the list stays to fix; switching to
+		// another library in Settings runs the scan there
+		m.pendingScan = nil
+		if _, err := workflow.CheckRoots(path.New(), m.a.Config.OutputDir(), msg.Paths); err != nil {
+			if errors.Is(err, workflow.ErrOverlapsLibrary) {
+				m.pendingScan = &msg
+				err = fmt.Errorf("%w. Or pick another library folder in Settings and the scan starts there", err)
+			}
+			return m, msgCmd(scanReadyMsg{err: err})
+		}
+		return m, msgCmd(scanReadyMsg{paths: msg.Paths, force: msg.Force})
 
 	case tui.OpenReviewMsg:
 		if m.reviewReady() {
@@ -303,7 +320,12 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screens[tabReview] = nil
 			m.screens[tabCopy] = nil
 			m.refresh()
-			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: "Now using the library in " + path.New().RelativeToHome(dir)})
+			note := m.forward(tabScan, tui.HomeNoteMsg{Text: "Now using the library in " + path.New().RelativeToHome(dir)})
+			if retry := m.pendingScan; retry != nil {
+				m.pendingScan = nil
+				return m, tea.Batch(note, msgCmd(*retry))
+			}
+			return m, note
 		}
 		// a row of the settings list saved: re-plan if it changed anything
 		cmd := m.settingsSaved(m.settingsBefore)
@@ -321,6 +343,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case scanReadyMsg:
 		if msg.err != nil {
+			m.tab = tabScan // a retry from Settings fails where its folders are
 			return m, m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})
 		}
 		// the new scan re-proposes everything, so a prefetched review is stale
@@ -557,14 +580,19 @@ func (m *shellModel) scanTabHome() tea.Cmd {
 // homeAgain puts the scan tab back to a folder input, with the finished scan's
 // stage summaries above it.
 func (m *shellModel) homeAgain(note string) tea.Cmd {
-	var history []string
+	var history, added []string
 	if s, ok := m.screens[tabScan].(tui.ScanModel); ok {
 		history = s.Summary()
+		if s.Failed() {
+			added = s.Paths() // to fix and plan again
+		}
 	}
 	if note != "" {
 		history = append(history, note)
 	}
-	cmd := m.place(tabScan, m.a.newHomeScreen(history))
+	home := m.a.newHomeScreen(history)
+	home.Add(added...)
+	cmd := m.place(tabScan, home)
 	m.forward(tabScan, m.lib.home())
 	return cmd
 }

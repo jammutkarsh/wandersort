@@ -109,11 +109,7 @@ func TestRunScanRefusesRootsOverlappingTheLibrary(t *testing.T) {
 	wf := NewWorkflow(d, logger.NewNoopLogger(), cfg, Deps{})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			root, err := wf.path.RealPath(tt.root) // roots arrive canonical
-			if err != nil {
-				t.Fatal(err)
-			}
-			err = wf.checkOverlap([]string{root})
+			_, err := CheckRoots(wf.path, wf.outputDir, []string{tt.root})
 			if got := errors.Is(err, ErrOverlapsLibrary); got != tt.refused {
 				t.Errorf("refused = %v (err %v), want %v", got, err, tt.refused)
 			}

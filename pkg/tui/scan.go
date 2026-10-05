@@ -119,6 +119,9 @@ func (m ScanModel) Busy() bool { return m.Running() }
 // place it is shown, so don't discard it unread.
 func (m ScanModel) Failed() bool { return m.state == scanFailed }
 
+// Paths is the folders this run was asked to plan.
+func (m ScanModel) Paths() []string { return m.cfg.Paths }
+
 // Summary is each finished stage's one-line result, for the home screen's
 // history block once the session moves on from this scan.
 func (m ScanModel) Summary() []string { return m.sl.Summary() }
@@ -201,6 +204,9 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.showKeys = true
 		return m, nil
+	}
+	if m.state == scanFailed && k.String() == "esc" {
+		return m, Left(Leave{Aborted: true}) // back to the folders, to fix
 	}
 	if m.state != scanFinished {
 		return m, nil
@@ -382,6 +388,9 @@ func (m ScanModel) footer() string {
 		return Footer(KeyHint("1-3", "choose")+"   "+KeyHint("enter", "go")+"   "+MoreKeys(), m.w)
 	case scanRunning:
 		return Footer(KeyHint("shift+tab", "switch tab")+"   "+KeyHint("ctrl+c", "stop")+"   "+MoreKeys(), m.w)
+	}
+	if m.state == scanFailed {
+		return Footer(KeyHint("esc", "back to the folders")+"   "+KeyHint("shift+tab", "switch tab")+"   "+KeyHint("ctrl+c", "quit"), m.w)
 	}
 	return Footer(KeyHint("shift+tab", "switch tab")+"   "+KeyHint("ctrl+c", "quit"), m.w)
 }
