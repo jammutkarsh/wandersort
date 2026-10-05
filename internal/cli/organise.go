@@ -26,7 +26,7 @@ wandersort organise`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// an alt-screen review can't draw into a pipe
 			if !a.isTuiEnabled(cmd) {
-				return fmt.Errorf("organise needs an interactive terminal — 'wandersort copy' copies the plan as proposed")
+				return fmt.Errorf("organise needs a terminal; 'wandersort copy' copies the plan as is")
 			}
 			// the shell on the Organise tab, so settings stay one shift+tab away
 			return a.runShell(shellStart{tab: tabReview})

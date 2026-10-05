@@ -203,7 +203,7 @@ func tryUpTo(ctx context.Context, tries int, beforeRetry RetryFunc, try func(con
 // logAndWait is the default RetryFunc: one warning, then RetryDelay.
 func logAndWait(log logger.Logger) RetryFunc {
 	return func(ctx context.Context, next int, err error) error {
-		log.Warn(fmt.Sprintf("Download failed (try %d of %d). Switch to a better network if you can; retrying in %s",
+		log.Warn(fmt.Sprintf("Download failed (try %d of %d); retrying in %s",
 			next-1, MaxTries, RetryDelay), logger.UserKey, true, "error", err)
 		select {
 		case <-time.After(RetryDelay):

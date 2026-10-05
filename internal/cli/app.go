@@ -155,9 +155,8 @@ func (a *app) lockOutput() (*lock.Lock, error) {
 	l, err := lock.AcquireOutput(filepath.Dir(a.Config.AppDBPath))
 	var running *lock.AlreadyRunningError
 	if errors.As(err, &running) {
-		return nil, withCode(exitBusy, fmt.Errorf("%s", tui.Bad.Render(fmt.Sprintf("Another wandersort process is already running (PID %d).", running.PID))+"\n\n"+
-			tui.FaintTxt.Render("Only one scan or review can use the same output directory at a time.")+"\n"+
-			tui.FaintTxt.Render("Stop the other process, then try again.")))
+		return nil, withCode(exitBusy, fmt.Errorf("%s", tui.Bad.Render(fmt.Sprintf("Another wandersort is already running here (PID %d).", running.PID))+"\n"+
+			tui.FaintTxt.Render("Stop it, then try again.")))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("acquire lock: %w", err)
@@ -258,7 +257,7 @@ func (a *app) switchLibrary(ctx context.Context, dir string) error {
 	}
 	release, ok := a.work.holdLibrary()
 	if !ok {
-		return errors.New("WanderSort is still working on this library; change the folder once it is done")
+		return errors.New("busy with this library; change it when it's done")
 	}
 	defer release()
 	// an organised folder keeps its own settings; any other starts a new library with these

@@ -80,7 +80,7 @@ var osClutter = map[string]bool{".DS_Store": true, "Thumbs.db": true, "desktop.i
 
 // ErrNetworkLibrary refuses a library on a network drive: file and SQLite locks
 // there don't keep two computers out, so the database could be corrupted.
-var ErrNetworkLibrary = errors.New("it is on a network drive (NAS, SMB, NFS), which WanderSort doesn't support; pick a folder on a local or USB drive")
+var ErrNetworkLibrary = errors.New("network drives aren't supported; pick a local or USB drive")
 
 // CheckLibrary reports whether dir may be an output folder: local, and missing,
 // empty, or already a library. Anything else would receive files on top of content the
@@ -103,12 +103,12 @@ func CheckLibrary(dir string) error {
 	}
 	for _, e := range entries {
 		if e.Name() == db.BackupFileName {
-			return fmt.Errorf("output folder %s has a database backup (%s) but no database; run 'wandersort admin db --restore' to restore it", dir, db.BackupFileName)
+			return fmt.Errorf("%s has a backup but no database; run 'wandersort admin db --restore'", dir)
 		}
 	}
 	for _, e := range entries {
 		if n := e.Name(); !osClutter[n] && n != lock.OutputFileName {
-			return fmt.Errorf("output folder %s already has files (%s) and is not a WanderSort library; pick an empty folder or an existing library", dir, n)
+			return fmt.Errorf("%s isn't empty or a library; pick another folder", dir)
 		}
 	}
 	return nil

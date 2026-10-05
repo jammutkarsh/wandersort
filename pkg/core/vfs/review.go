@@ -52,7 +52,7 @@ type Node struct {
 
 // ErrFixedFolder refuses renaming or removing a year or month folder: new
 // files find them by name, so a renamed month would get a twin.
-var ErrFixedFolder = errors.New("year and month folders are fixed — new files find them by name")
+var ErrFixedFolder = errors.New("year and month folders can't change")
 
 // Fixed reports whether n is a year or month folder, which the review can't
 // rename, merge or drop.

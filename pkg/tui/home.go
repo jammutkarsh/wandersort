@@ -317,7 +317,7 @@ func (m HomeModel) enter() (tea.Model, tea.Cmd) {
 	typed := strings.TrimSpace(m.ti.Value())
 	if typed == "" {
 		if len(m.added) == 0 {
-			m.err = fmt.Errorf("type a folder to scan first")
+			m.err = fmt.Errorf("type a folder first")
 			return m, nil
 		}
 		paths := slices.Clone(m.added)
@@ -328,7 +328,7 @@ func (m HomeModel) enter() (tea.Model, tea.Cmd) {
 	st, err := os.Stat(dir)
 	switch {
 	case err != nil:
-		m.err = fmt.Errorf("%s — no such folder", typed)
+		m.err = fmt.Errorf("%s: no such folder", typed)
 		return m, nil
 	case !st.IsDir():
 		m.err = fmt.Errorf("%s is not a folder", typed)

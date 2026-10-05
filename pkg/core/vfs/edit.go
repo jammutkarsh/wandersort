@@ -576,7 +576,7 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 			shared = commonChain(shared, chainTo(tree, p.id))
 		}
 		if len(shared) == 0 {
-			return tree, 0, "", "", fmt.Errorf("selected folders share no common ancestor to merge under")
+			return tree, 0, "", "", fmt.Errorf("these folders can't be merged")
 		}
 		dest = FindNode(tree, shared[len(shared)-1])
 		if dest == nil {
@@ -642,7 +642,7 @@ func dropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err er
 		if parent == nil {
 			// a top-level node has no parent to lift its children onto — its
 			// files would land in the library root ([D] flattens it instead)
-			return tree, nil, fmt.Errorf("can't drop a top-level folder — its files would land in the library root ([D] flattens it instead)")
+			return tree, nil, fmt.Errorf("can't drop a top-level folder; D flattens it")
 		}
 		n := FindNode(tree, id)
 		if n == nil {

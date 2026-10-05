@@ -286,7 +286,7 @@ type sweptRoot struct {
 func (s *Scanner) sweep(ctx context.Context, scan int64, r sweptRoot, gaps walkGaps) error {
 	root := r.root
 	if len(gaps.dirs)+len(gaps.files) > maxSweepGaps {
-		s.log.Warn("Skipping cleanup of vanished files: too much of this folder could not be read",
+		s.log.Warn("Too much of this folder is unreadable; kept files that seem gone",
 			logger.UserKey, true, "path", root, "unreadable", len(gaps.dirs)+len(gaps.files))
 		return nil
 	}
@@ -304,7 +304,7 @@ func (s *Scanner) sweep(ctx context.Context, scan int64, r sweptRoot, gaps walkG
 			return fmt.Errorf("sweep %q: %w", root, err)
 		}
 		if known > 0 {
-			s.log.Warn("Found no files in a folder the library knows files in; kept them — if the drive was not mounted, nothing was forgotten",
+			s.log.Warn("Folder looks empty; kept its files in case the drive isn't mounted",
 				logger.UserKey, true, "path", root, "known", known)
 			return nil
 		}

@@ -92,7 +92,7 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	res.Copied, res.Failed, res.Bytes = rep.Done, rep.Failed, rep.Bytes
 	if errors.Is(err, context.Canceled) {
 		// every file not yet reached is still pending; nothing is half-placed
-		return fmt.Errorf("stopped after %d files — run 'wandersort copy' again to carry on from there", rep.Done)
+		return fmt.Errorf("stopped after %d files; run copy again to resume", rep.Done)
 	}
 	if err != nil {
 		return err
@@ -102,7 +102,7 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	}
 	switch {
 	case rep.Failed > 0:
-		return withCode(exitPartial, fmt.Errorf("%d of %d files were not copied — the report lists each one and why", rep.Failed, rep.Done+rep.Failed))
+		return withCode(exitPartial, fmt.Errorf("%d of %d files not copied; see the report", rep.Failed, rep.Done+rep.Failed))
 	case len(left) > 0:
 		return withCode(exitPartial, fmt.Errorf("%s not be read, so not in the library", human.Plural(len(left), "source file could", "source files could")))
 	case rep.Done == 0:

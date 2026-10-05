@@ -62,7 +62,7 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 	backup := filepath.Join(filepath.Dir(a.Config.AppDBPath), db.BackupFileName)
 	info, err := os.Stat(backup)
 	if os.IsNotExist(err) {
-		return fmt.Errorf("no backup found at %s — one is written by 'wandersort copy' and by 'wandersort admin db --reset'", backup)
+		return fmt.Errorf("no backup at %s", backup)
 	}
 	if err != nil {
 		return fmt.Errorf("backup %s: %w", backup, err)
@@ -87,7 +87,7 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 	ctx, cancel := interruptible()
 	defer cancel()
 	if err := library.Restore(ctx, a.Config.AppDBPath, a.Log); errors.Is(err, db.ErrInUse) {
-		return fmt.Errorf("%w — close it (a sqlite browser, a backup tool) and try again; nothing was changed", err)
+		return fmt.Errorf("%w; close other apps using it and retry", err)
 	} else if err != nil {
 		return fmt.Errorf("restore failed: %w", err)
 	}

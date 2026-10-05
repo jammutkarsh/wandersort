@@ -142,8 +142,7 @@ func CheckRoots(r *path.Resolver, outputDir string, paths []string) ([]string, e
 	}
 	for _, root := range roots {
 		if path.Overlaps(root, library) {
-			return nil, fmt.Errorf("cannot scan %s: it %w at %s — pick folders outside it",
-				r.RelativeToHome(root), ErrOverlapsLibrary, r.RelativeToHome(library))
+			return nil, fmt.Errorf("%s %w; pick another folder", r.RelativeToHome(root), ErrOverlapsLibrary)
 		}
 	}
 	return roots, nil
@@ -168,8 +167,8 @@ func (wf *Workflow) runPhases(ctx context.Context, res *Result, force bool) erro
 	// hint; the same check execute refuses on, so the two never disagree
 	var full *execute.NotEnoughSpaceError
 	if err := execute.CheckFits(ctx, wf.db, wf.outputDir); errors.As(err, &full) {
-		wf.log.Warn(fmt.Sprintf("Output volume may be too small: copying the plan needs %s, only %s is free at %s",
-			volume.HumanBytes(full.Needed), volume.HumanBytes(full.Free), wf.outputDir), logger.UserKey, true)
+		wf.log.Warn(fmt.Sprintf("Library drive may be too small: the plan needs %s, %s free",
+			volume.HumanBytes(full.Needed), volume.HumanBytes(full.Free)), logger.UserKey, true)
 	} else if err != nil {
 		wf.log.Warn("Could not check the output volume's free space", "error", err)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/core/verify"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -68,7 +69,7 @@ func (a *app) runCheck(cmd *cobra.Command) error {
 
 func (a *app) check(full bool, res *checkResult) error {
 	if !a.libraryExists() {
-		return fmt.Errorf("no library found at %s — run 'wandersort add' first", a.Config.OutputDir())
+		return fmt.Errorf("no library at %s; run 'wandersort add' first", a.Config.OutputDir())
 	}
 
 	ctx, cancel := interruptible()
@@ -95,12 +96,12 @@ func (a *app) check(full bool, res *checkResult) error {
 // grouped by kind of problem.
 func reportVerify(rep verify.Report, full bool) error {
 	if rep.Checked == 0 {
-		fmt.Fprintln(os.Stderr, "Nothing in the library yet — run 'wandersort copy' to put files in it.")
+		fmt.Fprintln(os.Stderr, "Library is empty; 'wandersort copy' fills it.")
 		return nil
 	}
 	if len(rep.Forgotten) > 0 {
-		fmt.Fprintf(os.Stderr, "%s %d files are not in the library any more, so the library no longer records them — 'wandersort add' brings back any copy still at a source:\n",
-			tui.Attn.Render("✗"), len(rep.Forgotten))
+		fmt.Fprintf(os.Stderr, "%s %s gone from the library, now forgotten; 'wandersort add' restores any source copy:\n",
+			tui.Attn.Render("✗"), human.Plural(len(rep.Forgotten), "file", "files"))
 		for _, p := range rep.Forgotten {
 			fmt.Fprintf(os.Stderr, "    %s\n", p)
 		}

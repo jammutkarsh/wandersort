@@ -48,7 +48,7 @@ func (m *Model) mergeSelection() {
 	anchorID := m.rows[m.visualAnchor].node.ID
 	m.visualMode = false
 	if len(sel) < 2 {
-		m.statusMsg, m.statusIsErr = "select at least two folders at the same level to merge", true
+		m.statusMsg, m.statusIsErr = "select two or more folders to merge", true
 		return
 	}
 	// the row [V] was pressed on names the result, whichever way the range

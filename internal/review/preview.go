@@ -169,7 +169,7 @@ func makeRoom(root string, need, free int64) error {
 
 	budget := (free + used) / previewBudgetDivisor
 	if need > budget {
-		return fmt.Errorf("preview needs %d MB, more than the %d MB preview budget (5%% of this disk)",
+		return fmt.Errorf("preview needs %d MB; only %d MB allowed",
 			need/(1024*1024), budget/(1024*1024))
 	}
 

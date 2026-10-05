@@ -293,7 +293,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if _, err := workflow.CheckRoots(path.New(), m.a.Config.OutputDir(), msg.Paths); err != nil {
 			if errors.Is(err, workflow.ErrOverlapsLibrary) {
 				m.pendingScan = &msg
-				err = fmt.Errorf("%w. Or pick another library folder in Settings and the scan starts there", err)
+				err = fmt.Errorf("%w, or another library in Settings", err)
 			}
 			return m, msgCmd(scanReadyMsg{err: err})
 		}
@@ -357,7 +357,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a := m.a
 		return m, m.onLibrary("discard the current plan", func(ctx context.Context) (string, error) {
 			n, err := library.Discard(ctx, a.AppDB, a.Config.OutputDir())
-			return "Discarded the plan: " + human.Plural(n, "file", "files") + " forgotten. Add folders to plan again.", err
+			return "Plan discarded: " + human.Plural(n, "file", "files") + " forgotten.", err
 		})
 
 	case tui.ResetMsg:
@@ -365,9 +365,9 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.onLibrary("reset the library", func(ctx context.Context) (string, error) {
 			err := a.resetLibrary(ctx)
 			if errors.Is(err, library.ErrNothingToReset) {
-				return "Nothing to clear: the library database is already empty.", nil
+				return "Library is already empty.", nil
 			}
-			return "Cleared. Your settings stay; 'wandersort admin db --restore' brings the rest back.", err
+			return "Library reset. 'wandersort admin db --restore' undoes it.", err
 		})
 
 	case libraryEmptiedMsg:
@@ -517,7 +517,7 @@ func (m *shellModel) onLibrary(what string, run func(context.Context) (string, e
 	return func() tea.Msg {
 		release, ok := a.work.holdLibrary()
 		if !ok {
-			return libraryEmptiedMsg{err: fmt.Errorf("WanderSort is still working on this library; %s once it is done", what)}
+			return libraryEmptiedMsg{err: fmt.Errorf("busy with this library; %s when it's done", what)}
 		}
 		defer release()
 		if a.AppDB == nil {
@@ -544,7 +544,7 @@ func (m *shellModel) replan() tea.Cmd {
 		defer a.work.doneOnLibrary()
 		if _, err := a.rebuildTree(ctx); err != nil {
 			// logged as well as shown: a failed re-plan leaves copy with the old settings' plan
-			a.Log.Warn("Could not re-plan the folders for the new settings — 'wandersort copy' would still copy the old plan. Open the settings and save again.",
+			a.Log.Warn("Re-plan failed; copy would use the old plan. Save the settings again.",
 				logger.UserKey, true, "error", err)
 			return replanDoneMsg{err: err}
 		}

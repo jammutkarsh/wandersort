@@ -141,7 +141,7 @@ func (m Model) reset() Model {
 	m.cursor, m.offset = 0, 0
 	m.visualMode = false
 	m.reflow()
-	m.statusMsg, m.statusIsErr = "edits discarded — back to the plan as proposed", false
+	m.statusMsg, m.statusIsErr = "all edits undone", false
 	return m
 }
 
