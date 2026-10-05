@@ -43,23 +43,30 @@ type reviewRow struct {
 	// guide is the drawn tree prefix ("│  ├─ "), precomputed here because a row
 	// can't tell whether it's a last child from its depth alone.
 	guide string
+	// isNew: the copy creates this folder; nothing is at its path in the library yet
+	isNew bool
 }
 
 // flattenTree lays the tree out as rows, top to bottom (guides filled later by
-// buildRows).
-func flattenTree(nodes []vfs.Node, depth int, parent *vfs.Node) []*reviewRow {
+// buildRows). A row is new when library, the folders already copied into,
+// lacks its path; a nil library (unread) marks nothing.
+func flattenTree(nodes []vfs.Node, depth int, parent *vfs.Node, dir string, library map[string]bool) []*reviewRow {
 	var rows []*reviewRow
 	for i := range nodes {
-		rows = append(rows, &reviewRow{node: &nodes[i], parent: parent, depth: depth})
-		rows = append(rows, flattenTree(nodes[i].Children, depth+1, &nodes[i])...)
+		p := nodes[i].Name
+		if dir != "" {
+			p = dir + "/" + p
+		}
+		rows = append(rows, &reviewRow{node: &nodes[i], parent: parent, depth: depth, isNew: library != nil && !library[p]})
+		rows = append(rows, flattenTree(nodes[i].Children, depth+1, &nodes[i], p, library)...)
 	}
 	return rows
 }
 
 // buildRows flattens tree and fills each row's box-drawing guide, which needs
 // every row to exist first.
-func buildRows(tree []vfs.Node) []*reviewRow {
-	rows := flattenTree(tree, 0, nil)
+func buildRows(tree []vfs.Node, library map[string]bool) []*reviewRow {
+	rows := flattenTree(tree, 0, nil, "", library)
 	depths := make([]int, len(rows))
 	for i, r := range rows {
 		depths[i] = r.depth
@@ -104,6 +111,9 @@ type Model struct {
 	statusIsErr bool // rejection, not confirmation: rendered in a warning colour
 	statusUndo  bool // an edit landed: the line offers [u]
 
+	// library is the folders already copied into, by path; rows outside it are new
+	library map[string]bool
+
 	// async preview copy ([p])
 	previewing bool
 	previewErr error
@@ -124,7 +134,15 @@ func newModel(draft *vfs.Draft, ctx context.Context, database *db.DB, resolver *
 		resolver:   resolver,
 		log:        log,
 	}
-	m.rows = buildRows(draft.Tree())
+	// read once: nothing is copied in while this screen is up
+	if database != nil {
+		library, err := vfs.LibraryFolders(ctx, database)
+		if err != nil {
+			log.Warn("could not read the library's folders; new ones aren't marked", "error", err)
+		}
+		m.library = library
+	}
+	m.rows = buildRows(draft.Tree(), m.library)
 	// user_labels only changes when execute applies a plan, never while this
 	// screen is up, so load it once instead of querying per keystroke.
 	m.labels = vfs.Labels(ctx, database, log)
@@ -164,7 +182,7 @@ func (m Model) wrapDim(s string) string {
 
 // reflow rebuilds the row list after a tree edit (rename, merge, drop, undo).
 func (m *Model) reflow() {
-	m.rows = buildRows(m.draft.Tree())
+	m.rows = buildRows(m.draft.Tree(), m.library)
 	m.cursor = min(m.cursor, len(m.rows)-1) // the tree may have shrunk
 }
 

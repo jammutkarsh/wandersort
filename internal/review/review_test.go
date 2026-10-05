@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1613,4 +1614,29 @@ func TestDraft(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A folder is new when nothing in the library has its path; an unread
+// library marks nothing.
+func TestBuildRowsMarksNewFolders(t *testing.T) {
+	tree := []vfs.Node{
+		{ID: 1, Name: "2024", Children: []vfs.Node{
+			{ID: 2, Name: "06_June", Children: []vfs.Node{{ID: 3, Name: "03"}}},
+		}},
+		{ID: 4, Name: "2025"},
+	}
+	library := map[string]bool{"2024": true, "2024/06_June": true}
+	got := map[string]bool{}
+	for _, r := range buildRows(tree, library) {
+		got[r.node.Name] = r.isNew
+	}
+	want := map[string]bool{"2024": false, "06_June": false, "03": true, "2025": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("new = %v, want %v", got, want)
+	}
+	for _, r := range buildRows(tree, nil) {
+		if r.isNew {
+			t.Errorf("%s marked new with the library unread", r.node.Name)
+		}
+	}
 }

@@ -104,6 +104,32 @@ func placedPaths(ctx context.Context, q sqlx.QueryerContext) ([]string, error) {
 	return paths, nil
 }
 
+// LibraryFolders is every library-relative folder ("2024/06_June") that holds a
+// copied file or sits above one: what the review shows as already there.
+func LibraryFolders(ctx context.Context, database *db.DB) (map[string]bool, error) {
+	paths, err := placedPaths(ctx, database.SQL)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, p := range paths {
+		// target paths are "/"-separated on every OS
+		for dir, _ := splitLast(p); dir != "" && !out[dir]; dir, _ = splitLast(dir) {
+			out[dir] = true
+		}
+	}
+	return out, nil
+}
+
+// splitLast cuts p at its last "/": "a/b/c" is "a/b", "c"; "a" is "", "a".
+func splitLast(p string) (dir, last string) {
+	i := strings.LastIndexByte(p, '/')
+	if i < 0 {
+		return "", p
+	}
+	return p[:i], p[i+1:]
+}
+
 // masterColumns is what loadMasters and placedTimes read of a file.
 const masterColumns = `
 	SELECT fr.id, fr.file_dir, fr.file_name, fm.file_hash, fr.media_type, fr.file_extension, fr.file_modified_at,

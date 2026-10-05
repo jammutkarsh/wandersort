@@ -66,7 +66,11 @@ func (m Model) rowView(i int, inRange bool) string {
 		return tui.Selected.Render(tui.Row(cursor+r.guide+r.node.Name, count, m.width))
 	}
 
-	return tui.Row(cursor+tui.FaintTxt.Render(r.guide)+r.node.Name, tui.FaintTxt.Render(count), m.width)
+	name := r.node.Name
+	if r.isNew {
+		name = tui.NewFolder.Render(name)
+	}
+	return tui.Row(cursor+tui.FaintTxt.Render(r.guide)+name, tui.FaintTxt.Render(count), m.width)
 }
 
 // footer is everything below the tree: rename prompt, spinner, or status line
@@ -179,6 +183,10 @@ var reviewKeys = []tui.KeyGroup{
 		{Key: "ctrl+r", What: "discard the current plan: forget every file not yet copied"},
 		{Key: "ctrl+d", What: "reset: empty the library database"},
 		{Key: "esc", What: "done; edits are kept for copy"},
+	}},
+	{Title: "Folders", Keys: []tui.KeyLine{
+		{Key: tui.NewFolder.Render("blue"), What: "new: the copy creates it"},
+		{Key: "white", What: "already in the library"},
 	}},
 	{Title: "Years and months stay fixed.", Keys: nil},
 }

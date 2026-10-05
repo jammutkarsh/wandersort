@@ -18,6 +18,7 @@ var (
 	Subtle    = lipgloss.AdaptiveColor{Light: "#9CA3AF", Dark: "#4B5563"} // dim — borders, pending
 	Fg        = lipgloss.AdaptiveColor{Light: "#111827", Dark: "#E5E7EB"} // primary text
 	Highlight = lipgloss.AdaptiveColor{Light: "#EDE9FE", Dark: "#3B2F63"} // selected-row background
+	Folder    = lipgloss.AdaptiveColor{Light: "#2563EB", Dark: "#60A5FA"} // blue — a folder the copy creates
 	OnPrimary = lipgloss.Color("15")                                      // text on a Primary fill
 )
 
@@ -31,6 +32,9 @@ var (
 	Attn     = lipgloss.NewStyle().Foreground(Warn)
 	Bad      = lipgloss.NewStyle().Foreground(Error).Bold(true)
 	Selected = lipgloss.NewStyle().Background(Highlight).Foreground(Fg)
+	// NewFolder names a folder not yet in the library, blue like a folder
+	// icon on every desktop.
+	NewFolder = lipgloss.NewStyle().Foreground(Folder)
 
 	Box = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

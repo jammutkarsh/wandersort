@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -972,5 +973,25 @@ func TestParallelResolveMatchesSequential(t *testing.T) {
 		if got := parallel[id]; got.TargetPath != want.TargetPath {
 			t.Errorf("file %d: parallel target = %q, sequential = %q", id, got.TargetPath, want.TargetPath)
 		}
+	}
+}
+
+// LibraryFolders is every folder above a copied file, and nothing a pending
+// file alone would create.
+func TestLibraryFolders(t *testing.T) {
+	d := dbtest.New(t)
+	dbtest.SeedFile(t, d, 1, "/src", "a.jpg", 1)
+	dbtest.SeedEntry(t, d, 1, "/src/a.jpg", "2024/06_June/<city>/a.jpg")
+	dbtest.SeedPlaced(t, d, 1)
+	dbtest.SeedFile(t, d, 2, "/src", "b.jpg", 1)
+	dbtest.SeedEntry(t, d, 2, "/src/b.jpg", "2024/07_July/b.jpg")
+
+	got, err := LibraryFolders(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"2024": true, "2024/06_June": true, "2024/06_June/<city>": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("LibraryFolders = %v, want %v", got, want)
 	}
 }
