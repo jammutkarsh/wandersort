@@ -175,9 +175,9 @@ var reviewKeys = []tui.KeyGroup{
 	}},
 	{Title: "Go back", Keys: []tui.KeyLine{
 		{Key: "u", What: "undo; again to keep going back"},
-		{Key: "R", What: "start over from the plan"},
-		{Key: "ctrl+d", What: "discard the plan: forget every file not yet copied"},
-		{Key: "ctrl+r", What: "start over: empty the library database"},
+		{Key: "R", What: "undo every edit"},
+		{Key: "ctrl+d", What: "discard the current plan: forget every file not yet copied"},
+		{Key: "ctrl+r", What: "reset: empty the library database"},
 		{Key: "esc", What: "done; edits are kept for copy"},
 	}},
 	{Title: "Years and months stay fixed.", Keys: nil},

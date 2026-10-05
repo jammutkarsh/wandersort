@@ -170,7 +170,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg, m.statusIsErr = err.Error(), true
 			break
 		}
-		a := tui.StartOverAsk(placed)
+		a := tui.ResetAsk(placed)
 		m.ask = &a
 	case "u":
 		m.undo()

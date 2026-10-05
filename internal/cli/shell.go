@@ -326,14 +326,14 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tui.DiscardPlanMsg:
 		a := m.a
-		return m, m.onLibrary("discard the plan", func(ctx context.Context) (string, error) {
+		return m, m.onLibrary("discard the current plan", func(ctx context.Context) (string, error) {
 			n, err := library.Discard(ctx, a.AppDB, a.Config.OutputDir())
 			return "Discarded the plan: " + human.Plural(n, "file", "files") + " forgotten. Add folders to plan again.", err
 		})
 
-	case tui.StartOverMsg:
+	case tui.ResetMsg:
 		a := m.a
-		return m, m.onLibrary("start over", func(ctx context.Context) (string, error) {
+		return m, m.onLibrary("reset the library", func(ctx context.Context) (string, error) {
 			err := a.resetLibrary(ctx)
 			if errors.Is(err, library.ErrNothingToReset) {
 				return "Nothing to clear: the library database is already empty.", nil
@@ -474,14 +474,14 @@ func (m *shellModel) settingsSaved(before config.Settings) tea.Cmd {
 	return tea.Batch(cmd, m.replan())
 }
 
-// libraryEmptiedMsg reports a discarded plan or a start-over: what to tell
+// libraryEmptiedMsg reports a discarded plan or a reset: what to tell
 // the user, or why it failed.
 type libraryEmptiedMsg struct {
 	note string
 	err  error
 }
 
-// onLibrary runs a discard or a start-over off the UI goroutine, with the
+// onLibrary runs a discard or a reset off the UI goroutine, with the
 // library held from all other work.
 func (m *shellModel) onLibrary(what string, run func(context.Context) (string, error)) tea.Cmd {
 	a, ctx := m.a, m.ctx

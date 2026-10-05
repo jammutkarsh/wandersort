@@ -122,7 +122,7 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	ask := tui.StartOverAsk(placed)
+	ask := tui.ResetAsk(placed)
 	yes, _ := cmd.Flags().GetBool(flagYes)
 	if !yes && !a.confirm(cmd, ask.Title, ask.Detail) {
 		return fmt.Errorf("reset cancelled")

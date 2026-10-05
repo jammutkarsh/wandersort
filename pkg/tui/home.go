@@ -26,13 +26,13 @@ type StartScanMsg struct {
 // folders can be added again from scratch.
 type DiscardPlanMsg struct{}
 
-// StartOverMsg asks the shell to empty the library database, settings kept.
-type StartOverMsg struct{}
+// ResetMsg asks the shell to empty the library database, settings kept.
+type ResetMsg struct{}
 
 // DiscardPlanAsk is the question before a DiscardPlanMsg.
 func DiscardPlanAsk(planned int) Ask {
 	return Ask{
-		Title: fmt.Sprintf("Discard the plan for %s?", human.Plural(planned, "file", "files")),
+		Title: fmt.Sprintf("Discard the current plan for %s?", human.Plural(planned, "file", "files")),
 		Detail: "WanderSort forgets every file not yet copied: what was scanned, the plan and your edits. " +
 			"Files already in the library stay. Adding the folders again reads them from scratch.",
 		Action: "discard",
@@ -40,15 +40,15 @@ func DiscardPlanAsk(planned int) Ask {
 	}
 }
 
-// StartOverAsk is the question before a StartOverMsg, and before
+// ResetAsk is the question before a ResetMsg, and before
 // `admin db --reset`. Placed files stay on disk but untracked, so re-importing
 // a card copies them again: the question says so.
-func StartOverAsk(placed int) Ask {
+func ResetAsk(placed int) Ask {
 	a := Ask{
 		Title:  "Delete everything in the library database?",
 		Detail: "What was scanned, the duplicates found, the plan and your edits. Your settings stay. 'wandersort admin db --restore' brings the rest back until the next transfer or reset.",
 		Action: "delete",
-		Msg:    StartOverMsg{},
+		Msg:    ResetMsg{},
 	}
 	if placed > 0 {
 		a.Title = fmt.Sprintf("Forget the %s already in the library?", human.Plural(placed, "file", "files"))
@@ -120,8 +120,8 @@ var homeKeys = []KeyGroup{
 	{"Planning", []KeyLine{
 		{"enter", "on an empty line: plan the folders listed"},
 		{"ctrl+g", "plan again, re-reading every file"},
-		{"ctrl+d", "discard the plan: forget every file not yet copied"},
-		{"ctrl+r", "start over: empty the library database"},
+		{"ctrl+d", "discard the current plan: forget every file not yet copied"},
+		{"ctrl+r", "reset: empty the library database"},
 	}},
 	{"App", []KeyLine{
 		{"shift+tab", "next tab"},
@@ -206,7 +206,7 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "ctrl+r":
 			if m.lib.Planned > 0 || m.lib.Placed > 0 {
-				a := StartOverAsk(m.lib.Placed)
+				a := ResetAsk(m.lib.Placed)
 				m.ask = &a
 			}
 			return m, nil
@@ -428,10 +428,7 @@ func (m HomeModel) footer() string {
 		hints = append(hints, KeyHint("↑↓", "earlier folders"))
 	}
 	if m.lib.Planned > 0 {
-		hints = append(hints, KeyHint("ctrl+d", "discard plan"))
-	}
-	if m.lib.Planned > 0 || m.lib.Placed > 0 {
-		hints = append(hints, KeyHint("ctrl+r", "start over"))
+		hints = append(hints, KeyHint("ctrl+d", "discard current plan"))
 	}
 	hints = append(hints, MoreKeys())
 	b.WriteString(Footer(strings.Join(hints, "   "), m.w))
