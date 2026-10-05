@@ -132,7 +132,7 @@ func (a *app) runShell(start shellStart) error {
 	m.screens[tabScan] = a.newHomeScreen(nil)
 	m.lib = a.readState(ctx)
 
-	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
+	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr), tea.WithReportFocus())
 	// started once for the whole session; nothing else shows until it is done
 	a.Deps = a.newDeps(
 		func(p install.Progress) {
@@ -252,6 +252,12 @@ func (m shellModel) startCmd() tea.Cmd {
 }
 
 func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// The renderer rewrites only the lines it thinks changed, so a row the
+	// terminal dropped while hidden (another tab in front) stays blank. Coming
+	// back repaints everything at the size the window has now.
+	if _, ok := msg.(tea.FocusMsg); ok {
+		return m, tea.Batch(tea.ClearScreen, tea.WindowSize())
+	}
 	if m.gate != nil {
 		return m.updateGate(msg)
 	}
