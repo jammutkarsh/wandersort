@@ -622,3 +622,40 @@ func TestMergeNodesAcrossYearEnd(t *testing.T) {
 		t.Errorf("merged bounds %+v admit December 2nd, a day it never held", merged.Bounds)
 	}
 }
+
+// A day merged into a run crossing a year end names the whole span, whichever
+// folder the selection started on.
+func TestMergeNodesNamesTheWholeSpan(t *testing.T) {
+	day := func(y, m, d int) Constraint { return Constraint{Year: []int{y}, Month: []int{m}, Date: []int{d}} }
+	tree := func() []Node {
+		jan := Constraint{Year: []int{2026}, Month: []int{1}, Date: []int{1, 2}}
+		return []Node{{ID: pid("2025"), Name: "2025", Level: LevelYear, Bounds: Bounds{{Year: []int{2025}}, jan}, Children: []Node{
+			{ID: pid("2025/12"), Name: "12_December", Level: LevelMonth, Bounds: Bounds{{Month: []int{12}}, jan}, Children: []Node{
+				{ID: pid("2025/12/28"), Name: "28", Level: RuleDate, FileCount: 1, Bounds: Bounds{{Date: []int{28}}}},
+				{ID: pid("2025/12/run"), Name: "Dec_30-Jan_02", Level: RuleDate, FileCount: 1, Bounds: Bounds{{Date: []int{30, 31}}, day(2026, 1, 1), day(2026, 1, 2)}},
+				{ID: pid("2025/12/03"), Name: "03", Level: RuleDate, FileCount: 1, Bounds: Bounds{{Date: []int{3}}}},
+				{ID: pid("2025/12/05"), Name: "05", Level: RuleDate, FileCount: 1, Bounds: Bounds{{Date: []int{5}}}},
+			}},
+		}}}
+	}
+	tests := []struct {
+		name string
+		ids  []int64
+		want string
+	}{
+		{"from the day", pids("2025/12/28", "2025/12/run"), "Dec_28-Jan_02"},
+		{"from the run", pids("2025/12/run", "2025/12/28"), "Dec_28-Jan_02"},
+		{"days of one month", pids("2025/12/05", "2025/12/03"), "03_05"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, name, _, err := mergeNodes(tree(), tt.ids)
+			if err != nil {
+				t.Fatalf("mergeNodes: %v", err)
+			}
+			if name != tt.want {
+				t.Errorf("name = %q, want %q", name, tt.want)
+			}
+		})
+	}
+}

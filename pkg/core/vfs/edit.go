@@ -408,39 +408,70 @@ func combinedDayRange(picks []mergePick) (lo, hi int, ok bool) {
 	return lo, hi, true
 }
 
-// crossMonth, for day folders in more than one month folder, is the earliest
-// one's month, the days they span, and each pick's bounds ANDed with its
-// ancestors'. ok is false for any other selection, or days it can't date.
-func crossMonth(tree []Node, picks []mergePick) (month *Node, first, last time.Time, bounds []Bounds, ok bool) {
-	months := map[int64]bool{}
-	for _, p := range picks {
-		if p.value.Level != RuleDate || p.parent == nil || p.parent.Level != LevelMonth {
-			return nil, first, last, nil, false
-		}
-		months[p.parent.ID] = true
+// chainBounds is p's bounds ANDed with its ancestors': its full range.
+func chainBounds(tree []Node, p mergePick) Bounds {
+	b := p.value.Bounds
+	chain := chainTo(tree, p.id)
+	for _, a := range chain[:len(chain)-1] {
+		b = b.Intersect(FindNode(tree, a).Bounds)
 	}
-	if len(months) < 2 {
-		return nil, first, last, nil, false
+	return b
+}
+
+// mergedDayName names merged day folders after the days they span together
+// ("01_03", "Dec_28-Jan_02"); ok is false when any pick has a typed name or
+// days it can't date.
+func mergedDayName(tree []Node, picks []mergePick) (string, bool) {
+	if !allDateNames(picks) {
+		return "", false
 	}
-	bounds = make([]Bounds, len(picks))
+	var first, last time.Time
 	for i, p := range picks {
-		bounds[i] = p.value.Bounds
-		chain := chainTo(tree, p.id)
-		for _, a := range chain[:len(chain)-1] {
-			bounds[i] = bounds[i].Intersect(FindNode(tree, a).Bounds)
-		}
-		lo, hi, dated := dateSpan(bounds[i])
+		lo, hi, dated := dateSpan(chainBounds(tree, p))
 		if !dated {
-			return nil, first, last, nil, false
+			// no dated bounds: plain day names in one month still give the span
+			if lo, hi, ok := combinedDayRange(picks); ok {
+				return formatDayRange(lo, hi), true
+			}
+			return "", false
 		}
 		if i == 0 || lo.Before(first) {
-			first, month = lo, p.parent
+			first = lo
 		}
 		if i == 0 || hi.After(last) {
 			last = hi
 		}
 	}
-	return month, first, last, bounds, true
+	return dayRange(first, last), true
+}
+
+// crossMonth, for day folders in more than one month folder, is the earliest
+// one's month and each pick's full range. ok is false for any other
+// selection, or days it can't date.
+func crossMonth(tree []Node, picks []mergePick) (month *Node, bounds []Bounds, ok bool) {
+	months := map[int64]bool{}
+	for _, p := range picks {
+		if p.value.Level != RuleDate || p.parent == nil || p.parent.Level != LevelMonth {
+			return nil, nil, false
+		}
+		months[p.parent.ID] = true
+	}
+	if len(months) < 2 {
+		return nil, nil, false
+	}
+	var first time.Time
+	bounds = make([]Bounds, len(picks))
+	for i, p := range picks {
+		bounds[i] = chainBounds(tree, p)
+		lo, _, dated := dateSpan(bounds[i])
+		if !dated {
+			return nil, nil, false
+		}
+		if i == 0 || lo.Before(first) {
+			first, month = lo, p.parent
+		}
+	}
+	return month, bounds, true
 }
 
 // dateSpan is the first and last date b admits; ok is false unless every
@@ -489,8 +520,9 @@ type mergePick struct {
 }
 
 // mergeNodes folds every node in ids into one, under their lowest common
-// ancestor (day folders in different months: under the earliest's month). Returns the surviving node's ID, its name, and the
-// ancestor's name for the caller's status line.
+// ancestor (day folders in different months: under the earliest's month).
+// Returns the surviving node's ID, its name, and the ancestor's name for the
+// caller's status line.
 func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name, ancestorName string, err error) {
 	// no id is an ancestor of another: the TUI selects one depth only
 	if len(ids) < 2 {
@@ -509,9 +541,16 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 		picks = append(picks, mergePick{id: id, parent: parentOf(tree, id), value: *n})
 	}
 
+	// the first id's own name (already the reviewer's rename, if any), unless
+	// every pick is a day folder: then the days they span. Read before any
+	// bounds change.
+	target := picks[0].value.Name
+	if name, ok := mergedDayName(tree, picks); ok {
+		target = name
+	}
+
 	var dest *Node
-	var target string
-	if month, first, last, bounds, ok := crossMonth(tree, picks); ok {
+	if month, bounds, ok := crossMonth(tree, picks); ok {
 		// Day folders in different months: the merged folder joins the
 		// earliest one's month, as a day run crossing a month end does in the
 		// plan. Each pick carries its whole chain's bounds (full dates, which
@@ -529,10 +568,6 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 			picks[i].value.Bounds = bounds[i]
 			picks[i].value.Children = cloneTree(picks[i].value.Children)
 			pushDown(&picks[i].value)
-		}
-		target = picks[0].value.Name
-		if allDateNames(picks) {
-			target = dayRange(first, last)
 		}
 	} else {
 		// the picks' lowest common ancestor, found by walking the tree
@@ -561,14 +596,6 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 			}
 			picks[i].value.Children = cloneTree(picks[i].value.Children)
 			pushDown(&picks[i].value)
-		}
-
-		// the first id's own name (already the reviewer's rename, if any)
-		target = picks[0].value.Name
-
-		// unless every pick is a plain Date folder: then the day range they span
-		if lo, hi, ok := combinedDayRange(picks); ok {
-			target = formatDayRange(lo, hi)
 		}
 	}
 
