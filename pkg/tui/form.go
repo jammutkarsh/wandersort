@@ -979,9 +979,15 @@ func (m ConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m ConfirmModel) View() string {
-	title := Title.Render(m.Title)
+	// wrapped at a form's body width, inside the padding, so a long
+	// explanation folds instead of running off the edge
+	w := formBodyMaxW
+	if m.w > 0 {
+		w = min(w, m.w-2)
+	}
+	title := Title.Width(w).Render(m.Title)
 	if m.Description != "" {
-		title += "\n\n" + DimText.Render(m.Description)
+		title += "\n\n" + DimText.Width(w).Render(m.Description)
 	}
 
 	yes, no := m.yesLabel(), m.noLabel()

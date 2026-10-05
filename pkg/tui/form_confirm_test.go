@@ -191,3 +191,20 @@ func TestFormMovePrevAtFirstFieldIsNoop(t *testing.T) {
 		t.Errorf("movePrev at field 0 must stay put, got Current=%d", m.Current)
 	}
 }
+
+// A long explanation folds at a form's body width instead of running off the
+// edge, on a wide terminal and a narrow one.
+func TestConfirmModelWrapsLongDetail(t *testing.T) {
+	a := ResetAsk(3)
+	for _, width := range []int{200, 60} {
+		v := ansi.Strip(a.View(width, 30))
+		for _, line := range strings.Split(v, "\n") {
+			if got := ansi.StringWidth(strings.TrimRight(line, " ")); got > min(formBodyMaxW+2, width) {
+				t.Errorf("width %d: line is %d cells wide: %q", width, got, line)
+			}
+		}
+		if flat := strings.Join(strings.Fields(v), " "); !strings.Contains(flat, "until the next transfer or reset.") {
+			t.Errorf("width %d: the end of the explanation is missing:\n%s", width, v)
+		}
+	}
+}
