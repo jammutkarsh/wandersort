@@ -951,7 +951,9 @@ func (m ConfirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
-		case "y", "enter":
+		case "enter": // whichever side is highlighted
+			return m, tea.Quit
+		case "y":
 			if m.Value != nil {
 				*m.Value = true
 			}
@@ -1002,25 +1004,34 @@ func (m ConfirmModel) View() string {
 	body := lipgloss.NewStyle().Padding(1).Render(content)
 	keys := m.Keys
 	if keys == "" {
-		keys = fmt.Sprintf("%s / %s", KeyHint("y", yes), KeyHint("n", no))
+		// esc answers no too, unlisted
+		keys = KeyHint("←→", "choose") + "   " + KeyHint("enter", "confirm")
 	}
 	return Screen(body, Footer(keys, m.w), m.h)
 }
 
-// Ask is a full-screen yes/no before something hard to undo: enter sends Msg,
-// esc cancels.
+// Ask is a full-screen yes/no before something hard to undo: ←/→ move the
+// highlight, which starts on no; enter takes it, sending Msg on yes; esc is no.
 type Ask struct {
 	Title, Detail string
-	Action        string // what enter does, for the footer
+	Action        string // the yes button's label
 	Msg           tea.Msg
+	yes           bool // the highlighted answer
 }
 
 // Key answers k: done reports whether the ask is over, cmd what it sends.
-func (a Ask) Key(k tea.KeyMsg) (done bool, cmd tea.Cmd) {
+func (a *Ask) Key(k tea.KeyMsg) (done bool, cmd tea.Cmd) {
 	switch k.String() {
 	case "ctrl+c":
 		return true, Left(Leave{Quit: true})
+	case "left":
+		a.yes = true
+	case "right":
+		a.yes = false
 	case "enter":
+		if !a.yes {
+			return true, nil
+		}
 		msg := a.Msg
 		return true, func() tea.Msg { return msg }
 	case "esc":
@@ -1030,9 +1041,9 @@ func (a Ask) Key(k tea.KeyMsg) (done bool, cmd tea.Cmd) {
 }
 
 func (a Ask) View(w, h int) string {
-	yes := true
+	yes := a.yes
 	cm := NewConfirmModel(a.Title, a.Detail, &yes)
-	cm.Keys = fmt.Sprintf("%s / %s", KeyHint("enter", a.Action), KeyHint("esc", "cancel"))
+	cm.YesLabel, cm.NoLabel = a.Action, "cancel"
 	cm.w, cm.h = w, h
 	return cm.View()
 }

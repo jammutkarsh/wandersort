@@ -18,7 +18,6 @@ func TestConfirmModelYesNoKeys(t *testing.T) {
 		want bool
 	}{
 		{"y", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}, true},
-		{"enter", tea.KeyMsg{Type: tea.KeyEnter}, true},
 		{"n", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}, false},
 		{"escape", tea.KeyMsg{Type: tea.KeyEsc}, false},
 		{"left", tea.KeyMsg{Type: tea.KeyLeft}, true},
@@ -206,5 +205,53 @@ func TestConfirmModelWrapsLongDetail(t *testing.T) {
 		if flat := strings.Join(strings.Fields(v), " "); !strings.Contains(flat, "until the next copy or reset.") {
 			t.Errorf("width %d: the end of the explanation is missing:\n%s", width, v)
 		}
+	}
+}
+
+// Enter takes whichever answer is highlighted, never a fixed one.
+func TestConfirmModelEnterKeepsTheHighlight(t *testing.T) {
+	for _, start := range []bool{true, false} {
+		v := start
+		m := NewConfirmModel("Proceed?", "", &v)
+		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if v != start {
+			t.Errorf("enter on %v answered %v", start, v)
+		}
+	}
+}
+
+// An Ask starts on no: enter alone sends nothing, ← then enter sends its
+// message, and esc is no whatever is highlighted.
+func TestAskArrowsAndEnter(t *testing.T) {
+	press := func(a *Ask, keys ...tea.KeyType) (bool, tea.Cmd) {
+		var done bool
+		var cmd tea.Cmd
+		for _, k := range keys {
+			done, cmd = a.Key(tea.KeyMsg{Type: k})
+		}
+		return done, cmd
+	}
+	tests := []struct {
+		name string
+		keys []tea.KeyType
+		sent bool
+	}{
+		{"enter on the default", []tea.KeyType{tea.KeyEnter}, false},
+		{"left then enter", []tea.KeyType{tea.KeyLeft, tea.KeyEnter}, true},
+		{"left, right, enter", []tea.KeyType{tea.KeyLeft, tea.KeyRight, tea.KeyEnter}, false},
+		{"left then esc", []tea.KeyType{tea.KeyLeft, tea.KeyEsc}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := DiscardPlanAsk(3)
+			done, cmd := press(&a, tt.keys...)
+			if !done {
+				t.Fatal("the ask should be over")
+			}
+			sent := cmd != nil && cmd() == DiscardPlanMsg{}
+			if sent != tt.sent {
+				t.Errorf("sent = %v, want %v", sent, tt.sent)
+			}
+		})
 	}
 }
