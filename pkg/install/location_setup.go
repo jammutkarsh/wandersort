@@ -36,8 +36,8 @@ const (
 
 // locationMeta is LocationMetaFileName's shape.
 type locationMeta struct {
-	Hash string         `json:"sha256"`
 	Rows map[string]int `json:"rows"`
+	Hash string         `json:"sha256"`
 }
 
 // downloadLocationDB fetches the location database and its metadata if

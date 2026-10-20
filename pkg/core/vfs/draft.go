@@ -33,12 +33,12 @@ const (
 // Edit is one review edit. Rename names one Node (From is informational).
 // Merge, drop and flatten list Nodes; merge lists its survivor first.
 type Edit struct {
-	Seq   int     `json:"seq"`
 	Op    string  `json:"op"`
-	Node  int64   `json:"node,omitzero"`
-	Nodes []int64 `json:"nodes,omitempty"`
 	From  string  `json:"from,omitempty"`
 	To    string  `json:"to,omitempty"`
+	Nodes []int64 `json:"nodes,omitempty"`
+	Seq   int     `json:"seq"`
+	Node  int64   `json:"node,omitzero"`
 }
 
 func draftPath(outputDir string) string { return filepath.Join(outputDir, DraftFileName) }
@@ -183,10 +183,10 @@ func (d *Draft) Edits() []Edit { return slices.Clone(d.edits) }
 
 // Outcome is what an applied edit did, for the reviewer's status line.
 type Outcome struct {
-	Focus    int64    // the folder the edit leaves in view: the renamed one, the merge's survivor
 	Name     string   // rename: the new name; merge: the survivor's name
 	Parent   string   // merge: the common folder the survivor now sits under
 	Names    []string // drop, flatten: the folders acted on, in order
+	Focus    int64    // the folder the edit leaves in view: the renamed one, the merge's survivor
 	Absorbed int      // flatten: subfolders folded in
 }
 

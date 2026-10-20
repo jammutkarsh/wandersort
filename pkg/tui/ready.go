@@ -20,10 +20,10 @@ type InstallProgressMsg struct {
 // RetryMsg says a try failed; the screen closes Go to retry, after Wait or at once on enter.
 type RetryMsg struct {
 	Failed map[string]string // why each dependency that failed did, by phase
-	Next   int               // the try about to run
-	Tries  int               // tries allowed in all
-	Wait   time.Duration     // how long before the next try starts on its own
 	Go     chan<- struct{}
+	Next   int           // the try about to run
+	Tries  int           // tries allowed in all
+	Wait   time.Duration // how long before the next try starts on its own
 }
 
 // DepsFailedMsg says the last try failed; the app ends on the next key.
@@ -41,27 +41,27 @@ type ReadyItem struct {
 type retryTickMsg struct{ gen int }
 
 type readyRow struct {
+	start time.Time
 	ReadyItem
-	start       time.Time
+	failed      string // why the last try failed; empty while checking
 	done, total int64
 	ready       bool
-	failed      string // why the last try failed; empty while checking
 }
 
 // ReadyModel is a session's first screen: the dependencies, their downloads, and a wait between tries.
 type ReadyModel struct {
-	rows []readyRow
-	sb   spinnerBar
-	w, h int
-
 	// waiting holds the retry gate while a failed try counts down
 	waiting   chan<- struct{}
-	next      int
-	tries     int
-	left      time.Duration
-	gen       int
-	gaveUp    bool
 	gaveUpMsg DepsFailedMsg
+	rows      []readyRow
+	sb        spinnerBar
+	w, h      int
+
+	next   int
+	tries  int
+	left   time.Duration
+	gen    int
+	gaveUp bool
 }
 
 func NewReadyModel(items ...ReadyItem) ReadyModel {

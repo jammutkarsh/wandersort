@@ -23,10 +23,10 @@ const (
 // File is one process's log. Records stay in memory until Persist (on opening
 // a library, or the first warning); a run that never persists leaves no file.
 type File struct {
-	mu     sync.Mutex
+	f      *os.File
 	dir    string
 	buf    bytes.Buffer
-	f      *os.File
+	mu     sync.Mutex
 	failed bool
 }
 

@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"os"
 	"path/filepath"
@@ -179,9 +180,9 @@ func TestReplaySkipsMissingNodes(t *testing.T) {
 	}
 }
 
-// A draft written before the move to json/v2 is read the same, and a merge,
-// which names no single node, still doesn't write a "node" key.
-func TestDraftReadsLinesWrittenByEncodingJSONv1(t *testing.T) {
+// A draft line is read whatever its key order, and a rewrite keeps every
+// line's keys and values, a merge still without a "node" key.
+func TestDraftRewriteKeepsKeysAndValues(t *testing.T) {
 	dir := t.TempDir()
 	v1 := `{"seq":1,"op":"rename","node":17,"from":"Panji","to":"Goa Trip"}` + "\n" +
 		`{"seq":2,"op":"merge","nodes":[4,5]}` + "\n"
@@ -206,8 +207,21 @@ func TestDraftReadsLinesWrittenByEncodingJSONv1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != v1 {
-		t.Errorf("rewritten draft =\n%s\nwant it byte-identical to\n%s", got, v1)
+	gotLines, wantLines := strings.Split(strings.TrimSpace(string(got)), "\n"), strings.Split(strings.TrimSpace(v1), "\n")
+	if len(gotLines) != len(wantLines) {
+		t.Fatalf("rewritten draft =\n%s\nwant\n%s", got, v1)
+	}
+	for i := range wantLines {
+		var gotKeys, wantKeys map[string]any
+		if err := json.Unmarshal([]byte(gotLines[i]), &gotKeys); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(wantLines[i]), &wantKeys); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(gotKeys, wantKeys) {
+			t.Errorf("line %d = %s, want %s", i+1, gotLines[i], wantLines[i])
+		}
 	}
 }
 

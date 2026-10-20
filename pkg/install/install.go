@@ -47,18 +47,18 @@ type RetryFunc func(ctx context.Context, next int, err error) error
 
 // Options configures a Coordinator; any field may be nil, and a nil BeforeRetry logs and waits RetryDelay.
 type Options struct {
+	Log logger.Logger
+
+	OnProgress     func(Progress)
+	BeforeRetry    RetryFunc
 	ExecutablePath string // directory exiftool installs into
 	LocationDBPath string // path to the location database file
-	Log            logger.Logger
-
-	OnProgress  func(Progress)
-	BeforeRetry RetryFunc
 }
 
 // DependencyError is a failed install of one dependency.
 type DependencyError struct {
-	Phase string
 	Err   error
+	Phase string
 }
 
 func (e *DependencyError) Error() string { return e.Phase + ": " + e.Err.Error() }
@@ -103,18 +103,18 @@ func (e *DependencyError) Reason() string {
 // Coordinator installs exiftool and the location database under one install
 // lock and hands out readiness through blocking getters. Construct with New.
 type Coordinator struct {
-	opts    Options
-	started sync.Once   // Start closes the ready channels once
-	running atomic.Bool // set once Start has run; Close waits only then
-
-	exifPath  string
+	opts      Options
 	exifErr   error
+	locErr    error
 	exifReady chan struct{}
 
 	resolver   *location.Resolver
 	locationDB *db.ReadOnly
-	locErr     error
 	locReady   chan struct{}
+
+	exifPath string
+	started  sync.Once   // Start closes the ready channels once
+	running  atomic.Bool // set once Start has run; Close waits only then
 }
 
 // New returns a Coordinator ready for Start.
@@ -455,9 +455,9 @@ func openZstd(path string) (io.Reader, func(), error) {
 // progressReader reports cumulative bytes read to onProgress as they flow.
 type progressReader struct {
 	r          io.Reader
+	onProgress func(done, total int64)
 	total      int64
 	done       int64
-	onProgress func(done, total int64)
 }
 
 func (p *progressReader) Read(b []byte) (int, error) {

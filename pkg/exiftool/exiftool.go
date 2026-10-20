@@ -61,14 +61,15 @@ var exiftoolTags = []string{
 // Extractor talks to a single long-lived exiftool process running in
 // -stay_open mode, avoiding the per-file Perl startup cost.
 type Extractor struct {
-	cmd   *exec.Cmd
 	stdin io.WriteCloser
 
-	mu     sync.Mutex    // serializes access: exiftool handles one batch at a time
+	cmd    *exec.Cmd
 	reader *bufio.Reader // reads stdout up to the {ready} sentinel
-	dead   bool          // killed or broken; the pool replaces it before reuse
 
 	timeout time.Duration // per-file bound; see extractTimeout
+
+	mu   sync.Mutex // serializes access: exiftool handles one batch at a time
+	dead bool       // killed or broken; the pool replaces it before reuse
 }
 
 // New starts one exiftool -stay_open process.

@@ -13,26 +13,26 @@ import (
 
 // StageList is the stage stack every pipeline screen shares: status, elapsed time, and the running stage's bar.
 type StageList struct {
-	stages    []*Stage
 	idx       map[string]int
-	sb        spinnerBar
 	fmtCounts func(cur, total int) string // counts next to the bar; nil = "cur/total"
+	stages    []*Stage
+	sb        spinnerBar
 }
 
 // Stage is one row in a StageList. Key must match the logger.PhaseKey value
 // the pipeline emits for it.
 type Stage struct {
-	Key    string
-	Name   string
-	HasBar bool
-
-	state stageState
-	label string // running message, or the done summary
 	start time.Time
+	Key   string
+	Name  string
+	label string // running message, or the done summary
 	dur   string // frozen elapsed once done/failed
-	cur   int
-	total int
 	tail  string // the item being worked on
+
+	state  stageState
+	cur    int
+	total  int
+	HasBar bool
 }
 
 type stageState int

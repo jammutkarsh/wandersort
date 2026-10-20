@@ -101,8 +101,8 @@ func moduleRelative(file string) string {
 
 // chainLink is one layer of the unwrapped error.
 type chainLink struct {
-	Layer int    `json:"layer"`
 	Error string `json:"error"`
+	Layer int    `json:"layer"`
 }
 
 // syscallInfo is present in the detail only when the error carries an errno.
@@ -113,10 +113,10 @@ type syscallInfo struct {
 
 // ErrorDetail is what error.detail stores, every part a named field.
 type ErrorDetail struct {
+	Syscall *syscallInfo `json:"syscall,omitempty"`
 	Message string       `json:"message"`
 	Chain   []chainLink  `json:"chain"`
 	Frames  []Frame      `json:"frames"`
-	Syscall *syscallInfo `json:"syscall,omitempty"`
 }
 
 // errnoNames names the errnos the pipeline can meet. Any other is shown by

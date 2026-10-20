@@ -45,21 +45,21 @@ type Options struct {
 type File struct {
 	MediaType   string `json:"media_type"`
 	Extension   string `json:"extension"`
-	Size        int64  `json:"size"`
 	VolumeClass string `json:"volume_class"`
+	Size        int64  `json:"size"`
 }
 
 // Row is one exported error: the columns as named fields, the detail nested
 // under its own key, every path replaced.
 type Row struct {
+	Detail      db.ErrorDetail `json:"detail"`
+	File        File           `json:"file"`
 	Stage       string         `json:"stage"`
 	Op          string         `json:"op"`
 	Kind        string         `json:"kind"`
-	Attempts    int            `json:"attempts"`
 	FirstSeenAt string         `json:"first_seen_at"`
 	LastSeenAt  string         `json:"last_seen_at"`
-	File        File           `json:"file"`
-	Detail      db.ErrorDetail `json:"detail"`
+	Attempts    int            `json:"attempts"`
 }
 
 // Querier is the read side of a database handle.

@@ -31,11 +31,11 @@ const (
 
 // Options controls one Run.
 type Options struct {
+	// OnProgress reports after each file is checked.
+	OnProgress func(path string, done, total int)
 	// Full re-reads every placed file and compares its hash. Without it, only
 	// existence and size are checked (one stat per file).
 	Full bool
-	// OnProgress reports after each file is checked.
-	OnProgress func(path string, done, total int)
 }
 
 // Problem is one file that is not what the database says it is.
@@ -49,21 +49,21 @@ type Problem struct {
 
 // Report is what a Run found.
 type Report struct {
-	// Checked is the number of placed files looked at; Bytes their total size.
-	Checked int
-	Bytes   int64
+	// DatabaseDamage is SQLite's first finding against the file holding the
+	// plan; "" when integrity_check found nothing wrong.
+	DatabaseDamage string
 	// Problems is every file that is still there but not what was recorded,
 	// in the order they were checked.
 	Problems []Problem
 	// Forgotten is every placed file gone from the library (library-relative
 	// paths). Its records are deleted, so a copy at a source is planned again.
 	Forgotten []string
-	// DatabaseDamage is SQLite's first finding against the file holding the
-	// plan; "" when integrity_check found nothing wrong.
-	DatabaseDamage string
 	// Strays are leftover .copy-* temp files from a crashed transfer. Reported,
 	// never deleted.
 	Strays []string
+	// Checked is the number of placed files looked at; Bytes their total size.
+	Checked int
+	Bytes   int64
 }
 
 // Sound reports whether the library is entirely as recorded — forgotten files

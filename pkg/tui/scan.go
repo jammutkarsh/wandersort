@@ -30,8 +30,6 @@ type OpenCopyMsg struct{}
 
 // ScanConfig wires the scan screen to the pipeline.
 type ScanConfig struct {
-	// Paths are the folders being planned, for the heading.
-	Paths []string
 	// Pipeline runs the scan (RunScan) and blocks until it finishes. Its
 	// user-facing/stream log lines must reach the screen via LogEventMsg.
 	Pipeline func() error
@@ -40,33 +38,37 @@ type ScanConfig struct {
 	// ReviewNext builds the review screen once the plan is written; it is
 	// handed to the shell, and opened when the user picks it.
 	ReviewNext func() (Tab, error)
+	// Paths are the folders being planned, for the heading.
+	Paths []string
 }
 
 // ScanModel plans folders: a stage per pipeline phase while it runs, then what to do next.
 type ScanModel struct {
-	cfg  ScanConfig
-	sl   StageList
-	w, h int
+	sl  StageList
+	cfg ScanConfig
+	err error // why the run failed
 
-	// warnings are the user-facing ones, shown once the run ends; logWarnings
-	// counts the rest, which only the log has in full
-	warnings    []string
-	logWarnings int
+	// review is prefetched once the vfs phase flushes; reviewErr is why it
+	// could not be built; wantReview is a pick of choice 1 waiting on it
+	review    Tab
+	reviewErr error
 
 	// cur is the stage key of the running phase, so a stream line's counts
 	// drive that phase's own bar — the stream carries no PhaseKey of its own
 	cur string
 
-	state scanState
-	err   error // why the run failed
+	// warnings are the user-facing ones, shown once the run ends; logWarnings
+	// counts the rest, which only the log has in full
+	warnings []string
+	w, h     int
 
-	// review is prefetched once the vfs phase flushes; reviewErr is why it
-	// could not be built; wantReview is a pick of choice 1 waiting on it
-	review     Tab
-	reviewErr  error
+	logWarnings int
+
+	state scanState
+
+	choice     int
 	wantReview bool
 
-	choice   int
 	showKeys bool
 }
 

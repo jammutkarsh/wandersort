@@ -53,17 +53,18 @@ func layoutLabel(rules []string) string {
 
 // settingsForm is one edit of a library's settings, built fresh so leaving without saving changes nothing.
 type settingsForm struct {
-	a        *app
 	ctx      context.Context
+	a        *app
 	geonames func() (*location.Resolver, error)
 	paths    *path.Resolver
 
+	rulesField *tui.Field
+	ex         *settingsExamples
+
 	out                           string
 	layout                        string
-	rulesField                    *tui.Field
-	collapse, dateOnly, mergeDays bool
 	home, work                    string
-	ex                            *settingsExamples
+	collapse, dateOnly, mergeDays bool
 }
 
 func (a *app) newSettingsForm(ctx context.Context, geonames func() (*location.Resolver, error)) *settingsForm {

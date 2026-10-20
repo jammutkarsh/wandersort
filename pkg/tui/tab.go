@@ -14,14 +14,14 @@ type Tab interface {
 // Leave is the only way a hosted screen hands control back. Screens never
 // return tea.Quit: that would end every other tab too.
 type Leave struct {
+	// Err is why the screen ended, when it ended badly.
+	Err error
 	// Quit asks to end the session rather than go home; the container may
 	// still let a running scan ask first.
 	Quit bool
 	// Aborted marks a screen left without its work being kept, so the
 	// container knows not to act on an answer that was never given.
 	Aborted bool
-	// Err is why the screen ended, when it ended badly.
-	Err error
 }
 
 // Left is the command form of Leave, for a screen to return from Update.

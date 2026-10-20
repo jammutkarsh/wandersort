@@ -168,9 +168,9 @@ var candidateQuery = `
 // nameCounts is what disambiguate needs about one city name: how many geonames
 // rows carry it, how many countries those span, and how many sit in each.
 type nameCounts struct {
+	inCountry map[string]int
 	total     int
 	countries int
-	inCountry map[string]int
 }
 
 // countNames answers those three questions for a few city names in one indexed

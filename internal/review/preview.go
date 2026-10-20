@@ -34,8 +34,8 @@ const (
 /* --- preview: copy up to maxPreviewBytes of a folder's files to a temp dir and open it --- */
 
 type previewDoneMsg struct {
-	dir string
 	err error
+	dir string
 }
 
 // PreviewRoot is where every peek copy lives, under the system temp folder

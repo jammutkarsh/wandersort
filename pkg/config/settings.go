@@ -17,16 +17,16 @@ import (
 // database, so a library keeps the rules it was organized under. Stored as one
 // JSON value: a new setting is a field here plus its default.
 type Settings struct {
+	// HomeTown and WorkTown are the user's everyday places as saved ("" =
+	// none); both are anchored the same way.
+	HomeTown string `json:"homeTown"`
+	WorkTown string `json:"workTown"`
 	// Rules are the ordered folder levels below Year/Month; empty keeps the
 	// default pair. See vfs.Rule* for the names.
 	Rules                 []string `json:"rules"`
 	CollapseLevels        bool     `json:"collapseLevels"`
 	SavedPlacesDateOnly   bool     `json:"savedPlacesDateOnly"`
 	MergeSameLocationDays bool     `json:"mergeSameLocationDays"`
-	// HomeTown and WorkTown are the user's everyday places as saved ("" =
-	// none); both are anchored the same way.
-	HomeTown string `json:"homeTown"`
-	WorkTown string `json:"workTown"`
 }
 
 // DefaultSettings is what a brand-new library starts from.

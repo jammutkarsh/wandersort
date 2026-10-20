@@ -13,20 +13,21 @@ import (
 // Edits are read without opening anything; Open and Planned stay zero until
 // this session opens the library (which takes the lock and may create it).
 type libraryState struct {
-	// Exists is "the output folder already holds a library". Known from a
-	// stat, without opening anything.
-	Exists bool
 	// Edits is how many review edits wait in the draft for execute. An
 	// unreadable draft counts as one, so the user still hears about it.
 	Edits int
 
-	// Open is whether this session has the library open; the fields below are
-	// zero until it does.
-	Open bool
 	// Planned is how many files are proposed and not yet placed.
 	Planned int
 	// Placed is how many files are in the library.
 	Placed int
+	// Exists is "the output folder already holds a library". Known from a
+	// stat, without opening anything.
+	Exists bool
+
+	// Open is whether this session has the library open; the fields below are
+	// zero until it does.
+	Open bool
 }
 
 // CanReview reports whether there is a plan worth reviewing: "probably" while

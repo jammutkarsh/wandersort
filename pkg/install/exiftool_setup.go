@@ -37,8 +37,8 @@ const (
 //
 //	{"version":"13.59","updated":"...","files":{"darwin":{"name":"exiftool-13.59-darwin.tar.zst","sha256":"...","size":123}}}
 type releaseMeta struct {
-	Version string                     `json:"version"`
 	Files   map[string]releaseMetaFile `json:"files"`
+	Version string                     `json:"version"`
 }
 
 type releaseMetaFile struct {

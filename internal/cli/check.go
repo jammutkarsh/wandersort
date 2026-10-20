@@ -52,12 +52,12 @@ type checkProblem struct {
 // checkResult is check's --json result.
 type checkResult struct {
 	jsonOutcome
-	Checked        int            `json:"checked"`
-	Full           bool           `json:"full"`
+	DatabaseDamage string         `json:"databaseDamage,omitempty"`
 	Problems       []checkProblem `json:"problems"`
 	Forgotten      []string       `json:"forgotten"`
 	Strays         []string       `json:"strays"`
-	DatabaseDamage string         `json:"databaseDamage,omitempty"`
+	Checked        int            `json:"checked"`
+	Full           bool           `json:"full"`
 }
 
 func (a *app) runCheck(cmd *cobra.Command) error {
@@ -155,8 +155,8 @@ func reportVerify(rep verify.Report, full bool) error {
 // own detail adds anything to the heading.
 type problemGroup struct {
 	heading  string
-	detail   bool
 	problems []verify.Problem
+	detail   bool
 }
 
 // groupProblems sorts problems into groups by kind, in the order kinds first

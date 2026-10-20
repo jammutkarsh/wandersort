@@ -24,8 +24,8 @@ const (
 
 // codedError carries the exit code an error maps to.
 type codedError struct {
-	code int
 	err  error
+	code int
 }
 
 func (e *codedError) Error() string { return e.err.Error() }
@@ -61,9 +61,9 @@ func noArgs(cmd *cobra.Command, args []string) error {
 // jsonOutcome is what every --json result carries.
 type jsonOutcome struct {
 	Library   string `json:"library"`
+	Error     string `json:"error,omitempty"`
 	ElapsedMS int64  `json:"elapsedMs"`
 	Exit      int    `json:"exit"`
-	Error     string `json:"error,omitempty"`
 }
 
 func (o *jsonOutcome) outcome() *jsonOutcome { return o }

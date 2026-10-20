@@ -15,9 +15,9 @@ const sqlNowDefault = `(strftime('%Y-%m-%dT%H:%M:%f000000','now','localtime'))`
 
 // Migration describes a single schema migration step
 type Migration struct {
-	Version     uint
 	Description string
 	SQL         []string
+	Version     uint
 }
 
 // schemas is the ordered list of migrations. Append new migrations at the end;

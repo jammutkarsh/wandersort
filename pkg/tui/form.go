@@ -46,57 +46,59 @@ const (
 const maxFormSuggestions = 5
 
 type Field struct {
-	Kind        FieldKind
-	Title       string
-	Description string
-	Value       *string         // for Input
-	BoolValue   *bool           // for Confirm
-	Options     []string        // for MultiSelect and Select
-	Recommended string          // for Select: the option marked "(recommended)"
-	Selected    map[string]bool // for MultiSelect
+	Value     *string         // for Input
+	BoolValue *bool           // for Confirm
+	Selected  map[string]bool // for MultiSelect
 	// Skip leaves the step out while it reports true (a follow-up question
 	// whose answer doesn't matter yet).
 	Skip func() bool
-	// Subs are a FieldGroup's fields, answered in order on one screen. Any kind
-	// is allowed — a group is a screen, not an input list.
-	Subs []*Field
 	// Describe overrides Description when the explanation depends on the
 	// option under the cursor. Prose goes here, not in Example (which truncates).
 	Describe func() string
 	// Example renders what the option under the cursor would produce.
-	Example     func() string
-	Placeholder string
+	Example func() string
 	// Suggest returns completions for the typed text. Called per keystroke, so
 	// keep it fast. ↑/↓ pick, tab/enter fill.
-	Suggest   func(typed string) []string
-	Validator func(string) error
-	Error     string
+	Suggest     func(typed string) []string
+	Validator   func(string) error
+	Title       string
+	Description string
+	Recommended string // for Select: the option marked "(recommended)"
+	Placeholder string
+	Error       string
+	Options     []string // for MultiSelect and Select
+	// Subs are a FieldGroup's fields, answered in order on one screen. Any kind
+	// is allowed — a group is a screen, not an input list.
+	Subs []*Field
+	Kind FieldKind
 }
 
 // FormModel is a multi-step form navigator using bubbletea.
 type FormModel struct {
+	err      error
+	onSubmit func() error
+	// Then, when set, is what the form returns instead of Leave once it ends,
+	// for a host screen that keeps going afterwards.
+	Then func(Leave) tea.Cmd
+
+	// Heading names the form above its steps, with a step count beside it.
+	Heading     string
 	Fields      []*Field
+	sugg        []string // live completions for the current input field
+	ti          textinput.Model
 	Current     int // current field index
 	w, h        int
-	ti          textinput.Model
-	onSubmit    func() error
-	err         error
-	aborted     bool
-	multiCursor int      // cursor for multiselect field
-	subIdx      int      // focused sub-field inside a FieldGroup
-	sugg        []string // live completions for the current input field
-	suggCursor  int      // ↑/↓-picked suggestion; -1 = none picked
-	suggGen     int      // bumped per keystroke; invalidates in-flight debounce/query
+	multiCursor int // cursor for multiselect field
+	subIdx      int // focused sub-field inside a FieldGroup
+	suggCursor  int // ↑/↓-picked suggestion; -1 = none picked
+	suggGen     int // bumped per keystroke; invalidates in-flight debounce/query
+
+	aborted bool
 
 	// quitReq marks the ending key as "done with the app" (ctrl+c) rather than
 	// "done here"; it rides out on Leave
 	quitReq bool
 
-	// Heading names the form above its steps, with a step count beside it.
-	Heading string
-	// Then, when set, is what the form returns instead of Leave once it ends,
-	// for a host screen that keeps going afterwards.
-	Then func(Leave) tea.Cmd
 	// EscSaves makes esc save and leave without asking, for a one-setting
 	// edit where what's on screen is the answer.
 	EscSaves bool
@@ -1013,10 +1015,10 @@ func (m ConfirmModel) View() string {
 // Ask is a full-screen yes/no before something hard to undo: ←/→ move the
 // highlight, which starts on no; enter takes it, sending Msg on yes; esc is no.
 type Ask struct {
+	Msg           tea.Msg
 	Title, Detail string
 	Action        string // the yes button's label
-	Msg           tea.Msg
-	yes           bool // the highlighted answer
+	yes           bool   // the highlighted answer
 }
 
 // Key answers k: done reports whether the ask is over, cmd what it sends.

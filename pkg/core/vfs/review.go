@@ -30,24 +30,24 @@ var ErrNoProposal = errors.New("no proposal to review")
 
 // Node is one folder in the proposed hierarchy. ID is its folder_nodes id.
 type Node struct {
-	ID        int64    `json:"id"`
-	Name      string   `json:"name"`
-	FileCount int      `json:"fileCount"`
-	Samples   []string `json:"samples,omitempty"`
-	Children  []Node   `json:"children"`
 	// One exemplar GPS coordinate (location-depth node only), so the review UI
 	// can re-query the resolver for ranked rename alternatives.
-	Lat *float64 `json:"lat,omitempty"`
-	Lon *float64 `json:"lon,omitempty"`
+	Lat  *float64 `json:"lat,omitempty"`
+	Lon  *float64 `json:"lon,omitempty"`
+	Name string   `json:"name"`
+	// Level is the level that made the folder (folder_nodes.level): a Rules
+	// name, or one of the Level* constants. Fixed reads it.
+	Level    string   `json:"level,omitempty"`
+	Samples  []string `json:"samples,omitempty"`
+	Children []Node   `json:"children"`
 	// IDs of nodes a review merge folded into this one; Confirm moves their
 	// files and subfolders here.
 	MergedIDs []int64 `json:"mergedIds,omitempty"`
 	// What the folder holds, as stored; the edits in edit.go transform it and
 	// Confirm writes it back.
-	Bounds Bounds `json:"bounds"`
-	// Level is the level that made the folder (folder_nodes.level): a Rules
-	// name, or one of the Level* constants. Fixed reads it.
-	Level string `json:"level,omitempty"`
+	Bounds    Bounds `json:"bounds"`
+	ID        int64  `json:"id"`
+	FileCount int    `json:"fileCount"`
 }
 
 // ErrFixedFolder refuses renaming or removing a year or month folder: new

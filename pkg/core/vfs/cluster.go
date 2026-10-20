@@ -13,8 +13,8 @@ const maxFolderSpan = 24 * time.Hour
 // cluster groups masters whose capture times sit within the configured gap of
 // each other — one cluster ≈ one real-world event
 type cluster struct {
-	members    []int // indices into masters
 	start, end time.Time
+	members    []int // indices into masters
 }
 
 // sortKey is one master reduced to what the sort compares: 24 bytes instead of

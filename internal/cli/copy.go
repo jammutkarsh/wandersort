@@ -46,11 +46,11 @@ wandersort copy --dry-run`,
 // copyResult is the copy command's --json result.
 type copyResult struct {
 	jsonOutcome
+	Report  string `json:"report,omitempty"`
 	Copied  int    `json:"copied"`
 	Failed  int    `json:"failed"`
 	NotRead int    `json:"notRead"`
 	Bytes   int64  `json:"bytes"`
-	Report  string `json:"report,omitempty"`
 }
 
 func (a *app) runCopy(cmd *cobra.Command) error {

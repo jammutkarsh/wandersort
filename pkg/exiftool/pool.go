@@ -12,9 +12,9 @@ import (
 // Pool holds N long-lived -stay_open exiftool processes, checked out one
 // at a time to match your goroutine concurrency.
 type Pool struct {
+	workers chan *Extractor
 	path    string
 	timeout time.Duration
-	workers chan *Extractor
 }
 
 // NewPool starts size exiftool workers and returns a pool handing them out

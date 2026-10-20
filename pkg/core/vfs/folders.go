@@ -17,11 +17,11 @@ import (
 
 // folderRow is one folder_nodes row. Parent 0 is the top level.
 type folderRow struct {
-	ID     int64  `db:"id"`
-	Parent int64  `db:"parent_id"`
 	Name   string `db:"name"`
 	Level  string `db:"level"`
 	Bounds Bounds `db:"bounds"`
+	ID     int64  `db:"id"`
+	Parent int64  `db:"parent_id"`
 }
 
 // Scan reads a folder_nodes.bounds column.

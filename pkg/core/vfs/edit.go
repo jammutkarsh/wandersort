@@ -514,9 +514,9 @@ func allDateNames(picks []mergePick) bool {
 // mergePick is one selected row resolved to its node, its parent (for the
 // splice), and the raw value the merge absorbs.
 type mergePick struct {
-	id     int64
 	parent *Node
 	value  Node
+	id     int64
 }
 
 // mergeNodes folds every node in ids into one, under their lowest common
@@ -633,8 +633,8 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 // first avoids it.
 func dropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err error) {
 	type drop struct {
-		parentID int64
 		node     Node
+		parentID int64
 	}
 	drops := make([]drop, 0, len(ids))
 	for _, id := range ids {

@@ -19,8 +19,8 @@ import (
 type FailedFile struct {
 	Source string
 	Camera string
-	Size   int64
 	Target string // planned library folder; empty for a file never read
+	Size   int64
 }
 
 // FailureGroup is every failed file on one drive that failed for one reason.
@@ -33,8 +33,8 @@ type FailureGroup struct {
 // DriveFailures is every failed file whose original lives on one drive.
 type DriveFailures struct {
 	Drive  string
-	Count  int
 	Groups []FailureGroup
+	Count  int
 }
 
 // FailureReport is every file that should be in the library and isn't: failed transfers and never-read files.

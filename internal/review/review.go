@@ -39,10 +39,10 @@ func (m Model) Busy() bool { return false }
 type reviewRow struct {
 	node   *vfs.Node
 	parent *vfs.Node
-	depth  int
 	// guide is the drawn tree prefix ("│  ├─ "), precomputed here because a row
 	// can't tell whether it's a last child from its depth alone.
 	guide string
+	depth int
 	// isNew: the copy creates this folder; nothing is at its path in the library yet
 	isNew bool
 }
@@ -79,45 +79,48 @@ func buildRows(tree []vfs.Node, library map[string]bool) []*reviewRow {
 }
 
 type Model struct {
-	rows    []*reviewRow
-	cursor  int
-	offset  int // first visible row (scroll position)
-	height  int
-	width   int
-	editing bool
-	input   string
+	ctx context.Context
+	log logger.Logger
 
-	ctx      context.Context
-	db       *db.DB
-	resolver *location.Resolver
-	log      logger.Logger
-
-	// Rename autocomplete. Both sources are fetched up front and filtered in
-	// memory per keystroke, so typing never hits the DB.
-	suggestions []location.Suggestion
-	suggCursor  int                  // ↑/↓-picked suggestion; -1 = none picked
-	geoCands    []location.Candidate // refetched only by [r] and ctrl+e
-	labels      []string             // confirmed names, loaded once at startup
-	radiusDelta float64              // live search width; ctrl+e widens it
-
-	// Structural edits: [V] selects, [m] merges, [d]/[D] remove nesting.
-	visualMode   bool
-	visualAnchor int
-	showHelp     bool     // [?] — full-screen key reference; any key closes it
-	ask          *tui.Ask // [ctrl+d]/[ctrl+r]'s full-screen question
+	previewErr error
+	db         *db.DB
+	resolver   *location.Resolver
+	ask        *tui.Ask // [ctrl+d]/[ctrl+r]'s full-screen question
 	// draft owns the base plan, the journal and the tree they make
-	draft       *vfs.Draft
-	statusMsg   string
-	statusIsErr bool // rejection, not confirmation: rendered in a warning colour
-	statusUndo  bool // an edit landed: the line offers [u]
+	draft *vfs.Draft
 
 	// library is the folders already copied into, by path; rows outside it are new
 	library map[string]bool
 
+	input string
+
+	statusMsg string
+	rows      []*reviewRow
+
+	// Rename autocomplete. Both sources are fetched up front and filtered in
+	// memory per keystroke, so typing never hits the DB.
+	suggestions []location.Suggestion
+	geoCands    []location.Candidate // refetched only by [r] and ctrl+e
+	labels      []string             // confirmed names, loaded once at startup
+	spin        spinner.Model
+	cursor      int
+	offset      int // first visible row (scroll position)
+	height      int
+	width       int
+	suggCursor  int     // ↑/↓-picked suggestion; -1 = none picked
+	radiusDelta float64 // live search width; ctrl+e widens it
+
+	visualAnchor int
+	editing      bool
+
+	// Structural edits: [V] selects, [m] merges, [d]/[D] remove nesting.
+	visualMode  bool
+	showHelp    bool // [?] — full-screen key reference; any key closes it
+	statusIsErr bool // rejection, not confirmation: rendered in a warning colour
+	statusUndo  bool // an edit landed: the line offers [u]
+
 	// async preview copy ([p])
 	previewing bool
-	previewErr error
-	spin       spinner.Model
 }
 
 func newModel(draft *vfs.Draft, ctx context.Context, database *db.DB, resolver *location.Resolver, log logger.Logger) Model {

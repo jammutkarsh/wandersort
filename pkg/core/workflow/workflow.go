@@ -34,27 +34,28 @@ var ErrOverlapsLibrary = errors.New("overlaps the library")
 
 // Workflow orchestrates the phases of one scan.
 type Workflow struct {
-	db      *db.DB
-	log     logger.Logger
-	deps    Deps
-	workers int
-	appCfg  *config.Configuration
+	log    logger.Logger
+	deps   Deps
+	db     *db.DB
+	appCfg *config.Configuration
 
 	/* Utilities */
-	path      *path.Resolver
+	path *path.Resolver
+
+	scanner   *scanner.Scanner
 	outputDir string
 
-	scanner *scanner.Scanner
+	workers int
 }
 
 type workflowPhase struct {
-	kind workflowPhaseKind
-	// starting is the phase's one user-facing start line
-	starting string
-	run      func(ctx context.Context) (int, error)
+	run func(ctx context.Context) (int, error)
 	// summary is the phase's one user-facing success line; elapsed time is
 	// appended to it
 	summary func(count int) string
+	kind    workflowPhaseKind
+	// starting is the phase's one user-facing start line
+	starting string
 }
 
 type workflowPhaseKind string

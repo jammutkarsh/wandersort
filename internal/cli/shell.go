@@ -36,9 +36,9 @@ var tabNames = [numTabs]string{"Add", "Organise", "Copy", "Settings"}
 // shellStart is which tab a session opens on, and with what. Every
 // full-screen command is the same shell opened on its own tab.
 type shellStart struct {
-	tab   int
 	paths []string // tabScan: scan these immediately instead of asking
-	force bool     // tabScan: re-read every file from disk (--force)
+	tab   int
+	force bool // tabScan: re-read every file from disk (--force)
 }
 
 // openSettingsMsg opens the settings tab. A message because Init runs on a
@@ -52,40 +52,42 @@ func msgCmd(msg tea.Msg) tea.Cmd { return func() tea.Msg { return msg } }
 // bar plus one live screen per tab, all kept alive so a scan keeps receiving
 // events while another tab is open.
 type shellModel struct {
-	a   *app
-	ctx context.Context
-
 	screens [numTabs]tui.Tab
-	tab     int
-	start   shellStart
+	ctx     context.Context
 
 	// gate is the getting-ready screen, shown alone until both dependencies
 	// are installed; nil after
 	gate    tui.Tab
 	depsErr error // why the dependencies gave up; the session's exit error
 
-	opening  bool               // a review is being built off the UI goroutine
+	a        *app
 	stopCopy context.CancelFunc // ends the Copy tab's context once a fresh one replaces it
-	w, h     int
 
-	// lib is the library's state, refreshed where it can change, never per frame
-	lib libraryState
+	// pendingScan is a scan refused for overlapping the library; a switch to
+	// another library runs it
+	pendingScan *tui.StartScanMsg
 
 	// settingsBefore is the library's settings as the wizard opened on them,
 	// so a save that changes nothing costs nothing (see settingsSaved).
 	settingsBefore config.Settings
 	libraryBefore  string // the library folder the settings tab opened on
 
-	// pendingScan is a scan refused for overlapping the library; a switch to
-	// another library runs it
-	pendingScan *tui.StartScanMsg
+	start shellStart
+
+	// lib is the library's state, refreshed where it can change, never per frame
+	lib libraryState
+
+	tab  int
+	w, h int
+
+	opening bool // a review is being built off the UI goroutine
 }
 
 // scanReadyMsg reports whether the library opened for a scan.
 type scanReadyMsg struct {
+	err   error
 	paths []string
 	force bool
-	err   error
 }
 
 // reviewOpenMsg carries the review screen built for [ctrl+r] on the home
@@ -506,8 +508,8 @@ func (m *shellModel) settingsSaved(before config.Settings) tea.Cmd {
 // libraryEmptiedMsg reports a discarded plan or a reset: what to tell
 // the user, or why it failed.
 type libraryEmptiedMsg struct {
-	note string
 	err  error
+	note string
 }
 
 // onLibrary runs a discard or a reset off the UI goroutine, with the

@@ -54,11 +54,11 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 	}
 
 	type scanResult struct {
+		err    error
 		root   string // canonical absolute root, "" when canonicalization failed
 		volume string // the root's volume UUID, "" when unresolved
-		count  int
 		gaps   walkGaps
-		err    error
+		count  int
 	}
 
 	// Buffer exactly one result per path; no path produces more than one result

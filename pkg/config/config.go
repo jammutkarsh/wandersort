@@ -29,14 +29,15 @@ type Configuration struct {
 	// appDir is ~/.wandersort: location database, logs, library history
 	appDir string
 
-	// Workers sizes the CPU-bound goroutine and exiftool pools: NumCPU, not
-	// a setting. Disk reads are throttled by storage class instead.
-	Workers        int
 	AppDBPath      string
 	LocationDBPath string
 	// LogDir holds persisted run logs, apart from any library
 	LogDir         string
 	ExecutablePath string
+
+	// Workers sizes the CPU-bound goroutine and exiftool pools: NumCPU, not
+	// a setting. Disk reads are throttled by storage class instead.
+	Workers int
 }
 
 // New builds the runtime configuration with default settings and, as the

@@ -33,8 +33,28 @@ const defaultClusterGap = 12 * time.Hour
 
 // Config controls the shape of the proposed hierarchy
 type Config struct {
-	Rules      []string      // ordered levels below <YEAR>/<MONTH>; see Rules* constants
-	ClusterGap time.Duration // capture-time gap that starts a new event cluster
+	// placedTree is the folders placed files sit in, loaded by Run; route
+	// sends a new file into one it matches completely.
+	placedTree *placedTree
+	Rules      []string // ordered levels below <YEAR>/<MONTH>; see Rules* constants
+	// Anchors are saved places resolved to GPS coordinates, built by Propose
+	// from the library's settings. Nil when no saved places are configured or
+	// the resolver isn't ready.
+	Anchors []location.Anchor
+	// SavedPlaces is the same places as the names the user typed, before
+	// resolution — what the settings hold and what a save is compared against.
+	SavedPlaces []string
+	// Placed is the library-relative path of every file already placed, loaded
+	// by Run. assignTargetPaths never hands one of these names to a new file.
+	Placed []string
+	// placedTimes is every placed file's capture time, loaded by Run. They
+	// widen clusters but never join them.
+	placedTimes []time.Time
+	ClusterGap  time.Duration // capture-time gap that starts a new event cluster
+	// Workers sizes the pool every per-master pass fans out over — deriveAll,
+	// resolveLocations and assignTargetPaths (see forEachMaster).
+	// 0 or 1 runs them inline.
+	Workers int
 	// Drops a device/orientation/media level with one library-wide value.
 	// Date/location never drop. See assignTargetPaths step 3.
 	CollapseLevels bool
@@ -43,26 +63,6 @@ type Config struct {
 	// Collapses consecutive same-location days into one range folder
 	// (08/{02,03,04}/<city> → 08/02_04/<city>). See assignTargetPaths step 6.
 	MergeSameLocationDays bool
-	// Anchors are saved places resolved to GPS coordinates, built by Propose
-	// from the library's settings. Nil when no saved places are configured or
-	// the resolver isn't ready.
-	Anchors []location.Anchor
-	// SavedPlaces is the same places as the names the user typed, before
-	// resolution — what the settings hold and what a save is compared against.
-	SavedPlaces []string
-	// Workers sizes the pool every per-master pass fans out over — deriveAll,
-	// resolveLocations and assignTargetPaths (see forEachMaster).
-	// 0 or 1 runs them inline.
-	Workers int
-	// Placed is the library-relative path of every file already placed, loaded
-	// by Run. assignTargetPaths never hands one of these names to a new file.
-	Placed []string
-	// placedTree is the folders placed files sit in, loaded by Run; route
-	// sends a new file into one it matches completely.
-	placedTree *placedTree
-	// placedTimes is every placed file's capture time, loaded by Run. They
-	// widen clusters but never join them.
-	placedTimes []time.Time
 }
 
 func DefaultConfig() Config {
@@ -108,13 +108,13 @@ func ConfigFor(appCfg *config.Configuration) Config {
 // masterFile carries one master file through the build:
 // DB row → derived segments → proposed entry
 type masterFile struct {
-	FileID     int64  `db:"id"`
-	FileDir    string `db:"file_dir"`
-	FileName   string `db:"file_name"`
-	FileHash   string `db:"file_hash"`
-	MediaType  string `db:"media_type"`
-	Extension  string `db:"file_extension"`
-	ModifiedAt string `db:"file_modified_at"`
+	takenAt time.Time
+	// folderDate is the capture time the Year/Month folders come from (the
+	// cluster's start for a short cluster). Read through folderTime.
+	folderDate time.Time
+	// orderTime/orderHash rank a file when names collide: its own, or its
+	// capture group leader's, so a sidecar keeps its photo's suffix.
+	orderTime time.Time
 
 	// metadata persisted during hashing
 	DBWidth           *int64   `db:"exif_image_width"`
@@ -128,42 +128,43 @@ type masterFile struct {
 	DBCreateDate      *string  `db:"exif_create_date"`
 	DBCreationDate    *string  `db:"exif_creation_date"`
 	DBMediaCreateDate *string  `db:"exif_media_create_date"`
-	IsScreenshot      bool     `db:"is_screenshot"`
+	FileDir           string   `db:"file_dir"`
+	FileName          string   `db:"file_name"`
+	FileHash          string   `db:"file_hash"`
+	MediaType         string   `db:"media_type"`
+	Extension         string   `db:"file_extension"`
+	ModifiedAt        string   `db:"file_modified_at"`
 
-	absPath string
-	takenAt time.Time
-	// folderDate is the capture time the Year/Month folders come from (the
-	// cluster's start for a short cluster). Read through folderTime.
-	folderDate time.Time
-	// orderTime/orderHash rank a file when names collide: its own, or its
-	// capture group leader's, so a sidecar keeps its photo's suffix.
-	orderTime time.Time
+	absPath   string
 	orderHash string
 	// pairKey names the capture group this file shares one _N suffix with
 	// (captureDirs, pairLiveVideos); "" = a group of one.
-	pairKey       string
-	width, height int64
-	hasGPS        bool
-	lat, lon      float64
-	device        string
-	location      string // resolved city; "" when unknown
+	pairKey  string
+	device   string
+	location string // resolved city; "" when unknown
 	// city is the geonames city before a saved place's folder name replaced
 	// it — the anchor-folded cities a saved-place folder's Bounds list
 	city         string
+	clusterID    string // set when the location decision came from cluster logic
+	eventSegment string // dated segment for unresolved clusters, e.g. "03-05"
+	dayOverride  string // date-level range label from assignTargetPaths step 6, e.g. "02_04"
+	targetPath   string
+	// dir is targetPath's directory, one segment per folder, top first: set
+	// by dirFor, or by route from the placed folder it sent the file into
+	dir           []segment
+	FileID        int64 `db:"id"`
+	width, height int64
+	lat, lon      float64
+	// the folder_nodes rows persist linked this file to: its folder, and its
+	// location folder (0 = none)
+	nodeID, locationNodeID int64
+	IsScreenshot           bool `db:"is_screenshot"`
+
+	hasGPS       bool
 	atSavedPlace bool // GPS at a confirmed saved-place place; suppresses the location level (SavedPlacesDateOnly)
 	// keepLocationFolder overrides that suppression for this file because its
 	// day holds files from somewhere else too. See assignTargetPaths step 4.
 	keepLocationFolder bool
-	clusterID          string // set when the location decision came from cluster logic
-	eventSegment       string // dated segment for unresolved clusters, e.g. "03-05"
-	dayOverride        string // date-level range label from assignTargetPaths step 6, e.g. "02_04"
-	targetPath         string
-	// dir is targetPath's directory, one segment per folder, top first: set
-	// by dirFor, or by route from the placed folder it sent the file into
-	dir []segment
-	// the folder_nodes rows persist linked this file to: its folder, and its
-	// location folder (0 = none)
-	nodeID, locationNodeID int64
 }
 
 // segment is one folder of a planned directory: its name, the level that

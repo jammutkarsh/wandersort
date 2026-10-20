@@ -73,15 +73,15 @@ type HomeNoteMsg struct{ Text string }
 type HomeConfig struct {
 	// Suggest completes a typed path; nil disables the dropdown.
 	Suggest func(typed string) []string
+	// Check refuses a folder as it is added (one inside the library, say);
+	// nil accepts every folder.
+	Check func(dir string) error
 	// LastScan is the finished scan's summary, rendered dim above the input —
 	// empty on the first run, filled once a scan in this session has completed.
 	LastScan []string
 	// History is the folders scanned before, newest first; ↑ on an empty line
 	// walks it, after the folders added here.
 	History []string
-	// Check refuses a folder as it is added (one inside the library, say);
-	// nil accepts every folder.
-	Check func(dir string) error
 }
 
 // HomeLibraryMsg is where the open library's files stand, for the status above
@@ -103,25 +103,26 @@ const maxHomeSuggestions = 5
 // spaces need no quoting), with directory completion.
 type HomeModel struct {
 	cfg   HomeConfig
-	ti    textinput.Model
+	err   error
 	paths *path.Resolver
+
+	ask  *Ask   // a full-screen question before something hard to undo
+	note string // a success line; cleared by an error
 	// added holds expanded paths, rendered home-relative
-	added      []string
-	sugg       []string
-	suggCursor int // ↑/↓-picked completion; -1 = none picked
+	added []string
+	sugg  []string
 	// ↑/↓ walk: the folders added here (newest first), then History. The
 	// added one on screen is lifted out of the list while shown, so editing
 	// it replaces it.
-	walk    []string
-	histIdx int // walk entry in the input; -1 = not walking
-	lifted  int // where the shown entry sat in added; -1 = it wasn't there
-	lib     HomeLibraryMsg
-	err     error
-	note    string // a success line; cleared by an error
-	shown   int    // which err/note is up, so only its own timer clears it
-	w, h    int
+	walk       []string
+	ti         textinput.Model
+	lib        HomeLibraryMsg
+	suggCursor int // ↑/↓-picked completion; -1 = none picked
+	histIdx    int // walk entry in the input; -1 = not walking
+	lifted     int // where the shown entry sat in added; -1 = it wasn't there
+	shown      int // which err/note is up, so only its own timer clears it
+	w, h       int
 
-	ask      *Ask // a full-screen question before something hard to undo
 	showKeys bool // the ? overlay is up
 }
 

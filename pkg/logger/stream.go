@@ -24,9 +24,9 @@ const ElapsedKey = "elapsed"
 // Event is one log record delivered to a TUI Sink, with UserFacing and Stream
 // lifted out of the attrs.
 type Event struct {
-	Level      slog.Level
-	Message    string
 	Attrs      map[string]any
+	Message    string
+	Level      slog.Level
 	UserFacing bool
 	Stream     bool
 }

@@ -60,19 +60,18 @@ const readBatchSize = 256
 // fileRecord is one unread file for a worker: mediaType lets a sidecar skip
 // exiftool, cost is its charge against the read budget.
 type fileRecord struct {
-	id        int64
 	absPath   string
 	mediaType string
+	id        int64
 	cost      int64
 }
 
 // Extractor hashes discovered files and reads their EXIF in one pass
 type Extractor struct {
-	db      *db.DB
-	log     logger.Logger
-	pool    *exiftool.Pool
-	path    *wspath.Resolver
-	workers int
+	log  logger.Logger
+	db   *db.DB
+	pool *exiftool.Pool
+	path *wspath.Resolver
 
 	// reads admits byte reads by storage class: a spinning disk charges the
 	// whole budget, an SSD charges 1.
@@ -80,11 +79,13 @@ type Extractor struct {
 	// ponytail: one shared budget couples independent devices (an HDD read
 	// throttles an idle SSD), only at volume boundaries since volumes drain
 	// one at a time. Per-volume budgets if a mixed library measures badly.
-	reads  *semaphore.Weighted
-	budget int64
+	reads *semaphore.Weighted
 	// classes caches the storage class per volume UUID. Producer-only, so it
 	// needs no lock.
 	classes map[string]volume.Class
+	workers int
+
+	budget int64
 }
 
 // New starts the exiftool pool. Without it every file would be stored with

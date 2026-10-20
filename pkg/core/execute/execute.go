@@ -27,9 +27,6 @@ import (
 
 // Options controls one Run.
 type Options struct {
-	// DryRun touches nothing and reports the paths a real run would use, review
-	// edits applied.
-	DryRun bool
 	// OnApplied runs once the review's edits are in the plan, before any file
 	// moves (never on a dry run).
 	OnApplied func()
@@ -42,6 +39,9 @@ type Options struct {
 	// freeSpace reports the output volume's free and total bytes; nil means
 	// volume.Space. Tests set it to run out of room.
 	freeSpace func(path string) (free, total uint64, err error)
+	// DryRun touches nothing and reports the paths a real run would use, review
+	// edits applied.
+	DryRun bool
 }
 
 // The steps of a run, in order, as OnStep names them.
@@ -128,11 +128,11 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 
 // pendingRow is one file a run will place.
 type pendingRow struct {
-	ID         int64  `db:"id"`
-	FileID     int64  `db:"file_id"`
 	SourcePath string `db:"source_path"`
 	TargetPath string `db:"target_path"`
 	FileHash   string `db:"file_hash"`
+	ID         int64  `db:"id"`
+	FileID     int64  `db:"file_id"`
 	Size       int64  `db:"file_size"`
 }
 

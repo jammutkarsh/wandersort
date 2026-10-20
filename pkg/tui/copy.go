@@ -33,21 +33,21 @@ type CopyProblem struct {
 
 // CopyResult is what a finished copy did.
 type CopyResult struct {
-	Copied, Failed, NotRead int
-	Bytes                   int64
 	Report                  string // the failure page; "" when nothing failed
 	Problems                []CopyProblem
+	Copied, Failed, NotRead int
+	Bytes                   int64
 }
 
 // CopyConfig wires the Copy tab to the transfer.
 type CopyConfig struct {
-	Library string
-	Plan    CopyPlan
 	// Run copies, calling onStep as each step starts (the execute.Step*
 	// names) and onProgress after each file; it blocks until done.
 	Run func(onStep func(step string), onProgress func(target string, bytes int64, done, total int)) (CopyResult, error)
 	// Cancel stops Run between files.
-	Cancel context.CancelFunc
+	Cancel  context.CancelFunc
+	Library string
+	Plan    CopyPlan
 }
 
 // CopyFinishedMsg tells the shell a copy ended, so it can re-read the library.
@@ -82,17 +82,17 @@ const maxProblemPaths = 3
 
 // CopyModel is the Copy tab: what a copy would do, the copy itself, and what it did.
 type CopyModel struct {
-	cfg    CopyConfig
-	sl     StageList
-	events chan tea.Msg
-	w, h   int
+	sl      StageList
+	cfg     CopyConfig
+	started time.Time
+	err     error
+	events  chan tea.Msg
+	res     CopyResult
+	w, h    int
 
 	state    copyState
 	copied   int64 // bytes so far
 	files    int
-	started  time.Time
-	res      CopyResult
-	err      error
 	choice   int
 	showKeys bool
 }

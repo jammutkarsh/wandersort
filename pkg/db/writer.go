@@ -31,16 +31,16 @@ type flushReq struct {
 // BulkWriter batches multiple database operations into single transactions
 // to minimize lock contention and improve write performance in SQLite
 type BulkWriter struct {
-	sqlDB     *sqlx.DB
 	log       logger.Logger
+	failed    error // first lost write since the last Flush
+	sqlDB     *sqlx.DB
 	ops       chan DBOperation
 	flushReqs chan flushReq
 	done      chan struct{}
 	mu        sync.RWMutex
-	closed    atomic.Bool
 
 	errMu  sync.Mutex
-	failed error // first lost write since the last Flush
+	closed atomic.Bool
 }
 
 func NewBulkWriter(sqlDB *sqlx.DB, log logger.Logger) *BulkWriter {

@@ -48,8 +48,8 @@ func depsFailure(err error) error {
 
 // shortError is the on-screen message; the full cause stays for the log and errors.Is.
 type shortError struct {
-	msg string
 	err error
+	msg string
 }
 
 func (e *shortError) Error() string { return e.msg }

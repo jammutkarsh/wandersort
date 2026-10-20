@@ -361,12 +361,12 @@ func assignTargetPaths(ctx context.Context, masters []masterFile, cfg Config) {
 type Sample struct {
 	TakenAt      time.Time
 	Location     string // resolved city; "" = unknown
-	AtSavedPlace bool
 	Device       string
-	Width        int64
-	Height       int64
 	MediaType    string // classifier.MediaTypeVideo, else treated as a photo
 	FileName     string
+	Width        int64
+	Height       int64
+	AtSavedPlace bool
 }
 
 // PreviewPaths runs assignTargetPaths over made-up files, so a settings example

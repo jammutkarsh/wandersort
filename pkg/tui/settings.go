@@ -8,10 +8,10 @@ import (
 
 // SettingRow is one line of the settings list: what it is, its value, and how to change it.
 type SettingRow struct {
-	Label, Value string
 	// Edit builds the one-step form that changes this setting, over a fresh
 	// copy of the settings, and the save that writes them. nil: shown, fixed.
-	Edit func() ([]*Field, func() error)
+	Edit         func() ([]*Field, func() error)
+	Label, Value string
 }
 
 // SettingsSavedMsg tells the shell a setting was saved.
@@ -21,14 +21,14 @@ type settingsEditDoneMsg struct{ leave Leave }
 
 // SettingsModel lists a library's settings; enter changes one, and the list comes back updated.
 type SettingsModel struct {
-	rows     func() []SettingRow
-	list     []SettingRow
-	note     string
-	cursor   int
-	edit     *FormModel
 	err      error
-	saved    bool
+	rows     func() []SettingRow
+	edit     *FormModel
+	note     string
+	list     []SettingRow
+	cursor   int
 	w, h     int
+	saved    bool
 	showKeys bool
 }
 
