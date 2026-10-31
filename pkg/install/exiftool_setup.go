@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
@@ -30,6 +31,9 @@ const (
 
 	filesBaseURL        = "https://wandersort.utkarshchourasia.in/files"
 	releaseMetaFileName = "exiftool.json"
+
+	// releaseMetaTimeout bounds the whole manifest fetch, connect to last byte; it is under 1 KB
+	releaseMetaTimeout = 5 * time.Second
 )
 
 // releaseMeta is published by .github/workflows/publish-r2.yml alongside
@@ -49,13 +53,16 @@ type releaseMetaFile struct {
 // fetchReleaseMeta downloads the mirrored archives' checksum manifest, the only
 // trusted source of expected names and hashes.
 func fetchReleaseMeta(ctx context.Context) (releaseMeta, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, filesBaseURL+"/"+releaseMetaFileName, nil)
+	fetchCtx, cancel := context.WithTimeout(ctx, releaseMetaTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, filesBaseURL+"/"+releaseMetaFileName, nil)
 	if err != nil {
 		return releaseMeta{}, fmt.Errorf("create request: %w", err)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return releaseMeta{}, fmt.Errorf("GET %s: %w", releaseMetaFileName, err)
+		return releaseMeta{}, fmt.Errorf("GET %s: %w", releaseMetaFileName, terminalDownloadErr(ctx, err))
 	}
 	defer resp.Body.Close()
 
@@ -66,7 +73,7 @@ func fetchReleaseMeta(ctx context.Context) (releaseMeta, error) {
 	var meta releaseMeta
 	// published elsewhere, so matched the forgiving way
 	if err := json.UnmarshalRead(resp.Body, &meta, json.MatchCaseInsensitiveNames(true)); err != nil {
-		return releaseMeta{}, fmt.Errorf("decode %s: %w", releaseMetaFileName, err)
+		return releaseMeta{}, fmt.Errorf("decode %s: %w", releaseMetaFileName, terminalDownloadErr(ctx, err))
 	}
 	return meta, nil
 }
