@@ -32,6 +32,8 @@ type app struct {
 	Log    logger.Logger
 	AppDB  *db.DB
 	Deps   *install.Coordinator
+	// Version is the build main.go stamps via -ldflags; `wandersort --version` prints it
+	Version string
 	// outLock is the output-dir lock, taken with the database by openLibrary
 	// and released with it by closeDBs.
 	outLock *lock.Lock
@@ -100,8 +102,8 @@ func (g *workGroup) closeAndWait() {
 	g.wg.Wait()
 }
 
-func Execute() error {
-	a := &app{}
+func Execute(version string) error {
+	a := &app{Version: version}
 	err := a.newRootCmd().Execute()
 	// a failure before the command printed its own result still gets one; a
 	// bad flag or argument fails before PersistentPreRunE reads --json

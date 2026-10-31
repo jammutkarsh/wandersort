@@ -1,0 +1,68 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT with contents:write on jammutkarsh/homebrew-tap + scoop-bucket.
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+
+  # Unsigned macOS .pkg (GoReleaser has no native .pkg; pkgbuild ships with macOS).
+  macos-pkg:
+    needs: goreleaser
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and upload .pkg
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x scripts/build-pkg.sh
+          ./scripts/build-pkg.sh
+
+  # Unsigned Windows .msi, built with WiX v4 (GoReleaser OSS has no MSI output).
+  windows-msi:
+    needs: goreleaser
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install WiX
+        run: dotnet tool install --global wix
+      - name: Build and upload .msi (x64, arm64)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $num = $tag.TrimStart("v")
+          foreach ($arch in @(@{ go = "amd64"; wix = "x64" }, @{ go = "arm64"; wix = "arm64" })) {
+            $asset = "wandersort_${num}_windows_$($arch.go).zip"
+            $url = "https://github.com/${{ github.repository }}/releases/download/$tag/$asset"
+            Invoke-WebRequest $url -OutFile $asset
+            $dir = "extracted-$($arch.go)"
+            Expand-Archive $asset -DestinationPath $dir -Force
+            $msi = "wandersort-$num-$($arch.wix).msi"
+            wix build build\wandersort.wxs -arch $($arch.wix) `
+              -d "Version=$num" -d "BinPath=$dir\wandersort.exe" -o $msi
+            gh release upload $tag $msi --clobber --repo ${{ github.repository }}
+          }
