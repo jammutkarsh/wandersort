@@ -38,3 +38,33 @@ jobs:
       - name: Coverage summary
         run: |
           go tool cover -func=coverage.out | grep '^total:' | awk '{print $NF}' | tee -a "$GITHUB_STEP_SUMMARY"
+
+  test-os:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      WANDERSORT_TEST_DEPS_DIR: ${{ github.workspace }}/test/deps
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Fetch test dependencies
+        run: go run ./scripts/fetchtestdeps "$WANDERSORT_TEST_DEPS_DIR"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
