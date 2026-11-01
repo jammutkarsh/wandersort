@@ -124,7 +124,7 @@ func TestOverlaps(t *testing.T) {
 		{"parent", "/photos/sub", "/photos", true},
 		{"sibling", "/photos", "/videos", false},
 		{"prefix but not nested", "/photos", "/photos2", false},
-		{"root holds everything", rootDir, "/photos", true},
+		{"root holds everything", rootDir, rootDir + "photos", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

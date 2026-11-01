@@ -1,4 +1,4 @@
-[![CI](https://github.com/jammutkarsh/wandersort/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jammutkarsh/wandersort/actions/workflows/ci.yml)
+[![website](https://img.shields.io/badge/website-wandersort.utkarshchourasia.in-blue)](https://wandersort.utkarshchourasia.in) [![docs](https://img.shields.io/badge/docs-wandersort.utkarshchourasia.in%2Fdocs-blue)](https://wandersort.utkarshchourasia.in/docs) [![CI](https://github.com/jammutkarsh/wandersort/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jammutkarsh/wandersort/actions/workflows/ci.yml)
 
 # WanderSort
 
@@ -16,21 +16,18 @@ WanderSort is a single, self-contained command-line binary.
 
 #### macOS
 
-Homebrew
-
 ```bash
+# Homebrew
 brew install --cask jammutkarsh/tap/wandersort
 ```
 
-Install script
-
 ```bash
+# Install script
 curl -fsSL https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.sh | sh
 ```
 
-Release package
-
 ```bash
+# Release package
 # download the .pkg from https://github.com/jammutkarsh/wandersort/releases/latest and open it
 # it is unsigned; if macOS blocks it, run:
 sudo xattr -dr com.apple.quarantine /usr/local/bin/wandersort
@@ -38,42 +35,36 @@ sudo xattr -dr com.apple.quarantine /usr/local/bin/wandersort
 
 #### Windows
 
-winget
-
 ```powershell
+# winget
 winget install jammutkarsh.wandersort
 ```
 
-Install script
-
 ```powershell
+# Install script
 irm https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.ps1 | iex
 ```
 
-Scoop
-
 ```powershell
+# Scoop
 scoop bucket add jammutkarsh https://github.com/jammutkarsh/scoop-bucket
 scoop install wandersort
 ```
 
 #### Linux
 
-Install script
-
 ```bash
+# Install script
 curl -fsSL https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.sh | sh
 ```
 
-Go 1.27+
-
 ```bash
+# Go 1.27+
 go install github.com/jammutkarsh/wandersort@latest
 ```
 
-apt
-
 ```bash
+# apt
 # download the .deb from https://github.com/jammutkarsh/wandersort/releases/latest, then:
 sudo apt install ./wandersort_<version>_linux_amd64.deb
 ```
