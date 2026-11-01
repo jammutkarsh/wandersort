@@ -34,7 +34,7 @@ func TestOpenLibraryLoadsThatLibrarysSettings(t *testing.T) {
 	cfg := testConfig(t)
 	ctx := context.Background()
 
-	a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+	a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
 	if err := a.openLibrary(ctx); err != nil {
 		t.Fatalf("openLibrary: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestOpenLibraryLoadsThatLibrarysSettings(t *testing.T) {
 	// A second session over the same folder: nothing but the library itself
 	// says what its rules are.
 	next := testConfigAt(t, cfg.OutputDir())
-	b := &app{Config: next, Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+	b := &app{Config: next, Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
 	if err := b.openLibrary(ctx); err != nil {
 		t.Fatalf("openLibrary (second session): %v", err)
 	}
@@ -186,7 +186,7 @@ func TestOpenLibraryRefusedWritesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := &app{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}, Log: logger.NewNoopLogger()}
-	a.logFile = logger.NewFile(t.TempDir())
+	a.logFile = testLogFile(t, t.TempDir())
 	if err := a.openLibrary(context.Background()); err == nil {
 		t.Fatal("openLibrary must refuse a folder holding someone else's files")
 	}
@@ -296,7 +296,7 @@ func TestWorkGroupHoldLibrary(t *testing.T) {
 // A new folder starts an empty library with the same settings; an organised one opens with its own.
 func TestSwitchLibrary(t *testing.T) {
 	ctx := context.Background()
-	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
 	if err := a.openLibrary(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -335,4 +335,13 @@ func TestSwitchLibrary(t *testing.T) {
 	if files != 1 || !slices.Equal(a.Config.Rules, []string{"date"}) {
 		t.Errorf("back in the first library: files=%d rules=%v, want its own file and rules", files, a.Config.Rules)
 	}
+}
+
+// testLogFile is a log file in dir, closed before the test's temp folders are
+// removed: Windows can't remove an open file.
+func testLogFile(t *testing.T, dir string) *logger.File {
+	t.Helper()
+	f := logger.NewFile(dir)
+	t.Cleanup(func() { f.Close() })
+	return f
 }

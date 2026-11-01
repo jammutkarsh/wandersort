@@ -105,6 +105,8 @@ func (g *workGroup) closeAndWait() {
 func Execute(version string) error {
 	a := &app{Version: version}
 	err := a.newRootCmd().Execute()
+	defer a.logFile.Close() // after the result below, which may still log
+
 	// a failure before the command printed its own result still gets one; a
 	// bad flag or argument fails before PersistentPreRunE reads --json
 	if err != nil && !a.jsonOut {

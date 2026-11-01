@@ -65,7 +65,7 @@ func TestRunIssuePackagesRecentLogs(t *testing.T) {
 		logs[fmt.Sprintf("2026-01-0%dT10-00-00_1.log", i)] = "some log data\n"
 	}
 	a, dir := issueApp(t, logs)
-	a.logFile = logger.NewFile(a.Config.LogDir)
+	a.logFile = testLogFile(t, a.Config.LogDir)
 	a.logFile.Persist() // this run's own log, newest of all: must not be packaged
 	if _, err := a.logFile.Write([]byte("wandersort started\n")); err != nil {
 		t.Fatal(err)
@@ -147,6 +147,7 @@ func TestRunIssueIncludesDBWhenRequested(t *testing.T) {
 func TestRunIssueShipsScrubbedErrors(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	a, dir := issueApp(t, map[string]string{"2026-01-01T10-00-00_1.log": "some log data\n"})
 	if err := os.MkdirAll(filepath.Dir(a.Config.AppDBPath), 0o755); err != nil {
 		t.Fatal(err)

@@ -99,6 +99,7 @@ func TestSettingsEqual(t *testing.T) {
 func TestHistory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	cfg, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -152,6 +153,7 @@ func TestHistory(t *testing.T) {
 func TestHistoryCap(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	cfg, err := New()
 	if err != nil {
 		t.Fatal(err)
@@ -179,6 +181,7 @@ func TestHistoryCap(t *testing.T) {
 func TestNewOpensTheLastLibrary(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	cfg, err := New()
 	if err != nil {
 		t.Fatal(err)

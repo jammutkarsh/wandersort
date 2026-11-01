@@ -89,6 +89,23 @@ func (l *File) persist() {
 	l.f = file
 }
 
+// Close closes the persisted file; later writes are dropped. Idempotent and nil-safe.
+func (l *File) Close() error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.failed = true
+	l.buf.Reset()
+	if l.f == nil {
+		return nil
+	}
+	err := l.f.Close()
+	l.f = nil
+	return err
+}
+
 // Path is the persisted file's path, or "" while the run is still buffered.
 func (l *File) Path() string {
 	if l == nil {

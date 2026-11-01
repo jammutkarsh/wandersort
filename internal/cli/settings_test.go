@@ -54,7 +54,7 @@ func TestConfig(t *testing.T) {
 			cfg := testConfig(t)
 			cfg.Rules = []string{"date", "device"}
 			cfg.CollapseLevels = false
-			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
 			defer a.closeDBs()
 
 			// a place-name database that never opened must not trap the user
@@ -142,7 +142,7 @@ func TestConfig(t *testing.T) {
 		// An open library's settings are a list; each row edits a fresh copy, so
 		// leaving an edit unsaved changes nothing.
 		{"SettingsListEditsOneRow", func(t *testing.T) {
-			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
 			if err := a.openLibrary(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -180,7 +180,7 @@ func TestConfig(t *testing.T) {
 			}
 		}},
 		{"OutputPathAskedOnlyBeforeTheLibraryIsOpen", func(t *testing.T) {
-			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
 			fields, _ := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
 			if f := findField(fields, "Where should your library go?"); f == nil {
 				t.Error("a session with no library open must be asked for the library folder")
@@ -209,7 +209,7 @@ func TestConfig(t *testing.T) {
 			resolver := installtest.Resolver(t)
 
 			cfg := testConfig(t)
-			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: logger.NewFile(t.TempDir())}
+			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
 			defer a.closeDBs()
 
 			fields, save := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return resolver, nil })
