@@ -42,3 +42,7 @@ log.json
 .tickets
 .claude
 .wandersort-install.lock
+
+# GoReleaser output
+dist/
+.vibe-wise/

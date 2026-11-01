@@ -8,6 +8,101 @@ No cloud uploads. No subscriptions. No AI deciding what's "relevant." Just your 
 
 ---
 
+## Getting Started
+
+WanderSort is a single, self-contained command-line binary.
+
+### Install
+
+[macOS](#macos) · [Windows](#windows) · [Linux](#linux) · [From source](#from-source)
+
+#### macOS
+
+```bash
+# 1. Homebrew
+brew install --cask jammutkarsh/tap/wandersort
+
+# 2. Install script
+curl -fsSL https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.sh | sh
+
+# 3. .pkg from https://github.com/jammutkarsh/wandersort/releases/latest
+#    It is unsigned; if macOS blocks it, run:
+sudo xattr -dr com.apple.quarantine /usr/local/bin/wandersort
+```
+
+#### Windows
+
+```powershell
+# 1. Scoop
+scoop bucket add jammutkarsh https://github.com/jammutkarsh/scoop-bucket
+scoop install wandersort
+
+# 2. Install script
+irm https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.ps1 | iex
+
+# 3. .msi from https://github.com/jammutkarsh/wandersort/releases/latest
+#    It is unsigned; on the SmartScreen warning click "More info", then "Run anyway".
+```
+
+#### Linux
+
+```bash
+# 1. Install script
+curl -fsSL https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.sh | sh
+
+# 2. .deb, .rpm or .apk from https://github.com/jammutkarsh/wandersort/releases/latest
+sudo apt install ./wandersort_<version>_linux_amd64.deb
+```
+
+#### From source
+
+```bash
+# Go 1.27+
+go install github.com/jammutkarsh/wandersort@latest
+
+# or
+git clone https://github.com/jammutkarsh/wandersort.git && cd wandersort && make install
+```
+
+### Usage
+
+```bash
+# Do everything on screen: settings, adding folders, correcting the plan.
+wandersort
+
+# Or step by step. Dependencies (ExifTool + locationDB) download on first
+# use, in up to three tries.
+wandersort add --paths ~/Pictures,/Volumes/SD   # plan where every file goes
+wandersort organise                              # correct the plan
+wandersort copy                                  # copy the files in
+wandersort check                                 # later: verify the library
+```
+
+> Settings (folder layout, home and work, fine-tuning) live in the library itself, so each library keeps its own. `wandersort` opens the one you used last; `--output-path` picks another.
+
+### Running unattended
+
+`add`, `copy` and `check` need no terminal. Without one they never prompt and print one line per stage. With no library yet, `add` creates `~/WandersortLibrary` with default settings.
+
+```bash
+# every night: plan new uploads, then copy them in
+0 2 * * *  wandersort add -p /mnt/uploads -o /mnt/photos && wandersort copy -o /mnt/photos
+```
+
+| Exit | Meaning |
+|---|---|
+| 0 | Finished (also when there was nothing new) |
+| 1 | Stopped by an error; the next run carries on |
+| 2 | Couldn't start: bad flags or arguments |
+| 3 | Finished, but some files failed; each is named |
+| 4 | Another wandersort is using the library |
+
+`--json` prints one result object on stdout at the end, failures included; progress stays on stderr. A copy that leaves files out writes an HTML page listing each one, grouped by the drive it came from, beside that run's log in `~/.wandersort/logs/`.
+
+Run `wandersort --help`, or `wandersort <command> --help`, for the full command and flag reference.
+
+---
+
 ## The Problem
 
 You went to the coast six months ago. Shot a ton on your phone — some on a DSLR too. You want to make a reel. You remember the clip of that beach at golden hour, the slow-mo of waves crashing, the photo your friend edited and airdropped back.
@@ -53,57 +148,6 @@ If you want a visual hierarchy — `2024/08_August/02_04/<city>/sunset_01.heic` 
 If Google Photos or iCloud works for you — genuinely, no judgement — this isn't your tool. WanderSort is for people who want to *own* their media organisation, not rent it.
 
 ---
-
-## Getting Started
-
-WanderSort is a single, self-contained command-line binary.
-
-### Install
-
-Build from source (requires Go 1.27+):
-
-```bash
-git clone https://github.com/jammutkarsh/wandersort.git
-cd wandersort
-make install         installs to $GOPATH/bin/wandersort (requires Go 1.27.1 or above)
-```
-
-### Usage
-
-```bash
-# Do everything on screen: settings, adding folders, correcting the plan.
-wandersort
-
-# Or step by step. Dependencies (ExifTool + locationDB) download on first
-# use, in up to three tries.
-wandersort add --paths ~/Pictures,/Volumes/SD   # plan where every file goes
-wandersort organise                              # correct the plan
-wandersort copy                                  # copy the files in
-wandersort check                                 # later: verify the library
-```
-
-> Settings (folder layout, home and work, fine-tuning) live in the library itself, so each library keeps its own. `wandersort` opens the one you used last; `--output-path` picks another.
-
-### Running unattended
-
-`add`, `copy` and `check` need no terminal. Without one they never prompt and print one line per stage. With no library yet, `add` creates `~/WandersortLibrary` with default settings.
-
-```bash
-# every night: plan new uploads, then copy them in
-0 2 * * *  wandersort add -p /mnt/uploads -o /mnt/photos && wandersort copy -o /mnt/photos
-```
-
-| Exit | Meaning |
-|---|---|
-| 0 | Finished (also when there was nothing new) |
-| 1 | Stopped by an error; the next run carries on |
-| 2 | Couldn't start: bad flags or arguments |
-| 3 | Finished, but some files failed; each is named |
-| 4 | Another wandersort is using the library |
-
-`--json` prints one result object on stdout at the end, failures included; progress stays on stderr. A copy that leaves files out writes an HTML page listing each one, grouped by the drive it came from, beside that run's log in `~/.wandersort/logs/`.
-
-Run `wandersort --help`, or `wandersort <command> --help`, for the full command and flag reference.
 
 ---
 
