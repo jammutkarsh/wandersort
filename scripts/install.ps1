@@ -1,5 +1,5 @@
 # wandersort installer for Windows (PowerShell 5+).
-#   irm https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.ps1 | iex
+#   irm https://wandersort.utkarshchourasia.in/install.ps1 | iex
 # Downloads the bare .exe from the GitHub release and refuses to install it
 # unless it matches the release's checksums.txt.
 # Env overrides:

@@ -23,7 +23,7 @@ brew install --cask jammutkarsh/tap/wandersort
 
 ```bash
 # Install script
-curl -fsSL https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.sh | sh
+curl -fsSL https://wandersort.utkarshchourasia.in/install.sh | sh
 ```
 
 ```bash
@@ -42,7 +42,7 @@ winget install jammutkarsh.wandersort
 
 ```powershell
 # Install script
-irm https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.ps1 | iex
+irm https://wandersort.utkarshchourasia.in/install.ps1 | iex
 ```
 
 ```powershell
@@ -55,7 +55,7 @@ scoop install wandersort
 
 ```bash
 # Install script
-curl -fsSL https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.sh | sh
+curl -fsSL https://wandersort.utkarshchourasia.in/install.sh | sh
 ```
 
 ```bash
