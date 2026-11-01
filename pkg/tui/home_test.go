@@ -58,7 +58,7 @@ func TestHome(t *testing.T) {
 				t.Fatalf("added = %v, want the expanded [%s]", got, sub)
 			}
 			v := ansi.Strip(m.View())
-			if !strings.Contains(v, "~/Raw_JPG") || strings.Contains(v, home+"/Raw_JPG") {
+			if !strings.Contains(v, filepath.Join("~", "Raw_JPG")) || strings.Contains(v, sub) {
 				t.Errorf("want the folder listed as ~/Raw_JPG, not spelled out:\n%s", v)
 			}
 		}},

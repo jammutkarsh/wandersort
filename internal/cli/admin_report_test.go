@@ -189,10 +189,12 @@ func TestRunIssueShipsScrubbedErrors(t *testing.T) {
 	if got == "" {
 		t.Fatal("no errors.json in the zip")
 	}
-	if strings.Contains(got, home) {
+	// JSON doubles a Windows path's backslashes
+	jsonPath := func(p string) string { return strings.ReplaceAll(p, `\`, `\\`) }
+	if strings.Contains(got, jsonPath(home)) {
 		t.Errorf("home directory %q survived in errors.json:\n%s", home, got)
 	}
-	if !strings.Contains(got, "$HOME/Pictures/IMG_1.HEIC") {
+	if !strings.Contains(got, jsonPath(filepath.Join("$HOME", "Pictures", "IMG_1.HEIC"))) {
 		t.Errorf("errors.json lost the folder structure:\n%s", got)
 	}
 }

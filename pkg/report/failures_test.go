@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -71,7 +72,7 @@ func TestFailures(t *testing.T) {
 			}
 		}
 	}
-	if f := r.Drives[0].Groups[0].Files[0]; f.Target != "2024/01_January/02" {
+	if f := r.Drives[0].Groups[0].Files[0]; f.Target != filepath.FromSlash("2024/01_January/02") {
 		t.Errorf("planned folder = %q, want 2024/01_January/02", f.Target)
 	}
 

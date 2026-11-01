@@ -172,11 +172,10 @@ func unreserve(name string) string {
 // inside the other. Both must already be canonical absolute paths
 func Overlaps(a, b string) bool {
 	sep := string(filepath.Separator)
-	// the filesystem root contains every absolute path
-	if a == b || a == sep || b == sep {
-		return true
-	}
-	return strings.HasPrefix(b, a+sep) || strings.HasPrefix(a, b+sep)
+	// trimming the separator first makes a root ("/", `C:\`) the prefix of every path on it
+	return a == b ||
+		strings.HasPrefix(b, strings.TrimSuffix(a, sep)+sep) ||
+		strings.HasPrefix(a, strings.TrimSuffix(b, sep)+sep)
 }
 
 // ReduceRoots canonicalizes paths, checks they are directories, deduplicates,

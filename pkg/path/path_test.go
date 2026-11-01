@@ -38,7 +38,7 @@ func TestPathUtil_ExpandPath(t *testing.T) {
 }
 
 func TestPathUtil_ContractPath(t *testing.T) {
-	pu := &Resolver{HomeDir: "/home/testuser"}
+	pu := &Resolver{HomeDir: filepath.FromSlash("/home/testuser")}
 
 	tests := []struct {
 		input string
@@ -50,9 +50,9 @@ func TestPathUtil_ContractPath(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := pu.RelativeToHome(tt.input)
-			if got != tt.want {
-				t.Errorf("ContractPath(%q) = %q, want %q", tt.input, got, tt.want)
+			got := pu.RelativeToHome(filepath.FromSlash(tt.input))
+			if want := filepath.FromSlash(tt.want); got != want {
+				t.Errorf("ContractPath(%q) = %q, want %q", tt.input, got, want)
 			}
 		})
 	}
@@ -110,6 +110,9 @@ func TestSanitizeFileName(t *testing.T) {
 	}
 }
 
+// rootDir is the filesystem root as a slash path: / here, C:/ on Windows.
+var rootDir = filepath.ToSlash(filepath.VolumeName(os.TempDir()) + string(filepath.Separator))
+
 func TestOverlaps(t *testing.T) {
 	tests := []struct {
 		name string
@@ -121,10 +124,11 @@ func TestOverlaps(t *testing.T) {
 		{"parent", "/photos/sub", "/photos", true},
 		{"sibling", "/photos", "/videos", false},
 		{"prefix but not nested", "/photos", "/photos2", false},
+		{"root holds everything", rootDir, "/photos", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Overlaps(tt.a, tt.b); got != tt.want {
+			if got := Overlaps(filepath.FromSlash(tt.a), filepath.FromSlash(tt.b)); got != tt.want {
 				t.Errorf("Overlaps(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
 			}
 		})
