@@ -32,7 +32,9 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	os.Setenv("TMPDIR", dir)
+	for _, v := range []string{"TMPDIR", "TMP", "TEMP"} { // TMP, TEMP: Windows
+		os.Setenv(v, dir)
+	}
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
