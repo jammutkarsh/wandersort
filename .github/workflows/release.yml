@@ -55,6 +55,8 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $num = $tag.TrimStart("v")
+          # Windows Installer versions are numeric only: 0.1.0-beta installs as 0.1.0
+          $msiVersion = $num -replace '-.*$', ''
           foreach ($arch in @(@{ go = "amd64"; wix = "x64" }, @{ go = "arm64"; wix = "arm64" })) {
             $asset = "wandersort_${num}_windows_$($arch.go).zip"
             $url = "https://github.com/${{ github.repository }}/releases/download/$tag/$asset"
@@ -63,6 +65,6 @@ jobs:
             Expand-Archive $asset -DestinationPath $dir -Force
             $msi = "wandersort-$num-$($arch.wix).msi"
             wix build build\wandersort.wxs -arch $($arch.wix) `
-              -d "Version=$num" -d "BinPath=$dir\wandersort.exe" -o $msi
+              -d "Version=$msiVersion" -d "BinPath=$dir\wandersort.exe" -o $msi
             gh release upload $tag $msi --clobber --repo ${{ github.repository }}
           }
