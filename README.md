@@ -6,80 +6,102 @@ WanderSort is a local-first media organiser that scans your chaotic pile of phot
 
 No cloud uploads. No subscriptions. No AI deciding what's "relevant." Just your files, your rules, your structure.
 
----
-
 ## Getting Started
 
 WanderSort is a single, self-contained command-line binary.
 
 ### Install
 
-[macOS](#macos) · [Windows](#windows) · [Linux](#linux) · [From source](#from-source)
+[macOS](#macos) · [Windows](#windows) · [Linux](#linux)
 
 #### macOS
 
+Homebrew
+
 ```bash
-# 1. Homebrew
 brew install --cask jammutkarsh/tap/wandersort
+```
 
-# 2. Install script
+Install script
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.sh | sh
+```
 
-# 3. .pkg from https://github.com/jammutkarsh/wandersort/releases/latest
-#    It is unsigned; if macOS blocks it, run:
+Release package
+
+```bash
+# download the .pkg from https://github.com/jammutkarsh/wandersort/releases/latest and open it
+# it is unsigned; if macOS blocks it, run:
 sudo xattr -dr com.apple.quarantine /usr/local/bin/wandersort
 ```
 
 #### Windows
 
+winget
+
 ```powershell
-# 1. Scoop
+winget install jammutkarsh.wandersort
+```
+
+Install script
+
+```powershell
+irm https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.ps1 | iex
+```
+
+Scoop
+
+```powershell
 scoop bucket add jammutkarsh https://github.com/jammutkarsh/scoop-bucket
 scoop install wandersort
-
-# 2. Install script
-irm https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.ps1 | iex
-
-# 3. .msi from https://github.com/jammutkarsh/wandersort/releases/latest
-#    It is unsigned; on the SmartScreen warning click "More info", then "Run anyway".
 ```
 
 #### Linux
 
-```bash
-# 1. Install script
-curl -fsSL https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.sh | sh
+Install script
 
-# 2. .deb, .rpm or .apk from https://github.com/jammutkarsh/wandersort/releases/latest
-sudo apt install ./wandersort_<version>_linux_amd64.deb
+```bash
+curl -fsSL https://raw.githubusercontent.com/jammutkarsh/wandersort/main/scripts/install.sh | sh
 ```
 
-#### From source
+Go 1.27+
 
 ```bash
-# Go 1.27+
 go install github.com/jammutkarsh/wandersort@latest
+```
 
-# or
-git clone https://github.com/jammutkarsh/wandersort.git && cd wandersort && make install
+apt
+
+```bash
+# download the .deb from https://github.com/jammutkarsh/wandersort/releases/latest, then:
+sudo apt install ./wandersort_<version>_linux_amd64.deb
 ```
 
 ### Usage
 
-```bash
-# Do everything on screen: settings, adding folders, correcting the plan.
-wandersort
+#### TUI
 
-# Or step by step. Dependencies (ExifTool + locationDB) download on first
-# use, in up to three tries.
+```bash
+# settings, adding folders, correcting the plan and copying, all on screen
+wandersort
+```
+
+Settings (folder layout, home and work, fine-tuning) live in the library itself, so each library keeps its own. `wandersort` opens the one you used last; `--output-path` picks another.
+
+#### CLI
+
+```bash
+# dependencies (ExifTool + locationDB) download on first use, in up to three tries
 wandersort add --paths ~/Pictures,/Volumes/SD   # plan where every file goes
 wandersort organise                              # correct the plan
 wandersort copy                                  # copy the files in
 wandersort check                                 # later: verify the library
 ```
 
-> Settings (folder layout, home and work, fine-tuning) live in the library itself, so each library keeps its own. `wandersort` opens the one you used last; `--output-path` picks another.
+Run `wandersort --help`, or `wandersort <command> --help`, for the full command and flag reference.
 
+<!--
 ### Running unattended
 
 `add`, `copy` and `check` need no terminal. Without one they never prompt and print one line per stage. With no library yet, `add` creates `~/WandersortLibrary` with default settings.
@@ -98,8 +120,7 @@ wandersort check                                 # later: verify the library
 | 4 | Another wandersort is using the library |
 
 `--json` prints one result object on stdout at the end, failures included; progress stays on stderr. A copy that leaves files out writes an HTML page listing each one, grouped by the drive it came from, beside that run's log in `~/.wandersort/logs/`.
-
-Run `wandersort --help`, or `wandersort <command> --help`, for the full command and flag reference.
+-->
 
 ---
 
