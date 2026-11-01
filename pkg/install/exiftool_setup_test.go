@@ -89,6 +89,7 @@ func TestFindExiftoolRejectsOutdatedBinDir(t *testing.T) {
 }
 
 func TestFindExiftoolNotFound(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
 	if _, err := findExiftool(logger.NewNoopLogger(), t.TempDir()); err == nil {
 		t.Error("findExiftool() with nothing installed = nil error, want one")
 	}
