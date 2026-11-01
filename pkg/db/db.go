@@ -157,7 +157,7 @@ func OpenReadOnly(path string) (*ReadOnly, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("database not found at %s: %w", path, err)
 	}
-	sqlDB, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String())
+	sqlDB, err := sql.Open("sqlite", fileURI(path, "mode=ro"))
 	if err != nil {
 		return nil, fmt.Errorf("open %s read-only: %w", path, err)
 	}
@@ -214,13 +214,24 @@ func appDSN(dbPath string) string {
 		"temp_store(memory)", // temp tables and indices in RAM
 		"wal_autocheckpoint(2000)",
 	}
-	u := url.URL{Scheme: "file", Path: dbPath}
 	q := url.Values{}
 	for _, p := range pragmas {
 		q.Add("_pragma", p)
 	}
-	u.RawQuery = q.Encode()
-	return u.String()
+	return fileURI(dbPath, q.Encode())
+}
+
+// fileURI is path as a SQLite file: URI. A Windows drive path needs forward
+// slashes and a leading one (file:///C:/dir/x.db); SQLite reads anything else
+// before the first slash as a URI authority and refuses it.
+//
+// ponytail: UNC paths (\\server\share) are passed through as-is; SQLite wants
+// file:////server/share/... for those.
+func fileURI(path, rawQuery string) string {
+	if v := filepath.VolumeName(path); len(v) == 2 && v[1] == ':' {
+		path = "/" + filepath.ToSlash(path)
+	}
+	return (&url.URL{Scheme: "file", Path: path, RawQuery: rawQuery}).String()
 }
 
 // assertPragmas reads back the settings whose silent absence would be a

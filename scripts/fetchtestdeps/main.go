@@ -38,9 +38,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "fetchtestdeps: location db:", err)
 		os.Exit(1)
 	}
-	// no test needs the real exiftool binary, so its failure only warns
+	// only pkg/exiftool's pool tests need it, from PATH, so its failure only warns
 	if _, err := deps.Exiftool(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "fetchtestdeps: exiftool (non-fatal, no test needs it yet):", err)
+		fmt.Fprintln(os.Stderr, "fetchtestdeps: exiftool (non-fatal):", err)
 	}
 
 	fmt.Println("test deps ready:", dir)

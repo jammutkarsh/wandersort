@@ -61,7 +61,10 @@ jobs:
           cache: true
 
       - name: Fetch test dependencies
-        run: go run ./scripts/fetchtestdeps "$WANDERSORT_TEST_DEPS_DIR"
+        run: |
+          go run ./scripts/fetchtestdeps "$WANDERSORT_TEST_DEPS_DIR"
+          # the exiftool pool tests run exiftool from PATH
+          echo "$WANDERSORT_TEST_DEPS_DIR/bin" >> "$GITHUB_PATH"
 
       - name: Vet
         run: go vet ./...
