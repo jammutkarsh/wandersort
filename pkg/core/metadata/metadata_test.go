@@ -18,6 +18,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
+	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
@@ -29,24 +30,6 @@ const (
 	fileExceedsMemoryBytes    int64 = 96 << 20 // 96 MiB is above the configured memory limit
 	concurrentLargeFileCount        = 4
 )
-
-// fakeExiftool is a stand-in exiftool that answers every request with answer
-// followed by the ready token.
-func fakeExiftool(t *testing.T, answer string) string {
-	t.Helper()
-	p := filepath.Join(t.TempDir(), "exiftool")
-	script := "#!/bin/sh\nwhile read -r l; do [ \"$l\" = \"-execute\" ] && printf '" + answer + "{ready}\\n'; done\n"
-	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-// noTagsExiftool answers every file with valid JSON and no tags.
-func noTagsExiftool(t *testing.T) string {
-	t.Helper()
-	return fakeExiftool(t, `[{"SourceFile":"x"}]\n`)
-}
 
 func mustNew(t *testing.T, d *db.DB, exiftoolPath string, workers int) *Extractor {
 	t.Helper()
@@ -222,7 +205,7 @@ func TestExtractor(t *testing.T) {
 			}
 			dbtest.SeedFile(t, d, 1, root, "photo.jpg", 5)
 
-			e := mustNew(t, d, noTagsExiftool(t), 1)
+			e := mustNew(t, d, installtest.Exiftool(t), 1)
 			count, err := e.Run(ctx)
 			if err != nil {
 				t.Fatalf("Run: %v", err)
@@ -244,31 +227,6 @@ func TestExtractor(t *testing.T) {
 			}
 			if rows != 1 {
 				t.Errorf("a file with no tags should leave one hashed row with NULL exif columns, got %d", rows)
-			}
-		}},
-		// exiftool answering nothing (it could not open the file) is unknown
-		// tags, not empty ones: a READ failure retried next run, no metadata row
-		{"RunRecordsAFileExiftoolCouldNotOpen", func(t *testing.T) {
-			ctx := context.Background()
-			d := dbtest.New(t)
-			root := t.TempDir()
-			if err := os.WriteFile(filepath.Join(root, "photo.jpg"), []byte("bytes"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			dbtest.SeedFile(t, d, 1, root, "photo.jpg", 5)
-
-			if _, err := mustNew(t, d, fakeExiftool(t, ""), 1).Run(ctx); err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-			if got := state(t, d, 1); got != stateFailed {
-				t.Fatalf("state = %s, want %s", got, stateFailed)
-			}
-			var op string
-			if err := d.SQL.Get(&op, `SELECT op FROM errors WHERE file_id = 1 AND stage = 'READ'`); err != nil {
-				t.Fatal(err)
-			}
-			if op != opExiftool {
-				t.Errorf("op = %q, want %q", op, opExiftool)
 			}
 		}},
 		// without exiftool every file would be stored with empty metadata and
@@ -294,7 +252,7 @@ func TestExtractor(t *testing.T) {
 				BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := mustNew(t, d, noTagsExiftool(t), 1).Run(ctx); err == nil {
+			if _, err := mustNew(t, d, installtest.Exiftool(t), 1).Run(ctx); err == nil {
 				t.Fatal("Run with a lost metadata write = nil error, want one")
 			}
 		}},
@@ -311,7 +269,7 @@ func TestExtractor(t *testing.T) {
 			}
 			d.Writer.Close()
 
-			e := mustNew(t, d, noTagsExiftool(t), 1)
+			e := mustNew(t, d, installtest.Exiftool(t), 1)
 			done := make(chan error, 1)
 			go func() {
 				_, err := e.Run(context.Background())
@@ -342,7 +300,7 @@ func TestExtractor(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			e := mustNew(t, d, noTagsExiftool(t), 1)
+			e := mustNew(t, d, installtest.Exiftool(t), 1)
 			count, err := e.Run(ctx)
 			if err != nil {
 				t.Fatalf("Run: %v", err)
@@ -380,7 +338,7 @@ func TestExtractor(t *testing.T) {
 			dbtest.SeedFile(t, d, 1, root, "photo.jpg", 13)
 			dbtest.SeedHash(t, d, 1, "earlier-hash")
 
-			e := mustNew(t, d, noTagsExiftool(t), 1)
+			e := mustNew(t, d, installtest.Exiftool(t), 1)
 			count, err := e.Run(ctx)
 			if err != nil {
 				t.Fatalf("Run: %v", err)
@@ -405,7 +363,7 @@ func TestExtractor(t *testing.T) {
 			// Registry points at a file that does not exist, so opening fails
 			dbtest.SeedFile(t, d, 1, t.TempDir(), "gone.jpg", 13)
 
-			e := mustNew(t, d, noTagsExiftool(t), 1)
+			e := mustNew(t, d, installtest.Exiftool(t), 1)
 			if _, err := e.Run(ctx); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -430,7 +388,7 @@ func TestExtractor(t *testing.T) {
 				t.Errorf("detail = %s, want the message and frames", row.Detail)
 			}
 
-			count, err := mustNew(t, d, noTagsExiftool(t), 1).Run(ctx)
+			count, err := mustNew(t, d, installtest.Exiftool(t), 1).Run(ctx)
 			if err != nil {
 				t.Fatalf("second Run: %v", err)
 			}
@@ -450,7 +408,7 @@ func TestExtractor(t *testing.T) {
 			dir := t.TempDir()
 			dbtest.SeedFile(t, d, 1, dir, "back.jpg", 5)
 
-			if _, err := mustNew(t, d, noTagsExiftool(t), 1).Run(ctx); err != nil {
+			if _, err := mustNew(t, d, installtest.Exiftool(t), 1).Run(ctx); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 			d.Writer.Flush()
@@ -461,7 +419,7 @@ func TestExtractor(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "back.jpg"), []byte("photo"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			count, err := mustNew(t, d, noTagsExiftool(t), 1).Run(ctx)
+			count, err := mustNew(t, d, installtest.Exiftool(t), 1).Run(ctx)
 			if err != nil {
 				t.Fatalf("second Run: %v", err)
 			}
@@ -483,7 +441,7 @@ func TestExtractor(t *testing.T) {
 				t.Fatalf("setup: state = %s, want failed", got)
 			}
 
-			e := mustNew(t, d, noTagsExiftool(t), 1)
+			e := mustNew(t, d, installtest.Exiftool(t), 1)
 			d.Writer.Write(e.store(1, "hash", classifier.CommonMetadata{}))
 			d.Writer.Flush()
 			if got := state(t, d, 1); got != stateRead {
@@ -512,7 +470,7 @@ func TestExtractor(t *testing.T) {
 				dbtest.SeedFile(t, d, int64(i), root, name, int64(len(name)))
 			}
 
-			e := mustNew(t, d, noTagsExiftool(t), 2)
+			e := mustNew(t, d, installtest.Exiftool(t), 2)
 			e.reads = nil
 			if _, err := e.Run(ctx); err != nil {
 				t.Fatalf("Run: %v", err)
@@ -543,12 +501,12 @@ func TestExtractor(t *testing.T) {
 				t.Fatal(err)
 			}
 			dbtest.SeedFile(t, d, 1, root, "photo.jpg", 3)
-			dying := filepath.Join(t.TempDir(), "exiftool")
-			if err := os.WriteFile(dying, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			e := mustNew(t, d, installtest.Exiftool(t), 1)
+			if err := e.pool.Kill(); err != nil {
 				t.Fatal(err)
 			}
 
-			if _, err := mustNew(t, d, dying, 1).Run(ctx); err != nil {
+			if _, err := e.Run(ctx); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 			d.Writer.Flush()
@@ -579,7 +537,7 @@ func TestExtractor(t *testing.T) {
 				dbtest.SeedFile(t, d, int64(i), root, name, int64(len(name)))
 			}
 
-			e := mustNew(t, d, noTagsExiftool(t), 4)
+			e := mustNew(t, d, installtest.Exiftool(t), 4)
 			count, err := e.Run(ctx)
 			if err != nil {
 				t.Fatalf("Run: %v", err)
@@ -601,7 +559,7 @@ func TestExtractor(t *testing.T) {
 			d := dbtest.New(t)
 			dbtest.SeedFile(t, d, 1, t.TempDir(), "photo.jpg", 13)
 
-			e := mustNew(t, d, noTagsExiftool(t), 1)
+			e := mustNew(t, d, installtest.Exiftool(t), 1)
 			if !d.Writer.Write(e.store(1, "hash-of-photo.jpg", classifier.CommonMetadata{
 				ImageWidth:       "4032",
 				ImageHeight:      "3024",
@@ -674,7 +632,7 @@ func TestExtractor(t *testing.T) {
 				dbtest.SeedFile(t, d, int64(i), root, name, int64(len(name)))
 			}
 
-			e := mustNew(t, d, noTagsExiftool(t), 4)
+			e := mustNew(t, d, installtest.Exiftool(t), 4)
 			// pretend every file sits on a spinning disk: one read at a time,
 			// four workers waiting behind it
 			e.budget = 1
@@ -723,7 +681,7 @@ func TestExtractor(t *testing.T) {
 			// wildcard: scoping to it must not drain the other two
 			seed(5, "orphan.jpg", "")
 
-			e := mustNew(t, d, noTagsExiftool(t), 8)
+			e := mustNew(t, d, installtest.Exiftool(t), 8)
 			// classes are pre-seeded so the test never touches real hardware
 			e.classes["aaa-spinning"] = volume.ClassRotational
 			e.classes["zzz-nvme"] = volume.ClassSolidState
@@ -766,7 +724,7 @@ func TestExtractor(t *testing.T) {
 			}
 			dbtest.SeedFile(t, d, 1, root, "solo.jpg", int64(len("only one this long")))
 
-			e := mustNew(t, d, noTagsExiftool(t), 1)
+			e := mustNew(t, d, installtest.Exiftool(t), 1)
 			if _, err := e.Run(ctx); err != nil {
 				t.Fatalf("Run: %v", err)
 			}

@@ -39,6 +39,7 @@ func readOnlyLog(t *testing.T, dir string) string {
 func TestFileBuffersUntilPersist(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "logs")
 	f := NewFile(dir)
+	t.Cleanup(func() { f.Close() }) // Windows can't remove an open file
 	l := New(f)
 	l.Debug("debug-only detail", "key", "value")
 
@@ -66,7 +67,9 @@ func TestFileBuffersUntilPersist(t *testing.T) {
 
 func TestFilePersistsOnWarning(t *testing.T) {
 	dir := t.TempDir()
-	l := New(NewFile(dir))
+	f := NewFile(dir)
+	t.Cleanup(func() { f.Close() })
+	l := New(f)
 	l.Info("context before the problem")
 	if len(Recent(dir, 0)) != 0 {
 		t.Fatal("an info line must not persist the log")
@@ -81,6 +84,7 @@ func TestFilePersistsOnWarning(t *testing.T) {
 func TestFilePersistsPastBufferCap(t *testing.T) {
 	dir := t.TempDir()
 	f := NewFile(dir)
+	t.Cleanup(func() { f.Close() })
 	if _, err := f.Write(make([]byte, maxBuffered+1)); err != nil {
 		t.Fatal(err)
 	}
@@ -110,6 +114,7 @@ func TestFilePersistPrunes(t *testing.T) {
 	}
 
 	f := NewFile(dir)
+	t.Cleanup(func() { f.Close() })
 	f.Persist()
 	if _, err := os.Stat(prunedPage); !os.IsNotExist(err) {
 		t.Errorf("the pruned log's page is still there: %v", err)
@@ -142,6 +147,7 @@ func TestFilePersistPrunes(t *testing.T) {
 func TestNewTUIRoutesToSinkAndFile(t *testing.T) {
 	dir := t.TempDir()
 	f := NewFile(dir)
+	t.Cleanup(func() { f.Close() })
 
 	var events []Event
 	sink := func(e Event) { events = append(events, e) }

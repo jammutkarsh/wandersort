@@ -23,11 +23,11 @@ const (
 // File is one process's log. Records stay in memory until Persist (on opening
 // a library, or the first warning); a run that never persists leaves no file.
 type File struct {
-	f      *os.File
-	dir    string
-	buf    bytes.Buffer
-	mu     sync.Mutex
-	failed bool
+	f   *os.File
+	dir string
+	buf bytes.Buffer
+	mu  sync.Mutex
+	off bool // file logging is off: the file wouldn't open, or Close ran
 }
 
 // NewFile returns an unpersisted log file for this process, to live in dir.
@@ -39,7 +39,7 @@ func (l *File) Write(p []byte) (int, error) {
 	switch {
 	case l.f != nil:
 		return l.f.Write(p)
-	case l.failed:
+	case l.off:
 		return len(p), nil // file logging is off; never fail the caller's log call
 	}
 	l.buf.Write(p)
@@ -61,7 +61,7 @@ func (l *File) Persist() {
 }
 
 func (l *File) persist() {
-	if l.f != nil || l.failed {
+	if l.f != nil || l.off {
 		return
 	}
 	if old := Recent(l.dir, 0); len(old) >= keepLogs {
@@ -80,13 +80,30 @@ func (l *File) persist() {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: failed to open log file %s: %v (file logging disabled)\n", path, err)
-		l.failed = true
+		l.off = true
 		l.buf.Reset()
 		return
 	}
 	_, _ = file.Write(l.buf.Bytes())
 	l.buf.Reset()
 	l.f = file
+}
+
+// Close closes the persisted file; later writes are dropped. Idempotent and nil-safe.
+func (l *File) Close() error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.off = true
+	l.buf.Reset()
+	if l.f == nil {
+		return nil
+	}
+	err := l.f.Close()
+	l.f = nil
+	return err
 }
 
 // Path is the persisted file's path, or "" while the run is still buffered.

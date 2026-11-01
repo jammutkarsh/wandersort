@@ -32,7 +32,9 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	os.Setenv("TMPDIR", dir)
+	for _, v := range []string{"TMPDIR", "TMP", "TEMP"} { // TMP, TEMP: Windows
+		os.Setenv(v, dir)
+	}
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
@@ -41,7 +43,10 @@ func TestMain(m *testing.M) {
 // usePreviewRoot points the preview root at a directory only this test uses.
 func usePreviewRoot(t *testing.T) string {
 	t.Helper()
-	t.Setenv("TMPDIR", t.TempDir())
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	t.Setenv("TMP", tmp) // Windows reads the temp folder from TMP, then TEMP
+	t.Setenv("TEMP", tmp)
 	if err := os.MkdirAll(PreviewRoot(), 0o755); err != nil {
 		t.Fatal(err)
 	}

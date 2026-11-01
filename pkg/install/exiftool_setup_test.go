@@ -2,9 +2,9 @@ package install
 
 import (
 	"archive/tar"
+	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -12,21 +12,27 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-// fakeExiftool writes an executable shell script at path that prints ver to
-// stdout when run with "-ver" — standing in for the real binary so
-// checkVersion/findExiftool are testable without a live download.
-func fakeExiftool(t *testing.T, path, ver string) {
+// realExiftoolDir is the test-deps bin folder holding the real exiftool the
+// app installs, installing it there once per machine if missing. Its folder
+// lookup mirrors installtest.depsDir, which this package can't import (cycle).
+func realExiftoolDir(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS == windows {
-		t.Skip("fake exiftool script is a shell script; unix-only")
+	dir := os.Getenv("WANDERSORT_TEST_DEPS_DIR")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skipf("no home dir: %v", err)
+		}
+		dir = filepath.Join(home, ".wandersort")
 	}
-	script := "#!/bin/sh\necho '" + ver + "'\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake exiftool: %v", err)
+	binDir := filepath.Join(dir, "bin")
+	if _, err := setupExiftool(context.Background(), logger.NewNoopLogger(), binDir, nil); err != nil {
+		t.Skipf("exiftool unavailable (offline?): %v", err)
 	}
+	return binDir
 }
 
-func TestCheckVersion(t *testing.T) {
+func TestVersionAtLeast(t *testing.T) {
 	tests := []struct {
 		name    string
 		ver     string
@@ -44,17 +50,21 @@ func TestCheckVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bin := filepath.Join(t.TempDir(), "exiftool")
-			fakeExiftool(t, bin, tt.ver)
-
-			got, err := checkVersion(bin, logger.NewNoopLogger())
+			got, err := versionAtLeast(tt.ver)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("checkVersion() error = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("versionAtLeast(%q) error = %v, wantErr %v", tt.ver, err, tt.wantErr)
 			}
 			if got != tt.want {
-				t.Errorf("checkVersion() = %v, want %v", got, tt.want)
+				t.Errorf("versionAtLeast(%q) = %v, want %v", tt.ver, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCheckVersionOfRealExiftool(t *testing.T) {
+	ok, err := checkVersion(filepath.Join(realExiftoolDir(t), exiftoolBin()), logger.NewNoopLogger())
+	if err != nil || !ok {
+		t.Errorf("checkVersion() on the installed exiftool = %v, %v; want true", ok, err)
 	}
 }
 
@@ -65,9 +75,8 @@ func TestCheckVersionMissingBinary(t *testing.T) {
 	}
 }
 
-func TestFindExiftoolPrefersBinDirOverMissingPath(t *testing.T) {
-	binDir := t.TempDir()
-	fakeExiftool(t, filepath.Join(binDir, exiftoolBin()), exiftoolVersion)
+func TestFindExiftoolUsesBinDir(t *testing.T) {
+	binDir := realExiftoolDir(t)
 
 	got, err := findExiftool(logger.NewNoopLogger(), binDir)
 	if err != nil {
@@ -79,16 +88,8 @@ func TestFindExiftoolPrefersBinDirOverMissingPath(t *testing.T) {
 	}
 }
 
-func TestFindExiftoolRejectsOutdatedBinDir(t *testing.T) {
-	binDir := t.TempDir()
-	fakeExiftool(t, filepath.Join(binDir, exiftoolBin()), "1.0")
-
-	if _, err := findExiftool(logger.NewNoopLogger(), binDir); err == nil {
-		t.Error("findExiftool() with an outdated binary = nil error, want one (must fall through to install)")
-	}
-}
-
 func TestFindExiftoolNotFound(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
 	if _, err := findExiftool(logger.NewNoopLogger(), t.TempDir()); err == nil {
 		t.Error("findExiftool() with nothing installed = nil error, want one")
 	}

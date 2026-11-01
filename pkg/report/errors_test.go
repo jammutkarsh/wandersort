@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,10 +16,11 @@ import (
 )
 
 func TestScrub(t *testing.T) {
-	const home = "/Users/zzuser"
+	// paths in the OS's own form, as the app records them; the planned target stays slash-separated, as stored
+	home := filepath.FromSlash("/Users/zzuser")
 	known := knownPaths{
-		Options: Options{Home: home, Library: "/Volumes/Photos/Library", Redact: false},
-		source:  "/Users/zzuser/Pictures/Import/IMG_0231.HEIC",
+		Options: Options{Home: home, Library: filepath.FromSlash("/Volumes/Photos/Library"), Redact: false},
+		source:  filepath.FromSlash("/Users/zzuser/Pictures/Import/IMG_0231.HEIC"),
 		name:    "IMG_0231.HEIC",
 		target:  "2024/06_June/IMG_0231.HEIC",
 	}
@@ -58,12 +60,12 @@ func TestScrub(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			k := known
 			k.Redact = tt.redact
-			got := k.scrub(tt.in)
-			if got != tt.want {
-				t.Errorf("scrub = %q, want %q", got, tt.want)
+			got := k.scrub(filepath.FromSlash(tt.in))
+			if want := filepath.FromSlash(tt.want); got != want {
+				t.Errorf("scrub = %q, want %q", got, want)
 			}
 			for _, bad := range tt.notWant {
-				if strings.Contains(got, bad) {
+				if strings.Contains(got, filepath.FromSlash(bad)) {
 					t.Errorf("scrub left %q in %q", bad, got)
 				}
 			}

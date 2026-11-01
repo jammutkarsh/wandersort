@@ -12,27 +12,26 @@ import (
 )
 
 // TestStartOfflineHappyPath drives Coordinator.Start end to end with
-// everything already on disk (a valid fake exiftool binary, a valid location
-// db + meta), so neither dependency ever hits the network. This is the one
-// place install.go's own goroutine orchestration (lock -> exiftool ->
-// location, in that order) gets exercised together rather than through its
-// individual pieces.
+// everything already on disk (the real exiftool, a valid location db + meta),
+// so neither dependency ever hits the network. This is the one place
+// install.go's own goroutine orchestration (lock -> exiftool -> location, in
+// that order) gets exercised together rather than through its individual pieces.
 func TestStartOfflineHappyPath(t *testing.T) {
 	dir := t.TempDir()
-	fakeExiftool(t, filepath.Join(dir, exiftoolBin()), exiftoolVersion)
+	exiftoolDir := realExiftoolDir(t)
 
 	dbPath := filepath.Join(dir, config.LocationDBFileName)
 	buildLocationDB(t, dbPath, 2)
 	writeLocationMeta(t, dir, fileSHA256Helper(t, dbPath), 2)
 
-	c := New(Options{ExecutablePath: dir, LocationDBPath: dbPath, Log: logger.NewNoopLogger()})
+	c := New(Options{ExecutablePath: exiftoolDir, LocationDBPath: dbPath, Log: logger.NewNoopLogger()})
 	c.Start(context.Background())
 
 	path, err := c.Exiftool(context.Background())
 	if err != nil {
 		t.Fatalf("Exiftool() error = %v", err)
 	}
-	if want := filepath.Join(dir, exiftoolBin()); path != want {
+	if want := filepath.Join(exiftoolDir, exiftoolBin()); path != want {
 		t.Errorf("Exiftool() = %q, want %q", path, want)
 	}
 
@@ -51,14 +50,14 @@ func TestStartOfflineHappyPath(t *testing.T) {
 // A database that never verifies fails every try, BeforeRetry runs before tries 2 and 3, both getters report it.
 func TestStartGivesUpOnBadLocationDB(t *testing.T) {
 	dir := t.TempDir()
-	fakeExiftool(t, filepath.Join(dir, exiftoolBin()), exiftoolVersion)
+	exiftoolDir := realExiftoolDir(t)
 	dbPath := filepath.Join(dir, config.LocationDBFileName)
 	buildLocationDB(t, dbPath, 1)
 	writeLocationMeta(t, dir, fileSHA256Helper(t, dbPath), 999) // row count mismatch
 
 	var asked []int
 	c := New(Options{
-		ExecutablePath: dir, LocationDBPath: dbPath, Log: logger.NewNoopLogger(),
+		ExecutablePath: exiftoolDir, LocationDBPath: dbPath, Log: logger.NewNoopLogger(),
 		BeforeRetry: func(_ context.Context, next int, err error) error {
 			asked = append(asked, next)
 			// the failed database was removed; put the bad one back so every try fails

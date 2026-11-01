@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
 	"runtime"
 	"strings"
 	"syscall"
@@ -87,16 +88,31 @@ func callers(skip int) []Frame {
 	}
 }
 
-// modulePath is where a frame's file path turns repo-relative.
-const modulePath = "wandersort/"
+// thisFile is this file's path inside the module; frames spell the module root before it.
+const thisFile = "pkg/db/errors.go"
+
+// moduleRoot is the module's directory as this build records it (the module
+// path under -trimpath), whatever the checkout's folder is called.
+var moduleRoot = func() string {
+	_, file, _, _ := runtime.Caller(0)
+	root, found := strings.CutSuffix(file, thisFile)
+	if !found {
+		return ""
+	}
+	return root
+}()
 
 // moduleRelative shortens a frame's file to its path inside the module. Files
-// outside it (the standard library) keep the path they have.
+// outside it (the standard library, dependencies) keep only their name: the
+// frame's func already names the package, and the directory would name the
+// build machine's user.
 func moduleRelative(file string) string {
-	if i := strings.LastIndex(file, modulePath); i >= 0 {
-		return file[i+len(modulePath):]
+	if moduleRoot != "" {
+		if rest, ok := strings.CutPrefix(file, moduleRoot); ok {
+			return rest
+		}
 	}
-	return file
+	return path.Base(file)
 }
 
 // chainLink is one layer of the unwrapped error.

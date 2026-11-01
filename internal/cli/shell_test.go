@@ -98,6 +98,7 @@ func seedProposal(t *testing.T, a *app) {
 func testShell(t *testing.T) shellModel {
 	t.Helper()
 	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
+	t.Cleanup(a.closeDBs) // a refresh may open the library; Windows can't remove it open
 	m := shellModel{a: a, ctx: context.Background(), w: 80, h: 24}
 	m.screens[tabScan] = a.newHomeScreen(nil)
 	return m
