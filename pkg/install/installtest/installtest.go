@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
@@ -35,18 +36,29 @@ func Resolver(t testing.TB) *location.Resolver {
 func Exiftool(t testing.TB) string {
 	t.Helper()
 	dir := depsDir(t)
-	c := install.New(install.Options{
-		ExecutablePath: filepath.Join(dir, "bin"),
-		LocationDBPath: filepath.Join(dir, config.LocationDBFileName),
-		Log:            logger.NewNoopLogger(),
+	// once per test binary: the Coordinator also checks the 184 MB location
+	// database, which every caller would otherwise wait on
+	exiftool.once.Do(func() {
+		c := install.New(install.Options{
+			ExecutablePath: filepath.Join(dir, "bin"),
+			LocationDBPath: filepath.Join(dir, config.LocationDBFileName),
+			Log:            logger.NewNoopLogger(),
+		})
+		c.Start(context.Background())
+		exiftool.path, exiftool.err = c.Exiftool(context.Background())
+		c.Close()
 	})
-	c.Start(context.Background())
-	t.Cleanup(func() { c.Close() })
-	path, err := c.Exiftool(context.Background())
-	if err != nil {
-		t.Skipf("exiftool unavailable (offline?): %v", err)
+	if exiftool.err != nil {
+		t.Skipf("exiftool unavailable (offline?): %v", exiftool.err)
 	}
-	return path
+	return exiftool.path
+}
+
+// exiftool is Exiftool's one lookup, shared by every test in the binary.
+var exiftool struct {
+	once sync.Once
+	path string
+	err  error
 }
 
 // depsDir is where test dependencies live: WANDERSORT_TEST_DEPS_DIR (set by
