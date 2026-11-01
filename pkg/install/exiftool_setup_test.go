@@ -13,7 +13,8 @@ import (
 )
 
 // realExiftoolDir is the test-deps bin folder holding the real exiftool the
-// app installs, installing it there once per machine if missing.
+// app installs, installing it there once per machine if missing. Its folder
+// lookup mirrors installtest.depsDir, which this package can't import (cycle).
 func realExiftoolDir(t *testing.T) string {
 	t.Helper()
 	dir := os.Getenv("WANDERSORT_TEST_DEPS_DIR")

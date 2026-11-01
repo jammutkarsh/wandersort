@@ -13,9 +13,9 @@ import (
 
 // TestStartOfflineHappyPath drives Coordinator.Start end to end with
 // everything already on disk (the real exiftool, a valid location db + meta),
-// so neither dependency ever hits the network. This is the one place install.go's own goroutine orchestration (lock -> exiftool ->
-// location, in that order) gets exercised together rather than through its
-// individual pieces.
+// so neither dependency ever hits the network. This is the one place
+// install.go's own goroutine orchestration (lock -> exiftool -> location, in
+// that order) gets exercised together rather than through its individual pieces.
 func TestStartOfflineHappyPath(t *testing.T) {
 	dir := t.TempDir()
 	exiftoolDir := realExiftoolDir(t)

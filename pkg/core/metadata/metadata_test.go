@@ -490,9 +490,9 @@ func TestExtractor(t *testing.T) {
 				}
 			}
 		}},
-		// exiftool dying (or failing to open the file) is not "this file has no
-		// tags": the file gets a READ failure (so --force retries it) and no
-		// metadata row that would plan it by file date forever
+		// exiftool dying is not "this file has no tags": the file gets a READ
+		// failure (so --force retries it) and no metadata row that would plan
+		// it by file date forever
 		{"RunRecordsExiftoolProcessFailure", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
@@ -502,7 +502,9 @@ func TestExtractor(t *testing.T) {
 			}
 			dbtest.SeedFile(t, d, 1, root, "photo.jpg", 3)
 			e := mustNew(t, d, installtest.Exiftool(t), 1)
-			e.pool.Kill()
+			if err := e.pool.Kill(); err != nil {
+				t.Fatal(err)
+			}
 
 			if _, err := e.Run(ctx); err != nil {
 				t.Fatalf("Run: %v", err)

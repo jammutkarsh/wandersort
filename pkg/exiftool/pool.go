@@ -2,6 +2,7 @@ package exiftool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -79,13 +80,18 @@ func (p *Pool) Extract(ctx context.Context, path string) (classifier.CommonMetad
 }
 
 // Kill ends every idle worker's exiftool process without marking it dead, as a
-// crash would: the next Extract on it fails with ErrProcess. For tests of that path.
-func (p *Pool) Kill() {
+// crash would: the next Extract on it fails with ErrProcess. Exported for the
+// metadata tests of that path (an export_test.go reaches only this package).
+func (p *Pool) Kill() error {
+	var errs []error
 	for range len(p.workers) {
 		e := <-p.workers
-		e.cmd.Process.Kill()
+		if err := e.cmd.Process.Kill(); err != nil {
+			errs = append(errs, fmt.Errorf("kill exiftool worker: %w", err))
+		}
 		p.workers <- e
 	}
+	return errors.Join(errs...)
 }
 
 // Close shuts down every worker concurrently. Call once, after all Extract
