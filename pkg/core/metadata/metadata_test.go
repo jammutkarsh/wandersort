@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -458,6 +459,11 @@ func TestExtractor(t *testing.T) {
 		// A panic on one file is recorded with its stack and the run finishes.
 		// A nil semaphore panics on the first Acquire, so every file panics.
 		{"RunSurvivesWorkerPanic", func(t *testing.T) {
+			// the nil Acquire is a hardware fault; recovering one on windows/amd64
+			// can corrupt the goroutine stack and crash later tests (golang/go#81238)
+			if runtime.GOOS == "windows" {
+				t.Skip("recovering a hardware fault is unsafe on Windows: golang/go#81238")
+			}
 			ctx := context.Background()
 			d := dbtest.New(t)
 
