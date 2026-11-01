@@ -20,9 +20,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install exiftool
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libimage-exiftool-perl
-
       - name: Build all platforms
         run: make build-all
 
@@ -61,10 +58,7 @@ jobs:
           cache: true
 
       - name: Fetch test dependencies
-        run: |
-          go run ./scripts/fetchtestdeps "$WANDERSORT_TEST_DEPS_DIR"
-          # the exiftool pool tests run exiftool from PATH
-          echo "$WANDERSORT_TEST_DEPS_DIR/bin" >> "$GITHUB_PATH"
+        run: go run ./scripts/fetchtestdeps "$WANDERSORT_TEST_DEPS_DIR"
 
       - name: Vet
         run: go vet ./...

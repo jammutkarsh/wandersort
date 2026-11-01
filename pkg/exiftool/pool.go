@@ -78,6 +78,16 @@ func (p *Pool) Extract(ctx context.Context, path string) (classifier.CommonMetad
 	}
 }
 
+// Kill ends every idle worker's exiftool process without marking it dead, as a
+// crash would: the next Extract on it fails with ErrProcess. For tests of that path.
+func (p *Pool) Kill() {
+	for range len(p.workers) {
+		e := <-p.workers
+		e.cmd.Process.Kill()
+		p.workers <- e
+	}
+}
+
 // Close shuts down every worker concurrently. Call once, after all Extract
 // calls have returned.
 func (p *Pool) Close() error {

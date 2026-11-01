@@ -232,8 +232,16 @@ func checkVersion(path string, log logger.Logger) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("run %s -ver: %w", path, err)
 	}
-
 	ver := strings.TrimSpace(string(output))
+	ok, err := versionAtLeast(ver)
+	if err == nil && !ok {
+		log.Info("exiftool version below requirement", "have", ver, "want", exiftoolVersion)
+	}
+	return ok, err
+}
+
+// versionAtLeast reports whether ver ("major.minor", as exiftool -ver prints it) is at least exiftoolVersion.
+func versionAtLeast(ver string) (bool, error) {
 	parts := strings.SplitN(ver, ".", 2)
 	if len(parts) < 2 {
 		return false, fmt.Errorf("unexpected version format: %s", ver)
@@ -248,11 +256,5 @@ func checkVersion(path string, log logger.Logger) (bool, error) {
 	reqParts := strings.SplitN(exiftoolVersion, ".", 2)
 	reqMajor, _ := strconv.Atoi(reqParts[0])
 	reqMinor, _ := strconv.Atoi(reqParts[1])
-
-	if major > reqMajor || (major == reqMajor && minor >= reqMinor) {
-		return true, nil
-	}
-
-	log.Info("exiftool version below requirement", "have", ver, "want", exiftoolVersion)
-	return false, nil
+	return major > reqMajor || (major == reqMajor && minor >= reqMinor), nil
 }

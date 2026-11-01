@@ -1,5 +1,5 @@
-// Package installtest opens the real location.db for tests through
-// install.OpenLocationResolver, the app's own setup path.
+// Package installtest gives tests the real location.db and exiftool through
+// the app's own setup path.
 package installtest
 
 import (
@@ -28,6 +28,25 @@ func Resolver(t testing.TB) *location.Resolver {
 	}
 	t.Cleanup(func() { locationDB.Close() })
 	return resolver
+}
+
+// Exiftool returns the real exiftool the app installs, installing it once per
+// machine if missing.
+func Exiftool(t testing.TB) string {
+	t.Helper()
+	dir := depsDir(t)
+	c := install.New(install.Options{
+		ExecutablePath: filepath.Join(dir, "bin"),
+		LocationDBPath: filepath.Join(dir, config.LocationDBFileName),
+		Log:            logger.NewNoopLogger(),
+	})
+	c.Start(context.Background())
+	t.Cleanup(func() { c.Close() })
+	path, err := c.Exiftool(context.Background())
+	if err != nil {
+		t.Skipf("exiftool unavailable (offline?): %v", err)
+	}
+	return path
 }
 
 // depsDir is where test dependencies live: WANDERSORT_TEST_DEPS_DIR (set by
