@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -27,6 +28,12 @@ func fieldByTitle(t *testing.T, fields []*tui.Field, title string) *tui.Field {
 	return f
 }
 
+// setupFields is the layout and home questions of one settings form, and its save.
+func setupFields(a *app, geonames func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
+	f := a.newSettingsForm(context.Background(), geonames)
+	return append(f.layoutFields(), f.homeField()), f.save
+}
+
 // findField is fieldByTitle for the cases where the field's absence is the
 // thing being asserted.
 func findField(fields []*tui.Field, title string) *tui.Field {
@@ -43,10 +50,9 @@ func TestConfig(t *testing.T) {
 		name string
 		fn   func(t *testing.T)
 	}{
-		// The first-run setup asks library, layout (a custom rule list opens the
-		// rule step) and home, and its save writes every setting and creates
-		// the library.
-		{"SetupSavesEverySetting", func(t *testing.T) {
+		// The layout (a custom rule list opens the rule step) and home answers
+		// are saved together, and the save creates the library if none is open.
+		{"SaveWritesEverySetting", func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
@@ -60,12 +66,12 @@ func TestConfig(t *testing.T) {
 			// a place-name database that never opened must not trap the user
 			// on the town, nor drop it
 			broken := errors.New("location db: database is locked")
-			fields, save := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, broken })
+			fields, save := setupFields(a, func() (*location.Resolver, error) { return nil, broken })
 			var titles []string
 			for _, f := range fields {
 				titles = append(titles, f.Title)
 			}
-			want := []string{"Where should your library go?", "How should folders be laid out?", "Which folders, in order?", "Where's home?"}
+			want := []string{"How should folders be laid out?", "Which folders, in order?", "Where's home?"}
 			if !reflect.DeepEqual(titles, want) {
 				t.Errorf("setup steps = %v, want %v", titles, want)
 			}
@@ -98,7 +104,7 @@ func TestConfig(t *testing.T) {
 				SavedPlacesDateOnly:   cfg.SavedPlacesDateOnly,
 				MergeSameLocationDays: cfg.MergeSameLocationDays,
 				HomeTown:              "Indore",
-				WorkTown:              "Indore", // blank work = same as home
+				WorkTown:              "Indore", // work is off: same as home
 			}
 			if !got.Equal(wantSettings) {
 				t.Fatalf("saved settings = %+v, want %+v", got, wantSettings)
@@ -113,8 +119,8 @@ func TestConfig(t *testing.T) {
 				choice string
 				label  string
 			}{
-				{nil, layoutPresets[0].name, "Year › Month › Day › Place"},
-				{[]string{"date", "location"}, layoutPresets[0].name, "Year › Month › Day › Place"},
+				{nil, layoutPresets[0].name, "Default"},
+				{[]string{"date", "location"}, layoutPresets[0].name, "Default"},
 				{[]string{"location"}, "Year › Month › Place", "Year › Month › Place"},
 				{[]string{"none"}, customLayout, "Custom: Year › Month"},
 				{[]string{"date", "device"}, customLayout, "Custom: Year › Month › Day › Camera"},
@@ -152,14 +158,14 @@ func TestConfig(t *testing.T) {
 			for _, r := range rows {
 				labels = append(labels, r.Label)
 			}
-			if want := []string{"Library folder", "Folder layout", "Home", "Work", "Fine-tuning"}; !reflect.DeepEqual(labels, want) {
+			if want := []string{"Library folder", "Folder layout", "Home", "Fine-tuning"}; !reflect.DeepEqual(labels, want) {
 				t.Fatalf("rows = %v, want %v", labels, want)
 			}
 			if rows[0].Edit == nil {
 				t.Error("the library folder must be changeable")
 			}
 
-			fields, _ := rows[4].Edit()
+			fields, _ := rows[3].Edit()
 			group := fields[0]
 			// the collapse example shows all three collapsible levels when off
 			*group.Subs[0].BoolValue = false
@@ -167,7 +173,7 @@ func TestConfig(t *testing.T) {
 				t.Errorf("collapse-off example must show the collapsible levels, got %q", ex)
 			}
 			// edited but never saved: the next edit starts from the saved settings
-			again, save := rows[4].Edit()
+			again, save := rows[3].Edit()
 			if !*again[0].Subs[0].BoolValue {
 				t.Error("an unsaved edit leaked into the next one")
 			}
@@ -179,20 +185,20 @@ func TestConfig(t *testing.T) {
 				t.Error("saving the fine-tuning row must write the new answer")
 			}
 		}},
-		{"OutputPathAskedOnlyBeforeTheLibraryIsOpen", func(t *testing.T) {
-			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
-			fields, _ := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
-			if f := findField(fields, "Where should your library go?"); f == nil {
-				t.Error("a session with no library open must be asked for the library folder")
-			}
-
-			if err := a.openLibrary(context.Background()); err != nil {
+		// A folder dropped on the terminal arrives quoted or backslash-escaped;
+		// the library field takes it as the folder it names.
+		{"LibraryFieldTakesADroppedFolder", func(t *testing.T) {
+			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
+			f := a.newSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
+			dir := filepath.Join(t.TempDir(), "My Library")
+			if err := os.Mkdir(dir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			defer a.closeDBs()
-			fields, _ = a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
-			if f := findField(fields, "Where should your library go?"); f != nil {
-				t.Error("an open library's folder is fixed — the setup must not offer to change it")
+			if got := f.libraryDir("'" + dir + "' "); got != dir {
+				t.Errorf("libraryDir(quoted) = %q, want %q", got, dir)
+			}
+			if err := f.libraryField().Validator("'" + dir + "' "); err != nil {
+				t.Errorf("a dropped empty folder should be a valid library, got %v", err)
 			}
 		}},
 		// TestTownFieldsRoundTripARealTown exercises the real geonames path that
@@ -212,7 +218,7 @@ func TestConfig(t *testing.T) {
 			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
 			defer a.closeDBs()
 
-			fields, save := a.buildSettingsForm(context.Background(), func() (*location.Resolver, error) { return resolver, nil })
+			fields, save := setupFields(a, func() (*location.Resolver, error) { return resolver, nil })
 			homeField := fieldByTitle(t, fields, "Where's home?")
 
 			// A partial real city name must surface a real geonames entry — the

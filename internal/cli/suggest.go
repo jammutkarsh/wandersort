@@ -53,12 +53,3 @@ var bundleExts = map[string]bool{".app": true}
 func isBundleDir(name string) bool {
 	return bundleExts[strings.ToLower(filepath.Ext(name))]
 }
-
-// toMap converts a slice to a map for multiselect field initialization.
-func toMap(items []string) map[string]bool {
-	m := make(map[string]bool)
-	for _, item := range items {
-		m[item] = true
-	}
-	return m
-}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -40,6 +41,12 @@ type shellStart struct {
 	tab   int
 	force bool // tabScan: re-read every file from disk (--force)
 }
+
+// escWindow is how long after an esc a second one still means quit.
+const escWindow = 2 * time.Second
+
+// noticeExpiredMsg ends the tab-bar notice numbered seq, if it is still up.
+type noticeExpiredMsg struct{ seq int }
 
 // openSettingsMsg opens the settings tab. A message because Init runs on a
 // copy of the model; container changes must go through Update.
@@ -81,6 +88,12 @@ type shellModel struct {
 	w, h int
 
 	opening bool // a review is being built off the UI goroutine
+
+	// notice replaces the library name in the tab bar for escWindow; escArmed
+	// is the same window, in which a second esc quits
+	notice    string
+	noticeSeq int
+	escArmed  bool
 }
 
 // scanReadyMsg reports whether the library opened for a scan.
@@ -301,6 +314,16 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, msgCmd(scanReadyMsg{paths: msg.Paths, force: msg.Force})
 
+	case noticeExpiredMsg:
+		if msg.seq == m.noticeSeq {
+			m.notice, m.escArmed = "", false
+		}
+		return m, nil
+
+	case tui.NothingNewMsg:
+		m.refresh()
+		return m, m.homeAgain(msg.Text)
+
 	case tui.OpenReviewMsg:
 		if m.reviewReady() {
 			m.tab = tabReview
@@ -362,16 +385,6 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return "Plan discarded: " + human.Plural(n, "file", "files") + " forgotten.", err
 		})
 
-	case tui.ResetMsg:
-		a := m.a
-		return m, m.onLibrary("reset the library", func(ctx context.Context) (string, error) {
-			err := a.resetLibrary(ctx)
-			if errors.Is(err, library.ErrNothingToReset) {
-				return "Library is already empty.", nil
-			}
-			return "Library reset. Undo with admin db --restore.", err
-		})
-
 	case libraryEmptiedMsg:
 		if msg.err != nil {
 			m.tab = tabScan
@@ -395,6 +408,9 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reviewOpenMsg:
 		m.opening = false
+		if errors.Is(msg.err, tui.ErrNothingNew) {
+			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: msg.err.Error()})
+		}
 		if msg.err != nil {
 			return m, m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})
 		}
@@ -432,6 +448,22 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if k.String() != "esc" {
+		m.notice, m.escArmed = "", false
+	}
+	// esc esc quits when nothing is running; the first esc still reaches the
+	// screen, so it keeps its own meaning
+	if k.String() == "esc" {
+		if !m.escArmed {
+			m.escArmed = true
+			return m, tea.Batch(m.forward(m.tab, k), m.setNotice("esc again to quit"))
+		}
+		if !m.scanRunning() && !m.copyRunning() {
+			return m, tea.Quit
+		}
+		return m, tea.Batch(m.forward(m.tab, k), m.setNotice("busy — ctrl+c stops it"))
+	}
+
 	// ctrl+c goes to a running scan first (warn once, then cancel). Other
 	// screens answer it with a tui.Leave, handled below.
 	if k.String() == "ctrl+c" {
@@ -443,6 +475,14 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, m.forward(m.tab, k)
+}
+
+// setNotice shows text in the tab bar and starts the window a second esc counts in.
+func (m *shellModel) setNotice(text string) tea.Cmd {
+	m.notice = text
+	m.noticeSeq++
+	seq := m.noticeSeq
+	return tea.Tick(escWindow, func(time.Time) tea.Msg { return noticeExpiredMsg{seq} })
 }
 
 // handleLeave acts on a screen handing back. Screens never call tea.Quit: the
@@ -756,11 +796,14 @@ func (m shellModel) tabBar() string {
 			parts = append(parts, tui.DimText.Render(" "+name+" "))
 		}
 	}
-	library := ""
-	if m.a.AppDB != nil || m.lib.Exists {
-		library = path.New().RelativeToHome(m.a.Config.OutputDir())
+	right := ""
+	switch {
+	case m.notice != "":
+		right = tui.Attn.Render(m.notice)
+	case m.a.AppDB != nil || m.lib.Exists:
+		right = tui.FaintTxt.Render(path.New().RelativeToHome(m.a.Config.OutputDir()))
 	}
-	return tui.Row(strings.Join(parts, "  "), tui.FaintTxt.Render(library), m.w)
+	return tui.Row(strings.Join(parts, "  "), right, m.w)
 }
 
 /* --- screen constructors --- */
@@ -809,10 +852,9 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 	})
 }
 
-// newSettingsScreen is the settings wizard as a shell tab. An existing library
-// is opened first so the form is seeded from (and saves back to) its own
-// settings; with no library, the form asks for the output path and the save
-// creates it.
+// newSettingsScreen is the settings list as a shell tab. An existing library
+// is opened first so the list shows (and saves back to) its own settings; with
+// none, it shows the defaults and the first save creates the library.
 func (a *app) newSettingsScreen(ctx context.Context) (tui.Tab, error) {
 	if a.AppDB == nil && a.libraryExists() {
 		if err := a.openLibrary(ctx); err != nil {
@@ -820,14 +862,8 @@ func (a *app) newSettingsScreen(ctx context.Context) (tui.Tab, error) {
 		}
 	}
 	geonames := func() (*location.Resolver, error) { return a.Deps.LocationNow() }
-	if a.AppDB != nil {
-		return tui.NewSettingsModel(a.settingsRows(ctx, geonames),
-			"A change re-plans the files not yet copied. Copied files don't move."), nil
-	}
-	fields, save := a.buildSettingsForm(ctx, geonames)
-	form := tui.NewFormModel(fields, save)
-	form.Heading = "Set up your library"
-	return form, nil
+	return tui.NewSettingsModel(a.settingsRows(ctx, geonames),
+		"A change re-plans the files not yet copied. Copied files don't move."), nil
 }
 
 // runRoot is bare `wandersort`: the shell, or help with --plain or a piped
@@ -836,14 +872,5 @@ func (a *app) runRoot(cmd *cobra.Command) error {
 	if !a.isTuiEnabled(cmd) {
 		return cmd.Help()
 	}
-	return a.runShell(shellStart{tab: a.openingTab()})
-}
-
-// openingTab is Settings on a first run (empty library history) and Add after:
-// nothing can be planned before the output folder is chosen.
-func (a *app) openingTab() int {
-	if len(a.Config.History()) == 0 {
-		return tabSettings
-	}
-	return tabScan
+	return a.runShell(shellStart{tab: tabScan})
 }

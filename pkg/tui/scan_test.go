@@ -51,8 +51,39 @@ func TestScanModel(t *testing.T) {
 			if cmd != nil {
 				t.Errorf("finishing must not leave or switch by itself, got %v", flattenCmd(cmd))
 			}
-			if v := ansi.Strip(next.View()); !strings.Contains(v, "Plan ready") || !strings.Contains(v, "1) Look over the folders") {
+			if v := ansi.Strip(next.View()); !strings.Contains(v, "Plan ready") || !strings.Contains(v, "1) Review folders") {
 				t.Errorf("want the plan-ready choice:\n%s", v)
+			}
+		}},
+		// A scan that planned nothing to copy skips the plan-ready question and
+		// sends the shell back to the folder list, whichever of the finish and
+		// the review answer comes last.
+		{"NothingNewSkipsThePlanReadyScreen", func(t *testing.T) {
+			noNews := func(msgs []tea.Msg) bool {
+				return len(msgs) == 1 && msgs[0] == (NothingNewMsg{Text: ErrNothingNew.Error()})
+			}
+			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
+			next, cmd := m.Update(reviewReadyMsg{err: ErrNothingNew})
+			if cmd != nil {
+				t.Errorf("the scan is still running, got %v", flattenCmd(cmd))
+			}
+			_, cmd = next.(ScanModel).Update(scanDoneMsg{})
+			if msgs := flattenCmd(cmd); !noNews(msgs) {
+				t.Errorf("finishing after the review answered = %#v, want NothingNewMsg", msgs)
+			}
+
+			next, _ = m.Update(scanDoneMsg{})
+			_, cmd = next.(ScanModel).Update(reviewReadyMsg{err: ErrNothingNew})
+			if msgs := flattenCmd(cmd); !noNews(msgs) {
+				t.Errorf("review answering after the finish = %#v, want NothingNewMsg", msgs)
+			}
+		}},
+		// Warnings only the log has in full are counted in the footer, not the body.
+		{"LogWarningsCountInTheFooter", func(t *testing.T) {
+			m := NewScanModel(ScanConfig{})
+			m.logWarnings = 15
+			if v := ansi.Strip(m.View()); !strings.Contains(v, "⚠ 15 warnings — see the log") {
+				t.Errorf("want the warning count in the footer:\n%s", v)
 			}
 		}},
 		{"ChoicesDoWhatTheySay", func(t *testing.T) {

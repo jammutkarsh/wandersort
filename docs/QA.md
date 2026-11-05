@@ -14,11 +14,11 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 
 4a. `[H]` `shift+tab` cycles Add → Organise → Copy → Settings, skipping tabs with nothing to do.
 
-5. `[H]` first-ever `wandersort` → getting-ready screen downloads exiftool and the locationDB with progress bars, then opens the three-step setup (library, layout, home).
+5. `[H]` first-ever `wandersort` → getting-ready screen downloads exiftool and the locationDB with progress bars, then opens the Add tab; no setup questions come first.
 6. `[H]` dependencies already on disk → getting ready shows for a moment (`✓ found`), then the tabs; the last library opens without asking.
 6a. `[H]` network blocked (`HTTPS_PROXY=http://127.0.0.1:9`) → each failed dependency named, "Try switching to a better network", 10 s countdown, `enter` retries now; after try 3 any key quits with exit 1; the next launch tries 3 more times.
 7. `[H]` Settings → typing a town name lists full `<city>, <state>, <country>` names, never two identical rows; the saved choice resolves to the right city on the next scan.
-8. `[H]` setup → layouts are numbered, a digit picks one, the example tree follows the option under the cursor; `4) Custom…` adds the rule step; `ctrl+b` goes back a step.
+8. `[H]` Settings → Folder layout → layouts are numbered, a digit picks one, the example tree follows the option under the cursor; `4) Custom…` adds the rule step; `ctrl+b` goes back a step.
 9. `[H]` Settings with a library open → a list of answers; enter changes one row and returns to the list with "Saved"; `esc` saves what's on screen without asking; a changed setting re-plans at once, an unchanged save re-plans nothing; `ctrl+c` leaves without saving.
 9a. `[H]` Settings → Library folder → an empty folder starts a new library with the same settings and nothing planned; a folder WanderSort organised opens with its own; the old library is untouched and opens again when chosen.
 10. `[A]` delete the exiftool binary, then `add` → it is downloaded again before the run starts.
@@ -26,7 +26,9 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 ## 3. Add (scan → metadata → vfs)
 
 11. `[A]` `add -p <dir>` without a terminal → first line names library and layout, then one sentence per stage (`Found 15,481 files in 1.9s`), then `next:`; `--json` adds one result object on stdout; unreadable files exit 3.
-11a. `[H]` `add` in the app → Find / Read / Plan with the file being read and a time-left guess; then "Plan ready" with 1) look over the folders 2) copy as planned 3) add more.
+11a. `[H]` `add` in the app → Find / Read / Plan with the file being read and a time-left guess; then "Plan ready" with 1) review folders 2) copy folders 3) add more. A run that leaves nothing to copy skips it and returns to Add with "No new files to add."; `⚠ N warnings — see the log` sits in the footer.
+11b. `[H]` Add → drag a folder from the file manager onto the terminal → it is listed at once, quoted or escaped paths included; the footer hint reads `enter scan` once a folder is listed and `enter add` while a path is being typed; `enter` on an empty line with nothing listed does not scan; typing a path still lists completions, `tab` fills the top one.
+11c. `[H]` `esc` twice quickly → quits when nothing runs; while a scan or copy runs the top line warns "busy" instead.
 12. `[A]` `add -p ./a -p ./b` and `-p ./a,./b` → identical result; nested roots (`/x` and `/x/y`) walked once.
 13. `[A]` `add -p /does/not/exist` → clear error, non-zero exit, nothing written.
 14. `[A]` `add --plain` with no `-p` → error asking for paths.

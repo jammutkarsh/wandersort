@@ -433,3 +433,20 @@ func TestFormSummaryValues(t *testing.T) {
 		})
 	}
 }
+
+// A form that has finished waits for its host to take it away; keys landing in
+// that gap (enter pressed twice) must neither crash nor submit again.
+func TestFormIgnoresKeysAfterItFinishes(t *testing.T) {
+	v := "x"
+	submits := 0
+	m := NewFormModel([]*Field{{Kind: FieldInput, Title: "Only", Value: &v}}, func() error { submits++; return nil })
+	for _, k := range []tea.KeyMsg{
+		{Type: tea.KeyEnter}, {Type: tea.KeyEnter}, {Type: tea.KeyCtrlB}, {Type: tea.KeyEsc}, {Type: tea.KeyEnter},
+	} {
+		next, _ := m.Update(k)
+		m = next.(FormModel)
+	}
+	if submits != 1 {
+		t.Errorf("onSubmit ran %d times, want once", submits)
+	}
+}

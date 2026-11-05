@@ -369,19 +369,56 @@ func TestShellModel(t *testing.T) {
 				t.Error("review must stay closed while a scan is running")
 			}
 		}},
-		// shift+tab builds the real wizard — the same form the config subcommand
-		// runs, only hosted here.
-		{"ConfigTabOpensTheWizard", func(t *testing.T) {
+		// shift+tab builds the settings list, even before a library exists: the
+		// first save creates it.
+		{"SettingsTabOpensTheList", func(t *testing.T) {
 			m := testShell(t)
-			m.a.Deps = m.a.newDeps(nil, nil) // the wizard's geonames peek; never started
+			m.a.Deps = m.a.newDeps(nil, nil) // the list's geonames peek; never started
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 			m = next.(shellModel)
 			if m.tab != tabSettings || m.screens[tabSettings] == nil {
-				t.Fatalf("shift+tab should build and open the wizard, got tab=%d screen=%v", m.tab, m.screens[tabSettings])
+				t.Fatalf("shift+tab should build and open the settings, got tab=%d screen=%v", m.tab, m.screens[tabSettings])
 			}
-			if v := ansi.Strip(m.View()); !strings.Contains(v, "Set up your library") || !strings.Contains(v, "Where should your library go?") {
-				t.Errorf("the setup should be on screen:\n%s", v)
+			if v := ansi.Strip(m.View()); !strings.Contains(v, "Settings for this library") || !strings.Contains(v, "Library folder") || strings.Contains(v, "Work") {
+				t.Errorf("the settings list should be on screen, without Work:\n%s", v)
+			}
+		}},
+		// esc twice quits an idle session. Neither esc is swallowed by the
+		// shell, and a running scan turns the second into a warning.
+		{"DoubleEscQuitsOnlyWhenIdle", func(t *testing.T) {
+			esc := tea.KeyMsg{Type: tea.KeyEsc}
+			m := testShell(t)
+			next, _ := m.Update(esc)
+			m = next.(shellModel)
+			if !m.escArmed || m.notice == "" {
+				t.Fatalf("the first esc should say a second one quits, got armed=%v notice=%q", m.escArmed, m.notice)
+			}
+			_, cmd := m.Update(esc)
+			if cmd == nil || cmd() != tea.Msg(tea.QuitMsg{}) {
+				t.Error("the second esc on an idle session should quit")
+			}
+
+			m.screens[tabScan] = tui.NewScanModel(tui.ScanConfig{})
+			next, cmd = m.Update(esc)
+			if cmd != nil && cmd() == tea.Msg(tea.QuitMsg{}) {
+				t.Fatal("esc esc must not quit while a scan runs")
+			}
+			if !strings.Contains(next.(shellModel).notice, "busy") {
+				t.Errorf("a running scan should be named, got notice %q", next.(shellModel).notice)
+			}
+		}},
+		// A scan that planned nothing goes back to the folder list with the reason.
+		{"NothingNewReturnsToTheFolderList", func(t *testing.T) {
+			m := testShell(t)
+			m.screens[tabScan] = tui.NewScanModel(tui.ScanConfig{})
+			next, _ := m.Update(tui.NothingNewMsg{Text: tui.ErrNothingNew.Error()})
+			m = next.(shellModel)
+			if _, ok := m.screens[tabScan].(tui.HomeModel); !ok {
+				t.Fatalf("scan tab = %T, want the folder list", m.screens[tabScan])
+			}
+			if v := ansi.Strip(m.View()); !strings.Contains(v, "No new files to add.") {
+				t.Errorf("the folder list should say why:\n%s", v)
 			}
 		}},
 		// A saved wizard hands the tab back instead of taking the program (and
@@ -656,27 +693,6 @@ func TestConfigSavedReplansOnlyOnAChange(t *testing.T) {
 				t.Error("a save that changed nothing must not drop the open review")
 			}
 		})
-	}
-}
-
-// With no `wandersort config` any more, the opening tab is the only thing
-// that puts a new user in front of the settings — and it has to, because the
-// output folder is one of them and nothing can be planned before it is
-// answered. A later launch opens where the work is instead.
-func TestOpeningTabIsSettingsOnlyOnAFirstRun(t *testing.T) {
-	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
-	if got := a.openingTab(); got != tabSettings {
-		t.Errorf("first run opened tab %d, want Settings (%d)", got, tabSettings)
-	}
-
-	// Remembering a library is what makes a run not the first one — the same
-	// call openLibrary makes once a folder is known to really be a library.
-	lib := t.TempDir()
-	if err := a.Config.Remember(lib); err != nil {
-		t.Fatal(err)
-	}
-	if got := a.openingTab(); got != tabScan {
-		t.Errorf("second run opened tab %d, want Add (%d)", got, tabScan)
 	}
 }
 

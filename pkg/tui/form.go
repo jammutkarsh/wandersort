@@ -95,6 +95,10 @@ type FormModel struct {
 
 	aborted bool
 
+	// done is set once the form has handed back; the host takes it away on the
+	// next message, and keys landing before then are ignored
+	done bool
+
 	// quitReq marks the ending key as "done with the app" (ctrl+c) rather than
 	// "done here"; it rides out on Leave
 	quitReq bool
@@ -117,6 +121,7 @@ func (m FormModel) Busy() bool { return false }
 // finish hands control back to the container with why the form ended. It never
 // quits the program.
 func (m FormModel) finish() (tea.Model, tea.Cmd) {
+	m.done = true
 	l := Leave{Quit: m.quitReq, Aborted: m.aborted, Err: m.err}
 	if m.Then != nil {
 		return m, m.Then(l)
@@ -220,6 +225,9 @@ func (m FormModel) Init() tea.Cmd {
 func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.done {
+			return m, nil
+		}
 		// The question owns the keyboard until answered — everything below,
 		// including a FieldConfirm's own "y"/"n", would otherwise race it.
 		if m.askExit {

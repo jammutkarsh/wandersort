@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -55,6 +56,65 @@ func (r *Resolver) ExpandPath(path string) string {
 		return filepath.Join(r.HomeDir, path[2:])
 	}
 	return path
+}
+
+// Dropped is the paths in text a terminal received from a drag-and-drop or a
+// paste: quoted ('…', "…") or backslash-escaped, one or several, "~" expanded.
+// Text that is already a real path stays one path, spaces and all.
+func (r *Resolver) Dropped(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if _, err := os.Stat(r.ExpandPath(text)); err == nil {
+		return []string{r.ExpandPath(text)}
+	}
+	words := splitWords(text, runtime.GOOS != "windows")
+	for i, w := range words {
+		words[i] = r.ExpandPath(w)
+	}
+	return words
+}
+
+// splitWords splits text on unquoted spaces, dropping the quotes. With
+// backslashEscapes, "\x" is a literal x (a dropped "My\ Photos"); without,
+// backslashes are path separators and stay.
+func splitWords(text string, backslashEscapes bool) []string {
+	var words []string
+	var cur strings.Builder
+	var quote rune
+	inWord := false
+	escaped := false
+	for _, c := range text {
+		switch {
+		case escaped:
+			cur.WriteRune(c)
+			escaped = false
+		case c == '\\' && backslashEscapes && quote != '\'':
+			escaped, inWord = true, true
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(c)
+			}
+		case c == '\'' || c == '"':
+			quote, inWord = c, true
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			if inWord {
+				words = append(words, cur.String())
+				cur.Reset()
+				inWord = false
+			}
+		default:
+			cur.WriteRune(c)
+			inWord = true
+		}
+	}
+	if inWord {
+		words = append(words, cur.String())
+	}
+	return words
 }
 
 // RelativeToHome converts an absolute path to

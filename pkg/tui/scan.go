@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -9,8 +10,16 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
+
+// ErrNothingNew is ReviewNext's answer when the scan left no file to copy.
+var ErrNothingNew = errors.New("No new files to add.")
+
+// NothingNewMsg asks the shell to go back to the folder list with Text once a
+// scan has planned nothing to copy.
+type NothingNewMsg struct{ Text string }
 
 // LogEventMsg carries one logger.Event into the TUI. The scan command forwards
 // events from the TUI logger's sink into the program via program.Send.
@@ -84,11 +93,7 @@ const (
 )
 
 // planChoices is what the finished screen offers, in order.
-var planChoices = []struct{ label, detail string }{
-	{"Look over the folders", "rename, merge or flatten before anything is copied"},
-	{"Copy as planned", ""},
-	{"Add more folders", ""},
-}
+var planChoices = []string{"Review folders", "Copy folders", "Add more folders"}
 
 // scanKeys is the plan screen's full key list, behind ?.
 var scanKeys = []KeyGroup{
@@ -160,6 +165,8 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case m.state == scanCancelling && m.reviewErr != nil:
 			return m, Left(Leave{Quit: true})
+		case errors.Is(m.reviewErr, ErrNothingNew):
+			return m, m.nothingNew()
 		case m.review == nil:
 			return m, nil
 		case m.wantReview:
@@ -179,9 +186,18 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sl.FinishRemaining(false, "done")
 		m.state = scanFinished
-		return m, nil
+		return m, m.nothingNew()
 	}
 	return m, m.sl.Update(msg)
+}
+
+// nothingNew hands back to the folder list when the finished scan planned
+// nothing to copy; until the run has finished or the review answered, it waits.
+func (m ScanModel) nothingNew() tea.Cmd {
+	if m.state != scanFinished || !errors.Is(m.reviewErr, ErrNothingNew) {
+		return nil
+	}
+	return func() tea.Msg { return NothingNewMsg{Text: ErrNothingNew.Error()} }
 }
 
 func openReview() tea.Msg { return OpenReviewMsg{} }
@@ -357,25 +373,18 @@ func (m ScanModel) finishedView() string {
 	for _, w := range m.warnings {
 		b.WriteString(row("  "+Attn.Render("⚠ "+w), "", m.w) + "\n")
 	}
-	if len(m.warnings) == 0 && m.logWarnings > 0 {
-		b.WriteString(row("  "+Attn.Render(fmt.Sprintf("⚠ %d warnings — see the log", m.logWarnings)), "", m.w) + "\n")
-	}
 	if m.reviewErr != nil {
 		b.WriteString(row("  "+Bad.Render("Couldn't open the folders: ")+Text.Render(m.reviewErr.Error()), "", m.w) + "\n")
 	}
 	if b.Len() > 0 {
 		b.WriteString("\n")
 	}
-	for i, c := range planChoices {
-		label := c.label
+	for i, label := range planChoices {
 		if i == 0 && m.wantReview {
 			label += "  " + DimText.Render("opening…")
 		}
 		if i == m.choice {
 			line := Title.Render(fmt.Sprintf("❯ %d) ", i+1)) + Text.Bold(true).Render(label)
-			if c.detail != "" {
-				line += "  " + DimText.Render(c.detail)
-			}
 			b.WriteString(row("  "+line, "", m.w) + "\n")
 			continue
 		}
@@ -385,6 +394,14 @@ func (m ScanModel) finishedView() string {
 }
 
 func (m ScanModel) footer() string {
+	if m.logWarnings > 0 {
+		warn := row("  "+Attn.Render(fmt.Sprintf("⚠ %s — see the log", human.Plural(m.logWarnings, "warning", "warnings"))), "", m.w)
+		return warn + "\n" + m.keyFooter()
+	}
+	return m.keyFooter()
+}
+
+func (m ScanModel) keyFooter() string {
 	switch m.state {
 	case scanFinished:
 		return Footer(KeyHint("1-3", "choose")+"   "+KeyHint("enter", "go")+"   "+MoreKeys(), m.w)

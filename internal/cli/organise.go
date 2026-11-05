@@ -65,7 +65,7 @@ func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
 		return nil, err
 	}
 	if len(tree) == 0 {
-		return nil, fmt.Errorf("everything here is already organized — nothing left to review")
+		return nil, tui.ErrNothingNew
 	}
 	// a re-plan above already dropped the draft along with the old folder IDs
 	draft, err := vfs.OpenDraft(outputDir, tree)

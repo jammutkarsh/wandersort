@@ -164,14 +164,6 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+r":
 		a := tui.DiscardPlanAsk(m.plannedFiles())
 		m.ask = &a
-	case "ctrl+d":
-		placed, err := m.db.PlacedCount(m.ctx)
-		if err != nil {
-			m.statusMsg, m.statusIsErr = err.Error(), true
-			break
-		}
-		a := tui.ResetAsk(placed)
-		m.ask = &a
 	case "u":
 		m.undo()
 	}

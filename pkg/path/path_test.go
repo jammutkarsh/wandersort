@@ -247,3 +247,49 @@ func TestReduceRoots_ErrorCases(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitWords(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		escapes bool
+		want    []string
+	}{
+		{"escaped space", `/a/My\ Photos `, true, []string{"/a/My Photos"}},
+		{"two escaped", `/a/b\ c /d/e`, true, []string{"/a/b c", "/d/e"}},
+		{"single quotes", `'/a/b c' '/d'`, true, []string{"/a/b c", "/d"}},
+		{"double quotes", `"C:\Users\Me\My Photos"`, false, []string{`C:\Users\Me\My Photos`}},
+		{"windows backslashes kept", `C:\Photos`, false, []string{`C:\Photos`}},
+		{"backslash literal inside single quotes", `'a\b'`, true, []string{`a\b`}},
+		{"empty", `  `, true, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := splitWords(tt.in, tt.escapes); !slices.Equal(got, tt.want) {
+				t.Errorf("splitWords(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolver_Dropped(t *testing.T) {
+	dir := t.TempDir()
+	spaced := filepath.Join(dir, "My Photos")
+	if err := os.Mkdir(spaced, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &Resolver{HomeDir: dir}
+
+	if got := r.Dropped(spaced); !slices.Equal(got, []string{spaced}) {
+		t.Errorf("real path with a space = %q, want it whole", got)
+	}
+	if got := r.Dropped("'" + spaced + "' "); !slices.Equal(got, []string{spaced}) {
+		t.Errorf("quoted = %q", got)
+	}
+	if got := r.Dropped("~/My Photos"); !slices.Equal(got, []string{spaced}) {
+		t.Errorf("home-relative = %q", got)
+	}
+	if got := r.Dropped("  "); got != nil {
+		t.Errorf("blank = %q, want nil", got)
+	}
+}

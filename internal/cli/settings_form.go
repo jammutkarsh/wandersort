@@ -45,10 +45,14 @@ func layoutChoice(rules []string) string {
 
 // layoutLabel is how the settings list shows a rule list.
 func layoutLabel(rules []string) string {
-	if c := layoutChoice(rules); c != customLayout {
+	switch c := layoutChoice(rules); c {
+	case layoutPresets[0].name:
+		return "Default"
+	case customLayout:
+		return "Custom: " + layoutName(rules, " › ")
+	default:
 		return c
 	}
-	return "Custom: " + layoutName(rules, " › ")
 }
 
 // settingsForm is one edit of a library's settings, built fresh so leaving without saving changes nothing.
@@ -63,7 +67,7 @@ type settingsForm struct {
 
 	out                           string
 	layout                        string
-	home, work                    string
+	home                          string
 	collapse, dateOnly, mergeDays bool
 }
 
@@ -76,7 +80,7 @@ func (a *app) newSettingsForm(ctx context.Context, geonames func() (*location.Re
 		out:      paths.RelativeToHome(a.Config.OutputDir()),
 		layout:   layoutChoice(s.Rules),
 		collapse: s.CollapseLevels, dateOnly: s.SavedPlacesDateOnly, mergeDays: s.MergeSameLocationDays,
-		home: s.HomeTown, work: s.WorkTown,
+		home: s.HomeTown,
 	}
 	custom := s.Rules
 	if len(custom) == 0 || slices.Equal(custom, []string{vfs.RuleNone}) {
@@ -115,6 +119,14 @@ func (f *settingsForm) rules() []string {
 	return out
 }
 
+// libraryDir is the folder typed, pasted or dropped into the library field.
+func (f *settingsForm) libraryDir(typed string) string {
+	if dirs := f.paths.Dropped(typed); len(dirs) == 1 {
+		return dirs[0]
+	}
+	return f.paths.ExpandPath(strings.TrimSpace(typed))
+}
+
 func (f *settingsForm) libraryField() *tui.Field {
 	homeDir := f.paths.HomeDir
 	// recently used libraries first, then common locations whose parent exists
@@ -133,8 +145,8 @@ func (f *settingsForm) libraryField() *tui.Field {
 	}
 	return &tui.Field{
 		Kind:        tui.FieldInput,
-		Title:       "Where should your library go?",
-		Description: "An empty folder, or an existing library.",
+		Title:       "Which library?",
+		Description: "Drop a folder here, or type its path. An empty folder starts a new library.",
 		Value:       &f.out,
 		Suggest: func(typed string) []string {
 			if strings.TrimSpace(typed) == "" {
@@ -143,7 +155,7 @@ func (f *settingsForm) libraryField() *tui.Field {
 			return suggestDirs(f.paths, typed)
 		},
 		Validator: func(s string) error {
-			return config.CheckLibrary(f.paths.ExpandPath(strings.TrimSpace(s)))
+			return config.CheckLibrary(f.libraryDir(s))
 		},
 	}
 }
@@ -188,11 +200,6 @@ func (f *settingsForm) homeField() *tui.Field {
 		"Everyday photos from home get a date folder, without the town's name on every day. Optional.", &f.home)
 }
 
-func (f *settingsForm) workField() *tui.Field {
-	return f.townField("Where's work?",
-		"Treated like home. Leave it empty if it's the same town.", &f.work)
-}
-
 func (f *settingsForm) fineTuning() *tui.Field {
 	return &tui.Field{
 		Kind:  tui.FieldGroup,
@@ -203,7 +210,7 @@ func (f *settingsForm) fineTuning() *tui.Field {
 				Describe: f.ex.CollapseDescribe, BoolValue: &f.collapse, Example: f.ex.Collapse,
 			},
 			{
-				Kind: tui.FieldConfirm, Title: "Date only for home and work?",
+				Kind: tui.FieldConfirm, Title: "Date only for home?",
 				Describe: f.ex.DateOnlyDescribe, BoolValue: &f.dateOnly, Example: f.ex.DateOnly,
 			},
 			{
@@ -254,34 +261,19 @@ func (f *settingsForm) canonicalTown(typed string) string {
 
 // save writes the answers, opening or creating the library if the form asked where it goes.
 func (f *settingsForm) save() error {
-	work := f.work
-	if strings.TrimSpace(work) == "" {
-		work = f.home // blank work = same as home
-	}
+	home := f.canonicalTown(f.home)
 	s := config.Settings{
 		Rules:                 f.rules(),
 		CollapseLevels:        f.collapse,
 		SavedPlacesDateOnly:   f.dateOnly,
 		MergeSameLocationDays: f.mergeDays,
-		HomeTown:              f.canonicalTown(f.home),
-		WorkTown:              f.canonicalTown(work),
+		HomeTown:              home,
+		WorkTown:              home, // work is off for now: it is the same place as home
 	}
-	if err := f.a.saveSettings(f.ctx, f.paths.ExpandPath(strings.TrimSpace(f.out)), s); err != nil {
+	if err := f.a.saveSettings(f.ctx, f.libraryDir(f.out), s); err != nil {
 		return fmt.Errorf("save settings: %w", err)
 	}
 	return nil
-}
-
-// buildSettingsForm is the first-run setup: library folder (while none is open), layout and home.
-func (a *app) buildSettingsForm(ctx context.Context, geonames func() (*location.Resolver, error)) ([]*tui.Field, func() error) {
-	f := a.newSettingsForm(ctx, geonames)
-	var fields []*tui.Field
-	if a.AppDB == nil {
-		fields = append(fields, f.libraryField())
-	}
-	fields = append(fields, f.layoutFields()...)
-	fields = append(fields, f.homeField())
-	return fields, f.save
 }
 
 // settingsRows is an open library's settings, one row each; every edit starts from the saved settings.
@@ -311,23 +303,15 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 		if on == len(toggles) {
 			tuning = "all on"
 		}
-		work := s.WorkTown
-		if work == s.HomeTown {
-			work = ""
-		}
 		return []tui.SettingRow{
 			{Label: "Library folder", Value: path.New().RelativeToHome(a.Config.OutputDir()), Edit: func() ([]*tui.Field, func() error) {
 				f := a.newSettingsForm(ctx, geonames)
-				field := f.libraryField()
-				field.Title = "Which library?"
-				field.Description = "An existing library opens as it is; any other folder starts a new one with these settings. Planned files don't move over."
-				return []*tui.Field{field}, func() error {
-					return a.switchLibrary(ctx, f.paths.ExpandPath(strings.TrimSpace(f.out)))
+				return []*tui.Field{f.libraryField()}, func() error {
+					return a.switchLibrary(ctx, f.libraryDir(f.out))
 				}
 			}},
 			{Label: "Folder layout", Value: layoutLabel(s.Rules), Edit: edit((*settingsForm).layoutFields)},
 			{Label: "Home", Value: orNotSet(s.HomeTown), Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.homeField()} })},
-			{Label: "Work", Value: orNotSet(work), Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.workField()} })},
 			{Label: "Fine-tuning", Value: tuning, Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.fineTuning()} })},
 		}
 	}
@@ -351,4 +335,13 @@ func layoutName(rules []string, sep string) string {
 		}
 	}
 	return strings.Join(parts, sep)
+}
+
+// toMap converts a slice to a map for multiselect field initialization.
+func toMap(items []string) map[string]bool {
+	m := make(map[string]bool)
+	for _, item := range items {
+		m[item] = true
+	}
+	return m
 }

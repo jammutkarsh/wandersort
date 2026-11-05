@@ -18,6 +18,11 @@ func typeHome(m HomeModel, text string) HomeModel {
 	return next.(HomeModel)
 }
 
+// viewText is a view as text, hint spaces (non-breaking) included.
+func viewText(view string) string {
+	return strings.ReplaceAll(ansi.Strip(view), "\u00a0", " ")
+}
+
 func TestHome(t *testing.T) {
 	tests := []struct {
 		name string
@@ -79,7 +84,7 @@ func TestHome(t *testing.T) {
 		{"EmptyEnterStartsTheScan", func(t *testing.T) {
 			m := NewHomeModel(HomeConfig{})
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			if !strings.Contains(ansi.Strip(next.(HomeModel).View()), "type a folder first") {
+			if !strings.Contains(ansi.Strip(next.(HomeModel).View()), "Add a folder") {
 				t.Fatal("enter with no folders should ask for one, not start a scan")
 			}
 
@@ -161,12 +166,62 @@ func TestHome(t *testing.T) {
 				t.Errorf("↓ past the newest: input %q, list %v; want empty, list whole", m.ti.Value(), m.added)
 			}
 		}},
+		// Dropping the folder lifted into the input for editing, then walking
+		// on, must not index past the shortened list.
+		{"WalkAfterDroppingTheLiftedFolder", func(t *testing.T) {
+			m := typeHome(typeHome(NewHomeModel(HomeConfig{}), t.TempDir()), t.TempDir())
+			press := func(k tea.KeyType) {
+				next, _ := m.Update(tea.KeyMsg{Type: k})
+				m = next.(HomeModel)
+			}
+			press(tea.KeyUp)    // the newest is lifted into the input
+			press(tea.KeyCtrlX) // the other one is dropped, the list is empty
+			press(tea.KeyUp)
+			press(tea.KeyDown)
+		}},
 		// A refused folder stays in the input with the reason, not in the list.
 		{"CheckRefusesBeforeAdding", func(t *testing.T) {
 			dir := t.TempDir()
 			m := typeHome(NewHomeModel(HomeConfig{Check: func(string) error { return errBadValue }}), dir)
 			if len(m.added) != 0 || m.ti.Value() != dir || m.err == nil {
 				t.Errorf("list %v, input %q, err %v; want nothing added, the folder still typed, the reason shown", m.added, m.ti.Value(), m.err)
+			}
+		}},
+		// A drop reaches the terminal as a paste of quoted or escaped paths: on
+		// an empty line every folder in it is listed at once, no enter needed.
+		{"DroppedFoldersAreAddedAtOnce", func(t *testing.T) {
+			parent := t.TempDir()
+			spaced, plain := filepath.Join(parent, "My Photos"), filepath.Join(parent, "raw")
+			for _, d := range []string{spaced, plain} {
+				if err := os.Mkdir(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m := NewHomeModel(HomeConfig{})
+			drop := "'" + spaced + "' '" + plain + "' "
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(drop), Paste: true})
+			m = next.(HomeModel)
+			if got := m.added; len(got) != 2 || got[0] != spaced || got[1] != plain {
+				t.Fatalf("added = %v, want [%s %s]", got, spaced, plain)
+			}
+			if m.ti.Value() != "" {
+				t.Errorf("input = %q, want it emptied once the folders are listed", m.ti.Value())
+			}
+			if v := viewText(m.View()); !strings.Contains(v, "enter scan") {
+				t.Errorf("a listed folder should offer the scan in the footer:\n%s", v)
+			}
+			m = typeHome(m, "~/typing")
+			if v := viewText(m.View()); !strings.Contains(v, "enter add") {
+				t.Errorf("a line being typed should offer enter add:\n%s", v)
+			}
+		}},
+		// A paste that is no folder is text for the line, so it can be fixed.
+		{"PastedTextThatIsNoFolderStaysInTheInput", func(t *testing.T) {
+			m := NewHomeModel(HomeConfig{})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/definitely/not/here"), Paste: true})
+			m = next.(HomeModel)
+			if len(m.added) != 0 || m.ti.Value() != "/definitely/not/here" {
+				t.Errorf("list %v, input %q; want nothing added, the text kept", m.added, m.ti.Value())
 			}
 		}},
 		// Completions come from the injected Suggest; tab fills the top one.

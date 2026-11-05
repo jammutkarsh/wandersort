@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -27,9 +26,6 @@ type StartScanMsg struct {
 // folders can be added again from scratch.
 type DiscardPlanMsg struct{}
 
-// ResetMsg asks the shell to empty the library database, settings kept.
-type ResetMsg struct{}
-
 // DiscardPlanAsk is the question before a DiscardPlanMsg.
 func DiscardPlanAsk(planned int) Ask {
 	return Ask{
@@ -41,15 +37,13 @@ func DiscardPlanAsk(planned int) Ask {
 	}
 }
 
-// ResetAsk is the question before a ResetMsg, and before
-// `admin db --reset`. Placed files stay on disk but untracked, so re-importing
-// a card copies them again: the question says so.
+// ResetAsk is the question before `admin db --reset`. Placed files stay on
+// disk but untracked, so re-importing a card copies them again: the question
+// says so.
 func ResetAsk(placed int) Ask {
 	a := Ask{
 		Title:  "Reset the library?",
 		Detail: "Forgets everything scanned, planned and edited. Settings stay. Undo with admin db --restore until the next copy or reset.",
-		Action: "reset",
-		Msg:    ResetMsg{},
 	}
 	if placed > 0 {
 		a.Title = fmt.Sprintf("Forget the %s already in the library?", human.Plural(placed, "file", "files"))
@@ -99,8 +93,9 @@ type messageExpiredMsg struct{ shown int }
 // the footer, so an unbounded list would push the folder list off screen.
 const maxHomeSuggestions = 5
 
-// HomeModel is the landing screen: a folder list built one path per enter (so
-// spaces need no quoting), with directory completion.
+// HomeModel is the landing screen: a folder list built by dropping folders on
+// the terminal or typing one path per enter (so spaces need no quoting), with
+// directory completion.
 type HomeModel struct {
 	cfg   HomeConfig
 	err   error
@@ -129,6 +124,7 @@ type HomeModel struct {
 // homeKeys is the Add tab's full key list, behind ?.
 var homeKeys = []KeyGroup{
 	{"Folders", []KeyLine{
+		{"drop", "drag a folder onto the terminal to add it"},
 		{"enter", "add the folder typed"},
 		{"tab", "complete the folder name"},
 		{"↑ ↓", "on an empty line: folders added, then scanned before"},
@@ -138,10 +134,10 @@ var homeKeys = []KeyGroup{
 		{"enter", "on an empty line: plan the folders listed"},
 		{"ctrl+g", "plan again, re-reading every file"},
 		{"ctrl+r", "discard the current plan: forget every file not yet copied"},
-		{"ctrl+d", "reset: empty the library database"},
 	}},
 	{"App", []KeyLine{
 		{"shift+tab", "next tab"},
+		{"esc esc", "quit"},
 		{"ctrl+c", "quit"},
 	}},
 }
@@ -150,9 +146,7 @@ func NewHomeModel(cfg HomeConfig) HomeModel {
 	paths := path.New()
 	ti := textinput.New()
 	ti.Prompt = lipgloss.NewStyle().Foreground(Primary).Render("❯ ")
-	// Home-relative and OS-separated, not a hardcoded unix path: Windows'
-	// equivalent lives under its own user profile drive, never "~/Pictures".
-	ti.Placeholder = paths.RelativeToHome(filepath.Join(paths.HomeDir, "Pictures"))
+	ti.Placeholder = "Drop a folder here, or type its path"
 	ti.Focus()
 	m := HomeModel{cfg: cfg, ti: ti, paths: paths, suggCursor: -1, histIdx: -1, lifted: -1}
 	m.refresh()
@@ -223,12 +217,6 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ask = &a
 			}
 			return m, nil
-		case "ctrl+d":
-			if m.lib.Planned > 0 || m.lib.Placed > 0 {
-				a := ResetAsk(m.lib.Placed)
-				m.ask = &a
-			}
-			return m, nil
 		case "ctrl+x":
 			m.drop(len(m.added) - 1)
 			return m, nil
@@ -261,6 +249,13 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.enter()
 		}
+		// a drop arrives as a paste: onto an empty line it adds the folders at
+		// once, anywhere else it is text for the line
+		if msg.Paste && m.ti.Value() == "" {
+			if cmd, added := m.addDropped(string(msg.Runes)); added {
+				return m, cmd
+			}
+		}
 	}
 
 	var cmd tea.Cmd
@@ -286,7 +281,8 @@ func (m *HomeModel) walkHistory(step int) {
 		}
 	}
 	if m.lifted >= 0 {
-		m.added = slices.Insert(m.added, m.lifted, m.walk[m.histIdx])
+		// ctrl+x may have shortened the list since the folder was lifted
+		m.added = slices.Insert(m.added, min(m.lifted, len(m.added)), m.walk[m.histIdx])
 		m.lifted = -1
 	}
 	i := min(m.histIdx+step, len(m.walk)-1)
@@ -323,38 +319,47 @@ func (m *HomeModel) drop(i int) {
 }
 
 // enter adds the typed folder to the list, or starts the scan when the input
-// is empty.
+// is empty and a folder is listed.
 func (m HomeModel) enter() (tea.Model, tea.Cmd) {
-	typed := strings.TrimSpace(m.ti.Value())
-	if typed == "" {
+	if strings.TrimSpace(m.ti.Value()) == "" {
 		if len(m.added) == 0 {
-			return m, m.show(fmt.Errorf("type a folder first"), "")
+			return m, m.show(fmt.Errorf("Add a folder"), "")
 		}
 		paths := slices.Clone(m.added)
 		return m, func() tea.Msg { return StartScanMsg{Paths: paths} }
 	}
+	cmd, _ := m.addDropped(m.ti.Value())
+	return m, cmd
+}
 
-	dir := m.paths.ExpandPath(typed)
-	st, err := os.Stat(dir)
-	switch {
-	case err != nil:
-		return m, m.show(fmt.Errorf("%s: no such folder", typed), "")
-	case !st.IsDir():
-		return m, m.show(fmt.Errorf("%s is not a folder", typed), "")
-	}
-	// refused here, while it is still in the input to change
-	if m.cfg.Check != nil {
-		if err := m.cfg.Check(dir); err != nil {
-			return m, m.show(err, "")
+// addDropped lists every folder in text (typed, pasted or dropped) and clears
+// the input. One that can't be added stops it, stays in the input and is shown
+// as the warning; added reports that text held a folder.
+func (m *HomeModel) addDropped(text string) (cmd tea.Cmd, added bool) {
+	dirs := m.paths.Dropped(text)
+	for _, dir := range dirs {
+		shown := m.paths.RelativeToHome(dir)
+		st, err := os.Stat(dir)
+		switch {
+		case err != nil:
+			return m.show(fmt.Errorf("%s: no such folder", shown), ""), false
+		case !st.IsDir():
+			return m.show(fmt.Errorf("%s is not a folder", shown), ""), false
 		}
+		// refused here, while it is still in the input to change
+		if m.cfg.Check != nil {
+			if err := m.cfg.Check(dir); err != nil {
+				return m.show(err, ""), false
+			}
+		}
+		m.err = nil
+		if !slices.Contains(m.added, dir) {
+			m.added = append(m.added, dir)
+		}
+		m.ti.SetValue("")
+		m.refresh()
 	}
-	m.err = nil
-	if !slices.Contains(m.added, dir) {
-		m.added = append(m.added, dir)
-	}
-	m.ti.SetValue("")
-	m.refresh()
-	return m, nil
+	return nil, len(dirs) > 0
 }
 
 // show puts up a warning or a note (one replaces the other) for messageFor.
@@ -474,15 +479,16 @@ func (m HomeModel) footer() string {
 		b.WriteString(row(Attn.Render("⚠ "+m.err.Error()), "", m.w))
 		b.WriteString("\n")
 	}
-	if len(m.added) > 0 && len(m.sugg) == 0 {
-		b.WriteString(row("  "+FaintTxt.Render("Enter on an empty line plans these folders."), "", m.w))
-		b.WriteString("\n")
-	}
 	var hints []string
 	if len(m.sugg) > 0 {
 		hints = append(hints, KeyHint("tab", "complete"))
 	}
-	hints = append(hints, KeyHint("enter", "add"))
+	// enter scans once folders are listed and the line is empty
+	if len(m.added) > 0 && m.ti.Value() == "" {
+		hints = append(hints, KeyHint("enter", "scan"))
+	} else {
+		hints = append(hints, KeyHint("enter", "add"))
+	}
 	if len(m.added)+len(m.cfg.History) > 0 && (m.histIdx >= 0 || m.ti.Value() == "") {
 		hints = append(hints, KeyHint("↑↓", "earlier folders"))
 	}

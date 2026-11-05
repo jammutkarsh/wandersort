@@ -79,3 +79,24 @@ func TestSettingsListEdit(t *testing.T) {
 		t.Errorf("esc should save and close the edit: saves=%d value=%q msgs=%v", saves, value, msgs)
 	}
 }
+
+// Enter pressed repeatedly on a one-step row saves once and never crashes,
+// whether the extra presses land before or after the list takes the form away.
+func TestSettingsListEnterRepeatedly(t *testing.T) {
+	saves := 0
+	rows := func() []SettingRow {
+		return []SettingRow{{Label: "Library", Value: "/lib", Edit: func() ([]*Field, func() error) {
+			v := "/lib"
+			return []*Field{{Kind: FieldInput, Title: "Which library?", Value: &v}}, func() error { saves++; return nil }
+		}}}
+	}
+	var m tea.Model = NewSettingsModel(rows, "")
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+	for range 4 { // open the row, then press enter again and again
+		m, _ = m.Update(enter)
+	}
+	if saves != 1 {
+		t.Errorf("saved %d times, want once", saves)
+	}
+}

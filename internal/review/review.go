@@ -85,7 +85,7 @@ type Model struct {
 	previewErr error
 	db         *db.DB
 	resolver   *location.Resolver
-	ask        *tui.Ask // [ctrl+d]/[ctrl+r]'s full-screen question
+	ask        *tui.Ask // [ctrl+r]'s full-screen question
 	// draft owns the base plan, the journal and the tree they make
 	draft *vfs.Draft
 

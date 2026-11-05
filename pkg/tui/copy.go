@@ -318,7 +318,7 @@ func (m CopyModel) askView() string {
 		b.WriteString(row("  "+Attn.Render("⚠ Free some space on the library's drive, then come back."), "", m.w) + "\n")
 		return b.String()
 	}
-	b.WriteString(row("  "+FaintTxt.Render("Originals stay where they are. Every copy is checked against its original."), "", m.w) + "\n")
+	b.WriteString(row("  "+FaintTxt.Render("Original files are not deleted."), "", m.w) + "\n")
 	return b.String()
 }
 

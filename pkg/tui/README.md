@@ -32,7 +32,7 @@ Use the semantic styles (`Title`, `Text`, `DimText`, `FaintTxt`, `OK`, `Attn`, `
 - `CopyModel`: what a copy would do, the copy (bytes on the bar), and what it did, naming files left out by reason.
 - `FormModel`: the settings setup. `FieldSelect` (numbered single choice), `FieldMultiSelect`, `FieldConfirm`, `FieldInput`, `FieldGroup` (one screen, any kinds). `Field.Skip` leaves a follow-up step out; `Heading` adds a title and step count; `Then` lets a host screen keep going after it ends; `EscSaves` makes esc save without asking. `ctrl+b` goes back a step. `Field.Example` shows only the option under the cursor: a bordered right column on wide terminals (≥ 100 cols), a block above the footer otherwise.
 - `SettingsModel`: a library's settings as a list; enter edits one row with a one-step `FormModel`.
-- `HomeModel`: the Add tab's folder list.
+- `HomeModel`: the Add tab's folder list, built by dropping folders on the terminal (a paste) or typing one path per enter.
 - `Footer(help, w)` / `KeyHint(key, action)`: every key goes through `KeyHint` (non-breaking spaces, so wrapping only happens between hints).
 - `Row(left, right, w)`, `Screen(body, footer, h)`: one full-width line; a footer pinned to the bottom.
 - `Tab` / `Leave` / `SwitchMsg`: how the shell hosts screens. Screens never quit the program; they hand back with `Leave`.
