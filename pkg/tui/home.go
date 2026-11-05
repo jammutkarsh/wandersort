@@ -9,7 +9,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/path"
@@ -29,9 +28,9 @@ type DiscardPlanMsg struct{}
 // DiscardPlanAsk is the question before a DiscardPlanMsg.
 func DiscardPlanAsk(planned int) Ask {
 	return Ask{
-		Title: fmt.Sprintf("Discard the current plan for %s?", human.Plural(planned, "file", "files")),
-		Detail: "Forgets files not yet copied and your edits. Copied files stay. " +
-			"Add the folders again to re-plan.",
+		Title: fmt.Sprintf("Discard the plan for %s?", human.Plural(planned, "file", "files")),
+		Detail: "Forgets the files not copied yet and your edits from Organise. Copied files stay. " +
+			"Add the folders again to plan them again.",
 		Action: "discard",
 		Msg:    DiscardPlanMsg{},
 	}
@@ -127,13 +126,13 @@ var homeKeys = []KeyGroup{
 		{"drop", "drag a folder onto the terminal to add it"},
 		{"enter", "add the folder typed"},
 		{"tab", "complete the folder name"},
-		{"↑ ↓", "on an empty line: folders added, then scanned before"},
+		{"↑ ↓", "on an empty line: recent folders"},
 		{"ctrl+x", "remove the last folder"},
 	}},
-	{"Planning", []KeyLine{
-		{"enter", "on an empty line: plan the folders listed"},
-		{"ctrl+g", "plan again, re-reading every file"},
-		{"ctrl+r", "discard the current plan: forget every file not yet copied"},
+	{"Adding", []KeyLine{
+		{"enter", "on an empty line: start adding the folders listed"},
+		{"ctrl+g", "add again, reading every file again (slower)"},
+		{"ctrl+r", "discard the plan: forget the files not copied yet"},
 	}},
 	{"App", []KeyLine{
 		{"shift+tab", "next tab"},
@@ -145,7 +144,7 @@ var homeKeys = []KeyGroup{
 func NewHomeModel(cfg HomeConfig) HomeModel {
 	paths := path.New()
 	ti := textinput.New()
-	ti.Prompt = lipgloss.NewStyle().Foreground(Primary).Render("❯ ")
+	ti.Prompt = Prompt()
 	ti.Placeholder = "Drop a folder here, or type its path"
 	ti.Focus()
 	m := HomeModel{cfg: cfg, ti: ti, paths: paths, suggCursor: -1, histIdx: -1, lifted: -1}
@@ -203,10 +202,9 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// a decision this consequential (re-reading every file) gets
 				// exactly two keys: enter or esc
 				m.ask = &Ask{
-					Title: "Force re-scan?",
-					Detail: "Re-reads every file, unchanged ones too. Slower; use after an " +
-						"update or if a file's details look wrong.",
-					Action: "confirm",
+					Title:  "Read every file again?",
+					Detail: "Slower. Use it if dates or places look wrong.",
+					Action: "read again",
 					Msg:    StartScanMsg{Paths: slices.Clone(m.added), Force: true},
 				}
 			}
@@ -396,7 +394,7 @@ func (m HomeModel) View() string {
 	var b strings.Builder
 	b.WriteString("\n")
 	for _, l := range m.cfg.LastScan {
-		b.WriteString(row("  "+OK.Render("✓ ")+DimText.Render(l), "", m.w))
+		b.WriteString(row(OK.Render("✓ ")+DimText.Render(l), "", m.w))
 		b.WriteString("\n")
 	}
 	if len(m.cfg.LastScan) > 0 {
@@ -413,34 +411,33 @@ func (m HomeModel) View() string {
 	if len(m.cfg.LastScan) > 0 {
 		title = "Add more photos from"
 	}
-	b.WriteString(row("  "+Text.Bold(true).Render(title), "", m.w))
+	b.WriteString(row(Text.Bold(true).Render(title), "", m.w))
 	b.WriteString("\n\n")
 	for _, p := range m.added {
-		b.WriteString(row("    "+OK.Render("✓ ")+Text.Render(m.paths.RelativeToHome(p)), "", m.w))
+		b.WriteString(row("  "+OK.Render("✓ ")+Text.Render(m.paths.RelativeToHome(p)), "", m.w))
 		b.WriteString("\n")
 	}
-	b.WriteString("  ")
 	b.WriteString(m.ti.View())
 	b.WriteString("\n")
 
 	start, end := suggWindow(len(m.sugg), m.suggCursor, maxHomeSuggestions)
 	if start > 0 {
-		b.WriteString(row("      "+FaintTxt.Render(fmt.Sprintf("↑ %d more", start)), "", m.w) + "\n")
+		b.WriteString(row("    "+FaintTxt.Render(fmt.Sprintf("↑ %d more", start)), "", m.w) + "\n")
 	}
 	for i := start; i < end; i++ {
 		var line string
 		switch {
 		case i == m.suggCursor:
-			line = "      " + Selected.Render(m.sugg[i]) + FaintTxt.Render("  ⏎ pick")
+			line = "    " + Selected.Render(m.sugg[i]) + FaintTxt.Render("  ⏎ pick")
 		case i == 0 && m.suggCursor < 0:
-			line = "      " + FaintTxt.Render("· ") + DimText.Render(m.sugg[i]) + FaintTxt.Render("  ⇥ tab")
+			line = "    " + FaintTxt.Render("· ") + DimText.Render(m.sugg[i]) + FaintTxt.Render("  ⇥ tab")
 		default:
-			line = "      " + FaintTxt.Render("· ") + DimText.Render(m.sugg[i])
+			line = "    " + FaintTxt.Render("· ") + DimText.Render(m.sugg[i])
 		}
 		b.WriteString(row(line, "", m.w) + "\n")
 	}
 	if rest := len(m.sugg) - end; rest > 0 {
-		b.WriteString(row("      "+FaintTxt.Render(fmt.Sprintf("↓ %d more", rest)), "", m.w) + "\n")
+		b.WriteString(row("    "+FaintTxt.Render(fmt.Sprintf("↓ %d more", rest)), "", m.w) + "\n")
 	}
 
 	view := Screen(b.String(), m.footer(), m.h)
@@ -464,8 +461,8 @@ func (m HomeModel) libraryLines() []string {
 		}
 	}
 	return []string{
-		"  " + DimText.Render("Planned          ") + Text.Render(planned),
-		"  " + DimText.Render("In the library   ") + Text.Render(human.Plural(m.lib.Placed, "file", "files")),
+		DimText.Render("Planned          ") + Text.Render(planned),
+		DimText.Render("In the library   ") + Text.Render(human.Plural(m.lib.Placed, "file", "files")),
 	}
 }
 
@@ -485,15 +482,12 @@ func (m HomeModel) footer() string {
 	}
 	// enter scans once folders are listed and the line is empty
 	if len(m.added) > 0 && m.ti.Value() == "" {
-		hints = append(hints, KeyHint("enter", "scan"))
+		hints = append(hints, KeyHint("enter", "start"))
 	} else {
 		hints = append(hints, KeyHint("enter", "add"))
 	}
 	if len(m.added)+len(m.cfg.History) > 0 && (m.histIdx >= 0 || m.ti.Value() == "") {
-		hints = append(hints, KeyHint("↑↓", "earlier folders"))
-	}
-	if m.lib.Planned > 0 {
-		hints = append(hints, KeyHint("ctrl+r", "discard current plan"))
+		hints = append(hints, KeyHint("↑↓", "recent folders"))
 	}
 	hints = append(hints, MoreKeys())
 	b.WriteString(Footer(strings.Join(hints, "   "), m.w))

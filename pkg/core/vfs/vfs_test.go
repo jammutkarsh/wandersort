@@ -607,7 +607,7 @@ func TestOrientationTagSwapsDimensions(t *testing.T) {
 	cfg.Rules = []string{RuleLocation, RuleOrientation, RuleMedia}
 	rows := h.build(t, cfg, geo)
 	// media still collapses (both files are photos); orientation survives
-	want := "2024/06_June/Calangute/Vertical/IMG_0001.HEIC"
+	want := "2024/06_June/Calangute/Portrait/IMG_0001.HEIC"
 	if rows[id].TargetPath != want {
 		t.Errorf("target = %q, want %q", rows[id].TargetPath, want)
 	}
@@ -926,7 +926,7 @@ func TestCollapseDisabled(t *testing.T) {
 	cfg.CollapseLevels = false
 	rows := h.build(t, cfg, installtest.Resolver(t))
 
-	want := "2024/06_June/Calangute/Vertical/Photos/IMG_0001.HEIC"
+	want := "2024/06_June/Calangute/Portrait/Photos/IMG_0001.HEIC"
 	if got := rows[id].TargetPath; got != want {
 		t.Errorf("target = %q, want %q", got, want)
 	}

@@ -164,9 +164,9 @@ func (m ReadyModel) View() string {
 	var b strings.Builder
 	b.WriteString(Brand() + "\n\n")
 	if m.gaveUp {
-		b.WriteString("  " + Bad.Render(fmt.Sprintf("✗ Couldn't download %s after %d tries", m.failedLabels(), m.gaveUpMsg.Tries)) + "\n\n")
+		b.WriteString(Bad.Render(fmt.Sprintf("✗ Couldn't download %s after %d tries", m.failedLabels(), m.gaveUpMsg.Tries)) + "\n\n")
 	} else {
-		b.WriteString("  " + Text.Bold(true).Render("Getting ready") + "\n\n")
+		b.WriteString(Text.Bold(true).Render("Getting ready") + "\n\n")
 	}
 	for _, r := range m.rows {
 		b.WriteString(m.rowView(r) + "\n")
@@ -175,12 +175,12 @@ func (m ReadyModel) View() string {
 	var footer string
 	switch {
 	case m.gaveUp:
-		b.WriteString("  " + DimText.Render("Check your connection and run wandersort again.") + "\n")
-		b.WriteString("  " + DimText.Render("It picks up from what's already downloaded.") + "\n")
+		b.WriteString(DimText.Render("Check your connection and open WanderSort again.") + "\n")
+		b.WriteString(DimText.Render("It picks up from what's already downloaded.") + "\n")
 		footer = Footer(KeyHint("any key", "quit"), m.w)
 	case m.waiting != nil:
-		b.WriteString("  " + Attn.Render("⚠ Try switching to a better network.") + "\n")
-		b.WriteString("    " + DimText.Render(fmt.Sprintf("Retrying in %s", m.left)) + "  " +
+		b.WriteString(Attn.Render("⚠ Try switching to a better network.") + "\n")
+		b.WriteString("  " + DimText.Render(fmt.Sprintf("Retrying in %s", m.left)) + "  " +
 			FaintTxt.Render(fmt.Sprintf("try %d of %d", m.next, m.tries)) + "\n")
 		footer = Footer(KeyHint("enter", "retry now")+"   "+KeyHint("ctrl+c", "quit"), m.w)
 	default:
@@ -193,17 +193,17 @@ func (m ReadyModel) rowView(r readyRow) string {
 	name := fmt.Sprintf("%-13s", r.Label)
 	switch {
 	case r.failed != "":
-		return row("  "+Bad.Render("✗")+" "+Text.Render(name)+" "+DimText.Render(r.failed), "", m.w)
+		return row(Bad.Render("✗")+" "+Text.Render(name)+" "+DimText.Render(r.failed), "", m.w)
 	case r.ready && r.total > 0:
-		return row("  "+OK.Render("✓")+" "+Text.Render(name)+" "+DimText.Render("downloaded, "+volume.HumanBytes(uint64(r.total))), "", m.w)
+		return row(OK.Render("✓")+" "+Text.Render(name)+" "+DimText.Render("downloaded, "+volume.HumanBytes(uint64(r.total))), "", m.w)
 	case r.ready:
-		return row("  "+OK.Render("✓")+" "+Text.Render(name)+" "+DimText.Render("found"), "", m.w)
+		return row(OK.Render("✓")+" "+Text.Render(name)+" "+DimText.Render("found"), "", m.w)
 	case r.total > 0:
-		left := "  " + m.sb.spin.View() + Text.Render(name) + " " + m.sb.bar.View() + "  " +
+		left := m.sb.spin.View() + Text.Render(name) + " " + m.sb.bar.View() + "  " +
 			FaintTxt.Render(volume.HumanBytes(uint64(r.done))+" / "+volume.HumanBytes(uint64(r.total)))
 		return row(left, FaintTxt.Render(liveElapsed(r.start)), m.w)
 	default:
-		return row("  "+m.sb.spin.View()+Text.Render(name)+" "+DimText.Render("checking…"), FaintTxt.Render(liveElapsed(r.start)), m.w)
+		return row(m.sb.spin.View()+Text.Render(name)+" "+DimText.Render("checking…"), FaintTxt.Render(liveElapsed(r.start)), m.w)
 	}
 }
 

@@ -45,8 +45,8 @@ func TestStageList(t *testing.T) {
 			if strings.Contains(out, "a.jpg") {
 				t.Errorf("done stage should collapse its tail, got:\n%s", out)
 			}
-			if !strings.Contains(out, "Scanned 2 files") || !strings.Contains(out, "1.2s") {
-				t.Errorf("done row missing summary or elapsed:\n%s", out)
+			if !strings.Contains(out, "Scanned 2 files") || strings.Contains(out, "1.2s") {
+				t.Errorf("done row should show its summary without the elapsed time:\n%s", out)
 			}
 		}},
 		{"StageListShowsOnlyTheCurrentItem", func(t *testing.T) {

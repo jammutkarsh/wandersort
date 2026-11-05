@@ -207,7 +207,7 @@ func TestHome(t *testing.T) {
 			if m.ti.Value() != "" {
 				t.Errorf("input = %q, want it emptied once the folders are listed", m.ti.Value())
 			}
-			if v := viewText(m.View()); !strings.Contains(v, "enter scan") {
+			if v := viewText(m.View()); !strings.Contains(v, "enter start") {
 				t.Errorf("a listed folder should offer the scan in the footer:\n%s", v)
 			}
 			m = typeHome(m, "~/typing")

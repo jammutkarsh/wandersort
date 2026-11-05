@@ -117,13 +117,3 @@ func TestIsBundleDir(t *testing.T) {
 		}
 	}
 }
-
-func TestToMap(t *testing.T) {
-	got := toMap([]string{"a", "b", "a"})
-	if len(got) != 2 || !got["a"] || !got["b"] {
-		t.Errorf("toMap([a b a]) = %v, want set {a, b}", got)
-	}
-	if empty := toMap(nil); len(empty) != 0 {
-		t.Errorf("toMap(nil) = %v, want empty map", empty)
-	}
-}

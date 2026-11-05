@@ -123,10 +123,21 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.rows)-1 {
 			m.cursor++
 		}
-	case "n":
+	case "right", "n":
 		m.jumpSameDepth(1)
-	case "N":
+	case "left", "N":
 		m.jumpSameDepth(-1)
+	case "shift+up", "shift+down":
+		// extends a selection, starting one where the cursor is
+		if !m.visualMode {
+			m.visualMode, m.visualAnchor = true, m.cursor
+		}
+		if key.String() == "shift+up" && m.cursor > 0 {
+			m.cursor--
+		}
+		if key.String() == "shift+down" && m.cursor < len(m.rows)-1 {
+			m.cursor++
+		}
 	case "r":
 		if m.rows[m.cursor].node.Fixed() {
 			m.statusMsg, m.statusIsErr = vfs.ErrFixedFolder.Error(), true
@@ -143,7 +154,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.previewErr = nil
 			cmd = tea.Batch(peekCmd(m.ctx, m.db, m.rows[m.cursor].node), m.spin.Tick)
 		}
-	case "V":
+	case " ", "V":
 		if m.visualMode {
 			m.visualMode = false
 		} else {
@@ -153,13 +164,13 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusMsg, m.statusIsErr = "", false
 	case "m":
 		m.mergeSelection()
-	case "d":
+	case "x":
 		m.dropFolders(m.selectedRows())
-	case "D":
+	case "f":
 		m.flattenFolders(m.selectedRows())
 	case "?":
 		m.showHelp = true
-	case "R":
+	case "ctrl+u":
 		m = m.reset()
 	case "ctrl+r":
 		a := tui.DiscardPlanAsk(m.plannedFiles())

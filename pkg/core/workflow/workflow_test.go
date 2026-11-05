@@ -129,7 +129,7 @@ func TestRunScanRefusesRootsOverlappingTheLibrary(t *testing.T) {
 func TestWorkflowPhasesOrderAndMessages(t *testing.T) {
 	wf, _ := newTestWorkflow(t)
 
-	phases := wf.workflowPhases([]string{"/root"}, false)
+	phases := wf.workflowPhases(&Result{Roots: []string{"/root"}}, false)
 
 	wantKinds := []workflowPhaseKind{
 		workflowPhaseScan, workflowPhaseMetadata, workflowPhaseVFS,
@@ -155,18 +155,25 @@ func TestWorkflowPhasesOrderAndMessages(t *testing.T) {
 // so a silent format change should fail a test, not just look different.
 func TestPhaseSummaryFormatting(t *testing.T) {
 	wf, _ := newTestWorkflow(t)
-	phases := wf.workflowPhases([]string{"/root"}, false)
+	phases := wf.workflowPhases(&Result{Roots: []string{"/root"}}, false)
 
 	want := map[workflowPhaseKind]string{
 		workflowPhaseScan:     "Found 3 files",
-		workflowPhaseMetadata: "Read 3 files",
-		workflowPhaseVFS:      "Planned 3 files",
+		workflowPhaseMetadata: "Read dates and places from 3 files",
+		workflowPhaseVFS:      "Sorted 3 files into folders",
 	}
 	for _, p := range phases {
 		got := p.summary(3)
 		if got != want[p.kind] {
 			t.Errorf("%s summary: got %q, want %q", p.kind, got, want[p.kind])
 		}
+	}
+
+	// fewer planned than found says why the counts differ
+	res := &Result{Roots: []string{"/root"}, Found: 5}
+	vfsPhase := wf.workflowPhases(res, false)[2]
+	if got, want := vfsPhase.summary(3), "Sorted 3 files into folders · 2 skipped: already in the library, duplicates or unreadable"; got != want {
+		t.Errorf("vfs summary after a skip: got %q, want %q", got, want)
 	}
 }
 
@@ -179,7 +186,7 @@ func TestMetadataPhaseWrapsExiftoolDepsError(t *testing.T) {
 		Exiftool: func(context.Context) (string, error) { return "", errors.New("download failed") },
 	}
 
-	phases := wf.workflowPhases([]string{"/root"}, false)
+	phases := wf.workflowPhases(&Result{Roots: []string{"/root"}}, false)
 	var metaPhase *workflowPhase
 	for i := range phases {
 		if phases[i].kind == workflowPhaseMetadata {
@@ -204,7 +211,7 @@ func TestVFSPhaseWrapsLocationDepsError(t *testing.T) {
 		Location: func(context.Context) (*location.Resolver, error) { return nil, errors.New("download failed") },
 	}
 
-	phases := wf.workflowPhases([]string{"/root"}, false)
+	phases := wf.workflowPhases(&Result{Roots: []string{"/root"}}, false)
 	var vfsPhase *workflowPhase
 	for i := range phases {
 		if phases[i].kind == workflowPhaseVFS {

@@ -193,7 +193,7 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 		if unreadable == 1 {
 			files = "file"
 		}
-		e.log.Warn(fmt.Sprintf("%d %s could not be read — see the log", unreadable, files),
+		e.log.Warn(fmt.Sprintf("%d %s could not be read; they're tried again next time", unreadable, files),
 			logger.UserKey, true)
 	}
 	return persisted, nil

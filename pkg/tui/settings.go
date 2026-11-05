@@ -36,7 +36,7 @@ var settingsKeys = []KeyGroup{
 	{"Settings", []KeyLine{
 		{"↑ ↓", "move"},
 		{"enter", "change the setting"},
-		{"esc", "back"},
+		{"esc", "done"},
 		{"ctrl+c", "quit"},
 	}},
 }
@@ -145,7 +145,7 @@ func (m SettingsModel) View() string {
 		labelW = max(labelW, len(r.Label))
 	}
 	var b strings.Builder
-	b.WriteString("\n" + row("  "+Text.Bold(true).Render("Settings for this library"), "", m.w) + "\n\n")
+	b.WriteString("\n" + row(Text.Bold(true).Render("Settings for this library"), "", m.w) + "\n\n")
 	for i, r := range m.list {
 		label := r.Label + strings.Repeat(" ", labelW-len(r.Label)+3)
 		right, mark := FaintTxt.Render("›"), "  "
@@ -156,22 +156,22 @@ func (m SettingsModel) View() string {
 			mark = Title.Render("❯ ")
 			right = Title.Render("›")
 		}
-		line := row("  "+mark+DimText.Render(label)+Text.Render(r.Value), right+"  ", m.w)
+		line := row(mark+DimText.Render(label)+Text.Render(r.Value), right, m.w)
 		if i == m.cursor {
-			line = Selected.Render(row("  ❯ "+label+r.Value, "›  ", m.w))
+			line = Selected.Render(row("❯ "+label+r.Value, "›", m.w))
 		}
 		b.WriteString(line + "\n")
 	}
 	b.WriteString("\n")
 	switch {
 	case m.err != nil:
-		b.WriteString(row("  "+Bad.Render("✗ ")+Text.Render(m.err.Error()), "", m.w) + "\n")
+		b.WriteString(row(Bad.Render("✗ ")+Text.Render(m.err.Error()), "", m.w) + "\n")
 	case m.saved:
-		b.WriteString(row("  "+OK.Render("✓ ")+Text.Render("Saved. Files not yet copied are planned again."), "", m.w) + "\n")
+		b.WriteString(row(OK.Render("✓ ")+Text.Render("Saved. Files not copied yet now follow it."), "", m.w) + "\n")
 	case m.note != "":
-		b.WriteString(row("  "+FaintTxt.Render(m.note), "", m.w) + "\n")
+		b.WriteString(row(FaintTxt.Render(m.note), "", m.w) + "\n")
 	}
-	footer := Footer(KeyHint("↑↓", "move")+"   "+KeyHint("enter", "change")+"   "+KeyHint("esc", "back")+"   "+MoreKeys(), m.w)
+	footer := Footer(KeyHint("↑↓", "move")+"   "+KeyHint("enter", "change")+"   "+KeyHint("esc", "done")+"   "+MoreKeys(), m.w)
 	view := Screen(b.String(), footer, m.h)
 	if m.showKeys {
 		return KeyHelp(view, settingsKeys, m.w, m.h)

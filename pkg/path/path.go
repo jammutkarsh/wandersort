@@ -135,6 +135,19 @@ func (r *Resolver) RelativeToHome(path string) string {
 	return path
 }
 
+// Friendly shows a folder to someone who never uses a terminal: "Pictures/x,
+// in your home folder" rather than "~/Pictures/x"; outside home, the full path.
+func (r *Resolver) Friendly(path string) string {
+	rel := r.RelativeToHome(path)
+	switch {
+	case rel == "~":
+		return "your home folder"
+	case strings.HasPrefix(rel, "~"+string(filepath.Separator)):
+		return rel[2:] + ", in your home folder"
+	}
+	return rel
+}
+
 // SanitizeSegment makes a derived value safe as one path segment on every
 // filesystem a library may sit on (exFAT and NTFS refuse more than APFS).
 func SanitizeSegment(seg string) string {

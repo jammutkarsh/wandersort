@@ -47,8 +47,10 @@ type ScanConfig struct {
 	// ReviewNext builds the review screen once the plan is written; it is
 	// handed to the shell, and opened when the user picks it.
 	ReviewNext func() (Tab, error)
-	// Paths are the folders being planned, for the heading.
+	// Paths are the folders being added, for the heading.
 	Paths []string
+	// LogPath is where the run's log is, named when warnings only it holds.
+	LogPath string
 }
 
 // ScanModel plans folders: a stage per pipeline phase while it runs, then what to do next.
@@ -93,13 +95,13 @@ const (
 )
 
 // planChoices is what the finished screen offers, in order.
-var planChoices = []string{"Review folders", "Copy folders", "Add more folders"}
+var planChoices = []string{"Organise folders", "Copy into library", "Add more folders"}
 
 // scanKeys is the plan screen's full key list, behind ?.
 var scanKeys = []KeyGroup{
-	{"While planning", []KeyLine{
-		{"shift+tab", "next tab; planning keeps going"},
-		{"ctrl+c", "stop; the next run carries on"},
+	{"While adding", []KeyLine{
+		{"shift+tab", "next tab; adding keeps going"},
+		{"ctrl+c", "stop; next time picks up from here"},
 	}},
 	{"When the plan is ready", []KeyLine{
 		{"1-3", "choose what's next"},
@@ -137,9 +139,9 @@ func (m ScanModel) Summary() []string { return m.sl.Summary() }
 func NewScanModel(cfg ScanConfig) ScanModel {
 	sl := NewStageList(
 		nil,
-		&Stage{Key: "scan", Name: "Find"},
-		&Stage{Key: "metadata", Name: "Read", HasBar: true},
-		&Stage{Key: "vfs", Name: "Plan"},
+		&Stage{Key: "scan", Name: "Find files"},
+		&Stage{Key: "metadata", Name: "Read dates and places", HasBar: true},
+		&Stage{Key: "vfs", Name: "Sort into folders"},
 	)
 	return ScanModel{cfg: cfg, sl: sl}
 }
@@ -323,7 +325,7 @@ func (m *ScanModel) progressCmd(e logger.Event) tea.Cmd {
 func (m ScanModel) View() string {
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString(row("  "+m.heading(), "", m.w) + "\n\n")
+	b.WriteString(row(m.heading(), "", m.w) + "\n\n")
 	b.WriteString(m.sl.View(m.w) + "\n\n")
 
 	switch m.state {
@@ -332,11 +334,11 @@ func (m ScanModel) View() string {
 		if left != "" {
 			left += ". "
 		}
-		b.WriteString(row("  "+DimText.Render(left+"You can switch tabs; this keeps going."), "", m.w) + "\n")
+		b.WriteString(row(DimText.Render(left+"This keeps going if you switch tabs."), "", m.w) + "\n")
 	case scanCancelling:
-		b.WriteString(row("  "+Attn.Render("⚠ Stopping — press ctrl+c again to quit now. The next run carries on from here."), "", m.w) + "\n")
+		b.WriteString(row(Attn.Render("⚠ Stopping… Press ctrl+c again to quit now. Next time picks up from here."), "", m.w) + "\n")
 	case scanFailed:
-		b.WriteString(row("  "+Bad.Render("Planning failed: ")+Text.Render(m.err.Error()), "", m.w) + "\n")
+		b.WriteString(row(Bad.Render("Couldn't add the folders: ")+Text.Render(m.err.Error()), "", m.w) + "\n")
 	case scanFinished:
 		b.WriteString(m.finishedView())
 	}
@@ -353,7 +355,7 @@ func (m ScanModel) heading() string {
 	case scanFinished:
 		return Text.Bold(true).Render("Plan ready")
 	case scanFailed:
-		return Bad.Render("Planning stopped")
+		return Bad.Render("Adding stopped")
 	}
 	names := make([]string, len(m.cfg.Paths))
 	for i, p := range m.cfg.Paths {
@@ -363,7 +365,7 @@ func (m ScanModel) heading() string {
 	if len(names) == 1 {
 		folders = "folder"
 	}
-	return Text.Bold(true).Render(fmt.Sprintf("Planning %d %s", len(names), folders)) + "  " +
+	return Text.Bold(true).Render(fmt.Sprintf("Adding %d %s", len(names), folders)) + "  " +
 		DimText.Render(strings.Join(names, ", "))
 }
 
@@ -371,10 +373,10 @@ func (m ScanModel) heading() string {
 func (m ScanModel) finishedView() string {
 	var b strings.Builder
 	for _, w := range m.warnings {
-		b.WriteString(row("  "+Attn.Render("⚠ "+w), "", m.w) + "\n")
+		b.WriteString(row(Attn.Render("⚠ "+w), "", m.w) + "\n")
 	}
 	if m.reviewErr != nil {
-		b.WriteString(row("  "+Bad.Render("Couldn't open the folders: ")+Text.Render(m.reviewErr.Error()), "", m.w) + "\n")
+		b.WriteString(row(Bad.Render("Couldn't open the folders: ")+Text.Render(m.reviewErr.Error()), "", m.w) + "\n")
 	}
 	if b.Len() > 0 {
 		b.WriteString("\n")
@@ -385,18 +387,21 @@ func (m ScanModel) finishedView() string {
 		}
 		if i == m.choice {
 			line := Title.Render(fmt.Sprintf("❯ %d) ", i+1)) + Text.Bold(true).Render(label)
-			b.WriteString(row("  "+line, "", m.w) + "\n")
+			b.WriteString(row(line, "", m.w) + "\n")
 			continue
 		}
-		b.WriteString(row("    "+DimText.Render(fmt.Sprintf("%d) ", i+1))+Text.Render(label), "", m.w) + "\n")
+		b.WriteString(row("  "+DimText.Render(fmt.Sprintf("%d) ", i+1))+Text.Render(label), "", m.w) + "\n")
 	}
 	return b.String()
 }
 
 func (m ScanModel) footer() string {
 	if m.logWarnings > 0 {
-		warn := row("  "+Attn.Render(fmt.Sprintf("⚠ %s — see the log", human.Plural(m.logWarnings, "warning", "warnings"))), "", m.w)
-		return warn + "\n" + m.keyFooter()
+		text := fmt.Sprintf("⚠ %s noted while adding", human.Plural(m.logWarnings, "problem", "problems"))
+		if m.cfg.LogPath != "" {
+			text += ". Details: " + m.cfg.LogPath
+		}
+		return row(Attn.Render(text), "", m.w) + "\n" + m.keyFooter()
 	}
 	return m.keyFooter()
 }
@@ -406,12 +411,12 @@ func (m ScanModel) keyFooter() string {
 	case scanFinished:
 		return Footer(KeyHint("1-3", "choose")+"   "+KeyHint("enter", "go")+"   "+MoreKeys(), m.w)
 	case scanRunning:
-		return Footer(KeyHint("shift+tab", "switch tab")+"   "+KeyHint("ctrl+c", "stop")+"   "+MoreKeys(), m.w)
+		return Footer(KeyHint("ctrl+c", "stop")+"   "+MoreKeys(), m.w)
 	}
 	if m.state == scanFailed {
-		return Footer(KeyHint("esc", "back to the folders")+"   "+KeyHint("shift+tab", "switch tab")+"   "+KeyHint("ctrl+c", "quit"), m.w)
+		return Footer(KeyHint("esc", "back to the folders")+"   "+KeyHint("ctrl+c", "quit"), m.w)
 	}
-	return Footer(KeyHint("shift+tab", "switch tab")+"   "+KeyHint("ctrl+c", "quit"), m.w)
+	return Footer(KeyHint("ctrl+c", "quit"), m.w)
 }
 
 // --- small helpers ---

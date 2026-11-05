@@ -43,16 +43,12 @@ func layoutChoice(rules []string) string {
 	return customLayout
 }
 
-// layoutLabel is how the settings list shows a rule list.
+// layoutLabel is how the settings list shows a rule list: the folders it makes.
 func layoutLabel(rules []string) string {
-	switch c := layoutChoice(rules); c {
-	case layoutPresets[0].name:
-		return "Default"
-	case customLayout:
-		return "Custom: " + layoutName(rules, " › ")
-	default:
+	if c := layoutChoice(rules); c != customLayout {
 		return c
 	}
+	return layoutName(rules, " › ")
 }
 
 // settingsForm is one edit of a library's settings, built fresh so leaving without saving changes nothing.
@@ -86,14 +82,21 @@ func (a *app) newSettingsForm(ctx context.Context, geonames func() (*location.Re
 	if len(custom) == 0 || slices.Equal(custom, []string{vfs.RuleNone}) {
 		custom = vfs.DefaultConfig().Rules
 	}
+	selected := map[string]bool{}
+	for _, r := range custom {
+		selected[ruleNames[r]] = true
+	}
+	options := make([]string, len(ruleOrder))
+	for i, r := range ruleOrder {
+		options[i] = ruleNames[r]
+	}
 	f.rulesField = &tui.Field{
-		Kind:     tui.FieldMultiSelect,
-		Title:    "Which folders, in order?",
-		Options:  []string{vfs.RuleDate, vfs.RuleLocation, vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia},
-		Selected: toMap(custom),
-		Description: "Folder levels below Year and Month. date = day, location = place, " +
-			"device = camera, orientation = portrait or landscape, media = photo or video.",
-		Skip: func() bool { return f.layout != customLayout },
+		Kind:        tui.FieldMultiSelect,
+		Title:       "Which folders inside each month?",
+		Options:     options,
+		Selected:    selected,
+		Description: "Tick the folders to make, top to bottom.",
+		Skip:        func() bool { return f.layout != customLayout },
 	}
 	f.ex = newSettingsExamples(f.rules, &f.collapse, &f.mergeDays, &f.dateOnly, &f.home)
 	f.rulesField.Example = f.ex.Rules
@@ -108,9 +111,9 @@ func (f *settingsForm) rules() []string {
 		}
 	}
 	var out []string
-	for _, opt := range f.rulesField.Options {
-		if f.rulesField.Selected[opt] {
-			out = append(out, opt)
+	for _, r := range ruleOrder {
+		if f.rulesField.Selected[ruleNames[r]] {
+			out = append(out, r)
 		}
 	}
 	if len(out) == 0 {
@@ -197,24 +200,24 @@ func (f *settingsForm) townField(title, description string, value *string) *tui.
 
 func (f *settingsForm) homeField() *tui.Field {
 	return f.townField("Where's home?",
-		"Everyday photos from home get a date folder, without the town's name on every day. Optional.", &f.home)
+		"Your home town, so everyday photos there don't get a town folder. Optional.", &f.home)
 }
 
 func (f *settingsForm) fineTuning() *tui.Field {
 	return &tui.Field{
 		Kind:  tui.FieldGroup,
-		Title: "Fine-tuning",
+		Title: extraOptions,
 		Subs: []*tui.Field{
 			{
-				Kind: tui.FieldConfirm, Title: "Skip folders that would all be the same?",
+				Kind: tui.FieldConfirm, Title: "Skip folders that hold everything?",
 				Describe: f.ex.CollapseDescribe, BoolValue: &f.collapse, Example: f.ex.Collapse,
 			},
 			{
-				Kind: tui.FieldConfirm, Title: "Date only for home?",
+				Kind: tui.FieldConfirm, Title: "No town folder for home?",
 				Describe: f.ex.DateOnlyDescribe, BoolValue: &f.dateOnly, Example: f.ex.DateOnly,
 			},
 			{
-				Kind: tui.FieldConfirm, Title: "Merge back-to-back days in one place?",
+				Kind: tui.FieldConfirm, Title: "One folder per trip?",
 				Describe: f.ex.MergeDaysDescribe, BoolValue: &f.mergeDays, Example: f.ex.MergeDays,
 			},
 		},
@@ -304,7 +307,7 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 			tuning = "all on"
 		}
 		return []tui.SettingRow{
-			{Label: "Library folder", Value: path.New().RelativeToHome(a.Config.OutputDir()), Edit: func() ([]*tui.Field, func() error) {
+			{Label: "Library folder", Value: path.New().Friendly(a.Config.OutputDir()), Edit: func() ([]*tui.Field, func() error) {
 				f := a.newSettingsForm(ctx, geonames)
 				return []*tui.Field{f.libraryField()}, func() error {
 					return a.switchLibrary(ctx, f.libraryDir(f.out))
@@ -312,18 +315,24 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 			}},
 			{Label: "Folder layout", Value: layoutLabel(s.Rules), Edit: edit((*settingsForm).layoutFields)},
 			{Label: "Home", Value: orNotSet(s.HomeTown), Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.homeField()} })},
-			{Label: "Fine-tuning", Value: tuning, Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.fineTuning()} })},
+			{Label: extraOptions, Value: tuning, Edit: edit(func(f *settingsForm) []*tui.Field { return []*tui.Field{f.fineTuning()} })},
 		}
 	}
 }
 
-// ruleNames is how each folder level reads in a layout.
+// extraOptions names the settings row and screen of the three on/off choices.
+const extraOptions = "Extra options"
+
+// ruleOrder is the folder levels a custom layout offers, in their order.
+var ruleOrder = []string{vfs.RuleDate, vfs.RuleLocation, vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia}
+
+// ruleNames is how each folder level reads, in a layout and as a choice.
 var ruleNames = map[string]string{
 	vfs.RuleDate:        "Day",
 	vfs.RuleLocation:    "Place",
 	vfs.RuleDevice:      "Camera",
-	vfs.RuleOrientation: "Orientation",
-	vfs.RuleMedia:       "Photo/Video",
+	vfs.RuleOrientation: "Portrait or landscape",
+	vfs.RuleMedia:       "Photo or video",
 }
 
 // layoutName spells a library's folder levels, Year and Month first.
@@ -335,13 +344,4 @@ func layoutName(rules []string, sep string) string {
 		}
 	}
 	return strings.Join(parts, sep)
-}
-
-// toMap converts a slice to a map for multiselect field initialization.
-func toMap(items []string) map[string]bool {
-	m := make(map[string]bool)
-	for _, item := range items {
-		m[item] = true
-	}
-	return m
 }

@@ -139,8 +139,8 @@ var formKeys = []KeyGroup{
 		{"tab", "complete what's typed"},
 	}},
 	{"Moving", []KeyLine{
-		{"enter", "next step"},
-		{"ctrl+b", "previous step"},
+		{"enter", "next question"},
+		{"ctrl+b", "previous question"},
 		{"esc", "save or discard, then leave"},
 		{"ctrl+c", "leave without saving"},
 	}},
@@ -416,27 +416,33 @@ func (m FormModel) View() string {
 	if m.askExit {
 		return m.exitAskView()
 	}
-	rows := make([]string, 0, len(m.Fields)+2)
-	step, steps := 0, 0
+	steps := 0
+	for i := range m.Fields {
+		if !m.skipped(i) {
+			steps++
+		}
+	}
+	rows := make([]string, 0, steps+2)
+	step, n := 0, 0
 	for i, f := range m.Fields {
 		if m.skipped(i) {
 			continue
 		}
 		switch {
 		case i == m.Current:
-			step = steps + 1
-			rows = append(rows, m.expandedField(f, steps))
+			step = n + 1
+			rows = append(rows, m.expandedField(f, n, steps))
 		default:
-			rows = append(rows, m.collapsedRow(f, steps, i < m.Current))
+			rows = append(rows, m.collapsedRow(f, n, i < m.Current))
 		}
-		steps++
+		n++
 	}
 	if m.Heading != "" {
-		count := ""
+		heading := Text.Bold(true).Render(m.Heading)
 		if steps > 1 {
-			count = fmt.Sprintf("step %d of %d", step, steps)
+			heading += "  " + FaintTxt.Render(fmt.Sprintf("step %d of %d", step, steps))
 		}
-		rows = append([]string{row(Text.Bold(true).Render(m.Heading), FaintTxt.Render(count), m.bodyW()), ""}, rows...)
+		rows = append([]string{row(heading, "", m.bodyW()), ""}, rows...)
 	}
 	fields := strings.Join(rows, "\n")
 
@@ -537,10 +543,10 @@ func (m FormModel) exampleBlock() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(FaintTxt.Render(" example"))
+	b.WriteString(FaintTxt.Render("example"))
 	b.WriteString("\n")
 	for line := range strings.SplitSeq(ex, "\n") {
-		b.WriteString(row("   "+DimText.Render(line), "", m.w))
+		b.WriteString(row("  "+DimText.Render(line), "", m.w))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -613,20 +619,28 @@ func (m FormModel) descriptionBlock(f *Field, indent int) string {
 	return "\n" + DimText.Width(m.bodyW()).PaddingLeft(indent).Render(d)
 }
 
-// expandedField renders the current step in place: numbered + bold title,
-// indented description, then its control (input / yes-no / options).
-func (m FormModel) expandedField(f *Field, i int) string {
+// expandedField renders the current step in place: bold title (numbered when
+// there is more than one step), indented description, then its control.
+func (m FormModel) expandedField(f *Field, i, steps int) string {
 	var b strings.Builder
-	num := fmt.Sprintf("%d) ", i+1)
-	b.WriteString(row(Title.Render(num)+Text.Bold(true).Render(f.Title), "", m.bodyW()))
-	b.WriteString(m.descriptionBlock(f, 4))
-
+	num := ""
+	if steps > 1 {
+		num = fmt.Sprintf("%d) ", i+1)
+	}
 	if f.Kind == FieldGroup {
+		// a lone group under a heading is the heading's own screen: its
+		// questions are the content, its title would say the heading twice
+		if steps > 1 || m.Heading == "" {
+			b.WriteString(row(Title.Render(num)+Text.Bold(true).Render(f.Title), "", m.bodyW()))
+			b.WriteString(m.descriptionBlock(f, 4))
+		}
 		for i, sub := range f.Subs {
 			b.WriteString(m.subView(sub, i, i == m.subIdx))
 		}
-		return b.String()
+		return strings.TrimPrefix(b.String(), "\n")
 	}
+	b.WriteString(row(Title.Render(num)+Text.Bold(true).Render(f.Title), "", m.bodyW()))
+	b.WriteString(m.descriptionBlock(f, 4))
 	b.WriteString(m.controlView(f, ""))
 	return b.String()
 }
@@ -636,10 +650,10 @@ func (m FormModel) expandedField(f *Field, i int) string {
 func (m FormModel) subView(sub *Field, idx int, focused bool) string {
 	num := fmt.Sprintf("%d) ", idx+1)
 	if !focused {
-		return "\n    " + FaintTxt.Render(num) + Text.Render(sub.Title+": ") + DimText.Render(m.summaryValue(sub))
+		return "\n    " + FaintTxt.Render(num) + Text.Render(labelled(sub.Title)) + DimText.Render(m.summaryValue(sub))
 	}
 	var b strings.Builder
-	label := Title.Render(num) + Text.Render(sub.Title+": ")
+	label := Title.Render(num) + Text.Render(labelled(sub.Title))
 	if sub.Kind != FieldInput {
 		b.WriteString("\n")
 		b.WriteString(row("    "+Title.Render(num)+Text.Bold(true).Render(sub.Title), "", m.bodyW()))
@@ -648,6 +662,15 @@ func (m FormModel) subView(sub *Field, idx int, focused bool) string {
 	}
 	b.WriteString(m.controlView(sub, label))
 	return b.String()
+}
+
+// labelled is a title with its answer to follow: "Home: ", but a question
+// keeps its own mark ("Merge days? ").
+func labelled(title string) string {
+	if strings.HasSuffix(title, "?") {
+		return title + " "
+	}
+	return title + ": "
 }
 
 // controlView renders a field's interactive part — the text input, the
@@ -705,7 +728,7 @@ func optionRow(label string, on, cursor bool) string {
 func (m FormModel) inputView(f *Field, label string) string {
 	var b strings.Builder
 	prompt := m.ti.Prompt
-	m.ti.Prompt = lipgloss.NewStyle().Foreground(Primary).Render("» ")
+	m.ti.Prompt = Prompt()
 	b.WriteString("\n    ")
 	b.WriteString(label)
 	b.WriteString(m.ti.View())
@@ -777,12 +800,13 @@ func (m FormModel) renderFooter() string {
 		}
 	}
 	hints = append(hints, KeyHint("enter", "next"))
-	if m.Current > 0 || m.subIdx > 0 {
-		hints = append(hints, KeyHint("ctrl+b", "back"))
-	}
-	esc := KeyHint("esc", "done")
-	if m.EscSaves {
-		esc = KeyHint("esc", "save & back")
+	esc := KeyHint("esc", "save")
+	if !m.EscSaves {
+		esc = KeyHint("esc", "done")
+		// a one-setting edit leaves with esc; ctrl+b stays behind ?
+		if m.Current > 0 || m.subIdx > 0 {
+			hints = append(hints, KeyHint("ctrl+b", "previous question"))
+		}
 	}
 	hints = append(hints, esc, MoreKeys())
 	return Footer(strings.Join(hints, "   "), m.w)
@@ -995,7 +1019,7 @@ func (m ConfirmModel) View() string {
 	// explanation folds instead of running off the edge
 	w := formBodyMaxW
 	if m.w > 0 {
-		w = min(w, m.w-2)
+		w = min(w, m.w)
 	}
 	title := Title.Width(w).Render(m.Title)
 	if m.Description != "" {
@@ -1011,7 +1035,7 @@ func (m ConfirmModel) View() string {
 	}
 
 	content := title + "\n\n" + buttons
-	body := lipgloss.NewStyle().Padding(1).Render(content)
+	body := lipgloss.NewStyle().PaddingTop(1).Render(content)
 	keys := m.Keys
 	if keys == "" {
 		// esc answers no too, unlisted

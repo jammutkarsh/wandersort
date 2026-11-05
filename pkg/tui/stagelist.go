@@ -174,13 +174,13 @@ func (sl *StageList) FinishRemaining(failed bool, defaultLabel string) {
 	}
 }
 
-// Summary is every finished stage's one-line result with its elapsed time —
-// what a completed run leaves behind for a screen that outlives it.
+// Summary is every finished stage's one-line result — what a completed run
+// leaves behind for a screen that outlives it.
 func (sl StageList) Summary() []string {
 	var out []string
 	for _, s := range sl.stages {
 		if s.state == stateDone && s.label != "" {
-			out = append(out, s.label+"  "+s.dur)
+			out = append(out, s.label)
 		}
 	}
 	return out
@@ -192,15 +192,15 @@ func (sl StageList) View(width int) string {
 	for _, s := range sl.stages {
 		nameW = max(nameW, ansi.StringWidth(s.Name))
 	}
-	under := strings.Repeat(" ", nameW+6) // lines under a stage start below its label
+	under := strings.Repeat(" ", nameW+4) // lines under a stage start below its label
 	var rows []string
 	for _, s := range sl.stages {
 		name := s.Name + strings.Repeat(" ", nameW-ansi.StringWidth(s.Name))
 		switch s.state {
 		case statePending:
-			rows = append(rows, row("  "+FaintTxt.Render("○ "+name), "", width))
+			rows = append(rows, row(FaintTxt.Render("○ "+name), "", width))
 		case stateRunning:
-			left := "  " + sl.sb.spin.View() + Text.Bold(true).Render(name) + "  "
+			left := sl.sb.spin.View() + Text.Bold(true).Render(name) + "  "
 			if s.HasBar && s.total > 0 {
 				left += sl.sb.bar.View() + "  " + FaintTxt.Render(sl.fmtCounts(s.cur, s.total))
 			} else {
@@ -211,9 +211,10 @@ func (sl StageList) View(width int) string {
 				rows = append(rows, row(under+FaintTxt.Render(truncateMiddle(s.tail, width-len(under))), "", width))
 			}
 		case stateDone:
-			rows = append(rows, row("  "+OK.Render("✓")+" "+Text.Render(nonEmpty(s.label, s.Name)), FaintTxt.Render(s.dur), width))
+			// a finished stage shows what it did; how long it took is noise by now
+			rows = append(rows, row(OK.Render("✓")+" "+Text.Render(nonEmpty(s.label, s.Name)), "", width))
 		case stateFail:
-			rows = append(rows, row("  "+Bad.Render("✗")+" "+Text.Render(name)+"  "+Bad.Render(nonEmpty(s.label, "failed")),
+			rows = append(rows, row(Bad.Render("✗")+" "+Text.Render(name)+"  "+Bad.Render(nonEmpty(s.label, "failed")),
 				FaintTxt.Render(s.dur), width))
 		}
 	}

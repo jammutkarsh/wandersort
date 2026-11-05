@@ -946,9 +946,9 @@ func segmentFor(m *masterFile, level string, cfg Config) string {
 			return ""
 		}
 		if m.height > m.width {
-			return "Vertical"
+			return "Portrait"
 		}
-		return "Horizontal"
+		return "Landscape"
 	case RuleMedia:
 		if m.MediaType == classifier.MediaTypeVideo {
 			return "Videos"
@@ -1060,7 +1060,9 @@ func caseName(name string) string {
 	return b.String()
 }
 
-// titleWord title-cases a single word unless it matches caseWhitelist.
+// titleWord title-cases a single word unless it matches caseWhitelist. A
+// model number ("700D") or a short all-caps word ("EOS", "DJI") keeps its
+// letters as written.
 func titleWord(w string) string {
 	if exact, ok := caseWhitelist[strings.ToLower(w)]; ok {
 		return exact
@@ -1069,12 +1071,18 @@ func titleWord(w string) string {
 		return ""
 	}
 	runes := []rune(w)
+	keep := strings.ContainsAny(w, "0123456789") ||
+		(len(runes) <= maxKeptCapsWord && strings.ToUpper(w) == w)
 	runes[0] = unicode.ToUpper(runes[0])
-	for i := 1; i < len(runes); i++ {
+	for i := 1; i < len(runes) && !keep; i++ {
 		runes[i] = unicode.ToLower(runes[i])
 	}
 	return string(runes)
 }
+
+// maxKeptCapsWord is the longest all-caps word read as a short form and kept;
+// longer ones ("CANON", "NIKON") are a maker shouting and get title-cased.
+const maxKeptCapsWord = 3
 
 // deviceName joins Make and Model, skipping the make when the model already
 // starts with it.

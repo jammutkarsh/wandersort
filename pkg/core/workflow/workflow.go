@@ -157,7 +157,7 @@ func (wf *Workflow) runPhases(ctx context.Context, res *Result, force bool) erro
 		workflowPhaseMetadata: &res.Read,
 		workflowPhaseVFS:      &res.Planned,
 	}
-	for _, phase := range wf.workflowPhases(res.Roots, force) {
+	for _, phase := range wf.workflowPhases(res, force) {
 		n, err := wf.run(ctx, phase)
 		*counts[phase.kind] = n
 		if err != nil {
@@ -176,7 +176,8 @@ func (wf *Workflow) runPhases(ctx context.Context, res *Result, force bool) erro
 	return nil
 }
 
-func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
+func (wf *Workflow) workflowPhases(res *Result, force bool) []workflowPhase {
+	paths := res.Roots
 	return []workflowPhase{
 		{
 			kind:     workflowPhaseScan,
@@ -188,7 +189,7 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 		},
 		{
 			kind:     workflowPhaseMetadata,
-			starting: "Reading your files…",
+			starting: "Reading dates and places…",
 			run: func(ctx context.Context) (int, error) {
 				// blocks here (not at construction) if exiftool is still
 				// downloading — the walk has already run meanwhile
@@ -202,11 +203,11 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 				}
 				return extractor.Run(ctx)
 			},
-			summary: func(count int) string { return "Read " + human.Plural(count, "file", "files") },
+			summary: func(count int) string { return "Read dates and places from " + human.Plural(count, "file", "files") },
 		},
 		{
 			kind:     workflowPhaseVFS,
-			starting: "Planning folders…",
+			starting: "Sorting into folders…",
 			run: func(ctx context.Context) (int, error) {
 				resolver, err := wf.deps.Location(ctx)
 				if err != nil {
@@ -214,7 +215,15 @@ func (wf *Workflow) workflowPhases(paths []string, force bool) []workflowPhase {
 				}
 				return vfs.Propose(ctx, wf.db, resolver, wf.appCfg, wf.log)
 			},
-			summary: func(count int) string { return "Planned " + human.Plural(count, "file", "files") },
+			summary: func(count int) string {
+				s := "Sorted " + human.Plural(count, "file", "files") + " into folders"
+				// found counts this run's folders, planned the whole library: only
+				// fewer planned than found needs a word
+				if skipped := res.Found - count; skipped > 0 {
+					s += fmt.Sprintf(" · %d skipped: already in the library, duplicates or unreadable", skipped)
+				}
+				return s
+			},
 		},
 	}
 }

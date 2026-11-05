@@ -42,7 +42,23 @@ func (sb spinnerBar) update(msg tea.Msg) (spinnerBar, tea.Cmd) {
 }
 
 // Brand is the app's name as the first thing on every screen's top line.
-func Brand() string { return Title.Render("◆ wandersort") }
+func Brand() string { return Title.Render("◆ WanderSort") }
+
+// Gutter is the blank margin, in cells, on each side of every screen. Screens
+// draw from column 0 of the width they are given; Frame adds the margin.
+const Gutter = 2
+
+// Inner is the width a screen gets inside the gutters of a w-cell terminal.
+func Inner(w int) int { return max(w-2*Gutter, 0) }
+
+// Frame indents every line of view by the gutter.
+func Frame(view string) string {
+	pad := strings.Repeat(" ", Gutter)
+	return pad + strings.ReplaceAll(view, "\n", "\n"+pad)
+}
+
+// Prompt is the marker in front of every text input.
+func Prompt() string { return lipgloss.NewStyle().Foreground(Primary).Render("❯ ") }
 
 // Footer renders a dim key-help bar wrapped to width; callers measure its
 // height with lipgloss.Height.

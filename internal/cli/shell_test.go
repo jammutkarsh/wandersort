@@ -506,10 +506,10 @@ func TestShellModel(t *testing.T) {
 				next, _ := m.Update(tui.Leave{})
 				return ansi.Strip(next.(shellModel).View())
 			}
-			if v := leave(t, false); strings.Contains(v, "Your edits are kept") {
+			if v := leave(t, false); strings.Contains(v, "Your edits are saved") {
 				t.Errorf("no edits, yet the home screen says edits were kept:\n%s", v)
 			}
-			if v := leave(t, true); !strings.Contains(v, "Your edits are kept") {
+			if v := leave(t, true); !strings.Contains(v, "Your edits are saved") {
 				t.Errorf("draft edits, yet no note on the home screen:\n%s", v)
 			}
 		}},

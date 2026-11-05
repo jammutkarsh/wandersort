@@ -71,7 +71,7 @@ func TestConfig(t *testing.T) {
 			for _, f := range fields {
 				titles = append(titles, f.Title)
 			}
-			want := []string{"How should folders be laid out?", "Which folders, in order?", "Where's home?"}
+			want := []string{"How should folders be laid out?", "Which folders inside each month?", "Where's home?"}
 			if !reflect.DeepEqual(titles, want) {
 				t.Errorf("setup steps = %v, want %v", titles, want)
 			}
@@ -79,7 +79,7 @@ func TestConfig(t *testing.T) {
 			if *layout.Value != customLayout {
 				t.Errorf("rules %v should open as Custom, got %q", cfg.Rules, *layout.Value)
 			}
-			if fieldByTitle(t, fields, "Which folders, in order?").Skip() {
+			if fieldByTitle(t, fields, "Which folders inside each month?").Skip() {
 				t.Error("a custom layout must ask which folders")
 			}
 
@@ -119,11 +119,11 @@ func TestConfig(t *testing.T) {
 				choice string
 				label  string
 			}{
-				{nil, layoutPresets[0].name, "Default"},
-				{[]string{"date", "location"}, layoutPresets[0].name, "Default"},
+				{nil, layoutPresets[0].name, "Year › Month › Day › Place"},
+				{[]string{"date", "location"}, layoutPresets[0].name, "Year › Month › Day › Place"},
 				{[]string{"location"}, "Year › Month › Place", "Year › Month › Place"},
-				{[]string{"none"}, customLayout, "Custom: Year › Month"},
-				{[]string{"date", "device"}, customLayout, "Custom: Year › Month › Day › Camera"},
+				{[]string{"none"}, customLayout, "Year › Month"},
+				{[]string{"date", "device"}, customLayout, "Year › Month › Day › Camera"},
 			} {
 				if got := layoutChoice(tt.rules); got != tt.choice {
 					t.Errorf("layoutChoice(%v) = %q, want %q", tt.rules, got, tt.choice)
@@ -158,7 +158,7 @@ func TestConfig(t *testing.T) {
 			for _, r := range rows {
 				labels = append(labels, r.Label)
 			}
-			if want := []string{"Library folder", "Folder layout", "Home", "Fine-tuning"}; !reflect.DeepEqual(labels, want) {
+			if want := []string{"Library folder", "Folder layout", "Home", "Extra options"}; !reflect.DeepEqual(labels, want) {
 				t.Fatalf("rows = %v, want %v", labels, want)
 			}
 			if rows[0].Edit == nil {
@@ -169,7 +169,7 @@ func TestConfig(t *testing.T) {
 			group := fields[0]
 			// the collapse example shows all three collapsible levels when off
 			*group.Subs[0].BoolValue = false
-			if ex := group.Subs[0].Example(); !strings.Contains(ex, "iPhone-13") || !strings.Contains(ex, "Vertical") {
+			if ex := group.Subs[0].Example(); !strings.Contains(ex, "iPhone-13") || !strings.Contains(ex, "Portrait") {
 				t.Errorf("collapse-off example must show the collapsible levels, got %q", ex)
 			}
 			// edited but never saved: the next edit starts from the saved settings

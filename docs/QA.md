@@ -12,22 +12,22 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 
 ## 2. Settings & dependencies
 
-4a. `[H]` `shift+tab` cycles Add → Organise → Copy → Settings, skipping tabs with nothing to do.
+4a. `[H]` `shift+tab` (hinted on the top line) or a click on a tab cycles Add → Organise → Copy → Settings, skipping tabs with nothing to do; the mouse wheel moves like ↑/↓. The top line, every screen's body and its footer start at the same left margin, and right-hand numbers end at the same right margin.
 
 5. `[H]` first-ever `wandersort` → getting-ready screen downloads exiftool and the locationDB with progress bars, then opens the Add tab; no setup questions come first.
 6. `[H]` dependencies already on disk → getting ready shows for a moment (`✓ found`), then the tabs; the last library opens without asking.
 6a. `[H]` network blocked (`HTTPS_PROXY=http://127.0.0.1:9`) → each failed dependency named, "Try switching to a better network", 10 s countdown, `enter` retries now; after try 3 any key quits with exit 1; the next launch tries 3 more times.
 7. `[H]` Settings → typing a town name lists full `<city>, <state>, <country>` names, never two identical rows; the saved choice resolves to the right city on the next scan.
-8. `[H]` Settings → Folder layout → layouts are numbered, a digit picks one, the example tree follows the option under the cursor; `4) Custom…` adds the rule step; `ctrl+b` goes back a step.
-9. `[H]` Settings with a library open → a list of answers; enter changes one row and returns to the list with "Saved"; `esc` saves what's on screen without asking; a changed setting re-plans at once, an unchanged save re-plans nothing; `ctrl+c` leaves without saving.
+8. `[H]` Settings → Folder layout → layouts are numbered, a digit picks one, the example tree follows the option under the cursor; `4) Custom…` adds the "Which folders inside each month?" step with Day, Place, Camera, Portrait or landscape, Photo or video; `ctrl+b` goes back a step.
+9. `[H]` Settings with a library open → a list of answers (the library as "<folder>, in your home folder", the layout by its folders, e.g. "Year › Month › Day › Place", "Extra options 2 of 3 on"); enter changes one row and returns to the list with "Saved"; `esc save` saves what's on screen without asking; Extra options shows its three questions under one heading, no "1)" title, answers read "One folder per trip? yes"; a changed setting re-plans at once, an unchanged save re-plans nothing; `ctrl+c` leaves without saving.
 9a. `[H]` Settings → Library folder → an empty folder starts a new library with the same settings and nothing planned; a folder WanderSort organised opens with its own; the old library is untouched and opens again when chosen.
 10. `[A]` delete the exiftool binary, then `add` → it is downloaded again before the run starts.
 
 ## 3. Add (scan → metadata → vfs)
 
 11. `[A]` `add -p <dir>` without a terminal → first line names library and layout, then one sentence per stage (`Found 15,481 files in 1.9s`), then `next:`; `--json` adds one result object on stdout; unreadable files exit 3.
-11a. `[H]` `add` in the app → Find / Read / Plan with the file being read and a time-left guess; then "Plan ready" with 1) review folders 2) copy folders 3) add more. A run that leaves nothing to copy skips it and returns to Add with "No new files to add."; `⚠ N warnings — see the log` sits in the footer.
-11b. `[H]` Add → drag a folder from the file manager onto the terminal → it is listed at once, quoted or escaped paths included; the footer hint reads `enter scan` once a folder is listed and `enter add` while a path is being typed; `enter` on an empty line with nothing listed does not scan; typing a path still lists completions, `tab` fills the top one.
+11a. `[H]` `add` in the app → "Adding N folders" with Find files / Read dates and places / Sort into folders, the file being read and a time-left guess; finished stages show no times; fewer sorted than found says how many were skipped; then "Plan ready" with 1) Organise folders 2) Copy into library 3) Add more folders. A run that leaves nothing to copy skips it and returns to Add with "No new files to add."; `⚠ N problems noted while adding. Details: <log>` sits above the footer.
+11b. `[H]` Add → drag a folder from the file manager onto the terminal → it is listed at once, quoted or escaped paths included; the footer hint reads `enter start` once a folder is listed and `enter add` while a path is being typed; `enter` on an empty line with nothing listed does not scan; typing a path still lists completions, `tab` fills the top one.
 11c. `[H]` `esc` twice quickly → quits when nothing runs; while a scan or copy runs the top line warns "busy" instead.
 12. `[A]` `add -p ./a -p ./b` and `-p ./a,./b` → identical result; nested roots (`/x` and `/x/y`) walked once.
 13. `[A]` `add -p /does/not/exist` → clear error, non-zero exit, nothing written.
@@ -64,15 +64,15 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 ## 5. Organise (review)
 
 40. `[H]` no plan yet → home screen says so; the app stays open.
-41. `[H]` tree renders with box-drawing guides, file counts right-aligned, scrolls; footer shows five keys; `?` draws the full list over the tree, any key closes it; an edit shows "✓ … · u undo" until the next key.
-42. `[H]` `n`/`N` → next/previous row at the same depth across branches; stops at the ends.
-43. `[H]` `r` → rename with ranked place suggestions; `↑/↓` pick, `tab` fills, `ctrl+e` widens the radius; names typed in earlier reviews are offered.
-44. `[H]` `r`, `m`, `d` on a Year or Month folder → refused with a ⚠ status line.
-45. `[H]` `V` + extend + `m` → one folder under the common ancestor, named after the row `V` was pressed on (or the spanned day range for Date folders); emptied chains pruned; same-named children merged recursively; cursor on the result, in name order.
-46. `[H]` `m` with one row, no `V`, or across Years → flagged rejection, no change.
-47. `[H]` `d` → folder dropped, children lift to its parent; `D` → subtree collapsed into the folder, count unchanged; over a `V` range each folder stays separate.
+41. `[H]` tree renders with box-drawing guides, a blank line under the tabs, `+` and blue on folders the copy makes, file counts right-aligned, scrolls; footer shows five keys; `?` draws the full list over the tree, any key closes it; an edit shows "✓ … · u undo" until the next key.
+42. `[H]` `→`/`←` (or `n`/`N`) → next/previous row at the same depth across branches; stops at the ends.
+43. `[H]` `r` → rename with ranked place suggestions; `↑/↓` pick, `tab` fills, `ctrl+e` (more places) widens the radius; names typed in earlier reviews are offered.
+44. `[H]` `r`, `m`, `x` on a Year or Month folder → refused with a ⚠ status line.
+45. `[H]` `space` (or `shift+↑↓`) + extend + `m` → one folder under the common ancestor, named after the row the selection started on (or the spanned day range for Date folders); emptied chains pruned; same-named children merged recursively; cursor on the result, in name order.
+46. `[H]` `m` with one row, no selection, or across Years → flagged rejection, no change.
+47. `[H]` `x` → folder removed, what was inside lifts to its parent; `f` → subtree flattened into the folder, count unchanged; over a selection each folder stays separate.
 48. `[H]` `u` repeatedly → each edit undone in reverse order, whatever its kind, then "nothing left to undo".
-49. `[H]` `R` → draft deleted, tree back to the proposed plan.
+49. `[H]` `ctrl+u` → draft deleted, tree back to the proposed plan.
 50. `[H]` `p` → preview copy (≤ 250 MB) opens in the OS browser; a parent and its only-child leaf open the same copy; copies survive quitting.
 51. `[H]` edits, then `kill -9` and reopen → same tree; `esc` → home says the edits wait for `copy`.
 52. `[H]` narrow terminal (~50 cols) → key help wraps, last tree row still visible.
@@ -83,7 +83,7 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 54. `[A]` `copy --dry-run` → reports the edited target paths, writes nothing.
 55. `[A]` too little free space → refuses before changing anything; draft still there.
 56. `[A]` after `copy`, every source file is byte-identical and still in place.
-56a. `[H]` `copy` in a terminal → Copy tab: size, free space, edits; enter runs Check space / Apply edits / Back up / Copy & check with a byte bar; ends with "All done" or the files left out by reason.
+56a. `[H]` `copy` in a terminal → Copy tab: size, free space, edits; sizes in KB/MB/GB; enter runs Check space / Apply edits (only with edits) / Back up records / Copy & check with a byte bar; ends with "All done" or the files left out by reason.
 57. `[A]` a source edited after the scan (same size) → `checksum-mismatch` error, nothing lands, source kept; exit 3; `~/.wandersort/logs/<run>.html` lists it under its drive with what to do.
 58. `[A]` an occupied target name → lands at `_1`, nothing overwritten; the same file already there → recorded, not copied twice.
 59. `[A]` kill mid-run, run again → resumes; nothing copied twice; files that failed last run are tried again.

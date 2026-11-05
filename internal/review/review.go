@@ -113,7 +113,7 @@ type Model struct {
 	visualAnchor int
 	editing      bool
 
-	// Structural edits: [V] selects, [m] merges, [d]/[D] remove nesting.
+	// Structural edits: [space] selects, [m] merges, [x]/[f] remove nesting.
 	visualMode  bool
 	showHelp    bool // [?] — full-screen key reference; any key closes it
 	statusIsErr bool // rejection, not confirmation: rendered in a warning colour
@@ -193,7 +193,7 @@ func (m *Model) reflow() {
 // the cursor's depth.
 func (m *Model) jumpSameDepth(step int) {
 	depth := m.rows[m.cursor].depth
-	// crosses into other branches by design: that is what lets [V][n][n] select
+	// crosses into other branches by design: that is what lets [space][→][→] select
 	// one level across several months. Stops at the ends, never wraps.
 	for i := m.cursor + step; i >= 0 && i < len(m.rows); i += step {
 		if m.rows[i].depth == depth {

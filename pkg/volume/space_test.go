@@ -8,9 +8,10 @@ func TestHumanBytes(t *testing.T) {
 		want string
 	}{
 		{512, "512 B"},
-		{2048, "2.0 KiB"},
-		{5 << 30, "5.0 GiB"},
-		{1610612736, "1.5 GiB"},
+		{2048, "2.0 KB"},
+		{288_000, "288 KB"},
+		{5_300_000, "5.3 MB"},
+		{1_500_000_000, "1.5 GB"},
 	}
 	for _, tt := range tests {
 		if got := HumanBytes(tt.n); got != tt.want {

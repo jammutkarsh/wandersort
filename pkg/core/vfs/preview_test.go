@@ -22,12 +22,12 @@ func TestPreviewPathsCollapseDropsUniformDeviceOnly(t *testing.T) {
 	if want := "2024/08_August/iPhone-13/a.jpg"; diff[0] != want {
 		t.Errorf("distinct device a: got %q, want %q", diff[0], want)
 	}
-	// Canon-Eos-700d, not Canon-EOS-700D: assignTargetPaths title-cases every
+	// Canon-EOS-700D, not Canon-EOS-700D: assignTargetPaths title-cases every
 	// word that isn't whitelisted, and the preview now runs it because the
 	// real pipeline does. Showing the unmangled name here was the drift this
 	// preview is meant not to have — it promised a folder the pipeline would
 	// never create. (That the pipeline mangles it at all is its own bug.)
-	if want := "2024/08_August/Canon-Eos-700d/b.jpg"; diff[1] != want {
+	if want := "2024/08_August/Canon-EOS-700D/b.jpg"; diff[1] != want {
 		t.Errorf("distinct device b: got %q, want %q", diff[1], want)
 	}
 
@@ -35,5 +35,19 @@ func TestPreviewPathsCollapseDropsUniformDeviceOnly(t *testing.T) {
 	same := PreviewPaths(cfg, []Sample{base("iPhone 13", "a.jpg"), base("iPhone 13", "b.jpg")})
 	if want := "2024/08_August/a.jpg"; same[0] != want {
 		t.Errorf("uniform device: got %q, want %q (device level should collapse)", same[0], want)
+	}
+}
+
+func TestCaseNameKeepsModelNumbersAndShortForms(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"Canon EOS 700D", "Canon EOS 700D"},
+		{"NIKON CORPORATION", "Nikon Corporation"},
+		{"apple iphone 13", "Apple iPhone 13"},
+		{"new delhi", "New Delhi"},
+	}
+	for _, tt := range tests {
+		if got := caseName(tt.in); got != tt.want {
+			t.Errorf("caseName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }

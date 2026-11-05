@@ -51,7 +51,7 @@ func TestScanModel(t *testing.T) {
 			if cmd != nil {
 				t.Errorf("finishing must not leave or switch by itself, got %v", flattenCmd(cmd))
 			}
-			if v := ansi.Strip(next.View()); !strings.Contains(v, "Plan ready") || !strings.Contains(v, "1) Review folders") {
+			if v := ansi.Strip(next.View()); !strings.Contains(v, "Plan ready") || !strings.Contains(v, "1) Organise folders") {
 				t.Errorf("want the plan-ready choice:\n%s", v)
 			}
 		}},
@@ -80,9 +80,9 @@ func TestScanModel(t *testing.T) {
 		}},
 		// Warnings only the log has in full are counted in the footer, not the body.
 		{"LogWarningsCountInTheFooter", func(t *testing.T) {
-			m := NewScanModel(ScanConfig{})
+			m := NewScanModel(ScanConfig{LogPath: "logs/run.log"})
 			m.logWarnings = 15
-			if v := ansi.Strip(m.View()); !strings.Contains(v, "⚠ 15 warnings — see the log") {
+			if v := ansi.Strip(m.View()); !strings.Contains(v, "⚠ 15 problems noted while adding. Details: logs/run.log") {
 				t.Errorf("want the warning count in the footer:\n%s", v)
 			}
 		}},
@@ -141,7 +141,7 @@ func TestScanModel(t *testing.T) {
 			if cancelled != 1 || !m.Cancelled() {
 				t.Fatalf("first ctrl+c should cancel the pipeline: calls=%d cancelled=%v", cancelled, m.Cancelled())
 			}
-			if v := ansi.Strip(m.View()); !strings.Contains(v, "press ctrl+c again to quit now") {
+			if v := ansi.Strip(m.View()); !strings.Contains(v, "Press ctrl+c again to quit now") {
 				t.Errorf("want the warning above the footer:\n%s", v)
 			}
 

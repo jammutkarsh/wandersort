@@ -116,7 +116,7 @@ func TestReview(t *testing.T) {
 					fileID, name); err != nil {
 					t.Fatal(err)
 				}
-				target := "2017/April/08/Horizontal/Photos/" + name
+				target := "2017/April/08/Landscape/Photos/" + name
 				dbtest.SeedEntry(t, d, fileID, "/src/"+name, target)
 			}
 
@@ -124,7 +124,7 @@ func TestReview(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			leafFiles, err := vfs.FilesUnder(ctx, nodeAt(t, d, "2017/April/08/Horizontal/Photos"), d)
+			leafFiles, err := vfs.FilesUnder(ctx, nodeAt(t, d, "2017/April/08/Landscape/Photos"), d)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -362,7 +362,7 @@ func TestReview(t *testing.T) {
 			m := testModel(t, groupedTree(), nil)
 			// rows: 0=2023, 1=April, 2=Indore, 3=iPhone, 4=August, 5=Indore, 6=iPhone
 			m.cursor = 1 // April
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 			rm := next.(Model)
 			if rm.statusIsErr {
 				t.Fatalf("flatten April: %q", rm.statusMsg)
@@ -400,7 +400,7 @@ func TestReview(t *testing.T) {
 			m := testModel(t, groupedTree(), nil)
 			m.cursor = 0 // 2023
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 			rm := next.(Model)
 
 			if rm.statusIsErr {
@@ -418,7 +418,7 @@ func TestReview(t *testing.T) {
 			m := testModel(t, groupedTree(), nil)
 			m.cursor = 3 // the deepest row, nothing below it
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 			rm := next.(Model)
 
 			if !rm.statusIsErr {
@@ -433,7 +433,7 @@ func TestReview(t *testing.T) {
 		{"DropSingleFolderLiftsItsChildren", func(t *testing.T) {
 			m := testModel(t, groupedTree(), nil)
 			m.cursor = 2 // April's Indore, which still has the device child
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 			rm := next.(Model)
 
 			if rm.statusIsErr {
@@ -456,7 +456,7 @@ func TestReview(t *testing.T) {
 			m := testModel(t, groupedTree(), nil)
 			m.cursor = 0
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 			rm := next.(Model)
 
 			if !rm.statusIsErr {
@@ -471,7 +471,7 @@ func TestReview(t *testing.T) {
 		{"UndoRestoresTreeAfterFlatten", func(t *testing.T) {
 			m := testModel(t, groupedTree(), nil)
 			m.cursor = 1
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 			rm := next.(Model)
 
 			next2, _ := rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
@@ -849,13 +849,13 @@ func TestReview(t *testing.T) {
 
 			// three edits: drop a folder, flatten a subtree, drop another folder
 			m.cursor = 2 // April's Indore
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 			rm := next.(Model)
 			rm.cursor = 1 // April
-			next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+			next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 			rm = next.(Model)
 			rm.cursor = 3 // August's Indore
-			next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+			next, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 			rm = next.(Model)
 
 			if len(rm.draft.Edits()) != 3 {
@@ -890,10 +890,10 @@ func TestReview(t *testing.T) {
 		// They are not merged — that is [m]'s job.
 		{"VisualFlattenActsOnEverySelectedFolder", func(t *testing.T) {
 			m := testModel(t, dayWithLocationsTree(), nil)
-			// rows: 0=2024 1=06_June 2=03 3=Goa 4=iPhone 5=Vertical 6=Panaji ... 9=Margao ...
+			// rows: 0=2024 1=06_June 2=03 3=Goa 4=iPhone 5=Portrait 6=Panaji ... 9=Margao ...
 			m.visualAnchor, m.cursor, m.visualMode = 3, 11, true
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 			rm := next.(Model)
 			if rm.statusIsErr {
 				t.Fatalf("expected success, got %q", rm.statusMsg)
@@ -924,7 +924,7 @@ func TestReview(t *testing.T) {
 			m := testModel(t, dayWithLocationsTree(), nil)
 			m.visualAnchor, m.cursor, m.visualMode = 3, 11, true
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 			rm := next.(Model)
 			if rm.statusIsErr {
 				t.Fatalf("expected success, got %q", rm.statusMsg)
@@ -951,7 +951,7 @@ func TestReview(t *testing.T) {
 			// anchor on Goa (depth 3), extend only into its own subtree
 			m.visualAnchor, m.cursor, m.visualMode = 3, 5, true
 
-			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 			rm := next.(Model)
 
 			if goa := vfs.FindNode(rm.draft.Tree(), pid("2024/06_June/03/Goa")); len(goa.Children) != 0 {
@@ -1134,7 +1134,7 @@ func TestReview(t *testing.T) {
 			m.suggestions = []location.Suggestion{{Label: "Goa, India", Value: "Goa"}, {Label: "Gondia, India", Value: "Gondia"}}
 			m.suggCursor = 1
 			out := ansi.Strip(m.footer())
-			for _, want := range []string{"Rename", "Goa, India", "Gondia, India", "pick", "wider", "search"} {
+			for _, want := range []string{"Rename", "Goa, India", "Gondia, India", "pick", "places"} {
 				if !strings.Contains(out, want) {
 					t.Errorf("footer() missing %q:\n%s", want, out)
 				}
@@ -1475,7 +1475,7 @@ func dayWithLocationsTree() []vfs.Node {
 		base := "2024/06_June/03/" + name
 		return vfs.Node{ID: pid(base), Name: name, FileCount: n, Children: []vfs.Node{
 			{ID: pid(base + "/iPhone"), Name: "iPhone", FileCount: n, Children: []vfs.Node{
-				{ID: pid(base + "/iPhone/Vertical"), Name: "Vertical", FileCount: n},
+				{ID: pid(base + "/iPhone/Portrait"), Name: "Portrait", FileCount: n},
 			}},
 		}}
 	}
@@ -1489,7 +1489,7 @@ func dayWithLocationsTree() []vfs.Node {
 }
 
 // TestDraft covers the edit journal from the review's side: every edit lands in
-// the draft file, reopening replays it, leaving asks nothing, and [R] throws
+// the draft file, reopening replays it, leaving asks nothing, and [ctrl+u] throws
 // the file away without touching the database.
 func TestDraft(t *testing.T) {
 	key := func(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}} }
@@ -1581,14 +1581,14 @@ func TestDraft(t *testing.T) {
 		}
 	})
 
-	t.Run("R deletes the file and shows the plan as proposed", func(t *testing.T) {
+	t.Run("ctrl+u deletes the file and shows the plan as proposed", func(t *testing.T) {
 		dir := t.TempDir()
 		m, base := newDBModel(t, dir)
 		proposed := dayRow(m).node.Name
 		m.focusNode(dayRow(m).node.ID)
 		m.applyRename("Renamed")
 		m.visualMode = true
-		next, _ := m.Update(key('R'))
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
 		got := next.(Model)
 		switch {
 		case len(got.draft.Edits()) != 0:
@@ -1601,7 +1601,7 @@ func TestDraft(t *testing.T) {
 			t.Error("the plan the review was opened on must never be edited in place")
 		}
 		if _, err := os.Stat(filepath.Join(dir, vfs.DraftFileName)); !os.IsNotExist(err) {
-			t.Errorf("draft file still there after [R]: %v", err)
+			t.Errorf("draft file still there after [ctrl+u]: %v", err)
 		}
 		if strings.Contains(got.keyHelp(), "rebuild") {
 			t.Error("the key bar should never mention rebuilding")

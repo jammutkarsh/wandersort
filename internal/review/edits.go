@@ -19,7 +19,15 @@ func (m *Model) undo() {
 	if n := len(m.draft.Edits()); n > 0 {
 		left = fmt.Sprintf(" (%d more)", n)
 	}
-	m.statusMsg, m.statusIsErr = "Undid the "+last.Op+left, false
+	m.statusMsg, m.statusIsErr = "Undid the "+opWords[last.Op]+left, false
+}
+
+// opWords is how the screen names each kind of edit.
+var opWords = map[string]string{
+	vfs.OpRename:  "rename",
+	vfs.OpMerge:   "merge",
+	vfs.OpDrop:    "folder removal",
+	vfs.OpFlatten: "flatten",
 }
 
 // applyEdit hands one edit to the draft, then reflows and reports. Returns the
@@ -41,17 +49,17 @@ func (m *Model) applyEdit(e vfs.Edit, status func(vfs.Outcome) string) (vfs.Outc
 // common ancestor.
 func (m *Model) mergeSelection() {
 	if !m.visualMode {
-		m.statusMsg, m.statusIsErr = "press V to select folders, then m to merge", true
+		m.statusMsg, m.statusIsErr = "Press space to select folders, then m to merge", true
 		return
 	}
 	sel := m.selectedRows()
 	anchorID := m.rows[m.visualAnchor].node.ID
 	m.visualMode = false
 	if len(sel) < 2 {
-		m.statusMsg, m.statusIsErr = "select two or more folders to merge", true
+		m.statusMsg, m.statusIsErr = "Select two or more folders to merge", true
 		return
 	}
-	// the row [V] was pressed on names the result, whichever way the range
+	// the row the selection started on names the result, whichever way the range
 	// was extended, so move it to the front
 	ids := make([]int64, 0, len(sel))
 	ids = append(ids, anchorID)
@@ -82,7 +90,7 @@ func (m *Model) applyRename(name string) {
 	}
 }
 
-// selectedRows are the rows [m]/[d]/[D] act on: in visual mode every row of the
+// selectedRows are the rows [m]/[x]/[f] act on: in visual mode every row of the
 // range at the anchor's depth, otherwise just the row under the cursor.
 func (m *Model) selectedRows() []*reviewRow {
 	if !m.visualMode {
@@ -115,9 +123,9 @@ func (m *Model) dropFolders(targets []*reviewRow) {
 	m.applyEdit(vfs.Edit{Op: vfs.OpDrop, Nodes: ids}, func(o vfs.Outcome) string {
 		names := o.Names
 		if len(names) > 1 {
-			return fmt.Sprintf("Dropped %d folders; their contents moved up a level", len(names))
+			return fmt.Sprintf("Removed %d folders; what was inside moved up a level", len(names))
 		}
-		return fmt.Sprintf("Dropped %s; its contents moved up a level", names[0])
+		return fmt.Sprintf("Removed %s; what was inside moved up a level", names[0])
 	})
 }
 
@@ -129,7 +137,7 @@ func (m *Model) flattenFolders(targets []*reviewRow) {
 		ids[i] = r.node.ID
 	}
 
-	// over a [V] range the folders stay separate — folding them together is
+	// over a selection the folders stay separate — folding them together is
 	// [m]'s job, not this one
 	m.applyEdit(vfs.Edit{Op: vfs.OpFlatten, Nodes: ids}, func(o vfs.Outcome) string {
 		names := o.Names

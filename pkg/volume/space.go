@@ -24,9 +24,9 @@ func TransferNeeds(fileBytes, dbBytes, total uint64) uint64 {
 	return fileBytes + 2*dbBytes + max(minReserve, total/reserveShare)
 }
 
-// HumanBytes renders n as a short base-1024 size, e.g. "1.5 GiB"
+// HumanBytes renders n as a short decimal size: "1.5 GB", "288 KB".
 func HumanBytes(n uint64) string {
-	const unit = 1024
+	const unit = 1000 // the units Finder and Explorer show
 	if n < unit {
 		return fmt.Sprintf("%d B", n)
 	}
@@ -35,5 +35,9 @@ func HumanBytes(n uint64) string {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+	v := float64(n) / float64(div)
+	if v >= 10 {
+		return fmt.Sprintf("%.0f %cB", v, "KMGTPE"[exp])
+	}
+	return fmt.Sprintf("%.1f %cB", v, "KMGTPE"[exp])
 }

@@ -42,7 +42,7 @@ func TestCopyRunsStepsInOrder(t *testing.T) {
 	})
 	m = runToEnd(t, m)
 	view := ansi.Strip(m.View())
-	for _, want := range []string{"All done", "Enough space", "Applied 1 edit", "Backed up", "Copied and checked 2 files", "1) Open the library"} {
+	for _, want := range []string{"All done", "Enough space", "Applied your 1 edit from Organise", "Backed up", "Copied and checked 2 files", "1) Open the library"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("finished copy is missing %q:\n%s", want, view)
 		}

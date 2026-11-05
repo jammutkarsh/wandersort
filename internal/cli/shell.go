@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
@@ -151,7 +153,8 @@ func (a *app) runShell(start shellStart) error {
 	m.screens[tabScan] = a.newHomeScreen(nil)
 	m.lib = a.readState(ctx)
 
-	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr), tea.WithReportFocus())
+	// mouse clicks pick a tab; the wheel scrolls like the arrows
+	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr), tea.WithReportFocus(), tea.WithMouseCellMotion())
 	// started once for the whole session; nothing else shows until it is done
 	a.Deps = a.newDeps(
 		func(p install.Progress) {
@@ -225,6 +228,9 @@ func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+		next, cmd := m.gate.Update(tea.WindowSizeMsg{Width: tui.Inner(msg.Width), Height: msg.Height})
+		m.gate = next.(tui.Tab)
+		return m, cmd
 	case depsDoneMsg:
 		if msg.err == nil {
 			m.gate = nil
@@ -283,11 +289,15 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
-		// The container owns the tab-bar line; every screen lays out below it.
-		return m, m.broadcast(tea.WindowSizeMsg{Width: msg.Width, Height: msg.Height - 1})
+		// The container owns the tab-bar line and the gutters; every screen
+		// lays out below and between them.
+		return m, m.broadcast(tea.WindowSizeMsg{Width: tui.Inner(msg.Width), Height: msg.Height - 1})
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 
 	case tui.SwitchMsg:
 		return m.handleSwitch(msg)
@@ -345,7 +355,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screens[tabReview] = nil
 			m.screens[tabCopy] = nil
 			m.refresh()
-			note := m.forward(tabScan, tui.HomeNoteMsg{Text: "Now using the library in " + path.New().RelativeToHome(dir)})
+			note := m.forward(tabScan, tui.HomeNoteMsg{Text: "Now using the library " + path.New().Friendly(dir)})
 			if retry := m.pendingScan; retry != nil {
 				m.pendingScan = nil
 				return m, tea.Batch(note, msgCmd(*retry))
@@ -477,6 +487,43 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, m.forward(m.tab, k)
 }
 
+// handleMouse opens a clicked tab and turns the wheel into ↑/↓ for the screen.
+func (m shellModel) handleMouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case e.Button == tea.MouseButtonWheelUp:
+		return m.handleKey(tea.KeyMsg{Type: tea.KeyUp})
+	case e.Button == tea.MouseButtonWheelDown:
+		return m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	case e.Action != tea.MouseActionRelease || e.Button != tea.MouseButtonLeft || e.Y != 0:
+		return m, nil
+	}
+	t, ok := m.tabAt(e.X - tui.Gutter)
+	if !ok || t == m.tab {
+		return m, nil
+	}
+	// shift+tab from the tab before it lands on it, if it can be used now
+	before := m
+	before.tab = (t + numTabs - 1) % numTabs
+	if before.nextTab() != t {
+		return m, nil
+	}
+	return before.handleKey(tea.KeyMsg{Type: tea.KeyShiftTab})
+}
+
+// tabAt is the tab drawn at column x of the top line.
+func (m shellModel) tabAt(x int) (int, bool) {
+	at := lipgloss.Width(tui.Brand())
+	for i, part := range m.tabParts() {
+		at += 2 // the join
+		w := lipgloss.Width(part)
+		if x >= at && x < at+w {
+			return i, true
+		}
+		at += w
+	}
+	return 0, false
+}
+
 // setNotice shows text in the tab bar and starts the window a second esc counts in.
 func (m *shellModel) setNotice(text string) tea.Cmd {
 	m.notice = text
@@ -511,7 +558,7 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 		// next, but only if there are any
 		m.refresh()
 		if m.lib.HasEdits() {
-			note = "Your edits are kept; Copy applies them."
+			note = "Your edits are saved. Copy uses them."
 			m.a.Log.Info(note, logger.UserKey, true)
 		}
 		m.screens[tabReview] = nil
@@ -536,7 +583,7 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 func (m *shellModel) settingsSaved(before config.Settings) tea.Cmd {
 	// ponytail: only the home screen shows the receipt, so it is lost if a
 	// finished scan screen still holds the tab
-	cmd := m.forward(tabScan, tui.HomeNoteMsg{Text: "Settings saved in " + m.a.Config.OutputDir()})
+	cmd := m.forward(tabScan, tui.HomeNoteMsg{Text: "Settings saved."})
 
 	if m.a.Config.Settings.Equal(before) {
 		return cmd // a visit that changed nothing throws no plan away
@@ -741,7 +788,7 @@ func (m shellModel) scanRunning() bool {
 
 // place installs a new screen, sized to the current window, and inits it.
 func (m *shellModel) place(tab int, s tui.Tab) tea.Cmd {
-	sized, cmd := s.Update(tea.WindowSizeMsg{Width: m.w, Height: m.h - 1})
+	sized, cmd := s.Update(tea.WindowSizeMsg{Width: tui.Inner(m.w), Height: m.h - 1})
 	m.screens[tab] = sized.(tui.Tab)
 	return tea.Batch(sized.Init(), cmd)
 }
@@ -766,18 +813,32 @@ func (m *shellModel) broadcast(msg tea.Msg) tea.Cmd {
 
 func (m shellModel) View() string {
 	if m.gate != nil {
-		return m.gate.View()
+		return tui.Frame(m.gate.View())
 	}
 	s := m.screens[m.tab]
 	if s == nil {
-		return m.tabBar()
+		return tui.Frame(m.tabBar())
 	}
-	return m.tabBar() + "\n" + s.View()
+	return tui.Frame(m.tabBar() + "\n" + s.View())
 }
 
 // tabBar is the shell's one line: the app's name, the tabs (● where something waits) and the library.
 func (m shellModel) tabBar() string {
-	parts := []string{tui.Brand()}
+	parts := append([]string{tui.Brand()}, m.tabParts()...)
+	parts = append(parts, tui.FaintTxt.Render("shift+tab"))
+	right := ""
+	switch {
+	case m.notice != "":
+		right = tui.Attn.Render(m.notice)
+	case m.a.AppDB != nil || m.lib.Exists:
+		right = tui.FaintTxt.Render(filepath.Base(m.a.Config.OutputDir()))
+	}
+	return tui.Row(strings.Join(parts, "  "), right, tui.Inner(m.w))
+}
+
+// tabParts is each tab as the top line draws it.
+func (m shellModel) tabParts() []string {
+	var parts []string
 	for i, name := range tabNames {
 		switch {
 		case i == m.tab:
@@ -796,14 +857,7 @@ func (m shellModel) tabBar() string {
 			parts = append(parts, tui.DimText.Render(" "+name+" "))
 		}
 	}
-	right := ""
-	switch {
-	case m.notice != "":
-		right = tui.Attn.Render(m.notice)
-	case m.a.AppDB != nil || m.lib.Exists:
-		right = tui.FaintTxt.Render(path.New().RelativeToHome(m.a.Config.OutputDir()))
-	}
-	return tui.Row(strings.Join(parts, "  "), right, m.w)
+	return parts
 }
 
 /* --- screen constructors --- */
@@ -831,7 +885,8 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 	ctx, cancel := context.WithCancel(session)
 	wf := workflow.NewWorkflow(a.AppDB, a.Log, a.Config, a.workflowDeps())
 	return tui.NewScanModel(tui.ScanConfig{
-		Paths: paths,
+		Paths:   paths,
+		LogPath: path.New().Friendly(a.logFile.Path()),
 		Pipeline: func() error {
 			if !a.work.startOnLibrary() {
 				return context.Canceled
@@ -863,7 +918,7 @@ func (a *app) newSettingsScreen(ctx context.Context) (tui.Tab, error) {
 	}
 	geonames := func() (*location.Resolver, error) { return a.Deps.LocationNow() }
 	return tui.NewSettingsModel(a.settingsRows(ctx, geonames),
-		"A change re-plans the files not yet copied. Copied files don't move."), nil
+		"Changes apply to files not copied yet. Copied files stay where they are."), nil
 }
 
 // runRoot is bare `wandersort`: the shell, or help with --plain or a piped

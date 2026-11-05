@@ -96,20 +96,19 @@ func (e *settingsExamples) Collapse() string {
 // CollapseDescribe is the Collapse question's description (the example column
 // is too narrow for prose).
 func (e *settingsExamples) CollapseDescribe() string {
-	d := "Drop a device/orientation/media folder that would hold every single " +
-		"file in the library — one value means the level says nothing."
+	d := "If every file comes from one camera, a camera folder adds nothing."
 	if *e.collapse {
-		return d + " On: those folders are left out below."
+		return d + " On: such folders are left out."
 	}
-	return d + " Off: they stay, repeating under every folder even though they never vary."
+	return d + " Off: they're made anyway."
 }
 
 func (e *settingsExamples) DateOnlyDescribe() string {
-	d := "Everyday shots from a saved place aren't trips — a city folder there mostly repeats itself."
+	d := "Photos taken at home go straight into their date folder."
 	if *e.dateOnly {
-		return d + " On: no city folder for these."
+		return d + " On: no town folder for them."
 	}
-	return d + " Off: nearby suburbs still fold into " + e.homeTown() + "."
+	return d + " Off: they go in a " + e.homeTown() + " folder, like any trip."
 }
 
 func (e *settingsExamples) DateOnly() string {
@@ -125,12 +124,11 @@ func (e *settingsExamples) DateOnly() string {
 }
 
 func (e *settingsExamples) MergeDaysDescribe() string {
-	d := "A multi-day trip in one place becomes one folder instead of one per day. " +
-		"You can still split or merge days later in review."
+	d := "Days in a row in one place share one folder. You can merge more folders in Organise."
 	if *e.mergeDays {
-		return d + " On: consecutive same-location days merge."
+		return d + " On: those days share a folder."
 	}
-	return d + " Off: each day keeps its own folder."
+	return d + " Off: each day gets its own folder."
 }
 
 func (e *settingsExamples) MergeDays() string {

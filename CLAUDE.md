@@ -16,7 +16,7 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 
 | Command | File | What |
 |---|---|---|
-| `wandersort` | `shell.go` | Full-screen shell: getting ready, then Add / Organise / Copy / Settings tabs, `shift+tab` cycles |
+| `wandersort` | `shell.go` | Full-screen shell: getting ready, then Add / Organise / Copy / Settings tabs, `shift+tab` or a click cycles |
 | `add -p …` | `add.go` | Runs the pipeline (shell on the Add tab, or plain with `--plain`/`--json`/no terminal) |
 | `organise` | `organise.go` | Shell on the Organise tab; also `rebuildTree`, `newReviewScreen` |
 | `copy` | `copy.go` | Applies the draft and copies files in (shell on the Copy tab, or plain; `--dry-run`, `--json`) |
@@ -28,9 +28,10 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 - The shell opens on the getting-ready screen (`tui.ReadyModel`) until exiftool and the locationDB are installed: `install.MaxTries` tries, asking for a better network between them; giving up exits 1. Then it opens the last library, if there is one.
 - The shell opens on the Add tab. A folder dropped on the terminal arrives as a paste; `path.Resolver.Dropped` unquotes and unescapes it. Path completion (tab, dropdown) stays beside drop on Add and in the library field. `esc esc` quits when no scan or copy runs, else warns in the tab bar. A scan with nothing to copy skips the plan-ready screen and returns to Add (`tui.ErrNothingNew`).
 - Library reset is CLI only (`admin db --reset`); no key binding.
-- Settings is a shell tab (`settings_form.go`, `settings_examples.go`): one list of rows (library folder, folder layout, home, fine-tuning) edited one at a time; with no library open it shows the defaults and the first save creates the library. Work is off: it saves as home. Saving a changed setting re-plans at once. Changing the library folder switches libraries (`app.switchLibrary`): an organised folder opens with its own settings, any other starts a new library with the current settings; nothing planned comes along and the old library is left as it is.
+- Settings is a shell tab (`settings_form.go`, `settings_examples.go`): one list of rows (library folder, folder layout, home, extra options) edited one at a time; with no library open it shows the defaults and the first save creates the library. Work is off: it saves as home. Saving a changed setting re-plans at once. Changing the library folder switches libraries (`app.switchLibrary`): an organised folder opens with its own settings, any other starts a new library with the current settings; nothing planned comes along and the old library is left as it is.
 - Exit codes (`exit.go`): 0 done, 1 error, 2 bad usage, 3 finished with failed files, 4 library busy. `--json` prints one result object on stdout at the end.
 - A copy that leaves files out writes an HTML page (`report.Failures`, `report.SaveHTML`) beside the run's log, same name, `.html` (`logger.File.Page`).
+- The shell draws the top line and owns the gutters: screens get `tui.Inner(w)` and draw from column 0; `tui.Frame` adds the margin. Mouse: a click on a tab opens it, the wheel is ↑/↓.
 - `state.go` answers "what can the user do next" (`libraryState`).
 - Screens never call `tea.Quit`; they hand back with `tui.Leave`. The shell owns the program.
 

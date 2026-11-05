@@ -114,14 +114,17 @@ var copyKeys = []KeyGroup{
 }
 
 func NewCopyModel(cfg CopyConfig) CopyModel {
+	stages := []*Stage{{Key: execute.StepSpace, Name: "Check space"}}
+	if cfg.Plan.Edits > 0 {
+		stages = append(stages, &Stage{Key: execute.StepApply, Name: "Apply edits"})
+	}
 	sl := NewStageList(
 		func(cur, total int) string {
 			return volume.HumanBytes(uint64(cur)) + " / " + volume.HumanBytes(uint64(total))
 		},
-		&Stage{Key: execute.StepSpace, Name: "Check space"},
-		&Stage{Key: execute.StepApply, Name: "Apply edits"},
-		&Stage{Key: execute.StepBackup, Name: "Back up library"},
-		&Stage{Key: execute.StepCopy, Name: "Copy & check", HasBar: true},
+		append(stages,
+			&Stage{Key: execute.StepBackup, Name: "Back up records"},
+			&Stage{Key: execute.StepCopy, Name: "Copy & check", HasBar: true})...,
 	)
 	return CopyModel{cfg: cfg, sl: sl, events: make(chan tea.Msg, 64)}
 }
@@ -196,14 +199,14 @@ func (m *CopyModel) stepTo(step string) {
 	plan := m.cfg.Plan
 	done := map[string]string{
 		execute.StepSpace:  fmt.Sprintf("Enough space: %s free, %s needed", volume.HumanBytes(uint64(plan.Free)), volume.HumanBytes(uint64(plan.Bytes))),
-		execute.StepApply:  "Applied " + human.Plural(plan.Edits, "edit", "edits"),
-		execute.StepBackup: "Backed up the library",
+		execute.StepApply:  "Applied your " + human.Plural(plan.Edits, "edit", "edits") + " from Organise",
+		execute.StepBackup: "Backed up the library's records",
 	}
 	if !plan.FreeKnown {
 		done[execute.StepSpace] = "Free space unknown; copying anyway"
 	}
-	if plan.Edits == 0 {
-		done[execute.StepApply] = "No edits to apply"
+	if m.sl.get(step) == nil {
+		return // a step this screen doesn't list (no edits to apply)
 	}
 	for _, s := range m.sl.stages {
 		if s.Key == step {
@@ -281,7 +284,7 @@ func (m CopyModel) View() string {
 	case copyAsking:
 		b.WriteString(m.askView())
 	default:
-		b.WriteString(row("  "+m.heading(), "", m.w) + "\n\n")
+		b.WriteString(row(m.heading(), "", m.w) + "\n\n")
 		b.WriteString(m.sl.View(m.w) + "\n")
 		b.WriteString(m.belowStages())
 	}
@@ -296,29 +299,29 @@ func (m CopyModel) askView() string {
 	plan := m.cfg.Plan
 	var b strings.Builder
 	if plan.Files == 0 {
-		b.WriteString(row("  "+Text.Bold(true).Render("Nothing to copy"), "", m.w) + "\n\n")
-		b.WriteString(row("  "+DimText.Render("Every planned file is already in the library. Add folders to plan more."), "", m.w) + "\n")
+		b.WriteString(row(Text.Bold(true).Render("Nothing to copy"), "", m.w) + "\n\n")
+		b.WriteString(row(DimText.Render("Every planned file is already in the library. Add folders to plan more."), "", m.w) + "\n")
 		return b.String()
 	}
-	b.WriteString(row("  "+Text.Bold(true).Render("Copy "+human.Plural(plan.Files, "file", "files")+" into your library"), "", m.w) + "\n\n")
-	b.WriteString(row("  Size", volume.HumanBytes(uint64(plan.Bytes))+"  ", m.w) + "\n")
+	b.WriteString(row(Text.Bold(true).Render("Copy "+human.Plural(plan.Files, "file", "files")+" into your library"), "", m.w) + "\n\n")
+	b.WriteString(row("Size", volume.HumanBytes(uint64(plan.Bytes)), m.w) + "\n")
 	switch {
 	case !plan.FreeKnown:
-		b.WriteString(row("  Free on this drive  "+DimText.Render("couldn't be read"), "", m.w) + "\n")
+		b.WriteString(row("Free on this drive  "+DimText.Render("unknown"), "", m.w) + "\n")
 	case plan.Fits:
-		b.WriteString(row("  Free on this drive  "+OK.Render("✓ enough"), volume.HumanBytes(uint64(plan.Free))+"  ", m.w) + "\n")
+		b.WriteString(row("Free on this drive  "+OK.Render("✓ enough"), volume.HumanBytes(uint64(plan.Free)), m.w) + "\n")
 	default:
-		b.WriteString(row("  Free on this drive  "+Bad.Render("✗ not enough"), volume.HumanBytes(uint64(plan.Free))+"  ", m.w) + "\n")
+		b.WriteString(row("Free on this drive  "+Bad.Render("✗ not enough"), volume.HumanBytes(uint64(plan.Free)), m.w) + "\n")
 	}
 	if plan.Edits > 0 {
-		b.WriteString(row("  Your edits  "+DimText.Render("from Organise, applied first"), fmt.Sprint(plan.Edits)+"  ", m.w) + "\n")
+		b.WriteString(row("Your edits  "+DimText.Render("from Organise, applied first"), fmt.Sprint(plan.Edits), m.w) + "\n")
 	}
 	b.WriteString("\n")
 	if !plan.Fits {
-		b.WriteString(row("  "+Attn.Render("⚠ Free some space on the library's drive, then come back."), "", m.w) + "\n")
+		b.WriteString(row(Attn.Render("⚠ Free some space on the library's drive, then come back."), "", m.w) + "\n")
 		return b.String()
 	}
-	b.WriteString(row("  "+FaintTxt.Render("Original files are not deleted."), "", m.w) + "\n")
+	b.WriteString(row(FaintTxt.Render("Your original files stay where they are."), "", m.w) + "\n")
 	return b.String()
 }
 
@@ -338,11 +341,11 @@ func (m CopyModel) heading() string {
 
 func (m CopyModel) belowStages() string {
 	var b strings.Builder
-	line := func(s string) { b.WriteString(row("  "+s, "", m.w) + "\n") }
+	line := func(s string) { b.WriteString(row(s, "", m.w) + "\n") }
 	switch m.state {
 	case copyRunning, copyStopping:
 		spent := time.Since(m.started).Seconds()
-		detail := human.Plural(m.files, "file", "files") + " checked"
+		detail := human.Plural(m.files, "file", "files") + " copied and checked"
 		if spent > 1 && m.copied > 0 {
 			detail += fmt.Sprintf(" · %s/s", volume.HumanBytes(uint64(float64(m.copied)/spent)))
 		}
@@ -375,7 +378,7 @@ func (m CopyModel) belowStages() string {
 		if len(m.res.Problems) > 0 {
 			b.WriteString("\n")
 		} else {
-			line(DimText.Render("Originals left where they were. Your library is in ") + Text.Render(path.New().RelativeToHome(m.cfg.Library)))
+			line(DimText.Render("Originals left where they were. Library: ") + Text.Render(path.New().Friendly(m.cfg.Library)))
 			b.WriteString("\n")
 		}
 		for i, c := range []string{"Open the library", "Add more folders"} {
@@ -398,7 +401,7 @@ func (m CopyModel) footer() string {
 		}
 		return hints(KeyHint("enter", "start"), KeyHint("esc", "not now"), MoreKeys())
 	case copyRunning, copyStopping:
-		return hints(KeyHint("shift+tab", "switch tab"), KeyHint("ctrl+c", "stop"), MoreKeys())
+		return hints(KeyHint("ctrl+c", "stop"), MoreKeys())
 	}
 	if m.res.Report != "" {
 		return hints(KeyHint("r", "open report"), KeyHint("1-2", "choose"), KeyHint("enter", "go"), MoreKeys())

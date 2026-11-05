@@ -47,7 +47,7 @@ func (m Model) header() string {
 	if n := len(m.draft.Edits()); n > 0 {
 		right += " · " + human.Plural(n, "edit", "edits")
 	}
-	return tui.Row(tui.DimText.Render("  Nothing moves until you copy. Edits are saved as you go."),
+	return "\n" + tui.Row(tui.DimText.Render("Nothing moves until you copy. Edits are saved as you go."),
 		tui.FaintTxt.Render(right), m.width) + "\n"
 }
 
@@ -58,17 +58,22 @@ func (m Model) rowView(i int, inRange bool) string {
 	cursor := "  "
 	count := human.Plural(r.node.FileCount, "file", "files")
 
+	// a folder the copy creates is marked, not only coloured
+	mark := ""
+	if r.isNew {
+		mark = newMark
+	}
 	if inRange || i == m.cursor {
 		// Plain, no per-segment colour — a nested ANSI reset would cut the highlight short.
 		if i == m.cursor {
 			cursor = "❯ "
 		}
-		return tui.Selected.Render(tui.Row(cursor+r.guide+r.node.Name, count, m.width))
+		return tui.Selected.Render(tui.Row(cursor+r.guide+mark+r.node.Name, count, m.width))
 	}
 
 	name := r.node.Name
 	if r.isNew {
-		name = tui.NewFolder.Render(name)
+		name = tui.NewFolder.Render(mark + name)
 	}
 	return tui.Row(cursor+tui.FaintTxt.Render(r.guide)+name, tui.FaintTxt.Render(count), m.width)
 }
@@ -80,8 +85,8 @@ func (m Model) footer() string {
 	switch {
 	case m.editing:
 		fmt.Fprintf(&b, "%s%s%s█\n",
-			tui.DimText.Render("Rename "+m.rows[m.cursor].node.Name+" to"),
-			tui.Title.Render(" » "), tui.Text.Render(m.input))
+			tui.DimText.Render("Rename "+m.rows[m.cursor].node.Name+" to "),
+			tui.Prompt(), tui.Text.Render(m.input))
 		for i, s := range m.suggestions {
 			// same shape as the wizard's completion list: dim rows, the arrowed-onto
 			// one highlighted, and the top match — what [tab] fills in — says so
@@ -104,8 +109,7 @@ func (m Model) footer() string {
 		}
 		b.WriteString(tui.Footer(strings.Join([]string{
 			tui.KeyHint("↑↓", "pick a place"),
-			tui.KeyHint("tab", "use match"),
-			tui.KeyHint("ctrl+e", "search wider"),
+			tui.KeyHint("ctrl+e", "more places"),
 			tui.KeyHint("enter", "rename"),
 			tui.KeyHint("esc", "cancel"),
 			tui.MoreKeys(),
@@ -118,7 +122,7 @@ func (m Model) footer() string {
 			fmt.Fprintln(&b, tui.Bad.Render("Preview failed: ")+tui.Text.Render(m.previewErr.Error()))
 		}
 		if m.visualMode {
-			fmt.Fprintln(&b, tui.Title.Render("-- SELECT --")+" "+tui.DimText.Render(fmt.Sprintf("%d folders", len(m.selectedRows()))))
+			fmt.Fprintln(&b, tui.Title.Render("Selecting "+human.Plural(len(m.selectedRows()), "folder", "folders"))+" "+tui.DimText.Render("· ↑↓ to pick more"))
 		}
 		switch {
 		case m.statusMsg == "":
@@ -139,8 +143,8 @@ func (m Model) keyHelp() string {
 	if m.visualMode {
 		return strings.Join([]string{
 			tui.KeyHint("m", "merge"),
-			tui.KeyHint("d", "drop"),
-			tui.KeyHint("D", "flatten"),
+			tui.KeyHint("x", "remove folder"),
+			tui.KeyHint("f", "flatten"),
 			tui.KeyHint("esc", "cancel"),
 			tui.MoreKeys(),
 		}, "   ")
@@ -148,7 +152,7 @@ func (m Model) keyHelp() string {
 	return strings.Join([]string{
 		tui.KeyHint("↑↓", "move"),
 		tui.KeyHint("r", "rename"),
-		tui.KeyHint("V", "select"),
+		tui.KeyHint("space", "select"),
 		tui.KeyHint("esc", "done"),
 		tui.MoreKeys(),
 	}, "   ")
@@ -163,29 +167,32 @@ func (m Model) plannedFiles() int {
 	return files
 }
 
+// newMark is in front of every folder the copy creates.
+const newMark = "+ "
+
 // reviewKeys is every key, behind ?.
 var reviewKeys = []tui.KeyGroup{
 	{Title: "Move", Keys: []tui.KeyLine{
 		{Key: "↑ ↓", What: "one folder"},
-		{Key: "n N", What: "next / previous at this level"},
+		{Key: "← →", What: "previous / next at this level"},
 		{Key: "p", What: "peek at a few of its photos"},
 	}},
 	{Title: "Change", Keys: []tui.KeyLine{
 		{Key: "r", What: "rename"},
-		{Key: "V", What: "select a run of folders, then:"},
+		{Key: "space", What: "select folders (or shift+↑↓), then:"},
 		{Key: "  m", What: "merge them into one"},
-		{Key: "  d", What: "drop: contents move up a level"},
-		{Key: "  D", What: "flatten: everything below moves in"},
+		{Key: "  x", What: "remove folder; what's inside moves up a level"},
+		{Key: "  f", What: "flatten: everything below moves into it"},
 	}},
 	{Title: "Go back", Keys: []tui.KeyLine{
 		{Key: "u", What: "undo; again to keep going back"},
-		{Key: "R", What: "undo every edit"},
-		{Key: "ctrl+r", What: "discard the current plan: forget every file not yet copied"},
+		{Key: "ctrl+u", What: "undo every edit"},
+		{Key: "ctrl+r", What: "discard the plan: forget the files not copied yet"},
 		{Key: "esc", What: "done; edits are kept for copy"},
 	}},
 	{Title: "Folders", Keys: []tui.KeyLine{
-		{Key: tui.NewFolder.Render("blue"), What: "new: the copy creates it"},
-		{Key: "white", What: "already in the library"},
+		{Key: tui.NewFolder.Render(newMark + "blue"), What: "new: the copy makes it"},
+		{Key: "others", What: "already in your library"},
 	}},
 	{Title: "Years and months stay fixed.", Keys: nil},
 }

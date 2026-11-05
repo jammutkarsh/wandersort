@@ -36,13 +36,14 @@ func KeyHelp(base string, groups []KeyGroup, w, h int) string {
 		blocks[i] = b.String()
 	}
 	body := strings.Join(blocks, "\n\n")
-	const chrome = 6 // border, padding, the closing hint
+	const chrome = 9 // border, padding, the tab note, the closing hint
 	if h > 0 && lipgloss.Height(body)+chrome > h && len(blocks) > 1 {
 		half := (len(blocks) + 1) / 2
 		left := lipgloss.NewStyle().PaddingRight(4).Render(strings.Join(blocks[:half], "\n\n"))
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Join(blocks[half:], "\n\n"))
 	}
-	body += "\n\n" + FaintTxt.Render("any key closes")
+	body += "\n\n" + DimText.Render("shift+tab or a click on the top line changes tab;\n● on a tab: something is waiting there.") +
+		"\n\n" + FaintTxt.Render("any key closes")
 	return overlay(base, keyHelpBox.Render(body), w, h)
 }
 
