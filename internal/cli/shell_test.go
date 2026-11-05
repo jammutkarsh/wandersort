@@ -100,7 +100,7 @@ func testShell(t *testing.T) shellModel {
 	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
 	t.Cleanup(a.closeDBs) // a refresh may open the library; Windows can't remove it open
 	m := shellModel{a: a, ctx: context.Background(), w: 80, h: 24}
-	m.screens[tabScan] = a.newHomeScreen(nil)
+	m.screens[tabScan] = a.newHomeScreen(context.Background(), nil)
 	return m
 }
 

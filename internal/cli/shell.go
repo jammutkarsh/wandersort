@@ -150,7 +150,7 @@ func (a *app) runShell(start shellStart) error {
 		tui.ReadyItem{Phase: install.PhaseLocation, Label: depLabels[install.PhaseLocation]},
 	)
 	m := shellModel{a: a, ctx: ctx, start: start, gate: gate}
-	m.screens[tabScan] = a.newHomeScreen(nil)
+	m.screens[tabScan] = a.newHomeScreen(ctx, nil)
 	m.lib = a.readState(ctx)
 
 	// mouse clicks pick a tab; the wheel scrolls like the arrows
@@ -248,6 +248,14 @@ func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next, cmd := m.gate.Update(tui.DepsFailedMsg{Failed: failedDeps(msg.err), Tries: install.MaxTries})
 		m.gate = next.(tui.Tab)
 		return m, cmd
+	case tea.MouseMsg:
+		var cmds []tea.Cmd
+		for _, key := range clickedKeys(m.View(), msg, m.h) {
+			var cmd tea.Cmd
+			m, cmd = m.pressGateKey(key)
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
 	case tui.Leave:
 		if m.depsErr == nil {
 			m.depsErr = errors.New("quit before setup finished")
@@ -257,6 +265,12 @@ func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.gate.Update(msg)
 	m.gate = next.(tui.Tab)
 	return m, cmd
+}
+
+// pressGateKey sends one clicked key to the getting-ready screen.
+func (m shellModel) pressGateKey(key string) (shellModel, tea.Cmd) {
+	next, cmd := m.updateGate(tui.KeyMsgFor(key))
+	return next.(shellModel), cmd
 }
 
 // startCmd asks for the starting tab by message.
@@ -392,7 +406,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a := m.a
 		return m, m.onLibrary("discard the current plan", func(ctx context.Context) (string, error) {
 			n, err := library.Discard(ctx, a.AppDB, a.Config.OutputDir())
-			return "Plan discarded: " + human.Plural(n, "file", "files") + " forgotten.", err
+			return "Started over: " + human.Plural(n, "file", "files") + " taken off the list.", err
 		})
 
 	case libraryEmptiedMsg:
@@ -405,7 +419,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screens[tabReview] = nil
 		m.refresh()
 		m.tab = tabScan
-		cmd := m.place(tabScan, m.a.newHomeScreen(nil))
+		cmd := m.place(tabScan, m.a.newHomeScreen(m.ctx, nil))
 		m.forward(tabScan, m.lib.home())
 		return m, tea.Batch(cmd, m.forward(tabScan, tui.HomeNoteMsg{Text: msg.note}))
 
@@ -419,7 +433,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reviewOpenMsg:
 		m.opening = false
 		if errors.Is(msg.err, tui.ErrNothingNew) {
-			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: msg.err.Error()})
+			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: tui.Explain(msg.err)})
 		}
 		if msg.err != nil {
 			return m, m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})
@@ -462,16 +476,21 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.notice, m.escArmed = "", false
 	}
 	// esc esc quits when nothing is running; the first esc still reaches the
-	// screen, so it keeps its own meaning
+	// screen, so it keeps its own meaning (on a running scan or copy: stop)
 	if k.String() == "esc" {
+		if n, ok := m.screens[m.tab].(tui.Nester); ok && n.Nested() {
+			m.escArmed = false // esc closes the sub-menu; it is not a step towards quitting
+			return m, m.forward(m.tab, k)
+		}
+		if m.scanRunning() || m.copyRunning() {
+			m.escArmed = false
+			return m, tea.Batch(m.forward(m.tab, k), m.setNotice("busy — esc stops it on its own tab"))
+		}
 		if !m.escArmed {
 			m.escArmed = true
 			return m, tea.Batch(m.forward(m.tab, k), m.setNotice("esc again to quit"))
 		}
-		if !m.scanRunning() && !m.copyRunning() {
-			return m, tea.Quit
-		}
-		return m, tea.Batch(m.forward(m.tab, k), m.setNotice("busy — ctrl+c stops it"))
+		return m, tea.Quit
 	}
 
 	// ctrl+c goes to a running scan first (warn once, then cancel). Other
@@ -487,15 +506,25 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, m.forward(m.tab, k)
 }
 
-// handleMouse opens a clicked tab and turns the wheel into ↑/↓ for the screen.
+// handleMouse opens a clicked tab, presses the keys of a clicked hint or
+// choice, and turns the wheel into ↑/↓ for the screen.
 func (m shellModel) handleMouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case e.Button == tea.MouseButtonWheelUp:
 		return m.handleKey(tea.KeyMsg{Type: tea.KeyUp})
 	case e.Button == tea.MouseButtonWheelDown:
 		return m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
-	case e.Action != tea.MouseActionRelease || e.Button != tea.MouseButtonLeft || e.Y != 0:
+	case e.Action != tea.MouseActionRelease || e.Button != tea.MouseButtonLeft:
 		return m, nil
+	case e.Y != 0:
+		var cmds []tea.Cmd
+		var model tea.Model = m
+		for _, key := range clickedKeys(m.View(), e, m.h) {
+			var cmd tea.Cmd
+			model, cmd = model.(shellModel).handleKey(tui.KeyMsgFor(key))
+			cmds = append(cmds, cmd)
+		}
+		return model, tea.Batch(cmds...)
 	}
 	t, ok := m.tabAt(e.X - tui.Gutter)
 	if !ok || t == m.tab {
@@ -508,6 +537,23 @@ func (m shellModel) handleMouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return before.handleKey(tea.KeyMsg{Type: tea.KeyShiftTab})
+}
+
+// clickedKeys is the keys of the hint or choice drawn under a left click on
+// view. A view taller than the terminal shows its bottom rows.
+func clickedKeys(view string, e tea.MouseMsg, height int) []string {
+	if e.Action != tea.MouseActionRelease || e.Button != tea.MouseButtonLeft {
+		return nil
+	}
+	shown := max(strings.Count(view, "\n")+1-height, 0)
+	if height <= 0 {
+		shown = 0
+	}
+	target, ok := tui.ClickAt(tui.ClickTargets(view), e.Y+shown, e.X)
+	if !ok {
+		return nil
+	}
+	return target.Keys
 }
 
 // tabAt is the tab drawn at column x of the top line.
@@ -679,7 +725,7 @@ func (m *shellModel) homeAgain(note string) tea.Cmd {
 	if note != "" {
 		history = append(history, note)
 	}
-	home := m.a.newHomeScreen(history)
+	home := m.a.newHomeScreen(m.ctx, history)
 	home.Add(added...)
 	cmd := m.place(tabScan, home)
 	m.forward(tabScan, m.lib.home())
@@ -842,7 +888,7 @@ func (m shellModel) tabParts() []string {
 	for i, name := range tabNames {
 		switch {
 		case i == m.tab:
-			parts = append(parts, tui.Selected.Bold(true).Render(" "+name+" "))
+			parts = append(parts, tui.Pill(name))
 		case i == tabReview && m.opening:
 			parts = append(parts, tui.DimText.Render(" "+name+"… "))
 		case i == tabReview && m.canReview():
@@ -863,12 +909,17 @@ func (m shellModel) tabParts() []string {
 /* --- screen constructors --- */
 
 // newHomeScreen builds the folder-input screen.
-func (a *app) newHomeScreen(lastScan []string) tui.HomeModel {
+func (a *app) newHomeScreen(ctx context.Context, lastScan []string) tui.HomeModel {
 	paths := path.New()
+	var pickFolder func() (string, error)
+	if tui.CanPickFolder() {
+		pickFolder = func() (string, error) { return tui.PickFolder(ctx) }
+	}
 	return tui.NewHomeModel(tui.HomeConfig{
-		Suggest:  func(typed string) []string { return suggestDirs(paths, typed) },
-		LastScan: lastScan,
-		History:  a.Config.SourceHistory(),
+		Suggest:    func(typed string) []string { return suggestDirs(paths, typed) },
+		LastScan:   lastScan,
+		History:    a.Config.SourceHistory(),
+		PickFolder: pickFolder,
 		// only the library overlap: anything else is the scan's to report
 		Check: func(dir string) error {
 			if _, err := workflow.CheckRoots(paths, a.Config.OutputDir(), []string{dir}); errors.Is(err, workflow.ErrOverlapsLibrary) {

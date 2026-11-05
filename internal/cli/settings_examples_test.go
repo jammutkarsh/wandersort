@@ -53,48 +53,37 @@ func TestRulesExample(t *testing.T) {
 	}
 }
 
-func TestCollapseDescribe(t *testing.T) {
-	e := newTestExamples(t, nil, true, false, false, "")
-	on := e.CollapseDescribe()
-	if !strings.Contains(on, "On:") {
-		t.Errorf("CollapseDescribe(on) = %q, want it to say On:", on)
+// A yes/no description says what the question does and stays put as the answer changes.
+func TestYesNoDescriptionsDoNotFollowTheAnswer(t *testing.T) {
+	e := newTestExamples(t, nil, true, true, true, "Pune")
+	describers := map[string]func() string{
+		"collapse": e.CollapseDescribe, "dateOnly": e.DateOnlyDescribe, "mergeDays": e.MergeDaysDescribe,
 	}
-	*e.collapse = false
-	off := e.CollapseDescribe()
-	if !strings.Contains(off, "Off:") {
-		t.Errorf("CollapseDescribe(off) = %q, want it to say Off:", off)
+	for name, describe := range describers {
+		before := describe()
+		*e.collapse, *e.dateOnly, *e.mergeDays = false, false, false
+		after := describe()
+		if before != after {
+			t.Errorf("%s: description changed with the answer:\n%q\n%q", name, before, after)
+		}
+		if strings.TrimSpace(after) == "" || strings.Contains(after, "Yes:") {
+			t.Errorf("%s: description = %q, want one plain sentence about what the question does", name, after)
+		}
+		*e.collapse, *e.dateOnly, *e.mergeDays = true, true, true
 	}
-}
-
-func TestDateOnlyDescribe(t *testing.T) {
-	e := newTestExamples(t, nil, false, false, true, "Pune")
-	on := e.DateOnlyDescribe()
-	if !strings.Contains(on, "On:") {
-		t.Errorf("DateOnlyDescribe(on) = %q, want it to say On:", on)
-	}
-	*e.dateOnly = false
-	off := e.DateOnlyDescribe()
-	if !strings.Contains(off, "Pune") {
-		t.Errorf("DateOnlyDescribe(off) = %q, want it to name the home town", off)
+	if !strings.Contains(e.DateOnlyDescribe(), "Pune") {
+		t.Errorf("DateOnlyDescribe() = %q, want it to name the home town", e.DateOnlyDescribe())
 	}
 }
 
 func TestMergeDaysDescribeAndExample(t *testing.T) {
 	e := newTestExamples(t, []string{vfs.RuleDate, vfs.RuleLocation}, false, true, false, "")
-	on := e.MergeDaysDescribe()
-	if !strings.Contains(on, "On:") {
-		t.Errorf("MergeDaysDescribe(on) = %q, want it to say On:", on)
-	}
 	merged := e.MergeDays()
 	if strings.Count(merged, "Greece") != 1 {
 		t.Errorf("MergeDays(on) example = %q, want exactly one merged Greece folder", merged)
 	}
 
 	*e.mergeDays = false
-	off := e.MergeDaysDescribe()
-	if !strings.Contains(off, "Off:") {
-		t.Errorf("MergeDaysDescribe(off) = %q, want it to say Off:", off)
-	}
 	split := e.MergeDays()
 	if strings.Count(split, "Greece") != 3 {
 		t.Errorf("MergeDays(off) example = %q, want three separate day-branch Greece folders", split)
@@ -115,5 +104,24 @@ func TestIsBundleDir(t *testing.T) {
 		if got := isBundleDir(tt.name); got != tt.want {
 			t.Errorf("isBundleDir(%q) = %v, want %v", tt.name, got, tt.want)
 		}
+	}
+}
+
+// Both answers must show the same files, so the only difference on screen is
+// the folders the answer adds or leaves out.
+func TestCollapseExampleShowsTheSameFilesBothWays(t *testing.T) {
+	layout := []string{vfs.RuleDate, vfs.RuleDevice, vfs.RuleMedia}
+	on := newTestExamples(t, layout, true, true, true, "").Collapse()
+	off := newTestExamples(t, layout, false, true, true, "").Collapse()
+	for _, file := range []string{"IMG_1234.jpg", "IMG_1250.jpg", "IMG_1251.jpg"} {
+		if !strings.Contains(on, file) || !strings.Contains(off, file) {
+			t.Errorf("%s missing from one example:\non:\n%s\noff:\n%s", file, on, off)
+		}
+	}
+	if strings.Contains(on, "iPhone") || !strings.Contains(off, "iPhone") {
+		t.Errorf("on must leave the camera folder out and off must keep it:\non:\n%s\noff:\n%s", on, off)
+	}
+	if strings.Contains(off, "Portrait") {
+		t.Errorf("a layout without orientation folders must not show one:\n%s", off)
 	}
 }

@@ -207,7 +207,7 @@ func TestHome(t *testing.T) {
 			if m.ti.Value() != "" {
 				t.Errorf("input = %q, want it emptied once the folders are listed", m.ti.Value())
 			}
-			if v := viewText(m.View()); !strings.Contains(v, "enter start") {
+			if v := viewText(m.View()); !strings.Contains(v, "enter scan") {
 				t.Errorf("a listed folder should offer the scan in the footer:\n%s", v)
 			}
 			m = typeHome(m, "~/typing")
@@ -270,3 +270,58 @@ var errAlreadyRunning = errTest("another wandersort is already running")
 type errTest string
 
 func (e errTest) Error() string { return string(e) }
+
+func TestHomeFolderPicker(t *testing.T) {
+	dir := t.TempDir()
+	m := NewHomeModel(HomeConfig{PickFolder: func() (string, error) { return dir, nil }})
+
+	if v := viewText(m.View()); !strings.Contains(v, "ctrl+o choose a folder") {
+		t.Errorf("the footer should offer the folder window:\n%s", v)
+	}
+	if v := viewText(NewHomeModel(HomeConfig{}).View()); strings.Contains(v, "ctrl+o") {
+		t.Errorf("no folder window on this system, so no hint:\n%s", v)
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	if cmd == nil {
+		t.Fatal("ctrl+o should open the folder window")
+	}
+	picked := cmd()
+
+	next, _ := m.Update(picked)
+	if got := next.(HomeModel).added; len(got) != 1 || got[0] != dir {
+		t.Errorf("added = %v, want the chosen folder %s", got, dir)
+	}
+
+	next, _ = m.Update(folderPickedMsg{})
+	if got := next.(HomeModel).added; len(got) != 0 {
+		t.Errorf("a closed window must add nothing, got %v", got)
+	}
+}
+
+// Repeated ctrl+o while the folder window is open must not open another.
+func TestHomeFolderPickerOpensOneWindowAtATime(t *testing.T) {
+	opened := 0
+	m := NewHomeModel(HomeConfig{PickFolder: func() (string, error) { opened++; return "", nil }})
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = next.(HomeModel)
+	next, again := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = next.(HomeModel)
+	if again != nil {
+		t.Fatal("a second ctrl+o opened another window")
+	}
+	if v := viewText(m.View()); strings.Contains(v, "ctrl+o") {
+		t.Errorf("the hint should go while the window is open:\n%s", v)
+	}
+
+	picked := cmd()
+	if opened != 1 {
+		t.Fatalf("windows opened = %d, want 1", opened)
+	}
+	next, _ = m.Update(picked)
+	m = next.(HomeModel)
+	if _, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlO}); cmd == nil {
+		t.Error("ctrl+o should work again once the window has closed")
+	}
+}

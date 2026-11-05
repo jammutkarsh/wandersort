@@ -36,8 +36,7 @@ const (
 	FieldConfirm
 	FieldMultiSelect
 	FieldGroup
-	// FieldSelect picks one of Options into Value; options are numbered and a
-	// digit picks one.
+	// FieldSelect picks one of Options into Value; ↑/↓ or a click moves the pick.
 	FieldSelect
 )
 
@@ -132,10 +131,10 @@ func (m FormModel) finish() (tea.Model, tea.Cmd) {
 // formKeys is every form key, behind ?.
 var formKeys = []KeyGroup{
 	{"Answering", []KeyLine{
-		{"↑ ↓", "move between choices"},
-		{"1-9", "pick a numbered choice"},
+		{"↑ ↓", "move between choices or questions"},
+		{"← →", "answer yes or no"},
 		{"space", "tick or untick"},
-		{"y n", "answer yes or no"},
+		{"y n", "answer yes or no and go on"},
 		{"tab", "complete what's typed"},
 	}},
 	{"Moving", []KeyLine{
@@ -260,8 +259,9 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			// one completion left: enter takes it (the != guard lets the next
-			// enter advance)
-			if m.inputFocused() && len(m.sugg) == 1 && m.sugg[0] != m.ti.Value() {
+			// enter advance). A path already typed in full, with its folders
+			// below it offered, is done: enter must not drill into them.
+			if m.inputFocused() && len(m.sugg) == 1 && m.sugg[0] != m.ti.Value() && !isBelowTyped(m.sugg[0], m.ti.Value()) {
 				m.fillSuggestion(0)
 				return m, nil
 			}
@@ -300,8 +300,6 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.multiCursor = max(m.multiCursor-1, 0)
 				case key == "down":
 					m.multiCursor = min(m.multiCursor+1, len(field.Options)-1)
-				case len(key) == 1 && key[0] >= '1' && int(key[0]-'0') <= len(field.Options):
-					m.multiCursor = int(key[0] - '1')
 				default:
 					return m, nil
 				}
@@ -340,17 +338,21 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						*field.BoolValue = false
 					}
 					return m.moveNext()
-				// "yes" renders above "no" — both arrow pairs must match.
-				case "up", "left":
+				// ←/→ answer; ↑/↓ only move between a group's questions
+				case "left":
 					if field.BoolValue != nil {
 						*field.BoolValue = true
 					}
 					return m, nil
-				case "down", "right":
+				case "right":
 					if field.BoolValue != nil {
 						*field.BoolValue = false
 					}
 					return m, nil
+				case "up":
+					return m.moveWithinGroup(-1)
+				case "down":
+					return m.moveWithinGroup(1)
 				}
 			}
 		}
@@ -433,7 +435,7 @@ func (m FormModel) View() string {
 			step = n + 1
 			rows = append(rows, m.expandedField(f, n, steps))
 		default:
-			rows = append(rows, m.collapsedRow(f, n, i < m.Current))
+			rows = append(rows, m.collapsedRow(f, i, i < m.Current))
 		}
 		n++
 	}
@@ -446,14 +448,12 @@ func (m FormModel) View() string {
 	}
 	fields := strings.Join(rows, "\n")
 
-	footer := m.renderFooter()
+	footer := m.detailBlock() + m.renderFooter()
 	if m.sidePanel() {
 		// wide terminal: the example sits in the otherwise-empty right column,
 		// next to the question it belongs to, instead of above the footer
 		left := lipgloss.NewStyle().Width(m.bodyW() + 2).Render(fields)
 		fields = lipgloss.JoinHorizontal(lipgloss.Top, left, m.examplePanel())
-	} else {
-		footer = m.exampleBlock() + footer
 	}
 	body := "\n" + fields
 
@@ -471,7 +471,7 @@ func (m FormModel) View() string {
 
 // formBodyMaxW caps the field stack's width when the side panel is showing.
 // examplePanelMinW is the panel's floor width; examplePanelMinTermW is the
-// narrowest terminal that gets a side panel at all (else exampleBlock).
+// narrowest terminal that shows an example at all, in the side panel.
 const (
 	formBodyMaxW         = 76
 	examplePanelMinW     = 46
@@ -531,39 +531,34 @@ func (m FormModel) examplePanel() string {
 	return Box.Width(m.panelW() - 2).Render(b.String())
 }
 
-// exampleBlock renders the active field's example above the footer (narrow
-// terminals).
-func (m FormModel) exampleBlock() string {
-	f := m.active()
-	if f == nil || f.Example == nil {
-		return ""
-	}
-	ex := strings.TrimSpace(f.Example())
-	if ex == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString(FaintTxt.Render("example"))
-	b.WriteString("\n")
-	for line := range strings.SplitSeq(ex, "\n") {
-		b.WriteString(row("  "+DimText.Render(line), "", m.w))
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
 // collapsedRow renders a one-line summary of a step: done steps show their
 // answer, pending steps are dim placeholders.
-func (m FormModel) collapsedRow(f *Field, i int, done bool) string {
-	num := fmt.Sprintf("%d) ", i+1)
+// A done step is clickable: it takes the ctrl+b presses back to that step.
+func (m FormModel) collapsedRow(f *Field, field int, done bool) string {
 	if !done {
-		return row(FaintTxt.Render(num+f.Title), "", m.bodyW())
+		return row(FaintTxt.Render("○ "+f.Title), "", m.bodyW())
 	}
-	left := OK.Render(num) + Text.Render(f.Title)
+	left := OK.Render("✓ ") + Text.Render(f.Title)
 	if v := m.summaryValue(f); v != "" {
 		left += "  " + DimText.Render(v)
 	}
-	return row(left, "", m.bodyW())
+	return Clickable(row(left, "", m.bodyW()), m.backKeys(field)...)
+}
+
+// maxBackPresses bounds backKeys; no form has this many questions.
+const maxBackPresses = 32
+
+// backKeys is the ctrl+b presses that bring the form back to field.
+func (m FormModel) backKeys(field int) []string {
+	if m.done || m.Current >= len(m.Fields) {
+		return nil // a finished form is only on screen while the host swaps it out
+	}
+	var keys []string
+	for sim := m; sim.Current > field && len(keys) < maxBackPresses; keys = append(keys, "ctrl+b") {
+		next, _ := sim.movePrev()
+		sim = next.(FormModel)
+	}
+	return keys
 }
 
 // summaryValue is the collapsed one-line answer for a completed field.
@@ -612,26 +607,22 @@ func (m FormModel) descriptionBlock(f *Field, indent int) string {
 	if f.Describe != nil {
 		d = f.Describe()
 	}
-	d = strings.TrimSpace(strings.ReplaceAll(d, "\n", " "))
+	d = strings.TrimSpace(d)
 	if d == "" {
 		return ""
 	}
 	return "\n" + DimText.Width(m.bodyW()).PaddingLeft(indent).Render(d)
 }
 
-// expandedField renders the current step in place: bold title (numbered when
-// there is more than one step), indented description, then its control.
+// expandedField renders the current step in place: bold title, indented
+// description, then its control.
 func (m FormModel) expandedField(f *Field, i, steps int) string {
 	var b strings.Builder
-	num := ""
-	if steps > 1 {
-		num = fmt.Sprintf("%d) ", i+1)
-	}
 	if f.Kind == FieldGroup {
 		// a lone group under a heading is the heading's own screen: its
 		// questions are the content, its title would say the heading twice
 		if steps > 1 || m.Heading == "" {
-			b.WriteString(row(Title.Render(num)+Text.Bold(true).Render(f.Title), "", m.bodyW()))
+			b.WriteString(row(Text.Bold(true).Render(f.Title), "", m.bodyW()))
 			b.WriteString(m.descriptionBlock(f, 4))
 		}
 		for i, sub := range f.Subs {
@@ -639,7 +630,7 @@ func (m FormModel) expandedField(f *Field, i, steps int) string {
 		}
 		return strings.TrimPrefix(b.String(), "\n")
 	}
-	b.WriteString(row(Title.Render(num)+Text.Bold(true).Render(f.Title), "", m.bodyW()))
+	b.WriteString(row(Text.Bold(true).Render(f.Title), "", m.bodyW()))
 	b.WriteString(m.descriptionBlock(f, 4))
 	b.WriteString(m.controlView(f, ""))
 	return b.String()
@@ -648,20 +639,49 @@ func (m FormModel) expandedField(f *Field, i, steps int) string {
 // subView renders one FieldGroup member: full control when focused, else a
 // `Title: answer` line.
 func (m FormModel) subView(sub *Field, idx int, focused bool) string {
-	num := fmt.Sprintf("%d) ", idx+1)
+	// a click walks to this question: ctrl+b back, enter forward
+	key, steps := "enter", idx-m.subIdx
+	if steps < 0 {
+		key, steps = "ctrl+b", -steps
+	}
+	walk := slices.Repeat([]string{key}, steps)
+
+	if sub.Kind == FieldConfirm && sub.BoolValue != nil {
+		// question on the left, answer buttons on the right; a click on a
+		// button walks here, then picks, without moving on. The description
+		// of the focused one sits above the footer (detailBlock).
+		on := *sub.BoolValue
+		buttons := Clickable(choiceButtonText("yes", on), append(slices.Clone(walk), "left")...) + "  " +
+			Clickable(choiceButtonText("no", !on), append(slices.Clone(walk), "right")...)
+		title := "   " + Text.Render(sub.Title)
+		if focused {
+			title = "  " + Pill(sub.Title)
+		}
+		return "\n" + row(Clickable(title, walk...), buttons, m.bodyW())
+	}
 	if !focused {
-		return "\n    " + FaintTxt.Render(num) + Text.Render(labelled(sub.Title)) + DimText.Render(m.summaryValue(sub))
+		line := "    " + Text.Render(labelled(sub.Title)) + DimText.Render(m.summaryValue(sub))
+		return "\n" + Clickable(line, walk...)
 	}
 	var b strings.Builder
-	label := Title.Render(num) + Text.Render(labelled(sub.Title))
+	label := Text.Render(labelled(sub.Title))
 	if sub.Kind != FieldInput {
 		b.WriteString("\n")
-		b.WriteString(row("    "+Title.Render(num)+Text.Bold(true).Render(sub.Title), "", m.bodyW()))
+		b.WriteString(row("  "+Pill(sub.Title), "", m.bodyW()))
 		b.WriteString(m.descriptionBlock(sub, 6))
 		label = ""
 	}
 	b.WriteString(m.controlView(sub, label))
 	return b.String()
+}
+
+// detailBlock is the focused yes/no question's description, drawn above the footer.
+func (m FormModel) detailBlock() string {
+	f := m.active()
+	if f == nil || f.Kind != FieldConfirm || m.Fields[m.Current].Kind != FieldGroup {
+		return ""
+	}
+	return m.descriptionBlock(f, 2) + "\n"
 }
 
 // labelled is a title with its answer to follow: "Home: ", but a question
@@ -682,32 +702,46 @@ func (m FormModel) controlView(f *Field, label string) string {
 		b.WriteString(m.inputView(f, label))
 	case FieldConfirm:
 		on := f.BoolValue != nil && *f.BoolValue
-		b.WriteString("\n")
-		b.WriteString(optionRow("yes", on, on))
-		b.WriteString("\n")
-		b.WriteString(optionRow("no", !on, !on))
+		b.WriteString("\n      ")
+		b.WriteString(choiceButton("yes", on, "left") + "  " + choiceButton("no", !on, "right"))
 	case FieldMultiSelect:
 		for i, opt := range f.Options {
 			b.WriteString("\n")
-			b.WriteString(optionRow(opt, f.Selected[opt], i == m.multiCursor))
+			b.WriteString(Clickable(optionRow(opt, f.Selected[opt], i == m.multiCursor), append(MoveKeys(m.multiCursor, i), "space")...))
 		}
 	case FieldSelect:
 		for i, opt := range f.Options {
-			num := fmt.Sprintf("%d) ", i+1)
 			note := ""
 			if opt == f.Recommended {
 				note = DimText.Render("  (recommended)")
 			}
 			b.WriteString("\n")
-			if i == m.multiCursor {
-				b.WriteString("    " + Title.Render("❯ "+num) + Text.Bold(true).Render(opt) + note)
-				continue
-			}
-			b.WriteString("      " + DimText.Render(num) + Text.Render(opt) + note)
+			pick := append(MoveKeys(m.multiCursor, i), "enter")
+			b.WriteString("\n")
+			b.WriteString(choiceRow(opt+note, i == m.multiCursor, 4, pick...))
 		}
 	}
 	return b.String()
 }
+
+// choiceButton is one side of a yes/no answer, drawn as a button; a click picks
+// it without leaving the question, so the example beside it shows the result.
+func choiceButton(label string, on bool, key string) string {
+	return Clickable(choiceButtonText(label, on), key)
+}
+
+// choiceButtonText is a button's look. The label never changes; the picked
+// side is filled, bold and underlined, so the pick doesn't rest on colour.
+func choiceButtonText(label string, on bool) string {
+	cell := lipgloss.NewStyle().Width(choiceButtonW).Align(lipgloss.Center)
+	if on {
+		return pillStyle.Inherit(cell).Render(label)
+	}
+	return DimText.Inherit(cell).Render(label)
+}
+
+// choiceButtonW is every yes/no button's width, so the right edges line up in every row.
+const choiceButtonW = 7
 
 // optionRow renders one option as `marker label`. Options are picked with
 // ↑/↓ and space/y/n; on-screen numbers are step ordinals.
@@ -716,11 +750,11 @@ func optionRow(label string, on, cursor bool) string {
 	if on {
 		marker = OK.Render("● ")
 	}
-	line := marker + Text.Render(label)
+	line := " " + marker + Text.Render(label)
 	if cursor {
-		line = Selected.Render(ansi.Strip(line))
+		line = Pill(marker + label)
 	}
-	return "      " + line
+	return "     " + line
 }
 
 // inputView renders the live textinput plus its error and suggestion list —
@@ -747,7 +781,7 @@ func (m FormModel) inputView(f *Field, label string) string {
 		var line string
 		switch {
 		case i == m.suggCursor:
-			line = "      " + Selected.Render(s) + FaintTxt.Render("  ⏎ pick")
+			line = "     " + Pill(s) + FaintTxt.Render("  ⏎ pick")
 		case i == 0 && m.suggCursor < 0:
 			line = "      " + FaintTxt.Render("· ") + DimText.Render(s) + FaintTxt.Render("  ⇥ tab")
 		default:
@@ -789,11 +823,14 @@ func (m FormModel) renderFooter() string {
 	var hints []string
 	switch field.Kind {
 	case FieldSelect:
-		hints = []string{KeyHint(fmt.Sprintf("1-%d", len(field.Options)), "choose")}
+		hints = []string{KeyHint("↑↓", "choose")}
 	case FieldMultiSelect:
 		hints = []string{KeyHint("space", "on/off")}
 	case FieldConfirm:
-		hints = []string{KeyHint("y/n", "answer")}
+		hints = []string{KeyHint("←→", "yes or no")}
+		if m.Fields[m.Current].Kind == FieldGroup {
+			hints = append([]string{KeyHint("↑↓", "question")}, hints...)
+		}
 	default:
 		if len(m.sugg) > 0 {
 			hints = []string{KeyHint("tab", "complete")}
@@ -817,7 +854,7 @@ func (m FormModel) moveNext() (tea.Model, tea.Cmd) {
 	if f := m.active(); f != nil && f.Kind == FieldInput {
 		if f.Validator != nil {
 			if err := f.Validator(m.ti.Value()); err != nil {
-				f.Error = err.Error()
+				f.Error = Explain(err)
 				return m, nil
 			}
 		}
@@ -827,6 +864,9 @@ func (m FormModel) moveNext() (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if m.Current >= len(m.Fields) {
+		return m, nil // a finished form has nowhere to go next
+	}
 	// Inside a group: step to its next sub-input before leaving the field.
 	if cur := m.Fields[m.Current]; cur.Kind == FieldGroup && m.subIdx < len(cur.Subs)-1 {
 		m.subIdx++
@@ -899,7 +939,7 @@ func (m FormModel) saveAndExit() (tea.Model, tea.Cmd) {
 	if f := m.active(); f != nil && f.Kind == FieldInput {
 		if f.Validator != nil {
 			if err := f.Validator(m.ti.Value()); err != nil { // a failing validator on the field being typed still blocks
-				f.Error = err.Error()
+				f.Error = Explain(err)
 				return m, nil
 			}
 		}
@@ -917,7 +957,30 @@ func (m FormModel) saveAndExit() (tea.Model, tea.Cmd) {
 	return m.finish()
 }
 
+// moveWithinGroup focuses the group's previous (-1) or next (1) question, without answering or leaving.
+func (m FormModel) moveWithinGroup(delta int) (tea.Model, tea.Cmd) {
+	if m.Current >= len(m.Fields) || m.Fields[m.Current].Kind != FieldGroup {
+		return m, nil
+	}
+	next := m.subIdx + delta
+	if next < 0 || next >= len(m.Fields[m.Current].Subs) {
+		return m, nil
+	}
+	m.subIdx = next
+	m.seedInput()
+	return m, textinput.Blink
+}
+
+// isBelowTyped reports whether completion is a path inside the typed one.
+func isBelowTyped(completion, typed string) bool {
+	typed = strings.TrimRight(strings.TrimSpace(typed), "/")
+	return typed != "" && strings.HasPrefix(completion, typed+"/")
+}
+
 func (m FormModel) movePrev() (tea.Model, tea.Cmd) {
+	if m.Current >= len(m.Fields) {
+		return m, nil // a finished form has nowhere to go back to
+	}
 	// Inside a group: step back through its sub-inputs first.
 	if cur := m.Fields[m.Current]; cur.Kind == FieldGroup && m.subIdx > 0 {
 		m.subIdx--
@@ -1029,9 +1092,9 @@ func (m ConfirmModel) View() string {
 	yes, no := m.yesLabel(), m.noLabel()
 	var buttons string
 	if m.Value != nil && *m.Value {
-		buttons = OK.Render(yes) + "  " + DimText.Render(no)
+		buttons = Clickable(OK.Render(yes), "left", "enter") + "  " + Clickable(DimText.Render(no), "esc")
 	} else {
-		buttons = DimText.Render(yes) + "  " + Bad.Render(no)
+		buttons = Clickable(DimText.Render(yes), "left", "enter") + "  " + Clickable(Bad.Render(no), "esc")
 	}
 
 	content := title + "\n\n" + buttons

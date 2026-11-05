@@ -1117,7 +1117,7 @@ func TestReview(t *testing.T) {
 			m.height, m.width = 40, 80
 			m.showHelp = true
 			out := ansi.Strip(m.View())
-			for _, want := range []string{"Move", "Change", "Go back", "merge them into one", "2024"} {
+			for _, want := range []string{"Move", "Change", "Go back", "combine them into one folder", "2024"} {
 				if !strings.Contains(out, want) {
 					t.Errorf("helpView missing %q:\n%s", want, out)
 				}

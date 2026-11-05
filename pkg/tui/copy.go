@@ -104,10 +104,10 @@ var copyKeys = []KeyGroup{
 	}},
 	{"While copying", []KeyLine{
 		{"shift+tab", "next tab; copying keeps going"},
-		{"ctrl+c", "stop between files; the next copy carries on"},
+		{"esc", "stop between files; the next copy carries on"},
+		{"ctrl+c", "quit now"},
 	}},
 	{"After", []KeyLine{
-		{"1-2", "choose what's next"},
 		{"r", "open the report of files left out"},
 		{"o", "open the library"},
 	}},
@@ -131,6 +131,9 @@ func NewCopyModel(cfg CopyConfig) CopyModel {
 
 // Busy is a copy in flight: it must not be interrupted or replaced.
 func (m CopyModel) Busy() bool { return m.state == copyRunning || m.state == copyStopping }
+
+// Nested reports the key list up.
+func (m CopyModel) Nested() bool { return m.showKeys }
 
 func (m CopyModel) Init() tea.Cmd { return m.sl.Init() }
 
@@ -229,13 +232,13 @@ func (m CopyModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.showKeys = true
 		return m, nil
+	case "esc":
+		if m.state == copyRunning {
+			return m.stop()
+		}
 	case "ctrl+c":
 		if m.state == copyRunning {
-			if m.cfg.Cancel != nil {
-				m.cfg.Cancel()
-			}
-			m.state = copyStopping
-			return m, nil
+			return m.stop()
 		}
 		return m, Left(Leave{Quit: true})
 	}
@@ -264,8 +267,6 @@ func (m CopyModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.choice = 0
 		case "down":
 			m.choice = 1
-		case "1", "2":
-			m.choice = int(k.Runes[0] - '1')
 		case "enter":
 			if m.choice == 0 {
 				OpenInViewer(m.cfg.Library)
@@ -274,6 +275,15 @@ func (m CopyModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, Left(Leave{})
 		}
 	}
+	return m, nil
+}
+
+// stop finishes the file in flight, then ends the copy; the next copy carries on.
+func (m CopyModel) stop() (tea.Model, tea.Cmd) {
+	if m.cfg.Cancel != nil {
+		m.cfg.Cancel()
+	}
+	m.state = copyStopping
 	return m, nil
 }
 
@@ -358,7 +368,7 @@ func (m CopyModel) belowStages() string {
 	case copyFailed:
 		b.WriteString("\n")
 		if m.err != nil {
-			line(Bad.Render("✗ ") + Text.Render(m.err.Error()))
+			line(Bad.Render("✗ ") + Text.Render(Explain(m.err)))
 		}
 		if m.res.Copied > 0 {
 			line(DimText.Render(human.Plural(m.res.Copied, "file", "files") + " made it in before it stopped; the next copy carries on."))
@@ -381,16 +391,16 @@ func (m CopyModel) belowStages() string {
 			line(DimText.Render("Originals left where they were. Library: ") + Text.Render(path.New().Friendly(m.cfg.Library)))
 			b.WriteString("\n")
 		}
-		for i, c := range []string{"Open the library", "Add more folders"} {
-			if i == m.choice {
-				line(Title.Render(fmt.Sprintf("❯ %d) ", i+1)) + Text.Bold(true).Render(c))
-				continue
-			}
-			line("  " + DimText.Render(fmt.Sprintf("%d) ", i+1)) + Text.Render(c))
+		for i, c := range copyChoices {
+			pick := append(MoveKeys(m.choice, i), "enter")
+			b.WriteString(choiceRow(c, i == m.choice, 0, pick...) + "\n")
 		}
 	}
 	return b.String()
 }
+
+// copyChoices is what a finished copy offers next.
+var copyChoices = []string{"Open the library", "Add more folders"}
 
 func (m CopyModel) footer() string {
 	hints := func(h ...string) string { return Footer(strings.Join(h, "   "), m.w) }
@@ -399,12 +409,14 @@ func (m CopyModel) footer() string {
 		if m.cfg.Plan.Files == 0 || !m.cfg.Plan.Fits {
 			return hints(KeyHint("esc", "back"), MoreKeys())
 		}
-		return hints(KeyHint("enter", "start"), KeyHint("esc", "not now"), MoreKeys())
-	case copyRunning, copyStopping:
-		return hints(KeyHint("ctrl+c", "stop"), MoreKeys())
+		return hints(KeyHint("enter", "copy"), KeyHint("esc", "not now"), MoreKeys())
+	case copyRunning:
+		return hints(KeyHint("esc", "stop"), MoreKeys())
+	case copyStopping:
+		return hints(KeyHint("ctrl+c", "quit now"), MoreKeys())
 	}
 	if m.res.Report != "" {
-		return hints(KeyHint("r", "open report"), KeyHint("1-2", "choose"), KeyHint("enter", "go"), MoreKeys())
+		return hints(KeyHint("r", "open report"), KeyHint("↑↓", "choose"), KeyHint("enter", copyChoices[m.choice]), MoreKeys())
 	}
-	return hints(KeyHint("1-2", "choose"), KeyHint("enter", "go"), MoreKeys())
+	return hints(KeyHint("↑↓", "choose"), KeyHint("enter", copyChoices[m.choice]), MoreKeys())
 }

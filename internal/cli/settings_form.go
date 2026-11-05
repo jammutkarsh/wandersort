@@ -209,15 +209,15 @@ func (f *settingsForm) fineTuning() *tui.Field {
 		Title: extraOptions,
 		Subs: []*tui.Field{
 			{
-				Kind: tui.FieldConfirm, Title: "Skip folders that hold everything?",
+				Kind: tui.FieldConfirm, Title: "Skip folders",
 				Describe: f.ex.CollapseDescribe, BoolValue: &f.collapse, Example: f.ex.Collapse,
 			},
 			{
-				Kind: tui.FieldConfirm, Title: "No town folder for home?",
+				Kind: tui.FieldConfirm, Title: "No home town folder",
 				Describe: f.ex.DateOnlyDescribe, BoolValue: &f.dateOnly, Example: f.ex.DateOnly,
 			},
 			{
-				Kind: tui.FieldConfirm, Title: "One folder per trip?",
+				Kind: tui.FieldConfirm, Title: "One folder per trip",
 				Describe: f.ex.MergeDaysDescribe, BoolValue: &f.mergeDays, Example: f.ex.MergeDays,
 			},
 		},

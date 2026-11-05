@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // spinnerBar bundles the spinner and progress bar every stage-list screen uses.
@@ -75,10 +76,27 @@ func Footer(help string, width int) string {
 func Row(left, right string, width int) string { return row(left, right, width) }
 
 // KeyHint styles a "[key] action" pair with non-breaking spaces, so a wrapped
-// footer breaks between hints, never inside one.
+// footer breaks between hints, never inside one. A click on it presses the key.
 func KeyHint(key, action string) string {
-	return lipgloss.NewStyle().Foreground(Primary).Render(key) + " " +
-		FaintTxt.Render(strings.ReplaceAll(action, " ", " "))
+	return Clickable(lipgloss.NewStyle().Foreground(Primary).Render(key)+"\u00a0"+
+		FaintTxt.Render(strings.ReplaceAll(action, " ", "\u00a0")), hintKeys(key)...)
+}
+
+// pillStyle is the one selection look: a Highlight box round the text, bold
+// and underlined, so a picked item never rests on colour alone.
+var pillStyle = Selected.Bold(true).Underline(true)
+
+// Pill is text drawn as the picked item.
+func Pill(text string) string { return pillStyle.Render(" " + ansi.Strip(text) + " ") }
+
+// choiceRow is one pickable row indented by indent cells: the picked one is a
+// Pill, the others plain text on the same column. A click presses keys.
+func choiceRow(label string, picked bool, indent int, keys ...string) string {
+	pad := strings.Repeat(" ", indent)
+	if picked {
+		return Clickable(pad+Pill(label), keys...)
+	}
+	return Clickable(pad+" "+Text.Render(label), keys...)
 }
 
 // Screen frames a full-height view with the footer pinned to the bottom row.

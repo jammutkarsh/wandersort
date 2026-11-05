@@ -11,6 +11,11 @@ type Tab interface {
 	Busy() bool
 }
 
+// Nester is implemented by a screen that can sit inside one of its own
+// sub-menus (an overlay, an edit, a question). While Nested reports true, esc
+// closes that sub-menu: the shell's "esc again to quit" belongs to main screens only.
+type Nester interface{ Nested() bool }
+
 // Leave is the only way a hosted screen hands control back. Screens never
 // return tea.Quit: that would end every other tab too.
 type Leave struct {

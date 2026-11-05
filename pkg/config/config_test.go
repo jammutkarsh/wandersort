@@ -266,3 +266,42 @@ func TestSavedPlaces(t *testing.T) {
 		}
 	}
 }
+
+// A library never holds another one, whether the folder inside it exists yet or not.
+func TestCheckLibraryRefusesAFolderInsideALibrary(t *testing.T) {
+	lib := filepath.Join(t.TempDir(), "lib")
+	inner := filepath.Join(lib, "2025", "12_December")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lib, defaultDBFileName), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{inner, filepath.Join(inner, "27")} {
+		err := CheckLibrary(dir)
+		if err == nil || !strings.Contains(err.Error(), "inside the library") {
+			t.Errorf("CheckLibrary(%s) = %v, want a refusal naming the library", dir, err)
+		}
+	}
+	if err := CheckLibrary(lib); err != nil {
+		t.Errorf("the library itself must stay usable: %v", err)
+	}
+}
+
+// Errors name a folder the way the screens do, not by its absolute path.
+func TestCheckLibraryNamesFoldersFriendly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	lib := filepath.Join(home, "Library")
+	if err := os.MkdirAll(filepath.Join(lib, "2025"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lib, defaultDBFileName), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := CheckLibrary(filepath.Join(lib, "2025"))
+	if err == nil || strings.Contains(err.Error(), home) || !strings.Contains(err.Error(), "Library/2025, in your home folder") {
+		t.Errorf("error = %v, want the folders named relative to home with no absolute path", err)
+	}
+}

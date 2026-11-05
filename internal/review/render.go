@@ -25,8 +25,11 @@ func (m Model) View() string {
 
 	end := min(m.offset+m.visibleRows(), len(m.rows))
 	for i := m.offset; i < end; i++ {
-		b.WriteString("\n")
-		b.WriteString(m.rowView(i, selLo != -1 && i >= selLo && i <= selHi))
+		line := m.rowView(i, selLo != -1 && i >= selLo && i <= selHi)
+		if !m.editing && !m.visualMode {
+			line = tui.Clickable(line, tui.MoveKeys(m.cursor, i)...)
+		}
+		b.WriteString("\n" + line)
 	}
 
 	view := tui.Screen(b.String(), m.footer(), m.height)
@@ -64,11 +67,8 @@ func (m Model) rowView(i int, inRange bool) string {
 		mark = newMark
 	}
 	if inRange || i == m.cursor {
-		// Plain, no per-segment colour — a nested ANSI reset would cut the highlight short.
-		if i == m.cursor {
-			cursor = "❯ "
-		}
-		return tui.Selected.Render(tui.Row(cursor+r.guide+mark+r.node.Name, count, m.width))
+		// the guide stays dim and the name is the Pill, the same pick as everywhere
+		return tui.Row(cursor+tui.FaintTxt.Render(strings.TrimSuffix(r.guide, " "))+tui.Pill(mark+r.node.Name), tui.FaintTxt.Render(count), m.width)
 	}
 
 	name := r.node.Name
@@ -92,7 +92,7 @@ func (m Model) footer() string {
 			// one highlighted, and the top match — what [tab] fills in — says so
 			line := "    "
 			if i == m.suggCursor {
-				line += tui.Selected.Render(s.Label)
+				line += tui.Pill(s.Label)
 			} else {
 				line += tui.FaintTxt.Render("· ") + tui.DimText.Render(s.Label)
 			}
@@ -105,7 +105,7 @@ func (m Model) footer() string {
 			case i == 0 && m.suggCursor < 0:
 				line += tui.FaintTxt.Render("  ⇥ tab")
 			}
-			fmt.Fprintln(&b, tui.Row(line, "", m.width))
+			fmt.Fprintln(&b, tui.Row(tui.Clickable(line, append(tui.MoveKeys(m.suggCursor, i), "enter")...), "", m.width))
 		}
 		b.WriteString(tui.Footer(strings.Join([]string{
 			tui.KeyHint("↑↓", "pick a place"),
@@ -142,9 +142,9 @@ func (m Model) footer() string {
 func (m Model) keyHelp() string {
 	if m.visualMode {
 		return strings.Join([]string{
-			tui.KeyHint("m", "merge"),
+			tui.KeyHint("m", "combine"),
 			tui.KeyHint("x", "remove folder"),
-			tui.KeyHint("f", "flatten"),
+			tui.KeyHint("f", "gather"),
 			tui.KeyHint("esc", "cancel"),
 			tui.MoreKeys(),
 		}, "   ")
@@ -180,14 +180,14 @@ var reviewKeys = []tui.KeyGroup{
 	{Title: "Change", Keys: []tui.KeyLine{
 		{Key: "r", What: "rename"},
 		{Key: "space", What: "select folders (or shift+↑↓), then:"},
-		{Key: "  m", What: "merge them into one"},
+		{Key: "  m", What: "combine them into one folder"},
 		{Key: "  x", What: "remove folder; what's inside moves up a level"},
-		{Key: "  f", What: "flatten: everything below moves into it"},
+		{Key: "  f", What: "gather: everything inside them moves into this folder"},
 	}},
 	{Title: "Go back", Keys: []tui.KeyLine{
 		{Key: "u", What: "undo; again to keep going back"},
 		{Key: "ctrl+u", What: "undo every edit"},
-		{Key: "ctrl+r", What: "discard the plan: forget the files not copied yet"},
+		{Key: "ctrl+r", What: "start over: take the files not copied yet off the list"},
 		{Key: "esc", What: "done; edits are kept for copy"},
 	}},
 	{Title: "Folders", Keys: []tui.KeyLine{

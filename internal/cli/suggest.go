@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
@@ -24,6 +25,10 @@ func suggestDirs(paths *path.Resolver, typed string) []string {
 	// at a time like shell completion.
 	if st, err := os.Stat(typed); err == nil && st.IsDir() {
 		dir, base = typed, ""
+	}
+	// nothing below a library is offered: it is no source to scan and no place for another library
+	if _, inside := config.InsideLibrary(filepath.Join(dir, "child")); inside {
+		return nil
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {

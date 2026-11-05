@@ -32,6 +32,9 @@ func Screen(ctx context.Context, o Options) tui.Tab {
 // with nothing in flight the container has to wait for.
 func (m Model) Busy() bool { return false }
 
+// Nested reports a rename, a selection, the key list or a question up: esc closes it.
+func (m Model) Nested() bool { return m.editing || m.visualMode || m.showHelp || m.ask != nil }
+
 /* --- bubbletea model --- */
 
 // reviewRow is one visible line of the hierarchy: a node at its depth. parent
@@ -156,7 +159,7 @@ func newModel(draft *vfs.Draft, ctx context.Context, database *db.DB, resolver *
 // database is untouched — it never held the edits.
 func (m Model) reset() Model {
 	if err := m.draft.Reset(); err != nil {
-		m.statusMsg, m.statusIsErr = err.Error(), true
+		m.statusMsg, m.statusIsErr = tui.Explain(err), true
 		return m
 	}
 	m.cursor, m.offset = 0, 0

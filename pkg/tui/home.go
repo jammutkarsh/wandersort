@@ -21,17 +21,17 @@ type StartScanMsg struct {
 	Force bool
 }
 
-// DiscardPlanMsg asks the shell to forget every file not yet copied, so the
+// DiscardPlanMsg asks the shell to take every file not yet copied off the list, so the
 // folders can be added again from scratch.
 type DiscardPlanMsg struct{}
 
 // DiscardPlanAsk is the question before a DiscardPlanMsg.
 func DiscardPlanAsk(planned int) Ask {
 	return Ask{
-		Title: fmt.Sprintf("Discard the plan for %s?", human.Plural(planned, "file", "files")),
-		Detail: "Forgets the files not copied yet and your edits from Organise. Copied files stay. " +
-			"Add the folders again to plan them again.",
-		Action: "discard",
+		Title: fmt.Sprintf("Start over with %s?", human.Plural(planned, "file", "files")),
+		Detail: "Takes the files not copied yet off the list, along with your edits from Organise. Copied files stay. " +
+			"Add the folders again to sort them again.",
+		Action: "start over",
 		Msg:    DiscardPlanMsg{},
 	}
 }
@@ -75,6 +75,24 @@ type HomeConfig struct {
 	// History is the folders scanned before, newest first; ↑ on an empty line
 	// walks it, after the folders added here.
 	History []string
+	// PickFolder opens the system's folder dialog and returns the folder
+	// chosen ("" when closed without one); nil leaves the dialog out.
+	PickFolder func() (string, error)
+}
+
+// folderPickedMsg is the folder dialog's answer.
+type folderPickedMsg struct {
+	dir string
+	err error
+}
+
+// pickFolder opens the dialog off the UI goroutine.
+func (m HomeModel) pickFolder() tea.Cmd {
+	pick := m.cfg.PickFolder
+	return func() tea.Msg {
+		dir, err := pick()
+		return folderPickedMsg{dir: dir, err: err}
+	}
 }
 
 // HomeLibraryMsg is where the open library's files stand, for the status above
@@ -118,21 +136,23 @@ type HomeModel struct {
 	w, h       int
 
 	showKeys bool // the ? overlay is up
+	picking  bool // the folder window is open; one at a time
 }
 
 // homeKeys is the Add tab's full key list, behind ?.
 var homeKeys = []KeyGroup{
 	{"Folders", []KeyLine{
 		{"drop", "drag a folder onto the terminal to add it"},
+		{"ctrl+o", "choose a folder in a window"},
 		{"enter", "add the folder typed"},
 		{"tab", "complete the folder name"},
 		{"↑ ↓", "on an empty line: recent folders"},
 		{"ctrl+x", "remove the last folder"},
 	}},
 	{"Adding", []KeyLine{
-		{"enter", "on an empty line: start adding the folders listed"},
+		{"enter", "on an empty line: scan the folders listed"},
 		{"ctrl+g", "add again, reading every file again (slower)"},
-		{"ctrl+r", "discard the plan: forget the files not copied yet"},
+		{"ctrl+r", "start over: take the files not copied yet off the list"},
 	}},
 	{"App", []KeyLine{
 		{"shift+tab", "next tab"},
@@ -155,6 +175,9 @@ func NewHomeModel(cfg HomeConfig) HomeModel {
 // Busy is never true for the folder input: it is where a session waits.
 func (m HomeModel) Busy() bool { return false }
 
+// Nested reports a question or the key list up.
+func (m HomeModel) Nested() bool { return m.ask != nil || m.showKeys }
+
 func (m HomeModel) Init() tea.Cmd { return textinput.Blink }
 
 func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -174,6 +197,16 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case HomeLibraryMsg:
 		m.lib = msg
 		return m, nil
+	case folderPickedMsg:
+		m.picking = false
+		switch {
+		case msg.err != nil:
+			return m, m.show(msg.err, "")
+		case msg.dir == "":
+			return m, nil
+		}
+		cmd, _ := m.addDropped(msg.dir)
+		return m, cmd
 	case tea.KeyMsg:
 		if m.ask != nil {
 			done, cmd := m.ask.Key(msg)
@@ -197,6 +230,12 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "ctrl+c":
 			return m, Left(Leave{Quit: true})
+		case "ctrl+o":
+			if m.cfg.PickFolder == nil || m.picking {
+				return m, nil
+			}
+			m.picking = true
+			return m, m.pickFolder()
 		case "ctrl+g":
 			if len(m.added) > 0 {
 				// a decision this consequential (re-reading every file) gets
@@ -428,13 +467,13 @@ func (m HomeModel) View() string {
 		var line string
 		switch {
 		case i == m.suggCursor:
-			line = "    " + Selected.Render(m.sugg[i]) + FaintTxt.Render("  ⏎ pick")
+			line = "   " + Pill(m.sugg[i]) + FaintTxt.Render("  ⏎ pick")
 		case i == 0 && m.suggCursor < 0:
 			line = "    " + FaintTxt.Render("· ") + DimText.Render(m.sugg[i]) + FaintTxt.Render("  ⇥ tab")
 		default:
 			line = "    " + FaintTxt.Render("· ") + DimText.Render(m.sugg[i])
 		}
-		b.WriteString(row(line, "", m.w) + "\n")
+		b.WriteString(row(Clickable(line, append(MoveKeys(m.suggCursor, i), "enter")...), "", m.w) + "\n")
 	}
 	if rest := len(m.sugg) - end; rest > 0 {
 		b.WriteString(row("    "+FaintTxt.Render(fmt.Sprintf("↓ %d more", rest)), "", m.w) + "\n")
@@ -455,13 +494,13 @@ func (m HomeModel) libraryLines() []string {
 	}
 	planned := "nothing"
 	if m.lib.Planned > 0 {
-		planned = human.Plural(m.lib.Planned, "file", "files") + " waiting to be copied"
+		planned = human.Plural(m.lib.Planned, "file", "files")
 		if m.lib.Edits > 0 {
 			planned += ", " + human.Plural(m.lib.Edits, "edit", "edits") + " from Organise"
 		}
 	}
 	return []string{
-		DimText.Render("Planned          ") + Text.Render(planned),
+		DimText.Render("To copy          ") + Text.Render(planned),
 		DimText.Render("In the library   ") + Text.Render(human.Plural(m.lib.Placed, "file", "files")),
 	}
 }
@@ -473,7 +512,7 @@ func (m HomeModel) footer() string {
 		b.WriteString("\n")
 	}
 	if m.err != nil {
-		b.WriteString(row(Attn.Render("⚠ "+m.err.Error()), "", m.w))
+		b.WriteString(row(Attn.Render("⚠ "+Explain(m.err)), "", m.w))
 		b.WriteString("\n")
 	}
 	var hints []string
@@ -482,9 +521,12 @@ func (m HomeModel) footer() string {
 	}
 	// enter scans once folders are listed and the line is empty
 	if len(m.added) > 0 && m.ti.Value() == "" {
-		hints = append(hints, KeyHint("enter", "start"))
+		hints = append(hints, KeyHint("enter", "scan"))
 	} else {
 		hints = append(hints, KeyHint("enter", "add"))
+	}
+	if m.cfg.PickFolder != nil && !m.picking {
+		hints = append(hints, KeyHint("ctrl+o", "choose a folder"))
 	}
 	if len(m.added)+len(m.cfg.History) > 0 && (m.histIdx >= 0 || m.ti.Value() == "") {
 		hints = append(hints, KeyHint("↑↓", "recent folders"))

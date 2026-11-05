@@ -108,3 +108,18 @@ func TestScreenNeverShrinksGapBelowOne(t *testing.T) {
 		t.Errorf("Screen must still append the footer even when content overflows h, got %q", got)
 	}
 }
+
+// The picked choice is the same boxed, underlined Pill as a picked yes/no
+// button; the others sit on the same text column, plain.
+func TestChoiceRowPickedIsAPill(t *testing.T) {
+	on := ansi.Strip(choiceRow("Copy into library", true, 4))
+	if on != "     Copy into library " {
+		t.Errorf("picked = %q, want the label boxed by one space each side", on)
+	}
+	if off := ansi.Strip(choiceRow("Copy into library", false, 4)); off != "     Copy into library" {
+		t.Errorf("plain = %q, want the label on the pill's text column", off)
+	}
+	if on, button := Pill("yes"), choiceButtonText("yes", true); !strings.Contains(button, "yes") || on == "" {
+		t.Error("pill and button must both render their label")
+	}
+}

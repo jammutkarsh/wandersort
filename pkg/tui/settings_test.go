@@ -1,12 +1,13 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// A digit picks a numbered choice; a step whose Skip says so is never visited.
+// ↓ moves the pick; a step whose Skip says so is never visited.
 func TestFormSelectAndSkip(t *testing.T) {
 	layout, custom := "A", ""
 	fields := []*Field{
@@ -15,16 +16,16 @@ func TestFormSelectAndSkip(t *testing.T) {
 		{Kind: FieldInput, Title: "Home", Value: new(string)},
 	}
 	m := NewFormModel(fields, nil)
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if layout != "B" {
-		t.Fatalf("2 picked %q, want B", layout)
+		t.Fatalf("down picked %q, want B", layout)
 	}
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if got := next.(FormModel).Current; got != 2 {
 		t.Errorf("enter after a preset landed on step %d, want 2 (the rules step skipped)", got)
 	}
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyDown})
 	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if got := next.(FormModel).Current; got != 1 {
 		t.Errorf("enter after Custom landed on step %d, want the rules step", got)
@@ -98,5 +99,34 @@ func TestSettingsListEnterRepeatedly(t *testing.T) {
 	}
 	if saves != 1 {
 		t.Errorf("saved %d times, want once", saves)
+	}
+}
+
+// Only the value Enter changes is boxed, so every value starts in the same
+// column whether or not its row is picked, and no arrow trails the row.
+func TestSettingsRowsKeepTheValueColumn(t *testing.T) {
+	rows := []SettingRow{
+		{Label: "Library folder", Value: "/lib", Edit: func() ([]*Field, func() error) { return nil, nil }},
+		{Label: "Home", Value: "Pune", Edit: func() ([]*Field, func() error) { return nil, nil }},
+	}
+	m := NewSettingsModel(func() []SettingRow { return rows }, "")
+	m.w, m.h = 80, 24
+
+	// col is the cell a value starts at within its line
+	col := func(view, value string) int {
+		text := viewText(view)
+		at := strings.Index(text, value)
+		return at - strings.LastIndex(text[:at], "\n")
+	}
+	atFirst := m.View()
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	atSecond := next.(SettingsModel).View()
+	for _, value := range []string{"/lib", "Pune"} {
+		if a, b := col(atFirst, value), col(atSecond, value); a != b {
+			t.Errorf("%s moved from column %d to %d when the pick moved", value, a, b)
+		}
+	}
+	if strings.Contains(viewText(atFirst), "›") {
+		t.Errorf("no arrow belongs at the end of a row:\n%s", viewText(atFirst))
 	}
 }

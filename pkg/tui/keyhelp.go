@@ -17,8 +17,8 @@ type KeyGroup struct {
 // KeyLine is one key and what it does, in a few words.
 type KeyLine struct{ Key, What string }
 
-// MoreKeys is the hint every footer ends on: the rest of the keys are one ? away.
-func MoreKeys() string { return KeyHint("?", "more keys") }
+// MoreKeys is the hint every footer ends on: the full key list is one ? away.
+func MoreKeys() string { return KeyHint("?", "help") }
 
 // keyHelpBox is the bordered key list the overlay draws.
 var keyHelpBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(Primary).Padding(0, 2)
@@ -42,9 +42,14 @@ func KeyHelp(base string, groups []KeyGroup, w, h int) string {
 		left := lipgloss.NewStyle().PaddingRight(4).Render(strings.Join(blocks[:half], "\n\n"))
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Join(blocks[half:], "\n\n"))
 	}
-	body += "\n\n" + DimText.Render("shift+tab or a click on the top line changes tab;\n● on a tab: something is waiting there.") +
+	body += "\n\n" + DimText.Render("Click a tab or a key hint to use it; shift+tab changes tab.\n● on a tab: something is waiting there.") +
 		"\n\n" + FaintTxt.Render("any key closes")
-	return overlay(base, keyHelpBox.Render(body), w, h)
+	// a click anywhere on the box closes it, like any key
+	box := strings.Split(keyHelpBox.Render(body), "\n")
+	for i, line := range box {
+		box[i] = Clickable(line, "?")
+	}
+	return overlay(base, strings.Join(box, "\n"), w, h)
 }
 
 // overlay draws box over base, centred, keeping base's lines either side.

@@ -101,10 +101,10 @@ var planChoices = []string{"Organise folders", "Copy into library", "Add more fo
 var scanKeys = []KeyGroup{
 	{"While adding", []KeyLine{
 		{"shift+tab", "next tab; adding keeps going"},
-		{"ctrl+c", "stop; next time picks up from here"},
+		{"esc", "stop; next time picks up from here"},
+		{"ctrl+c", "quit now"},
 	}},
-	{"When the plan is ready", []KeyLine{
-		{"1-3", "choose what's next"},
+	{"When the folders are ready", []KeyLine{
 		{"↑↓", "move between choices"},
 		{"enter", "go"},
 	}},
@@ -123,6 +123,9 @@ func (m ScanModel) Running() bool {
 // Busy is the container's word for Running: a pipeline in flight must not be
 // interrupted, replaced, or have its settings retargeted under it.
 func (m ScanModel) Busy() bool { return m.Running() }
+
+// Nested reports the key list up, or a failed run whose esc goes back to the folders.
+func (m ScanModel) Nested() bool { return m.showKeys || m.state == scanFailed }
 
 // Failed reports that the pipeline returned an error; this screen is the only
 // place it is shown, so don't discard it unread.
@@ -210,6 +213,11 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch k.String() {
+	case "esc":
+		if m.state != scanRunning {
+			break
+		}
+		return m.stop()
 	case "ctrl+c":
 		if m.cfg.Cancel != nil {
 			m.cfg.Cancel()
@@ -236,11 +244,18 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.choice = max(m.choice-1, 0)
 	case "down":
 		m.choice = min(m.choice+1, len(planChoices)-1)
-	case "1", "2", "3":
-		m.choice = int(k.Runes[0] - '1')
 	case "enter":
 		return m.choose()
 	}
+	return m, nil
+}
+
+// stop asks the pipeline to wind down; the next run picks up from here.
+func (m ScanModel) stop() (tea.Model, tea.Cmd) {
+	if m.cfg.Cancel != nil {
+		m.cfg.Cancel()
+	}
+	m.state = scanCancelling
 	return m, nil
 }
 
@@ -336,9 +351,9 @@ func (m ScanModel) View() string {
 		}
 		b.WriteString(row(DimText.Render(left+"This keeps going if you switch tabs."), "", m.w) + "\n")
 	case scanCancelling:
-		b.WriteString(row(Attn.Render("⚠ Stopping… Press ctrl+c again to quit now. Next time picks up from here."), "", m.w) + "\n")
+		b.WriteString(row(Attn.Render("⚠ Stopping… Next time picks up from here."), "", m.w) + "\n")
 	case scanFailed:
-		b.WriteString(row(Bad.Render("Couldn't add the folders: ")+Text.Render(m.err.Error()), "", m.w) + "\n")
+		b.WriteString(row(Bad.Render("Couldn't add the folders: ")+Text.Render(Explain(m.err)), "", m.w) + "\n")
 	case scanFinished:
 		b.WriteString(m.finishedView())
 	}
@@ -353,7 +368,7 @@ func (m ScanModel) View() string {
 func (m ScanModel) heading() string {
 	switch m.state {
 	case scanFinished:
-		return Text.Bold(true).Render("Plan ready")
+		return Text.Bold(true).Render("Folders ready")
 	case scanFailed:
 		return Bad.Render("Adding stopped")
 	}
@@ -376,21 +391,17 @@ func (m ScanModel) finishedView() string {
 		b.WriteString(row(Attn.Render("⚠ "+w), "", m.w) + "\n")
 	}
 	if m.reviewErr != nil {
-		b.WriteString(row(Bad.Render("Couldn't open the folders: ")+Text.Render(m.reviewErr.Error()), "", m.w) + "\n")
+		b.WriteString(row(Bad.Render("Couldn't open the folders: ")+Text.Render(Explain(m.reviewErr)), "", m.w) + "\n")
 	}
 	if b.Len() > 0 {
 		b.WriteString("\n")
 	}
 	for i, label := range planChoices {
+		pick := append(MoveKeys(m.choice, i), "enter")
 		if i == 0 && m.wantReview {
 			label += "  " + DimText.Render("opening…")
 		}
-		if i == m.choice {
-			line := Title.Render(fmt.Sprintf("❯ %d) ", i+1)) + Text.Bold(true).Render(label)
-			b.WriteString(row(line, "", m.w) + "\n")
-			continue
-		}
-		b.WriteString(row("  "+DimText.Render(fmt.Sprintf("%d) ", i+1))+Text.Render(label), "", m.w) + "\n")
+		b.WriteString(choiceRow(label, i == m.choice, 0, pick...) + "\n")
 	}
 	return b.String()
 }
@@ -409,12 +420,14 @@ func (m ScanModel) footer() string {
 func (m ScanModel) keyFooter() string {
 	switch m.state {
 	case scanFinished:
-		return Footer(KeyHint("1-3", "choose")+"   "+KeyHint("enter", "go")+"   "+MoreKeys(), m.w)
+		return Footer(KeyHint("↑↓", "choose")+"   "+KeyHint("enter", planChoices[m.choice])+"   "+MoreKeys(), m.w)
 	case scanRunning:
-		return Footer(KeyHint("ctrl+c", "stop")+"   "+MoreKeys(), m.w)
+		return Footer(KeyHint("esc", "stop")+"   "+MoreKeys(), m.w)
+	case scanCancelling:
+		return Footer(KeyHint("ctrl+c", "quit now"), m.w)
 	}
 	if m.state == scanFailed {
-		return Footer(KeyHint("esc", "back to the folders")+"   "+KeyHint("ctrl+c", "quit"), m.w)
+		return Footer(KeyHint("esc", "back"), m.w)
 	}
 	return Footer(KeyHint("ctrl+c", "quit"), m.w)
 }

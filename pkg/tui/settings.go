@@ -59,6 +59,9 @@ func (m SettingsModel) firstEditable() int {
 
 func (m SettingsModel) Busy() bool { return false }
 
+// Nested reports a setting open for editing or the key list up.
+func (m SettingsModel) Nested() bool { return m.edit != nil || m.showKeys }
+
 func (m SettingsModel) Init() tea.Cmd { return nil }
 
 func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -148,24 +151,25 @@ func (m SettingsModel) View() string {
 	b.WriteString("\n" + row(Text.Bold(true).Render("Settings for this library"), "", m.w) + "\n\n")
 	for i, r := range m.list {
 		label := r.Label + strings.Repeat(" ", labelW-len(r.Label)+3)
-		right, mark := FaintTxt.Render("›"), "  "
+		right := ""
 		if r.Edit == nil {
 			right = FaintTxt.Render("can't change")
 		}
+		left := "  " + DimText.Render(label) + Text.Render(r.Value)
 		if i == m.cursor {
-			mark = Title.Render("❯ ")
-			right = Title.Render("›")
+			// only the part Enter changes is boxed; its text stays in the value's column
+			left = "  " + DimText.Render(strings.TrimSuffix(label, " ")) + Pill(r.Value)
 		}
-		line := row(mark+DimText.Render(label)+Text.Render(r.Value), right, m.w)
-		if i == m.cursor {
-			line = Selected.Render(row("❯ "+label+r.Value, "›", m.w))
+		line := row(left, right, m.w)
+		if r.Edit != nil {
+			line = Clickable(line, append(MoveKeys(m.cursor, i), "enter")...)
 		}
 		b.WriteString(line + "\n")
 	}
 	b.WriteString("\n")
 	switch {
 	case m.err != nil:
-		b.WriteString(row(Bad.Render("✗ ")+Text.Render(m.err.Error()), "", m.w) + "\n")
+		b.WriteString(row(Bad.Render("✗ ")+Text.Render(Explain(m.err)), "", m.w) + "\n")
 	case m.saved:
 		b.WriteString(row(OK.Render("✓ ")+Text.Render("Saved. Files not copied yet now follow it."), "", m.w) + "\n")
 	case m.note != "":

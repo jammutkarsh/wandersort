@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
 // undo drops the last edit from the draft; the tree comes back as the plan
@@ -11,7 +12,7 @@ import (
 func (m *Model) undo() {
 	last, err := m.draft.Undo()
 	if err != nil {
-		m.statusMsg, m.statusIsErr = err.Error(), true
+		m.statusMsg, m.statusIsErr = tui.Explain(err), true
 		return
 	}
 	m.reflow()
@@ -25,9 +26,9 @@ func (m *Model) undo() {
 // opWords is how the screen names each kind of edit.
 var opWords = map[string]string{
 	vfs.OpRename:  "rename",
-	vfs.OpMerge:   "merge",
+	vfs.OpMerge:   "combine",
 	vfs.OpDrop:    "folder removal",
-	vfs.OpFlatten: "flatten",
+	vfs.OpFlatten: "gather",
 }
 
 // applyEdit hands one edit to the draft, then reflows and reports. Returns the
@@ -37,7 +38,7 @@ func (m *Model) applyEdit(e vfs.Edit, status func(vfs.Outcome) string) (vfs.Outc
 	out, err := m.draft.Apply(e)
 	m.reflow()
 	if err != nil {
-		m.statusMsg, m.statusIsErr = err.Error(), true
+		m.statusMsg, m.statusIsErr = tui.Explain(err), true
 		return out, false
 	}
 	m.visualMode = false
@@ -49,14 +50,14 @@ func (m *Model) applyEdit(e vfs.Edit, status func(vfs.Outcome) string) (vfs.Outc
 // common ancestor.
 func (m *Model) mergeSelection() {
 	if !m.visualMode {
-		m.statusMsg, m.statusIsErr = "Press space to select folders, then m to merge", true
+		m.statusMsg, m.statusIsErr = "Press space to select folders, then m to combine", true
 		return
 	}
 	sel := m.selectedRows()
 	anchorID := m.rows[m.visualAnchor].node.ID
 	m.visualMode = false
 	if len(sel) < 2 {
-		m.statusMsg, m.statusIsErr = "Select two or more folders to merge", true
+		m.statusMsg, m.statusIsErr = "Select two or more folders to combine", true
 		return
 	}
 	// the row the selection started on names the result, whichever way the range
@@ -70,7 +71,7 @@ func (m *Model) mergeSelection() {
 	}
 
 	if out, ok := m.applyEdit(vfs.Edit{Op: vfs.OpMerge, Nodes: ids}, func(o vfs.Outcome) string {
-		return fmt.Sprintf("Merged %d folders into %s", len(ids), o.Name)
+		return fmt.Sprintf("Combined %d folders into %s", len(ids), o.Name)
 	}); ok {
 		m.focusNode(out.Focus)
 	}
@@ -145,6 +146,6 @@ func (m *Model) flattenFolders(targets []*reviewRow) {
 		if len(names) > 1 {
 			into = fmt.Sprintf("%d folders", len(names))
 		}
-		return fmt.Sprintf("Flattened %d subfolders into %s", o.Absorbed, into)
+		return fmt.Sprintf("Gathered %d subfolders into %s", o.Absorbed, into)
 	})
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
@@ -83,19 +84,36 @@ var osClutter = map[string]bool{".DS_Store": true, "Thumbs.db": true, "desktop.i
 // there don't keep two computers out, so the database could be corrupted.
 var ErrNetworkLibrary = errors.New("network drives aren't supported; pick a local or USB drive")
 
+// InsideLibrary reports the library whose folder is above dir, if any. A
+// library never holds another one, and nothing in it is a source to scan.
+func InsideLibrary(dir string) (root string, inside bool) {
+	for p := filepath.Dir(filepath.Clean(dir)); ; p = filepath.Dir(p) {
+		if _, err := os.Stat(filepath.Join(p, defaultDBFileName)); err == nil {
+			return p, true
+		}
+		if parent := filepath.Dir(p); parent == p {
+			return "", false
+		}
+	}
+}
+
 // CheckLibrary reports whether dir may be an output folder: local, and missing,
 // empty, or already a library. Anything else would receive files on top of content the
 // database doesn't know. OS clutter and a lone lock file don't count.
 func CheckLibrary(dir string) error {
+	shown := path.New().Friendly // messages name folders the way the screens do, never by absolute path
 	if volume.IsNetwork(dir) {
-		return fmt.Errorf("output folder %s: %w", dir, ErrNetworkLibrary)
+		return fmt.Errorf("output folder %s: %w", shown(dir), ErrNetworkLibrary)
+	}
+	if root, inside := InsideLibrary(dir); inside {
+		return fmt.Errorf("%s: inside the library %s; pick a folder outside it", shown(dir), shown(root))
 	}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("output folder %s: %w", dir, err)
+		return fmt.Errorf("output folder %s: %w", shown(dir), err)
 	}
 	for _, e := range entries {
 		if e.Name() == defaultDBFileName {
@@ -104,12 +122,12 @@ func CheckLibrary(dir string) error {
 	}
 	for _, e := range entries {
 		if e.Name() == db.BackupFileName {
-			return fmt.Errorf("%s has a backup but no database; run 'wandersort admin db --restore'", dir)
+			return fmt.Errorf("%s: has a backup but no database; run 'wandersort admin db --restore'", shown(dir))
 		}
 	}
 	for _, e := range entries {
 		if n := e.Name(); !osClutter[n] && n != lock.OutputFileName {
-			return fmt.Errorf("%s isn't empty or a library; pick another folder", dir)
+			return fmt.Errorf("%s: isn't empty or a library; pick another folder", shown(dir))
 		}
 	}
 	return nil

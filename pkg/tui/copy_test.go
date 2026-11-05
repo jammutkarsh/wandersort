@@ -42,7 +42,7 @@ func TestCopyRunsStepsInOrder(t *testing.T) {
 	})
 	m = runToEnd(t, m)
 	view := ansi.Strip(m.View())
-	for _, want := range []string{"All done", "Enough space", "Applied your 1 edit from Organise", "Backed up", "Copied and checked 2 files", "1) Open the library"} {
+	for _, want := range []string{"All done", "Enough space", "Applied your 1 edit from Organise", "Backed up", "Copied and checked 2 files", "Open the library"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("finished copy is missing %q:\n%s", want, view)
 		}
@@ -101,5 +101,30 @@ func TestCopyCtrlCStopsBetweenFiles(t *testing.T) {
 	next, _ = next.Update(next.(CopyModel).next())
 	if v := ansi.Strip(next.View()); next.(CopyModel).Busy() || !strings.Contains(v, "1 file made it in") {
 		t.Errorf("a stopped copy should say what made it in:\n%s", v)
+	}
+}
+
+func TestCopyEscStopsARunningCopy(t *testing.T) {
+	cancelled := 0
+	release := make(chan struct{})
+	m := NewCopyModel(CopyConfig{
+		Plan: fits, Cancel: func() { cancelled++; close(release) },
+		Run: func(step func(string), _ func(string, int64, int, int)) (CopyResult, error) {
+			step(execute.StepCopy)
+			<-release
+			return CopyResult{Copied: 1}, errors.New("context canceled")
+		},
+	})
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ = next.Update(next.(CopyModel).next())
+	if v := viewText(next.View()); !strings.Contains(v, "esc stop") {
+		t.Errorf("a running copy should offer esc to stop:\n%s", v)
+	}
+	next, cmd := next.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil || cancelled != 1 || !next.(CopyModel).Busy() {
+		t.Fatalf("esc should stop and wait: cmd=%v cancelled=%d", cmd, cancelled)
+	}
+	if _, cmd = next.Update(tea.KeyMsg{Type: tea.KeyEsc}); cmd != nil || cancelled != 1 {
+		t.Errorf("a second esc must not quit or cancel again: cmd=%v cancelled=%d", cmd, cancelled)
 	}
 }

@@ -63,52 +63,59 @@ func (e *settingsExamples) Rules() string {
 	return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{sample})...)
 }
 
-// Collapse always demonstrates all three collapsible levels even when Rules has none ticked
-func (e *settingsExamples) Collapse() string {
-	cfg := vfs.DefaultConfig()
-	var lead []string
-	if e.has(vfs.RuleDate) {
-		lead = append(lead, vfs.RuleDate)
-	}
-	if e.has(vfs.RuleLocation) {
-		lead = append(lead, vfs.RuleLocation)
-	}
-	cfg.Rules = append(lead, vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia)
-	cfg.CollapseLevels = *e.collapse
-
-	day := func(d int) vfs.Sample {
-		return vfs.Sample{
-			TakenAt: exampleDay(d), Location: e.homeTown(), Device: "iPhone 13",
-			Width: 1170, Height: 2532, MediaType: classifier.MediaTypeImage,
+// collapsibleSelected is the camera, orientation and photo/video levels the
+// answers so far include, in folder order.
+func (e *settingsExamples) collapsibleSelected() []string {
+	var levels []string
+	for _, r := range []string{vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia} {
+		if e.has(r) {
+			levels = append(levels, r)
 		}
 	}
-	day12, day13a, day13b := day(12), day(13), day(13)
-	day12.FileName, day13a.FileName, day13b.FileName = "IMG_1234.jpg", "IMG_1250.jpg", "IMG_1251.jpg"
-	if !*e.collapse {
-		// Second branch differs in device/orientation, showing what does NOT
-		// collapse: neither level is one value library-wide, only Photos is.
-		day13a.Device, day13a.Width, day13a.Height = "Canon EOS 700D", 6000, 4000
-		day13b.Device, day13b.Width, day13b.Height = "Canon EOS 700D", 6000, 4000
-	}
-	return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{day12, day13a, day13b})...)
+	return levels
 }
 
-// CollapseDescribe is the Collapse question's description (the example column
-// is too narrow for prose).
+// Collapse shows one camera's files with the question's answer applied: on, they
+// sit straight in their day; off, the camera, orientation and photo/video
+// folders are made anyway. A layout with none of those levels borrows all three.
+func (e *settingsExamples) Collapse() string {
+	cfg := vfs.DefaultConfig()
+	levels := e.collapsibleSelected()
+	if len(levels) == 0 {
+		levels = []string{vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia}
+	}
+	cfg.Rules = nil
+	for _, r := range []string{vfs.RuleDate, vfs.RuleLocation} {
+		if e.has(r) {
+			cfg.Rules = append(cfg.Rules, r)
+		}
+	}
+	cfg.Rules = append(cfg.Rules, levels...)
+	cfg.CollapseLevels = *e.collapse
+
+	day := func(d int, name string) vfs.Sample {
+		return vfs.Sample{
+			TakenAt: exampleDay(d), Location: e.homeTown(), Device: "iPhone 13",
+			Width: 1170, Height: 2532, MediaType: classifier.MediaTypeImage, FileName: name,
+		}
+	}
+	samples := []vfs.Sample{day(12, "IMG_1234.jpg"), day(13, "IMG_1250.jpg"), day(13, "IMG_1251.jpg")}
+	return treeExample("", vfs.PreviewPaths(cfg, samples)...)
+}
+
+// CollapseDescribe says what the question does; the answer does not change it.
 func (e *settingsExamples) CollapseDescribe() string {
-	d := "If every file comes from one camera, a camera folder adds nothing."
-	if *e.collapse {
-		return d + " On: such folders are left out."
+	d := "Leaves out a camera, portrait/landscape or photo/video folder that would hold every file in the library."
+	if len(e.collapsibleSelected()) == 0 {
+		d += " Your layout has none of these folders yet, so the example borrows them."
 	}
-	return d + " Off: they're made anyway."
+	return d
 }
 
+// DateOnlyDescribe says what the question does; only the town's name follows the form.
 func (e *settingsExamples) DateOnlyDescribe() string {
-	d := "Photos taken at home go straight into their date folder."
-	if *e.dateOnly {
-		return d + " On: no town folder for them."
-	}
-	return d + " Off: they go in a " + e.homeTown() + " folder, like any trip."
+	return "Puts photos taken at home straight into their date folder. Without it they go in a " +
+		e.homeTown() + " folder, like any trip."
 }
 
 func (e *settingsExamples) DateOnly() string {
@@ -123,12 +130,9 @@ func (e *settingsExamples) DateOnly() string {
 	return treeExample("", vfs.PreviewPaths(cfg, []vfs.Sample{sample})...)
 }
 
+// MergeDaysDescribe says what the question does; the answer does not change it.
 func (e *settingsExamples) MergeDaysDescribe() string {
-	d := "Days in a row in one place share one folder. You can merge more folders in Organise."
-	if *e.mergeDays {
-		return d + " On: those days share a folder."
-	}
-	return d + " Off: each day gets its own folder."
+	return "Days in a row in one place share one folder. You can combine more folders in Organise."
 }
 
 func (e *settingsExamples) MergeDays() string {

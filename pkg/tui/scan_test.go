@@ -51,7 +51,7 @@ func TestScanModel(t *testing.T) {
 			if cmd != nil {
 				t.Errorf("finishing must not leave or switch by itself, got %v", flattenCmd(cmd))
 			}
-			if v := ansi.Strip(next.View()); !strings.Contains(v, "Plan ready") || !strings.Contains(v, "1) Organise folders") {
+			if v := ansi.Strip(next.View()); !strings.Contains(v, "Folders ready") || !strings.Contains(v, "Organise folders") || strings.Contains(v, "❯") {
 				t.Errorf("want the plan-ready choice:\n%s", v)
 			}
 		}},
@@ -93,19 +93,26 @@ func TestScanModel(t *testing.T) {
 				next, _ = next.(ScanModel).Update(scanDoneMsg{})
 				return next.(ScanModel)
 			}
-			pick := func(m ScanModel, key string) []tea.Msg {
-				next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
-				_, cmd := next.(ScanModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
-				return flattenCmd(cmd)
+			// pick presses what a click on the n-th choice presses
+			pick := func(m ScanModel, n int) []tea.Msg {
+				var model tea.Model = m
+				for _, key := range append(MoveKeys(0, n), "enter") {
+					var cmd tea.Cmd
+					model, cmd = model.Update(KeyMsgFor(key))
+					if key == "enter" {
+						return flattenCmd(cmd)
+					}
+				}
+				return nil
 			}
-			if msgs := pick(done(), "1"); len(msgs) != 1 || msgs[0] != (OpenReviewMsg{}) {
-				t.Errorf("1 = %v, want OpenReviewMsg", msgs)
+			if msgs := pick(done(), 0); len(msgs) != 1 || msgs[0] != (OpenReviewMsg{}) {
+				t.Errorf("first = %v, want OpenReviewMsg", msgs)
 			}
-			if msgs := pick(done(), "2"); len(msgs) != 1 || msgs[0] != (OpenCopyMsg{}) {
-				t.Errorf("2 = %v, want OpenCopyMsg", msgs)
+			if msgs := pick(done(), 1); len(msgs) != 1 || msgs[0] != (OpenCopyMsg{}) {
+				t.Errorf("second = %v, want OpenCopyMsg", msgs)
 			}
-			if msgs := pick(done(), "3"); len(msgs) != 1 || msgs[0] != (Leave{}) {
-				t.Errorf("3 = %v, want a plain Leave (back to the folder input)", msgs)
+			if msgs := pick(done(), 2); len(msgs) != 1 || msgs[0] != (Leave{}) {
+				t.Errorf("third = %v, want a plain Leave (back to the folder input)", msgs)
 			}
 		}},
 		// Picking the folders before the prefetch lands opens them when it does.
@@ -141,8 +148,8 @@ func TestScanModel(t *testing.T) {
 			if cancelled != 1 || !m.Cancelled() {
 				t.Fatalf("first ctrl+c should cancel the pipeline: calls=%d cancelled=%v", cancelled, m.Cancelled())
 			}
-			if v := ansi.Strip(m.View()); !strings.Contains(v, "Press ctrl+c again to quit now") {
-				t.Errorf("want the warning above the footer:\n%s", v)
+			if v := viewText(m.View()); !strings.Contains(v, "Stopping") || !strings.Contains(v, "quit now") {
+				t.Errorf("want the stop note and the way to quit now:\n%s", v)
 			}
 
 			// The screen asks to end the session; it must not end the
@@ -152,6 +159,22 @@ func TestScanModel(t *testing.T) {
 			if !left || !l.Quit {
 				t.Errorf("the second ctrl+c should ask to quit, got %v", flattenCmd(cmd))
 			}
+		}},
+		// esc stops a running scan like ctrl+c, but a second esc is not a
+		// quit: the shell reserves esc esc for an idle session.
+		{"EscStopsARunningScanAndNeverQuits", func(t *testing.T) {
+			cancelled := 0
+			m := NewScanModel(ScanConfig{Cancel: func() { cancelled++ }})
+			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			m = next.(ScanModel)
+			if cmd != nil || cancelled != 1 || !m.Cancelled() {
+				t.Fatalf("esc should stop the scan: cmd=%v calls=%d cancelled=%v", cmd, cancelled, m.Cancelled())
+			}
+			next, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			if _, left := leaveOf(cmd); left || cancelled != 1 {
+				t.Errorf("a second esc must not quit or cancel again: left=%v calls=%d", left, cancelled)
+			}
+			_ = next
 		}},
 	}
 	for _, tt := range tests {

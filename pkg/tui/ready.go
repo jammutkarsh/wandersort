@@ -114,7 +114,7 @@ func (m ReadyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch {
-		case m.gaveUp, msg.String() == "ctrl+c":
+		case m.gaveUp, msg.String() == "ctrl+c", msg.String() == "esc":
 			return m, Left(Leave{Quit: true, Aborted: true})
 		case msg.String() == "enter" && m.waiting != nil:
 			m.retryNow()
@@ -166,7 +166,8 @@ func (m ReadyModel) View() string {
 	if m.gaveUp {
 		b.WriteString(Bad.Render(fmt.Sprintf("✗ Couldn't download %s after %d tries", m.failedLabels(), m.gaveUpMsg.Tries)) + "\n\n")
 	} else {
-		b.WriteString(Text.Bold(true).Render("Getting ready") + "\n\n")
+		b.WriteString(Text.Bold(true).Render("Getting ready") + "\n")
+		b.WriteString(DimText.Render("One-time downloads WanderSort needs to read photo dates and places.") + "\n\n")
 	}
 	for _, r := range m.rows {
 		b.WriteString(m.rowView(r) + "\n")
@@ -182,9 +183,9 @@ func (m ReadyModel) View() string {
 		b.WriteString(Attn.Render("⚠ Try switching to a better network.") + "\n")
 		b.WriteString("  " + DimText.Render(fmt.Sprintf("Retrying in %s", m.left)) + "  " +
 			FaintTxt.Render(fmt.Sprintf("try %d of %d", m.next, m.tries)) + "\n")
-		footer = Footer(KeyHint("enter", "retry now")+"   "+KeyHint("ctrl+c", "quit"), m.w)
+		footer = Footer(KeyHint("enter", "retry now")+"   "+KeyHint("esc", "quit"), m.w)
 	default:
-		footer = Footer(KeyHint("ctrl+c", "quit"), m.w)
+		footer = Footer(KeyHint("esc", "quit"), m.w)
 	}
 	return Screen(b.String(), footer, m.h)
 }

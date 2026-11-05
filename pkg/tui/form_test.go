@@ -187,6 +187,7 @@ func TestForm(t *testing.T) {
 				},
 			}}
 			m := NewFormModel(fields, nil)
+			m.w, m.h = 140, 30
 
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			m = next.(FormModel)
@@ -194,12 +195,12 @@ func TestForm(t *testing.T) {
 				t.Fatalf("enter should reach the confirm sub, subIdx=%d", m.subIdx)
 			}
 
-			// ↓ picks no, without advancing — and only that option's example renders,
+			// → picks no, without advancing — and only that option's example renders,
 			// outside the description.
-			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+			next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
 			m = next.(FormModel)
 			if dateOnly {
-				t.Error("down should select no")
+				t.Error("right should select no")
 			}
 			view := ansi.Strip(m.View())
 			if !strings.Contains(view, "2024/08/12/Indore/IMG.jpg") || strings.Contains(view, "2024/08/12/IMG.jpg\n") {
@@ -209,9 +210,9 @@ func TestForm(t *testing.T) {
 				t.Errorf("example must not sit inside the description:\n%s", view)
 			}
 		}},
-		// The step list — not the options inside a step — is numbered. There is no
-		// digit-jump: a digit typed anywhere is ordinary input (or ignored).
-		{"FormStepNumbering", func(t *testing.T) {
+		// Nothing is numbered, and a digit is ordinary input (or ignored): it
+		// never jumps to a step.
+		{"FormHasNoNumbers", func(t *testing.T) {
 			out := ""
 			rules := map[string]bool{"date": true}
 			fields := []*Field{
@@ -222,11 +223,11 @@ func TestForm(t *testing.T) {
 			m.w, m.h = 80, 24
 
 			view := ansi.Strip(m.View())
-			if !strings.Contains(view, "1) Output path") || !strings.Contains(view, "2) Rules") {
-				t.Errorf("steps must be numbered, options must not:\n%s", view)
+			if !strings.Contains(view, "Output path") || !strings.Contains(view, "Rules") {
+				t.Errorf("both steps should show:\n%s", view)
 			}
-			if strings.Contains(view, "1) ○") || strings.Contains(view, "2) ○") {
-				t.Errorf("option markers must not carry step-style numbers:\n%s", view)
+			if strings.Contains(view, "1)") || strings.Contains(view, "2)") {
+				t.Errorf("no step or option may be numbered:\n%s", view)
 			}
 
 			// A digit typed into the focused text field is ordinary input.
@@ -246,8 +247,8 @@ func TestForm(t *testing.T) {
 			}
 		}},
 		// FormExampleSidePanel: on a wide terminal the example renders as a
-		// right-hand column (bordered box); on a narrow one it falls back to the
-		// block above the footer. Same content either way.
+		// right-hand column (bordered box); a narrow one has no room for it, so
+		// it is left out.
 		{"FormExampleSidePanel", func(t *testing.T) {
 			yes := true
 			m := NewFormModel([]*Field{{
@@ -266,10 +267,10 @@ func TestForm(t *testing.T) {
 
 			m.w = 80
 			if m.sidePanel() {
-				t.Fatal("narrow terminal must fall back to the footer block")
+				t.Fatal("narrow terminal must not get the side panel")
 			}
-			if narrow := ansi.Strip(m.View()); !strings.Contains(narrow, "└─ 08_August") {
-				t.Errorf("footer example block missing:\n%s", narrow)
+			if narrow := ansi.Strip(m.View()); strings.Contains(narrow, "08_August") {
+				t.Errorf("a narrow terminal must not show the example:\n%s", narrow)
 			}
 		}},
 		// Embedded in the app shell, the form never quits the program — the
@@ -448,5 +449,198 @@ func TestFormIgnoresKeysAfterItFinishes(t *testing.T) {
 	}
 	if submits != 1 {
 		t.Errorf("onSubmit ran %d times, want once", submits)
+	}
+}
+
+// From the middle question of a group, a click on the first or the third
+// walks there without the keyboard.
+func TestFormGroupQuestionsAreClickable(t *testing.T) {
+	a, b, c := true, true, true
+	m := NewFormModel([]*Field{{Kind: FieldGroup, Title: "Extra", Subs: []*Field{
+		{Kind: FieldConfirm, Title: "First?", BoolValue: &a},
+		{Kind: FieldConfirm, Title: "Second?", BoolValue: &b},
+		{Kind: FieldConfirm, Title: "Third?", BoolValue: &c},
+	}}}, func() error { return nil })
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(FormModel)
+
+	keysFor := func(title string) string {
+		t.Helper()
+		for _, tg := range ClickTargets(m.View()) {
+			if strings.Contains(ansi.Strip(strings.Split(m.View(), "\n")[tg.Row]), title) {
+				return strings.Join(tg.Keys, " ")
+			}
+		}
+		return ""
+	}
+	if got := keysFor("First?"); got != "ctrl+b" {
+		t.Errorf("first question from the second: keys = %q, want ctrl+b", got)
+	}
+	if got := keysFor("Third?"); got != "enter" {
+		t.Errorf("third question from the second: keys = %q, want enter", got)
+	}
+}
+
+// Every yes/no question of a group shows its own buttons; a click on one walks
+// to the question and picks that side without moving on.
+func TestFormGroupButtonsAnswerWhereTheyStand(t *testing.T) {
+	a, b, c := true, true, true
+	m := NewFormModel([]*Field{{Kind: FieldGroup, Title: "Extra", Subs: []*Field{
+		{Kind: FieldConfirm, Title: "First?", BoolValue: &a},
+		{Kind: FieldConfirm, Title: "Second?", BoolValue: &b},
+		{Kind: FieldConfirm, Title: "Third?", BoolValue: &c},
+	}}}, func() error { return nil })
+	m.w = 120
+
+	var third []string
+	for _, tg := range ClickTargets(m.View()) {
+		if line := ansi.Strip(strings.Split(m.View(), "\n")[tg.Row]); strings.Contains(line, "Third?") && tg.Keys[len(tg.Keys)-1] == "right" {
+			third = tg.Keys
+		}
+	}
+	if got := strings.Join(third, " "); got != "enter enter right" {
+		t.Fatalf("no on the third question from the first: keys = %q, want enter enter right", got)
+	}
+
+	for _, key := range third {
+		next, _ := m.Update(KeyMsgFor(key))
+		m = next.(FormModel)
+	}
+	if !a || !b || c {
+		t.Errorf("answers = %v %v %v, want yes yes no", a, b, c)
+	}
+}
+
+// A narrow screen has no side panel, so no example; the description still sits above the footer.
+func TestFormNarrowScreenDropsTheExample(t *testing.T) {
+	on := true
+	fields := []*Field{{Kind: FieldGroup, Title: "Extra", Subs: []*Field{
+		{
+			Kind: FieldConfirm, Title: "First?", BoolValue: &on, Describe: func() string { return "what the first does" },
+			Example: func() string { return "2024/08/IMG.jpg" },
+		},
+		{Kind: FieldConfirm, Title: "Second?", BoolValue: &on},
+	}}}
+	m := NewFormModel(fields, nil)
+	m.w, m.h = 80, 30
+
+	narrow := viewText(m.View())
+	if strings.Contains(narrow, "2024/08/IMG.jpg") {
+		t.Errorf("narrow: the example must go:\n%s", narrow)
+	}
+	if !strings.Contains(narrow, "what the first does") || !strings.Contains(narrow, "Second?") {
+		t.Errorf("narrow: the description and every question must stay:\n%s", narrow)
+	}
+
+	m.w = 140
+	if wide := viewText(m.View()); !strings.Contains(wide, "2024/08/IMG.jpg") {
+		t.Errorf("wide: the example belongs in the side panel:\n%s", wide)
+	}
+}
+
+// ↑/↓ move between a group's yes/no questions without changing any answer;
+// ←/→ answer the focused one.
+func TestFormGroupArrowsMoveAndAnswerSeparately(t *testing.T) {
+	a, b, c := true, true, true
+	m := NewFormModel([]*Field{{Kind: FieldGroup, Title: "Extra", Subs: []*Field{
+		{Kind: FieldConfirm, Title: "First?", BoolValue: &a},
+		{Kind: FieldConfirm, Title: "Second?", BoolValue: &b},
+		{Kind: FieldConfirm, Title: "Third?", BoolValue: &c},
+	}}}, nil)
+
+	var model tea.Model = m
+	press := func(keys ...string) FormModel {
+		for _, k := range keys {
+			model, _ = model.Update(KeyMsgFor(k))
+		}
+		return model.(FormModel)
+	}
+	if got := press("down", "down"); got.subIdx != 2 || !a || !b || !c {
+		t.Fatalf("two downs: subIdx=%d answers=%v %v %v, want 2 and nothing changed", got.subIdx, a, b, c)
+	}
+	if got := press("down"); got.subIdx != 2 {
+		t.Errorf("down past the last question moved to %d", got.subIdx)
+	}
+	if got := press("up", "right"); got.subIdx != 1 || !a || b || !c {
+		t.Errorf("up then right: subIdx=%d answers=%v %v %v, want 1 with only the second set to no", got.subIdx, a, b, c)
+	}
+	if got := press("up", "up", "left"); got.subIdx != 0 || !a {
+		t.Errorf("up past the first question: subIdx=%d a=%v", got.subIdx, a)
+	}
+}
+
+// A form that has finished stays drawable until its host swaps it out, and
+// keys that land in that gap must not index past the last field.
+func TestFormSurvivesKeysAfterItFinished(t *testing.T) {
+	town := ""
+	submits := 0
+	m := NewFormModel([]*Field{{Kind: FieldInput, Title: "Home", Value: &town}}, func() error { submits++; return nil })
+	m.w, m.h = 100, 30
+
+	var model tea.Model = m
+	for _, key := range []string{"enter", "enter", "ctrl+b", "esc", "enter"} {
+		model, _ = model.Update(KeyMsgFor(key))
+		_ = model.View()
+	}
+	if submits != 1 {
+		t.Errorf("submits = %d, want exactly 1", submits)
+	}
+}
+
+func TestFormSurvivesKeysAfterAGroupFinished(t *testing.T) {
+	on := true
+	m := NewFormModel([]*Field{{Kind: FieldGroup, Title: "Extra", Subs: []*Field{
+		{Kind: FieldConfirm, Title: "First?", BoolValue: &on},
+		{Kind: FieldConfirm, Title: "Second?", BoolValue: &on},
+	}}}, nil)
+	m.w, m.h = 100, 30
+
+	var model tea.Model = m
+	for _, key := range []string{"enter", "enter", "enter", "ctrl+b", "enter"} {
+		model, _ = model.Update(KeyMsgFor(key))
+		_ = model.View()
+	}
+}
+
+// A path typed in full, with its folders offered below it, is accepted by
+// enter; enter only takes a lone completion that finishes what was typed.
+func TestFormEnterDoesNotDrillIntoAFinishedPath(t *testing.T) {
+	out := ""
+	m := NewFormModel([]*Field{
+		{Kind: FieldInput, Title: "Library", Value: &out, Suggest: func(typed string) []string {
+			switch strings.TrimSpace(typed) {
+			case "~/lib/2025":
+				return []string{"~/lib/2025/12_December"} // the folder's own child
+			case "~/li":
+				return []string{"~/lib"} // finishes what was typed
+			}
+			return nil
+		}},
+		{Kind: FieldInput, Title: "Home", Value: new(string)},
+	}, nil)
+
+	var model tea.Model = m
+	typeText := func(s string) {
+		for _, r := range s {
+			model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		}
+		// suggestions arrive after the debounce; hand the form its answer
+		f := model.(FormModel)
+		f.sugg = f.Fields[0].Suggest(f.ti.Value())
+		model = f
+	}
+
+	typeText("~/lib/2025 ")
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := model.(FormModel); got.Current != 1 || out != "~/lib/2025 " {
+		t.Fatalf("enter on a finished path: Current=%d out=%q, want to move on with it untouched", got.Current, out)
+	}
+
+	out = ""
+	model = NewFormModel(m.Fields, nil)
+	typeText("~/li")
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := model.(FormModel); got.Current != 0 || got.ti.Value() != "~/lib" {
+		t.Errorf("enter on a prefix: Current=%d value=%q, want the lone completion taken", got.Current, got.ti.Value())
 	}
 }

@@ -11,13 +11,14 @@ import (
 // terminal's light or dark background, so the UI reads well either way.
 var (
 	Primary   = lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"} // violet — brand / focus
-	Success   = lipgloss.AdaptiveColor{Light: "#059669", Dark: "#34D399"} // green — done / yes
+	Success   = lipgloss.AdaptiveColor{Light: "#047857", Dark: "#34D399"} // green — done / yes
 	Warn      = lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FBBF24"} // amber — warnings
 	Error     = lipgloss.AdaptiveColor{Light: "#DC2626", Dark: "#F87171"} // red — failures
-	Muted     = lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#9CA3AF"} // gray — secondary text
-	Subtle    = lipgloss.AdaptiveColor{Light: "#9CA3AF", Dark: "#4B5563"} // dim — borders, pending
+	Muted     = lipgloss.AdaptiveColor{Light: "#4B5563", Dark: "#D1D5DB"} // gray — secondary text
+	Subtle    = lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#9CA3AF"} // dim — hints, pending rows (still 4.5:1 text)
+	Border    = lipgloss.AdaptiveColor{Light: "#9CA3AF", Dark: "#4B5563"} // lines only, never text
 	Fg        = lipgloss.AdaptiveColor{Light: "#111827", Dark: "#E5E7EB"} // primary text
-	Highlight = lipgloss.AdaptiveColor{Light: "#EDE9FE", Dark: "#3B2F63"} // selected-row background
+	Highlight = lipgloss.AdaptiveColor{Light: "#DDD6FE", Dark: "#4F3F8C"} // selected-row background
 	Folder    = lipgloss.AdaptiveColor{Light: "#2563EB", Dark: "#60A5FA"} // blue — a folder the copy creates
 	OnPrimary = lipgloss.Color("15")                                      // text on a Primary fill
 )
@@ -38,6 +39,6 @@ var (
 
 	Box = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Subtle).
+		BorderForeground(Border).
 		Padding(0, 2)
 )
