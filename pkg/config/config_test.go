@@ -301,7 +301,7 @@ func TestCheckLibraryNamesFoldersFriendly(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := CheckLibrary(filepath.Join(lib, "2025"))
-	if err == nil || strings.Contains(err.Error(), home) || !strings.Contains(err.Error(), "Library/2025, in your home folder") {
+	if err == nil || strings.Contains(err.Error(), home) || !strings.Contains(err.Error(), filepath.Join("Library", "2025")+", in your home folder") {
 		t.Errorf("error = %v, want the folders named relative to home with no absolute path", err)
 	}
 }

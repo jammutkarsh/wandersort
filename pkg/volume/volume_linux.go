@@ -46,6 +46,11 @@ func uuidForPath(path string) (string, error) {
 // deviceForPath returns the source device and filesystem type of the longest
 // mount point that is a prefix of path
 func deviceForPath(path string) (device, fstype string, err error) {
+	// "/" covers every string, so a missing path would otherwise get the root device
+	if _, err := os.Stat(path); err != nil {
+		return "", "", fmt.Errorf("stat %q: %w", path, err)
+	}
+
 	data, err := os.ReadFile("/proc/self/mounts")
 	if err != nil {
 		return "", "", fmt.Errorf("read mounts: %w", err)

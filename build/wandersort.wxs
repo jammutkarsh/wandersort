@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Minimal WiX v4 source for an (unsigned) wandersort .msi.
-     Build (on Windows, after `dotnet tool install --global wix`):
+     Build (on Windows, after `dotnet tool install -g wix`):
        wix build build\wandersort.wxs -arch x64 ^
          -d Version=%NUM% -d BinPath=wandersort.exe -o wandersort-%NUM%-x64.msi
      UpgradeCode is fixed so upgrades replace prior installs — do not change it. -->
