@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -78,7 +79,8 @@ func newTestScanner(t *testing.T) *Scanner {
 		classifier: classifier.NewFileClassifier(),
 		log:        logger.NewNoopLogger(),
 		path:       &path.Resolver{HomeDir: "/tmp"},
-		volumes:    volume.New(),
+		volumeOf:   volume.New().ForPath,
+		device:     volume.Device,
 	}
 }
 
@@ -571,6 +573,90 @@ func TestScanner(t *testing.T) {
 			}
 			if _, ok := registryByName(t, d)["a.jpg"]; !ok {
 				t.Error("an empty walk swept the rows under its root")
+			}
+		}},
+		// A drive mounted inside a root is its own drive: its files carry its
+		// volume, unplugging it keeps their rows, and a file deleted from it
+		// while mounted is forgotten. A sibling folder whose name starts the
+		// same is not on it.
+		{"DriveMountedInsideRootIsSweptOnItsOwn", func(t *testing.T) {
+			ctx := context.Background()
+			sc, d := newDBScanner(t)
+			root := t.TempDir()
+			// a mounted card is its own device; unplugged, its mount point is an
+			// empty folder on the root's device
+			mounted := true
+			sc.device = func(info fs.FileInfo) (uint64, bool) {
+				if mounted && info.Name() == "card" {
+					return 2, true
+				}
+				return 1, true
+			}
+			sc.volumeOf = func(p string) string {
+				if filepath.Base(p) == "card" {
+					return "card-vol"
+				}
+				return "vol-" + filepath.Base(p)
+			}
+			write := func(rel string) {
+				t.Helper()
+				p := filepath.Join(root, rel)
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(rel), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			scan := func() {
+				t.Helper()
+				if _, err := sc.Run(ctx, []string{root}, false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, rel := range []string{"a.jpg", "card/b.jpg", "card/c.jpg", "card2/d.jpg"} {
+				write(rel)
+			}
+
+			scan()
+			var rows []struct {
+				Name   string `db:"file_name"`
+				Volume string `db:"volume_uuid"`
+			}
+			if err := d.SQL.Select(&rows, `SELECT file_name, COALESCE(volume_uuid, '') AS volume_uuid FROM file_registry`); err != nil {
+				t.Fatal(err)
+			}
+			volumes := map[string]string{}
+			for _, r := range rows {
+				volumes[r.Name] = r.Volume
+			}
+			if volumes["b.jpg"] != "card-vol" || volumes["c.jpg"] != "card-vol" {
+				t.Errorf("files on the card = %v, want card-vol", volumes)
+			}
+			if volumes["a.jpg"] == "card-vol" || volumes["d.jpg"] != volumes["a.jpg"] {
+				t.Errorf("files beside the card = %v, want the root's volume", volumes)
+			}
+
+			for _, rel := range []string{"card/b.jpg", "card/c.jpg"} {
+				if err := os.Remove(filepath.Join(root, rel)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mounted = false
+			scan()
+			if _, ok := registryByName(t, d)["b.jpg"]; !ok {
+				t.Fatal("unplugging the card forgot its files")
+			}
+
+			write("card/c.jpg")
+			mounted = true
+			scan()
+			got := registryByName(t, d)
+			if _, ok := got["b.jpg"]; ok {
+				t.Error("a file deleted from the mounted card kept its row")
+			}
+			if _, ok := got["c.jpg"]; !ok {
+				t.Error("a file still on the card was forgotten")
 			}
 		}},
 		// Another card mounted at the same path does not sweep the first

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -25,8 +26,11 @@ type Scanner struct {
 	classifier *classifier.FileClassifier
 	log        logger.Logger
 	path       *path.Resolver
-	volumes    *volume.Resolver
-	workers    int
+	// volumeOf names the drive a path is on ("" when unknown); device tells
+	// one drive from another while walking. Tests fake both.
+	volumeOf func(path string) string
+	device   func(fs.FileInfo) (uint64, bool)
+	workers  int
 }
 
 func New(db *db.DB, log logger.Logger, workers int) *Scanner {
@@ -35,7 +39,8 @@ func New(db *db.DB, log logger.Logger, workers int) *Scanner {
 		classifier: classifier.NewFileClassifier(),
 		log:        log,
 		path:       path.New(),
-		volumes:    volume.New(),
+		volumeOf:   volume.New().ForPath,
+		device:     volume.Device,
 		workers:    workers,
 	}
 }
@@ -57,7 +62,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 		err    error
 		root   string // canonical absolute root, "" when canonicalization failed
 		volume string // the root's volume UUID, "" when unresolved
-		gaps   walkGaps
+		walk   walkResult
 		count  int
 	}
 
@@ -87,8 +92,8 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 					continue
 				}
 
-				volumeUUID := s.volumes.ForPath(absRoot)
-				count, gaps, err := s.scan(ctx, absRoot, volumeUUID, scan, force)
+				volumeUUID := s.volumeOf(absRoot)
+				count, walk, err := s.scan(ctx, absRoot, volumeUUID, scan, force)
 				if err != nil {
 					s.log.Error("Failed to scan path", "path", absRoot, "error", err)
 					results <- scanResult{root: absRoot, count: count, err: fmt.Errorf("scan failed for %s: %w", path, err)}
@@ -96,7 +101,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 				}
 
 				s.log.Info("Scanned path", "path", absRoot, "filesDiscovered", count)
-				results <- scanResult{root: absRoot, volume: volumeUUID, count: count, gaps: gaps}
+				results <- scanResult{root: absRoot, volume: volumeUUID, count: count, walk: walk}
 			}
 		})
 	}
@@ -122,10 +127,15 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 		if flushErr != nil {
 			continue
 		}
-		if err := s.sweep(ctx, scan, sweptRoot{root: result.root, volume: result.volume, seen: result.count}, result.gaps); err != nil {
-			s.log.Error("Failed to sweep path", "path", result.root, "error", err)
-			if firstScanErr == nil {
-				firstScanErr = err
+		// each drive mounted inside the root is swept as a root of its own; the
+		// root's sweep keeps their rows, which carry the drive's own volume
+		roots := append([]sweptRoot{{root: result.root, volume: result.volume, seen: result.count}}, result.walk.drives...)
+		for _, r := range roots {
+			if err := s.sweep(ctx, scan, r, result.walk.gaps); err != nil {
+				s.log.Error("Failed to sweep path", "path", r.root, "error", err)
+				if firstScanErr == nil {
+					firstScanErr = err
+				}
 			}
 		}
 	}
@@ -137,17 +147,18 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 }
 
 // scan walks absRoot and queues one upsert per file it finds, returning how
-// many it queued and the parts of the tree the walk could not see.
-func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, scan int64, force bool) (int, walkGaps, error) {
+// many it queued, the parts of the tree the walk could not see and the drives
+// mounted inside it.
+func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, scan int64, force bool) (int, walkResult, error) {
 	s.log.Info("Scanning path", "path", absRoot)
 	// A separate walker goroutine decouples traversal from queueing, so a
 	// full writer queue never stalls the directory walk mid-read.
 	discoveries := make(chan FileDiscovery, 2*s.workers)
-	var gaps walkGaps
+	var walk walkResult
 	var walkErr error
 	go func() {
 		defer close(discoveries)
-		gaps, walkErr = s.walkRoot(ctx, absRoot, volumeUUID, discoveries)
+		walk, walkErr = s.walkRoot(ctx, absRoot, volumeUUID, discoveries)
 		if walkErr != nil {
 			s.log.Error("Walk root failed", "path", absRoot, "error", walkErr)
 		}
@@ -161,8 +172,15 @@ func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, scan int
 		}
 		count++
 	}
-	// the channel closing is what makes gaps and walkErr safe to read
-	return count, gaps, walkErr
+	// the channel closing is what makes walk and walkErr safe to read
+	return count, walk, walkErr
+}
+
+// walkResult is what a walk reports besides files: what it could not see, and
+// each drive it found mounted inside the root.
+type walkResult struct {
+	gaps   walkGaps
+	drives []sweptRoot
 }
 
 // walkGaps is what a walk couldn't see: directories it couldn't list, files it
@@ -175,9 +193,35 @@ type walkGaps struct {
 func (g walkGaps) empty() bool { return len(g.dirs) == 0 && len(g.files) == 0 }
 
 // walkRoot walks absRoot (already canonical) and emits FileDiscovery records
-// carrying the file's absolute directory and name
-func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, output chan<- FileDiscovery) (walkGaps, error) {
+// carrying the file's absolute directory and name, each labelled with the
+// drive it is on: a folder on another device is a drive mounted inside the
+// root, and gets its own volume.
+func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, output chan<- FileDiscovery) (walkResult, error) {
 	var gaps walkGaps
+
+	// drives[0] is the root's own; the rest are mounted inside it, in walk
+	// order, so an inner drive always comes after the one holding it. Empty
+	// when devices can't be told apart: every file then gets the root's volume.
+	type drive struct {
+		sweptRoot
+		dev uint64
+	}
+	var drives []drive
+	if info, err := os.Stat(absRoot); err == nil {
+		if dev, ok := s.device(info); ok {
+			drives = append(drives, drive{sweptRoot{root: absRoot, volume: volumeUUID}, dev})
+		}
+	}
+	// innermost is the deepest drive holding p, nil without drives
+	innermost := func(p string) *drive {
+		for i := len(drives) - 1; i >= 0; i-- {
+			if within(p, drives[i].root) {
+				return &drives[i]
+			}
+		}
+		return nil
+	}
+
 	err := filepath.WalkDir(absRoot, func(p string, d fs.DirEntry, err error) error {
 		// Check for context cancellation
 		select {
@@ -204,6 +248,15 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 		if d.IsDir() {
 			if s.classifier.ShouldIgnoreDir(d.Name()) {
 				return filepath.SkipDir
+			}
+			// compared with the drive holding it, so only the mount point
+			// itself costs a volume lookup, not every folder below it
+			if outer := innermost(p); outer != nil && p != absRoot {
+				if info, err := d.Info(); err == nil {
+					if dev, ok := s.device(info); ok && dev != outer.dev {
+						drives = append(drives, drive{sweptRoot{root: p, volume: s.volumeOf(p)}, dev})
+					}
+				}
 			}
 			return nil
 		}
@@ -243,6 +296,10 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 			VolumeUUID: volumeUUID,
 			MediaType:  mediaType,
 		}
+		if on := innermost(p); on != nil {
+			file.VolumeUUID = on.volume
+			on.seen++
+		}
 
 		// StreamKey: feeds the TUI progress line, stripped from the plain console.
 		s.log.Info("Scanning", logger.StreamKey, true, "file", s.path.RelativeToHome(p))
@@ -257,17 +314,30 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 		return nil
 	})
 	if err != nil {
-		return gaps, fmt.Errorf("walk %q: %w", absRoot, err)
+		return walkResult{gaps: gaps}, fmt.Errorf("walk %q: %w", absRoot, err)
 	}
-	return gaps, nil
+	walk := walkResult{gaps: gaps}
+	for i, dr := range drives {
+		if i > 0 { // drives[0] is the root, swept by the caller
+			walk.drives = append(walk.drives, dr.sweptRoot)
+		}
+	}
+	return walk, nil
+}
+
+// within reports whether p is dir or below it; "/" and a trailing separator
+// both work.
+func within(p, dir string) bool {
+	return p == dir || strings.HasPrefix(p, strings.TrimSuffix(dir, string(filepath.Separator))+string(filepath.Separator))
 }
 
 // maxSweepGaps bounds the exclusions a sweep spells out; past it the walk saw
 // too little and the sweep is skipped.
 const maxSweepGaps = 1000
 
-// sweptRoot is one cleanly walked root as the sweep needs it: its canonical
-// path, the volume it was on, and how many files the walk saw under it.
+// sweptRoot is one cleanly walked root, or a drive mounted inside one, as the
+// sweep needs it: its canonical path, the volume it was on, and how many files
+// the walk saw on it.
 type sweptRoot struct {
 	root, volume string
 	seen         int
@@ -280,7 +350,8 @@ type sweptRoot struct {
 // Rows are kept where the walk may not have been looking:
 //   - under gaps (unlistable folders, unstattable files);
 //   - on a different volume than the one now at root (another card mounted at
-//     the same path);
+//     the same path, or a drive mounted inside root that is unplugged now: its
+//     rows carry its own volume);
 //   - under a root that walked clean but empty while rows say it held files
 //     (an unmounted drive's mount point).
 func (s *Scanner) sweep(ctx context.Context, scan int64, r sweptRoot, gaps walkGaps) error {

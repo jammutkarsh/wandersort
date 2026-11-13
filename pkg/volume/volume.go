@@ -5,7 +5,8 @@ package volume
 import "sync"
 
 // Resolver caches volume UUID lookups per path. Lookups shell out or read
-// system tables, so scan roots (a handful per run) are the intended keys
+// system tables, so scan roots and the drives mounted inside them (a handful
+// per run) are the intended keys
 type Resolver struct {
 	cache map[string]string
 	mu    sync.Mutex
