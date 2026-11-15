@@ -273,7 +273,7 @@ func (f *settingsForm) save() error {
 		HomeTown:              home,
 		WorkTown:              home, // work is off for now: it is the same place as home
 	}
-	if err := f.a.saveSettings(f.ctx, f.libraryDir(f.out), s); err != nil {
+	if err := explainBusy(f.a.SaveSettings(f.ctx, f.libraryDir(f.out), s)); err != nil {
 		return fmt.Errorf("save settings: %w", err)
 	}
 	return nil
@@ -310,7 +310,7 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 			{Label: "Library folder", Value: path.New().Friendly(a.Config.OutputDir()), Edit: func() ([]*tui.Field, func() error) {
 				f := a.newSettingsForm(ctx, geonames)
 				return []*tui.Field{f.libraryField()}, func() error {
-					return a.switchLibrary(ctx, f.libraryDir(f.out))
+					return explainBusy(a.Switch(ctx, f.libraryDir(f.out)))
 				}
 			}},
 			{Label: "Folder layout", Value: layoutLabel(s.Rules), Edit: edit((*settingsForm).layoutFields)},

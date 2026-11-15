@@ -65,8 +65,8 @@ wandersort check`,
 			a.jsonOut, _ = cmd.Flags().GetBool(flagJSON)
 			// Build the logger after the output folder is settled, so the
 			// startup line can name it.
-			a.logFile = logger.NewFile(a.Config.LogDir)
-			a.Log = logger.New(a.logFile)
+			a.LogFile = logger.NewFile(a.Config.LogDir)
+			a.Log = logger.New(a.LogFile)
 			// The log no longer sits in the library, so say which one this run is about.
 			a.Log.Info("wandersort started", "command", cmd.CommandPath(), "output", a.Config.OutputDir())
 			return nil

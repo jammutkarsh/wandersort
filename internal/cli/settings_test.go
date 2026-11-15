@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
@@ -60,7 +61,7 @@ func TestConfig(t *testing.T) {
 			cfg := testConfig(t)
 			cfg.Rules = []string{"date", "device"}
 			cfg.CollapseLevels = false
-			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
+			a := &app{Session: library.Session{Config: cfg, Log: logger.NewNoopLogger(), LogFile: testLogFile(t, t.TempDir())}}
 			defer a.closeDBs()
 
 			// a place-name database that never opened must not trap the user
@@ -94,7 +95,7 @@ func TestConfig(t *testing.T) {
 			if err := save(); err != nil {
 				t.Fatalf("save: %v", err)
 			}
-			got, err := config.LoadSettings(context.Background(), a.AppDB)
+			got, err := config.LoadSettings(context.Background(), a.DB())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -133,7 +134,7 @@ func TestConfig(t *testing.T) {
 				}
 			}
 
-			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
+			a := &app{Session: library.Session{Config: testConfig(t), Log: logger.NewNoopLogger()}}
 			f := a.newSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
 			f.layout = "Year › Month › Place"
 			if got := f.rules(); !reflect.DeepEqual(got, []string{"location"}) {
@@ -148,7 +149,7 @@ func TestConfig(t *testing.T) {
 		// An open library's settings are a list; each row edits a fresh copy, so
 		// leaving an edit unsaved changes nothing.
 		{"SettingsListEditsOneRow", func(t *testing.T) {
-			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
+			a := &app{Session: library.Session{Config: testConfig(t), Log: logger.NewNoopLogger(), LogFile: testLogFile(t, t.TempDir())}}
 			if err := a.openLibrary(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -188,7 +189,7 @@ func TestConfig(t *testing.T) {
 		// A folder dropped on the terminal arrives quoted or backslash-escaped;
 		// the library field takes it as the folder it names.
 		{"LibraryFieldTakesADroppedFolder", func(t *testing.T) {
-			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
+			a := &app{Session: library.Session{Config: testConfig(t), Log: logger.NewNoopLogger()}}
 			f := a.newSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
 			dir := filepath.Join(t.TempDir(), "My Library")
 			if err := os.Mkdir(dir, 0o755); err != nil {
@@ -215,7 +216,7 @@ func TestConfig(t *testing.T) {
 			resolver := installtest.Resolver(t)
 
 			cfg := testConfig(t)
-			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
+			a := &app{Session: library.Session{Config: cfg, Log: logger.NewNoopLogger(), LogFile: testLogFile(t, t.TempDir())}}
 			defer a.closeDBs()
 
 			fields, save := setupFields(a, func() (*location.Resolver, error) { return resolver, nil })
@@ -261,7 +262,7 @@ func TestConfig(t *testing.T) {
 			if err := save(); err != nil {
 				t.Fatalf("save: %v", err)
 			}
-			g, err := config.LoadSettings(context.Background(), a.AppDB)
+			g, err := config.LoadSettings(context.Background(), a.DB())
 			if err != nil {
 				t.Fatal(err)
 			}

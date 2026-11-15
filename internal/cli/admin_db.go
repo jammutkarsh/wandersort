@@ -77,7 +77,7 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 
 	// not openLibrary: Restore refuses while any connection, ours included,
 	// has the database open
-	a.logFile.Persist()
+	a.LogFile.Persist()
 	l, err := a.lockOutput()
 	if err != nil {
 		return err
@@ -99,7 +99,7 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 
 // resetDB empties the library's data but keeps its settings.
 func (a *app) resetDB(cmd *cobra.Command) error {
-	if !a.libraryExists() {
+	if !a.LibraryExists() {
 		return fmt.Errorf("no database found — nothing to reset")
 	}
 
@@ -111,14 +111,14 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 	defer a.closeDBs()
 
 	// already empty: nothing to ask about
-	if empty, err := a.AppDB.IsEmpty(ctx); err != nil {
+	if empty, err := a.DB().IsEmpty(ctx); err != nil {
 		return err
 	} else if empty {
 		fmt.Fprintln(os.Stderr, "Nothing to reset — the database is already empty.")
 		return nil
 	}
 
-	placed, err := a.AppDB.PlacedCount(ctx)
+	placed, err := a.DB().PlacedCount(ctx)
 	if err != nil {
 		return err
 	}
@@ -139,7 +139,7 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 
 // resetLibrary empties the open library's database (settings kept) and the preview copies.
 func (a *app) resetLibrary(ctx context.Context) error {
-	if err := library.Reset(ctx, a.AppDB, a.Config.OutputDir(), a.Log); err != nil {
+	if err := library.Reset(ctx, a.DB(), a.Config.OutputDir(), a.Log); err != nil {
 		return err
 	}
 	// preview copies outlive a session, so a wipe has to take them too

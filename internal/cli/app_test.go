@@ -1,16 +1,13 @@
 package cli
 
 import (
-	"context"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
-	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/spf13/cobra"
@@ -30,48 +27,8 @@ func testConfig(t *testing.T) *config.Configuration {
 
 // TestOpenLibraryLoadsThatLibrarysSettings: a library's rules come back with it,
 // and opening it makes it the most recently used one.
-func TestOpenLibraryLoadsThatLibrarysSettings(t *testing.T) {
-	cfg := testConfig(t)
-	ctx := context.Background()
-
-	a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
-	if err := a.openLibrary(ctx); err != nil {
-		t.Fatalf("openLibrary: %v", err)
-	}
-	want := config.Settings{Rules: []string{"device"}, CollapseLevels: true}
-	if err := config.SaveSettings(ctx, a.AppDB, want); err != nil {
-		t.Fatal(err)
-	}
-	a.closeDBs()
-
-	// A second session over the same folder: nothing but the library itself
-	// says what its rules are.
-	next := testConfigAt(t, cfg.OutputDir())
-	b := &app{Config: next, Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
-	if err := b.openLibrary(ctx); err != nil {
-		t.Fatalf("openLibrary (second session): %v", err)
-	}
-	defer b.closeDBs()
-	if !b.Config.Settings.Equal(want) {
-		t.Errorf("settings = %+v, want the library's own %+v", b.Config.Settings, want)
-	}
-	if hist := b.Config.History(); len(hist) == 0 || hist[0] != cfg.OutputDir() {
-		t.Errorf("history = %v, want the library just opened at the front", hist)
-	}
-}
-
 // testConfigAt is testConfig pointed at an existing library, without moving
 // $HOME (which would lose the history the first session wrote).
-func testConfigAt(t *testing.T, dir string) *config.Configuration {
-	t.Helper()
-	cfg, err := config.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.SetOutput(dir)
-	return cfg
-}
-
 // TestIsTuiEnabled pins the --plain escape hatch: it must short-circuit the
 // terminal check rather than merely influence it, since `go test` never runs
 // with a terminal on stderr and the branch would otherwise be untestable.
@@ -107,7 +64,7 @@ func TestLockOutputAlreadyRunning(t *testing.T) {
 	}
 	defer held.Unlock()
 
-	a := &app{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}}
+	a := &app{Session: library.Session{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}}}
 	_, err = a.lockOutput()
 	if err == nil {
 		t.Fatal("lockOutput must fail while another lock is held")
@@ -121,7 +78,7 @@ func TestLockOutputAlreadyRunning(t *testing.T) {
 // acquire cleanly and hand back a lock the caller can release.
 func TestLockOutputSucceedsWhenFree(t *testing.T) {
 	dir := t.TempDir()
-	a := &app{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}}
+	a := &app{Session: library.Session{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}}}
 	l, err := a.lockOutput()
 	if err != nil {
 		t.Fatalf("lockOutput: %v", err)
@@ -132,32 +89,11 @@ func TestLockOutputSucceedsWhenFree(t *testing.T) {
 // TestOpenLibraryIdempotent covers the early-return branch: calling it twice
 // must not replace an already-open handle (which would leak the first one's
 // file descriptor).
-func TestOpenLibraryIdempotent(t *testing.T) {
-	cfg := testConfig(t)
-	a := &app{Config: cfg, Log: logger.NewNoopLogger()}
-	ctx := context.Background()
-
-	if err := a.openLibrary(ctx); err != nil {
-		t.Fatalf("openLibrary: %v", err)
-	}
-	first := a.AppDB
-	if first == nil {
-		t.Fatal("openLibrary left AppDB nil")
-	}
-	if err := a.openLibrary(ctx); err != nil {
-		t.Fatalf("openLibrary (second call): %v", err)
-	}
-	if a.AppDB != first {
-		t.Error("openLibrary replaced an already-open AppDB handle")
-	}
-	a.closeDBs()
-}
-
 // TestCloseDBsNilSafe is the "nothing was ever opened" path — closeDBs runs
 // unconditionally in every command's deferred cleanup, including the
 // no-database-found early-return paths, so it must not panic on a bare app.
 func TestCloseDBsNilSafe(t *testing.T) {
-	a := &app{Log: logger.NewNoopLogger()}
+	a := &app{Session: library.Session{Log: logger.NewNoopLogger()}}
 	a.closeDBs() // must not panic
 }
 
@@ -166,7 +102,7 @@ func TestCloseDBsNilSafe(t *testing.T) {
 // closures are built — the TUI path constructs the workflow before a.Deps
 // exists, and relies on exactly this indirection.
 func TestWorkflowDepsReadsThroughToCoordinator(t *testing.T) {
-	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
+	a := &app{Session: library.Session{Config: testConfig(t), Log: logger.NewNoopLogger()}}
 	deps := a.workflowDeps()
 	a.Deps = a.newDeps(nil, nil)
 
@@ -180,28 +116,6 @@ func TestWorkflowDepsReadsThroughToCoordinator(t *testing.T) {
 // TestOpenLibraryRefusedWritesNothing: the check runs before the lock, so a
 // folder that is not a library gets no lock file and no database. The attempt
 // itself is worth a log, so the run's log is persisted all the same.
-func TestOpenLibraryRefusedWritesNothing(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "IMG_0001.JPG"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	a := &app{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}, Log: logger.NewNoopLogger()}
-	a.logFile = testLogFile(t, t.TempDir())
-	if err := a.openLibrary(context.Background()); err == nil {
-		t.Fatal("openLibrary must refuse a folder holding someone else's files")
-	}
-	if a.logFile.Path() == "" {
-		t.Error("openLibrary must persist the run's log")
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("refused folder holds %d entries, want only the user's file", len(entries))
-	}
-}
-
 // TestConfirmPlainPrompt exercises the --plain y/N stdin path directly,
 // both answers, without going through a command.
 func TestConfirmPlainPrompt(t *testing.T) {
@@ -242,101 +156,8 @@ func TestConfirmPlainPrompt(t *testing.T) {
 }
 
 // Shutdown waits for running work and refuses work that starts after it.
-func TestWorkGroupShutdown(t *testing.T) {
-	var g workGroup
-	if !g.start() {
-		t.Fatal("start refused before shutdown")
-	}
-	finished := make(chan struct{})
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		close(finished)
-		g.done()
-	}()
-	g.closeAndWait()
-	select {
-	case <-finished:
-	default:
-		t.Fatal("closeAndWait returned before the running work finished")
-	}
-	if g.start() {
-		t.Error("work started after shutdown")
-	}
-}
-
 // The library can't be switched while work runs on it, and work waits out a switch.
-func TestWorkGroupHoldLibrary(t *testing.T) {
-	var g workGroup
-	if !g.startOnLibrary() {
-		t.Fatal("startOnLibrary refused")
-	}
-	if _, ok := g.holdLibrary(); ok {
-		t.Fatal("library held while work ran on it")
-	}
-	g.doneOnLibrary()
-	release, ok := g.holdLibrary()
-	if !ok {
-		t.Fatal("library not held once the work finished")
-	}
-	started := make(chan struct{})
-	go func() {
-		g.startOnLibrary()
-		close(started)
-		g.doneOnLibrary()
-	}()
-	select {
-	case <-started:
-		t.Fatal("work started on a library being switched")
-	case <-time.After(50 * time.Millisecond):
-	}
-	release()
-	<-started
-}
-
 // A new folder starts an empty library with the same settings; an organised one opens with its own.
-func TestSwitchLibrary(t *testing.T) {
-	ctx := context.Background()
-	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
-	if err := a.openLibrary(ctx); err != nil {
-		t.Fatal(err)
-	}
-	defer a.closeDBs()
-	first := a.Config.OutputDir()
-	s := a.Config.Settings
-	s.Rules = []string{"date"}
-	if err := a.saveSettings(ctx, first, s); err != nil {
-		t.Fatal(err)
-	}
-	dbtest.SeedFile(t, a.AppDB, 1, "/src", "a.jpg", 1)
-
-	second := filepath.Join(t.TempDir(), "second")
-	if err := a.switchLibrary(ctx, second); err != nil {
-		t.Fatal(err)
-	}
-	var files int
-	if err := a.AppDB.SQL.GetContext(ctx, &files, `SELECT COUNT(*) FROM file_registry`); err != nil {
-		t.Fatal(err)
-	}
-	if a.Config.OutputDir() != second || files != 0 || !slices.Equal(a.Config.Rules, []string{"date"}) {
-		t.Errorf("new library at %q: files=%d rules=%v, want empty with the old rules", a.Config.OutputDir(), files, a.Config.Rules)
-	}
-
-	s = a.Config.Settings
-	s.Rules = []string{"location"}
-	if err := a.saveSettings(ctx, second, s); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.switchLibrary(ctx, first); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.AppDB.SQL.GetContext(ctx, &files, `SELECT COUNT(*) FROM file_registry`); err != nil {
-		t.Fatal(err)
-	}
-	if files != 1 || !slices.Equal(a.Config.Rules, []string{"date"}) {
-		t.Errorf("back in the first library: files=%d rules=%v, want its own file and rules", files, a.Config.Rules)
-	}
-}
-
 // testLogFile is a log file in dir, closed before the test's temp folders are
 // removed: Windows can't remove an open file.
 func testLogFile(t *testing.T, dir string) *logger.File {

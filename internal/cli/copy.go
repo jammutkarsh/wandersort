@@ -64,7 +64,7 @@ func (a *app) runCopy(cmd *cobra.Command) error {
 }
 
 func (a *app) copyPlain(dryRun bool, res *copyResult) error {
-	if !a.libraryExists() {
+	if !a.LibraryExists() {
 		return fmt.Errorf("no database found — run 'wandersort add' first")
 	}
 
@@ -78,14 +78,14 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	defer a.closeDBs()
 
 	a.Log.Info("wandersort copy · library "+wspath.New().RelativeToHome(outputDir), logger.UserKey, true)
-	left, err := execute.LeftBehind(ctx, a.AppDB)
+	left, err := execute.LeftBehind(ctx, a.DB())
 	if err != nil {
 		return err
 	}
 	res.NotRead = len(left)
 	defer a.reportLeftBehind(left)
 
-	rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{
+	rep, err := execute.Run(ctx, a.DB(), a.Log, outputDir, execute.Options{
 		DryRun:    dryRun,
 		OnApplied: a.cleanPreviews,
 	})
@@ -117,16 +117,16 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 		return nil, nil, err
 	}
 	outputDir := a.Config.OutputDir()
-	files, bytes, err := execute.Pending(session, a.AppDB)
+	files, bytes, err := execute.Pending(session, a.DB())
 	if err != nil {
 		return nil, nil, err
 	}
-	space, err := execute.SpaceFor(session, a.AppDB, outputDir)
+	space, err := execute.SpaceFor(session, a.DB(), outputDir)
 	if err != nil {
 		return nil, nil, err
 	}
 	plan := tui.CopyPlan{
-		Files: files, Bytes: bytes, Edits: a.readState(session).Edits,
+		Files: files, Bytes: bytes, Edits: a.State(session).Edits,
 		Free: int64(space.Free), FreeKnown: space.Known, Fits: space.Fits(),
 	}
 
@@ -137,11 +137,11 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 		Plan:    plan,
 		Cancel:  cancel,
 		Run: func(onStep func(string), onProgress func(string, int64, int, int)) (tui.CopyResult, error) {
-			if !a.work.startOnLibrary() {
+			if !a.Work.StartOnLibrary() {
 				return tui.CopyResult{}, context.Canceled
 			}
-			defer a.work.doneOnLibrary()
-			rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{
+			defer a.Work.DoneOnLibrary()
+			rep, err := execute.Run(ctx, a.DB(), a.Log, outputDir, execute.Options{
 				OnApplied:  a.cleanPreviews,
 				OnStep:     onStep,
 				OnProgress: onProgress,
@@ -150,7 +150,7 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 			if err != nil {
 				return res, err
 			}
-			left, lerr := execute.LeftBehind(ctx, a.AppDB)
+			left, lerr := execute.LeftBehind(ctx, a.DB())
 			if lerr != nil {
 				return res, lerr
 			}
@@ -167,7 +167,7 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 
 // copyProblems groups the files a copy left out by reason, for the screen.
 func (a *app) copyProblems(ctx context.Context) []tui.CopyProblem {
-	failures, err := report.Failures(ctx, a.AppDB.SQL)
+	failures, err := report.Failures(ctx, a.DB().SQL)
 	if err != nil {
 		a.Log.Warn("could not list the files left out", "error", err)
 		return nil
@@ -199,14 +199,14 @@ func (a *app) cleanPreviews() {
 
 // saveFailurePage writes the failure page beside this run's log and returns its path; "" if it couldn't.
 func (a *app) saveFailurePage(ctx context.Context) string {
-	page := a.logFile.Page()
+	page := a.LogFile.Page()
 	if page == "" {
 		return ""
 	}
-	failures, err := report.Failures(ctx, a.AppDB.SQL)
+	failures, err := report.Failures(ctx, a.DB().SQL)
 	if err == nil {
 		err = report.SaveHTML(page, failures, report.PageInfo{
-			Library: a.Config.OutputDir(), When: time.Now(), LogPath: a.logFile.Path(),
+			Library: a.Config.OutputDir(), When: time.Now(), LogPath: a.LogFile.Path(),
 		})
 	}
 	if err != nil {

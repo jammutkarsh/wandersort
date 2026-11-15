@@ -43,10 +43,10 @@ func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
 		return nil, fmt.Errorf("dependencies: %w", err)
 	}
 	a.Log.Info("Settings changed — re-proposing the folder structure", logger.UserKey, true)
-	if _, err := vfs.Propose(ctx, a.AppDB, resolver, a.Config, a.Log); err != nil {
+	if _, err := vfs.Propose(ctx, a.DB(), resolver, a.Config, a.Log); err != nil {
 		return nil, fmt.Errorf("re-plan proposal: %w", err)
 	}
-	return vfs.BuildTree(ctx, a.AppDB)
+	return vfs.BuildTree(ctx, a.DB())
 }
 
 // newReviewScreen builds the review over the current proposal using the open
@@ -60,7 +60,7 @@ func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
 	}
 	resolver = resolver.WithAnchors(resolver.BuildAnchors(ctx, a.Config.SavedPlaces()))
 	outputDir := a.Config.OutputDir()
-	tree, err := vfs.BuildTree(ctx, a.AppDB)
+	tree, err := vfs.BuildTree(ctx, a.DB())
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
 		return nil, err
 	}
 	return review.Screen(ctx, review.Options{
-		DB:       a.AppDB,
+		DB:       a.DB(),
 		Draft:    draft,
 		Resolver: resolver,
 		Log:      a.Log,

@@ -79,7 +79,7 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 	for _, p := range logger.Recent(a.Config.LogDir, 0) {
 		// This run's own log says nothing about the problem; an empty one is a
 		// run that died before logging anything.
-		if info, err := os.Stat(p); p == a.logFile.Path() || err != nil || info.Size() == 0 {
+		if info, err := os.Stat(p); p == a.LogFile.Path() || err != nil || info.Size() == 0 {
 			continue
 		}
 		entries = append(entries, zipEntry{p, "logs/" + filepath.Base(p), home})
@@ -168,7 +168,7 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 // read-only on its own (no lock, no openLibrary). A missing or busy database
 // costs the error report, never the logs.
 func (a *app) exportErrors(redactPaths bool) ([]report.Row, []string) {
-	if !a.libraryExists() {
+	if !a.LibraryExists() {
 		return nil, nil
 	}
 	conn, err := db.OpenReadOnly(a.Config.AppDBPath)

@@ -68,7 +68,7 @@ func (a *app) runCheck(cmd *cobra.Command) error {
 }
 
 func (a *app) check(full bool, res *checkResult) error {
-	if !a.libraryExists() {
+	if !a.LibraryExists() {
 		return fmt.Errorf("no library at %s; run 'wandersort add' first", a.Config.OutputDir())
 	}
 
@@ -79,7 +79,7 @@ func (a *app) check(full bool, res *checkResult) error {
 	}
 	defer a.closeDBs()
 
-	rep, err := verify.Run(ctx, a.AppDB, a.Log, a.Config.OutputDir(), verify.Options{Full: full})
+	rep, err := verify.Run(ctx, a.DB(), a.Log, a.Config.OutputDir(), verify.Options{Full: full})
 	if err != nil {
 		return err
 	}

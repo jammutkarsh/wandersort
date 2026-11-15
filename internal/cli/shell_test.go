@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
@@ -47,7 +49,7 @@ func (p *probe) got(msg tea.Msg) bool {
 }
 
 // fakeProposal leaves behind what an earlier run would: a database file where
-// the output path says. libraryExists only stats it, so it needn't be a real one.
+// the output path says. LibraryExists only stats it, so it needn't be a real one.
 func fakeProposal(t *testing.T, a *app) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(a.Config.AppDBPath), 0o755); err != nil {
@@ -97,7 +99,7 @@ func seedProposal(t *testing.T, a *app) {
 
 func testShell(t *testing.T) shellModel {
 	t.Helper()
-	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
+	a := &app{Session: library.Session{Config: testConfig(t), Log: logger.NewNoopLogger()}}
 	t.Cleanup(a.closeDBs) // a refresh may open the library; Windows can't remove it open
 	m := shellModel{a: a, ctx: context.Background(), w: 80, h: 24}
 	m.screens[tabScan] = a.newHomeScreen(context.Background(), nil)
@@ -282,7 +284,7 @@ func TestShellModel(t *testing.T) {
 		// and a switch to another library runs that scan there.
 		{"AnOverlappingScanRunsInTheNextLibrary", func(t *testing.T) {
 			m := testShell(t)
-			t.Cleanup(m.a.closeLibrary)
+			t.Cleanup(m.a.Close)
 			lib := m.a.Config.OutputDir()
 
 			next, cmd := m.Update(tui.StartScanMsg{Paths: []string{lib}})
@@ -297,7 +299,7 @@ func TestShellModel(t *testing.T) {
 			}
 
 			m.libraryBefore = lib
-			if err := m.a.switchLibrary(context.Background(), filepath.Join(t.TempDir(), "other")); err != nil {
+			if err := m.a.Switch(context.Background(), filepath.Join(t.TempDir(), "other")); err != nil {
 				t.Fatal(err)
 			}
 			next, cmd = m.Update(tui.SettingsSavedMsg{})
@@ -656,7 +658,7 @@ func flattenTeaCmd(cmd tea.Cmd) []tea.Msg {
 // without asking, but *only* when the settings really moved — a trip through
 // the wizard that lands back where it started must not throw away the plan or
 // the review edits made against it. The library is open by the time this
-// runs: the save itself writes into it (see app.saveSettings), which is why
+// runs: the save itself writes into it (see Session.SaveSettings), which is why
 // the re-plan can go straight to rebuildTree.
 func TestConfigSavedReplansOnlyOnAChange(t *testing.T) {
 	before := config.Settings{Rules: []string{"date", "location"}, CollapseLevels: true}
@@ -699,7 +701,7 @@ func TestConfigSavedReplansOnlyOnAChange(t *testing.T) {
 // Cancelling one scan leaves the session's context alive for the next scan,
 // review and download.
 func TestScanCancelLeavesSessionAlive(t *testing.T) {
-	a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
+	a := &app{Session: library.Session{Config: testConfig(t), Log: logger.NewNoopLogger()}}
 	session, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -708,5 +710,22 @@ func TestScanCancelLeavesSessionAlive(t *testing.T) {
 
 	if err := session.Err(); err != nil {
 		t.Errorf("session context = %v after a scan's ctrl+c, want alive", err)
+	}
+}
+
+// seedDraft writes edits as the review's journal in dir, the way a review
+// session left them, without needing a plan they apply to.
+func seedDraft(t *testing.T, dir string, edits ...vfs.Edit) {
+	t.Helper()
+	var buf []byte
+	for _, e := range edits {
+		line, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf = append(append(buf, line...), '\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, vfs.DraftFileName), buf, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

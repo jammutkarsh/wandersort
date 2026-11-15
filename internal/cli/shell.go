@@ -84,7 +84,7 @@ type shellModel struct {
 	start shellStart
 
 	// lib is the library's state, refreshed where it can change, never per frame
-	lib libraryState
+	lib library.State
 
 	tab  int
 	w, h int
@@ -136,11 +136,11 @@ func (a *app) runShell(start shellStart) error {
 	// on the way out: stop running work, wait for it, then flush and close
 	ctx, cancel := context.WithCancel(context.Background())
 	defer a.closeDBs()
-	defer a.work.closeAndWait()
+	defer a.Work.CloseAndWait()
 	defer cancel()
 
 	events := make(chan logger.Event, 4096)
-	tuiLog := logger.NewTUI(a.logFile, func(e logger.Event) { events <- e })
+	tuiLog := logger.NewTUI(a.LogFile, func(e logger.Event) { events <- e })
 	origLog := a.Log
 	a.Log = tuiLog
 	defer func() { a.Log = origLog }()
@@ -151,7 +151,7 @@ func (a *app) runShell(start shellStart) error {
 	)
 	m := shellModel{a: a, ctx: ctx, start: start, gate: gate}
 	m.screens[tabScan] = a.newHomeScreen(ctx, nil)
-	m.lib = a.readState(ctx)
+	m.lib = a.State(ctx)
 
 	// mouse clicks pick a tab; the wheel scrolls like the arrows
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr), tea.WithReportFocus(), tea.WithMouseCellMotion())
@@ -174,18 +174,18 @@ func (a *app) runShell(start shellStart) error {
 	)
 	a.Deps.Start(ctx)
 	// both goroutines end with the session context; shutdown waits for them
-	if a.work.start() {
+	if a.Work.Start() {
 		go func() {
-			defer a.work.done()
+			defer a.Work.Done()
 			err := waitForDeps(ctx, a.Deps)
 			if !errors.Is(err, context.Canceled) {
 				prog.Send(depsDoneMsg{err: err})
 			}
 		}()
 	}
-	if a.work.start() {
+	if a.Work.Start() {
 		go func() {
-			defer a.work.done()
+			defer a.Work.Done()
 			for {
 				select {
 				case e := <-events:
@@ -236,7 +236,7 @@ func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.gate = nil
 			cmds := []tea.Cmd{m.place(tabScan, m.screens[tabScan]), m.startCmd()}
 			// the last run's library opens straight away, so nothing asks for it
-			if m.a.AppDB == nil && m.a.libraryExists() {
+			if m.a.DB() == nil && m.a.LibraryExists() {
 				if err := m.a.openLibrary(m.ctx); err != nil {
 					cmds = append(cmds, m.forward(tabScan, tui.HomeErrMsg{Err: err}))
 				}
@@ -405,7 +405,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tui.DiscardPlanMsg:
 		a := m.a
 		return m, m.onLibrary("discard the current plan", func(ctx context.Context) (string, error) {
-			n, err := library.Discard(ctx, a.AppDB, a.Config.OutputDir())
+			n, err := library.Discard(ctx, a.DB(), a.Config.OutputDir())
 			return "Started over: " + human.Plural(n, "file", "files") + " taken off the list.", err
 		})
 
@@ -420,7 +420,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh()
 		m.tab = tabScan
 		cmd := m.place(tabScan, m.a.newHomeScreen(m.ctx, nil))
-		m.forward(tabScan, m.lib.home())
+		m.forward(tabScan, homeMsg(m.lib))
 		return m, tea.Batch(cmd, m.forward(tabScan, tui.HomeNoteMsg{Text: msg.note}))
 
 	case replanDoneMsg:
@@ -650,12 +650,12 @@ type libraryEmptiedMsg struct {
 func (m *shellModel) onLibrary(what string, run func(context.Context) (string, error)) tea.Cmd {
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
-		release, ok := a.work.holdLibrary()
+		release, ok := a.Work.HoldLibrary()
 		if !ok {
 			return libraryEmptiedMsg{err: fmt.Errorf("busy with this library; %s when it's done", what)}
 		}
 		defer release()
-		if a.AppDB == nil {
+		if a.DB() == nil {
 			return libraryEmptiedMsg{err: errors.New("no library is open")}
 		}
 		note, err := run(ctx)
@@ -673,10 +673,10 @@ type replanDoneMsg struct{ err error }
 func (m *shellModel) replan() tea.Cmd {
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
-		if !a.work.startOnLibrary() {
+		if !a.Work.StartOnLibrary() {
 			return nil
 		}
-		defer a.work.doneOnLibrary()
+		defer a.Work.DoneOnLibrary()
 		if _, err := a.rebuildTree(ctx); err != nil {
 			// logged as well as shown: a failed re-plan leaves copy with the old settings' plan
 			a.Log.Warn("Re-plan failed; copy would use the old plan. Save the settings again.",
@@ -728,7 +728,7 @@ func (m *shellModel) homeAgain(note string) tea.Cmd {
 	home := m.a.newHomeScreen(m.ctx, history)
 	home.Add(added...)
 	cmd := m.place(tabScan, home)
-	m.forward(tabScan, m.lib.home())
+	m.forward(tabScan, homeMsg(m.lib))
 	return cmd
 }
 
@@ -763,8 +763,13 @@ func (m shellModel) canReview() bool {
 // refresh re-reads the library state after something that can change it (a
 // scan opening it, a review closing, a re-plan).
 func (m *shellModel) refresh() {
-	m.lib = m.a.readState(m.ctx)
-	m.forward(tabScan, m.lib.home())
+	m.lib = m.a.State(m.ctx)
+	m.forward(tabScan, homeMsg(m.lib))
+}
+
+// homeMsg is the library state as the Add tab shows it.
+func homeMsg(s library.State) tui.HomeLibraryMsg {
+	return tui.HomeLibraryMsg{Planned: s.Planned, Placed: s.Placed, Edits: s.Edits}
 }
 
 // openSettings places the settings wizard, seeded from the library's own
@@ -793,10 +798,10 @@ func (m *shellModel) openReview() tea.Cmd {
 		return msgCmd(reviewOpenMsg{err: err})
 	}
 	return func() tea.Msg {
-		if !a.work.startOnLibrary() {
+		if !a.Work.StartOnLibrary() {
 			return nil
 		}
-		defer a.work.doneOnLibrary()
+		defer a.Work.DoneOnLibrary()
 		model, err := a.newReviewScreen(ctx)
 		return reviewOpenMsg{model: model, err: err}
 	}
@@ -876,7 +881,7 @@ func (m shellModel) tabBar() string {
 	switch {
 	case m.notice != "":
 		right = tui.Attn.Render(m.notice)
-	case m.a.AppDB != nil || m.lib.Exists:
+	case m.a.DB() != nil || m.lib.Exists:
 		right = tui.FaintTxt.Render(filepath.Base(m.a.Config.OutputDir()))
 	}
 	return tui.Row(strings.Join(parts, "  "), right, tui.Inner(m.w))
@@ -934,25 +939,25 @@ func (a *app) newHomeScreen(ctx context.Context, lastScan []string) tui.HomeMode
 func (a *app) newScanScreen(session context.Context, paths []string, force bool) tui.ScanModel {
 	// the scan's own context: its ctrl+c must not cancel the session's
 	ctx, cancel := context.WithCancel(session)
-	wf := workflow.NewWorkflow(a.AppDB, a.Log, a.Config, a.workflowDeps())
+	wf := workflow.NewWorkflow(a.DB(), a.Log, a.Config, a.workflowDeps())
 	return tui.NewScanModel(tui.ScanConfig{
 		Paths:   paths,
-		LogPath: path.New().Friendly(a.logFile.Path()),
+		LogPath: path.New().Friendly(a.LogFile.Path()),
 		Pipeline: func() error {
-			if !a.work.startOnLibrary() {
+			if !a.Work.StartOnLibrary() {
 				return context.Canceled
 			}
-			defer a.work.doneOnLibrary()
+			defer a.Work.DoneOnLibrary()
 			res, err := wf.RunScan(ctx, paths, force)
-			a.rememberSources(res.Roots)
+			a.RememberSources(res.Roots)
 			return err
 		},
 		Cancel: cancel,
 		ReviewNext: func() (tui.Tab, error) {
-			if !a.work.startOnLibrary() {
+			if !a.Work.StartOnLibrary() {
 				return nil, context.Canceled
 			}
-			defer a.work.doneOnLibrary()
+			defer a.Work.DoneOnLibrary()
 			return a.newReviewScreen(ctx)
 		},
 	})
@@ -962,7 +967,7 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 // is opened first so the list shows (and saves back to) its own settings; with
 // none, it shows the defaults and the first save creates the library.
 func (a *app) newSettingsScreen(ctx context.Context) (tui.Tab, error) {
-	if a.AppDB == nil && a.libraryExists() {
+	if a.DB() == nil && a.LibraryExists() {
 		if err := a.openLibrary(ctx); err != nil {
 			return nil, err
 		}

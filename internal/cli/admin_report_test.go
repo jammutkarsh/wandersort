@@ -15,6 +15,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -35,10 +36,10 @@ func issueApp(t *testing.T, logs map[string]string) (*app, string) {
 			t.Fatal(err)
 		}
 	}
-	return &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
+	return &app{Session: library.Session{Log: logger.NewNoopLogger(), Config: &config.Configuration{
 		LogDir:    logDir,
 		AppDBPath: filepath.Join(dir, "lib", ".wandersort.db"),
-	}}, dir
+	}}}, dir
 }
 
 func TestRunIssueNoLogData(t *testing.T) {
@@ -65,9 +66,9 @@ func TestRunIssuePackagesRecentLogs(t *testing.T) {
 		logs[fmt.Sprintf("2026-01-0%dT10-00-00_1.log", i)] = "some log data\n"
 	}
 	a, dir := issueApp(t, logs)
-	a.logFile = testLogFile(t, a.Config.LogDir)
-	a.logFile.Persist() // this run's own log, newest of all: must not be packaged
-	if _, err := a.logFile.Write([]byte("wandersort started\n")); err != nil {
+	a.LogFile = testLogFile(t, a.Config.LogDir)
+	a.LogFile.Persist() // this run's own log, newest of all: must not be packaged
+	if _, err := a.LogFile.Write([]byte("wandersort started\n")); err != nil {
 		t.Fatal(err)
 	}
 

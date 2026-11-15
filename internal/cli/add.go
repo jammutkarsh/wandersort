@@ -136,7 +136,7 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 	ctx, cancel := interruptible()
 	defer cancel()
 
-	isNew := !a.libraryExists()
+	isNew := !a.LibraryExists()
 	if err := a.openLibrary(ctx); err != nil {
 		return err
 	}
@@ -154,15 +154,15 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 		return err
 	}
 
-	wf := workflow.NewWorkflow(a.AppDB, a.Log, a.Config, a.workflowDeps())
+	wf := workflow.NewWorkflow(a.DB(), a.Log, a.Config, a.workflowDeps())
 	scan, err := wf.RunScan(ctx, paths, force)
-	a.rememberSources(scan.Roots)
+	a.RememberSources(scan.Roots)
 	res.Found, res.Read, res.Planned = scan.Found, scan.Read, scan.Planned
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}
 
-	left, err := execute.LeftBehind(ctx, a.AppDB)
+	left, err := execute.LeftBehind(ctx, a.DB())
 	if err != nil {
 		return err
 	}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -47,7 +48,7 @@ func TestRunExecuteAppliesDraft(t *testing.T) {
 	}
 	seedDraft(t, dir, vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: day, From: "03", To: "Goa-Trip"})
 
-	a := &app{Log: logger.NewNoopLogger(), Config: cfg}
+	a := &app{Session: library.Session{Log: logger.NewNoopLogger(), Config: cfg}}
 	err = a.runCopy(execCmd(t))
 	a.closeDBs()
 	if err != nil {
