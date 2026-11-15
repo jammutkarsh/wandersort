@@ -32,3 +32,7 @@ We have strict coding standards to maintain the quality of the codebase. Please 
 3. Create a new branch for your feature or bugfix.
 4. Make your changes adhering to the guidelines above.
 5. Push your changes and open a Pull Request!
+
+## 5. License of Contributions
+
+By opening a pull request you agree that your contribution is licensed under this repository's [LICENSE](LICENSE), and that the maintainer may also license it under other terms.

@@ -58,7 +58,7 @@ nfpms:
     formats: [deb, rpm, apk]
     maintainer: "Utkarsh Chourasia <utkarshchourasia100@gmail.com>"
     description: "Local-first media organizer and duplicate finder."
-    license: AGPL-3.0-or-later
+    license: LicenseRef-PolyForm-Shield-1.0.0
     homepage: https://github.com/jammutkarsh/wandersort
     bindir: /usr/bin
 
@@ -92,7 +92,7 @@ scoops:
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/jammutkarsh/wandersort
     description: "Local-first media organizer and duplicate finder."
-    license: AGPL-3.0-or-later
+    license: LicenseRef-PolyForm-Shield-1.0.0
 
 # winget manifest -> jammutkarsh/winget-pkgs (fork), then a PR to microsoft/winget-pkgs.
 winget:
@@ -100,7 +100,8 @@ winget:
     ids: [default]
     publisher: jammutkarsh
     package_identifier: jammutkarsh.wandersort
-    license: AGPL-3.0-or-later
+    license: LicenseRef-PolyForm-Shield-1.0.0
+    license_url: https://github.com/jammutkarsh/wandersort/blob/main/LICENSE
     homepage: https://github.com/jammutkarsh/wandersort
     short_description: "Local-first media organizer and duplicate finder"
     repository:
