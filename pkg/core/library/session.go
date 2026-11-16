@@ -120,10 +120,10 @@ func (s *Session) SaveSettings(ctx context.Context, outputDir string, settings c
 	return nil
 }
 
-// Switch makes dir the session's library; if dir can't be opened the session
-// is left as it was, the old library reopened only if one was open. An
-// organised folder opens with its own settings; any other starts a new
-// library with the current ones.
+// Switch makes dir the session's library. An organised folder opens with its
+// own settings; any other starts a new library with the current ones. If dir
+// can't be opened, or a new library can't take the settings, the session is
+// left as it was, the old library reopened only if one was open.
 func (s *Session) Switch(ctx context.Context, dir string) error {
 	old := s.Config.OutputDir()
 	if dir == old {
@@ -144,17 +144,20 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 
 	s.Close()
 	s.Config.SetOutput(dir)
-	if err := s.Open(ctx); err != nil {
-		s.Config.SetOutput(old)
-		if !wasOpen {
-			return err
-		}
-		return errors.Join(err, s.Open(ctx))
+	err := s.Open(ctx)
+	if err == nil && isNew {
+		err = s.SaveSettings(ctx, dir, carry)
 	}
-	if isNew {
-		return s.SaveSettings(ctx, dir, carry)
+	if err == nil {
+		return nil
 	}
-	return nil
+	s.Close()
+	s.Config.SetOutput(old)
+	s.Config.Settings = carry
+	if !wasOpen {
+		return err
+	}
+	return errors.Join(err, s.Open(ctx))
 }
 
 // RememberSources records the folders a scan walked; the first given ends up newest.
