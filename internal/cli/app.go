@@ -88,17 +88,7 @@ func (a *app) workflowDeps() workflow.Deps {
 	}
 }
 
-// lockOutput takes the exclusive output-dir lock and styles the "already
-// running" error.
-func (a *app) lockOutput() (*lock.Lock, error) {
-	l, err := lock.AcquireOutput(a.Config.OutputDir())
-	if err != nil {
-		return nil, explainBusy(fmt.Errorf("acquire lock: %w", err))
-	}
-	return l, nil
-}
-
-// Open, Switch and SaveSettings are the Session's, with a library held
+// Open, Switch, SaveSettings and Restore are the Session's, with a library held
 // elsewhere explained for the terminal; shadowing them leaves no unexplained way in.
 func (a *app) Open(ctx context.Context) error {
 	return explainBusy(a.Session.Open(ctx))
@@ -106,6 +96,10 @@ func (a *app) Open(ctx context.Context) error {
 
 func (a *app) Switch(ctx context.Context, dir string) error {
 	return explainBusy(a.Session.Switch(ctx, dir))
+}
+
+func (a *app) Restore(ctx context.Context) error {
+	return explainBusy(a.Session.Restore(ctx))
 }
 
 func (a *app) SaveSettings(ctx context.Context, outputDir string, settings config.Settings) error {

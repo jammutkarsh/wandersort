@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,10 +54,10 @@ func TestIsTuiEnabled(t *testing.T) {
 	}
 }
 
-// TestLockOutputAlreadyRunning is the one error users hit routinely: a second
-// process against the same output dir must get the full styled explanation,
-// not a bare wrapped error.
-func TestLockOutputAlreadyRunning(t *testing.T) {
+// A library another process holds is the one error users hit routinely: it
+// must come back as the styled explanation with the busy exit code, not a bare
+// wrapped error.
+func TestOpenExplainsABusyLibrary(t *testing.T) {
 	dir := t.TempDir()
 	held, err := lock.AcquireOutput(dir)
 	if err != nil {
@@ -64,26 +65,17 @@ func TestLockOutputAlreadyRunning(t *testing.T) {
 	}
 	defer held.Unlock()
 
-	a := &app{Session: library.Session{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}}}
-	_, err = a.lockOutput()
+	a := &app{Session: library.Session{
+		Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")},
+		Log:    logger.NewNoopLogger(),
+	}}
+	err = a.Open(context.Background())
 	if err == nil {
-		t.Fatal("lockOutput must fail while another lock is held")
+		t.Fatal("Open must fail while another process holds the library")
 	}
-	if !strings.Contains(err.Error(), "already running") {
-		t.Errorf("lockOutput error = %q, want the styled already-running message", err.Error())
+	if !strings.Contains(err.Error(), "already running") || ExitCode(err) != exitBusy {
+		t.Errorf("Open error = %q (exit %d), want the already-running message and exit %d", err.Error(), ExitCode(err), exitBusy)
 	}
-}
-
-// TestLockOutputSucceedsWhenFree is the other half: an unheld directory must
-// acquire cleanly and hand back a lock the caller can release.
-func TestLockOutputSucceedsWhenFree(t *testing.T) {
-	dir := t.TempDir()
-	a := &app{Session: library.Session{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}}}
-	l, err := a.lockOutput()
-	if err != nil {
-		t.Fatalf("lockOutput: %v", err)
-	}
-	defer l.Unlock()
 }
 
 // TestCloseDBsNilSafe is the "nothing was ever opened" path — closeDBs runs

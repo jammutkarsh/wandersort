@@ -77,16 +77,9 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 
 	// not Open: Restore refuses while any connection, ours included,
 	// has the database open
-	a.LogFile.Persist()
-	l, err := a.lockOutput()
-	if err != nil {
-		return err
-	}
-	defer l.Unlock()
-
 	ctx, cancel := interruptible()
 	defer cancel()
-	if err := library.Restore(ctx, a.Config.AppDBPath, a.Log); errors.Is(err, db.ErrInUse) {
+	if err := a.Restore(ctx); errors.Is(err, db.ErrInUse) {
 		return fmt.Errorf("%w; close other apps using it and retry", err)
 	} else if err != nil {
 		return fmt.Errorf("restore failed: %w", err)

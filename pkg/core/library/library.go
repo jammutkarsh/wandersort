@@ -67,7 +67,7 @@ func Discard(ctx context.Context, database *db.DB, outputDir string) (int, error
 // Restore puts the backup beside the library database at live back over it,
 // checks the result opens as a library, and drops the review draft: its edits
 // were made against a newer plan. The caller holds the output lock and has no
-// connection open (db.ErrInUse otherwise).
+// connection open (db.ErrInUse otherwise); Session.Restore is that caller.
 func Restore(ctx context.Context, live string, log logger.Logger) error {
 	outputDir := filepath.Dir(live)
 	if err := db.Restore(ctx, filepath.Join(outputDir, db.BackupFileName), live); err != nil {

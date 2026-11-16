@@ -160,6 +160,19 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 	return errors.Join(err, s.Open(ctx))
 }
 
+// Restore puts the library's backup back over its database (see Restore),
+// holding the output lock meanwhile. The session must have no library open:
+// a restore refuses any open connection, db.ErrInUse.
+func (s *Session) Restore(ctx context.Context) error {
+	s.LogFile.Persist()
+	l, err := lock.AcquireOutput(s.Config.OutputDir())
+	if err != nil {
+		return fmt.Errorf("acquire lock: %w", err)
+	}
+	defer l.Unlock()
+	return Restore(ctx, s.Config.AppDBPath, s.Log)
+}
+
 // RememberSources records the folders a scan walked; the first given ends up newest.
 func (s *Session) RememberSources(roots []string) {
 	for _, root := range slices.Backward(roots) {
