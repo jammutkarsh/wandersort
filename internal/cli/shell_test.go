@@ -371,6 +371,39 @@ func TestShellModel(t *testing.T) {
 				t.Error("review must stay closed while a scan is running")
 			}
 		}},
+		// A changed setting rewrites the plan off the UI goroutine. Until it
+		// lands, a copy would place files under the old layout for good, a
+		// review would edit folders about to be replaced, and a second save or
+		// a scan would start a second plan beside it.
+		{"PlanIsClosedWhileASettingsReplanRuns", func(t *testing.T) {
+			m := testShell(t)
+			seedProposal(t, m.a)
+			m.refresh()
+			before := m.a.Config.Settings
+			m.a.Config.Rules = []string{"device"}
+			m.settingsSaved(before)
+
+			if m.canReview() || m.nextTab() != tabScan {
+				t.Errorf("mid re-plan: canReview=%v nextTab=%d, want every other tab shut", m.canReview(), m.nextTab())
+			}
+			for name, open := range map[string]func(*shellModel) tea.Cmd{
+				"Organise": (*shellModel).openReview, "Copy": (*shellModel).openCopy, "Settings": (*shellModel).openSettings,
+			} {
+				open(&m)
+				if m.tab != tabScan || m.opening {
+					t.Errorf("%s opened mid re-plan", name)
+				}
+			}
+			_, cmd := m.Update(tui.StartScanMsg{})
+			if ready, ok := cmd().(scanReadyMsg); !ok || !errors.Is(ready.err, errReplanning) {
+				t.Errorf("a scan started mid re-plan: %#v", cmd())
+			}
+
+			next, _ := m.Update(replanDoneMsg{})
+			if m = next.(shellModel); !m.canReview() {
+				t.Error("the new plan must be reviewable once the re-plan lands")
+			}
+		}},
 		// shift+tab builds the settings list, even before a library exists: the
 		// first save creates it.
 		{"SettingsTabOpensTheList", func(t *testing.T) {
