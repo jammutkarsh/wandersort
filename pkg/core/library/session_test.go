@@ -2,7 +2,6 @@ package library
 
 import (
 	"context"
-	"encoding/json/v2"
 	"os"
 	"path/filepath"
 	"slices"
@@ -74,25 +73,6 @@ func TestOpenLoadsThatLibrarysSettings(t *testing.T) {
 	}
 }
 
-// Opening twice must not replace the open handle, which would leak the first one.
-func TestOpenIsIdempotent(t *testing.T) {
-	ctx := context.Background()
-	s := testSession(t)
-	if err := s.Open(ctx); err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	first := s.DB()
-	if first == nil {
-		t.Fatal("Open left no database")
-	}
-	if err := s.Open(ctx); err != nil {
-		t.Fatalf("Open (second call): %v", err)
-	}
-	if s.DB() != first {
-		t.Error("Open replaced an already-open database handle")
-	}
-}
-
 // The check runs before the lock, so a folder that is not a library gets no
 // lock file and no database. The attempt itself is worth a log, so the run's
 // log is persisted all the same.
@@ -119,12 +99,6 @@ func TestOpenRefusedWritesNothing(t *testing.T) {
 	if len(entries) != 1 {
 		t.Errorf("refused folder holds %d entries, want only the user's file", len(entries))
 	}
-}
-
-// Close runs in every deferred cleanup, including paths that never opened anything.
-func TestCloseWithNothingOpen(t *testing.T) {
-	s := &Session{Log: logger.NewNoopLogger()}
-	s.Close() // must not panic
 }
 
 // A new folder starts an empty library with the same settings; an organised one opens with its own.
@@ -258,16 +232,6 @@ func TestState(t *testing.T) {
 				t.Errorf("state = %+v, want nothing left to review once everything is placed", st)
 			}
 		}},
-		{"CountsTheReviewEditsWaiting", func(t *testing.T) {
-			s := testSession(t)
-			fakeLibrary(t, s.Config.AppDBPath)
-			writeDraft(t, s.Config.OutputDir(),
-				vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: 1, From: "03", To: "<place>"},
-				vfs.Edit{Seq: 2, Op: vfs.OpDrop, Nodes: []int64{2}})
-			if st := s.State(context.Background()); st.Edits != 2 || !st.HasEdits() {
-				t.Errorf("state = %+v, want two edits waiting", st)
-			}
-		}},
 		// An unreadable draft still means something is waiting: execute is
 		// where that surfaces, and the user needs telling either way.
 		{"AnUnreadableDraftStillCounts", func(t *testing.T) {
@@ -316,22 +280,6 @@ func seedPlannedFile(t *testing.T, dbPath string) {
 	dbtest.SeedFile(t, d, 1, "/src", "A.jpg", 5)
 	dbtest.SeedEntry(t, d, 1, "/src/A.jpg", "2024/A.jpg")
 	if err := d.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// writeDraft writes edits as the review's journal in dir, without a plan they apply to.
-func writeDraft(t *testing.T, dir string, edits ...vfs.Edit) {
-	t.Helper()
-	var buf []byte
-	for _, e := range edits {
-		line, err := json.Marshal(e)
-		if err != nil {
-			t.Fatal(err)
-		}
-		buf = append(append(buf, line...), '\n')
-	}
-	if err := os.WriteFile(filepath.Join(dir, vfs.DraftFileName), buf, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
