@@ -35,7 +35,8 @@ type Session struct {
 	lock *lock.Lock
 }
 
-// DB is the open library's database, or nil while none is open.
+// DB is the open library's database, or nil while none is open. A getter, not
+// a field, so only Open and Close change the handle, always with the lock.
 func (s *Session) DB() *db.DB { return s.db }
 
 // LibraryExists reports whether the output folder already holds a library
