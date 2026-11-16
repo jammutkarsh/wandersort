@@ -636,7 +636,7 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 // at once and drops any stashed review screen (its folder IDs are gone). The
 // settings tab is unreachable during a scan, so no workflow is retargeted.
 func (m *shellModel) settingsSaved(before config.Settings) tea.Cmd {
-	// ponytail: only the home screen shows the receipt, so it is lost if a
+	// only the home screen shows the receipt, so it is lost if a
 	// finished scan screen still holds the tab
 	cmd := m.forward(tabScan, tui.HomeNoteMsg{Text: "Settings saved."})
 

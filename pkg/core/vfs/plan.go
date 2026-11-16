@@ -511,7 +511,7 @@ func hasLocationLevel(m *masterFile) bool {
 // locationParent is the folder path m's location level sits under: everything
 // dirFor emits above it. Files sharing it are siblings at that level.
 //
-// ponytail: computed pre-merge, so a located sibling that the day merge (step 6)
+// computed pre-merge, so a located sibling that the day merge (step 6)
 // later lifts into a day *range* leaves the Unknown behind alone in its day.
 // Order the two passes properly if that shows up in practice.
 func locationParent(m *masterFile, skip map[string]bool, cfg Config) string {
@@ -795,7 +795,7 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 			// and its folder date, or a sidecar (file mtime only) lands in a
 			// different month than its path
 			//
-			// ponytail: an undated leader has no folder time to copy, so a dated
+			// an undated leader has no folder time to copy, so a dated
 			// member still lands in its own Fallback folder. Give masterFile an
 			// explicit folder time if that turns up.
 			masters[i].folderDate = masters[leader].folderTime()

@@ -87,7 +87,7 @@ type folderIndex struct {
 // renaming one would rename where the placed file is recorded. A new file
 // routed into a placed folder gets a same-path twin instead.
 //
-// ponytail: each transfer into a twin adds one more placed folder at that path.
+// each transfer into a twin adds one more placed folder at that path.
 // route takes the oldest; fold same-path placed folders if the count matters.
 func loadFolders(ctx context.Context, tx *sqlx.Tx) (*folderIndex, error) {
 	var rows []folderRow
