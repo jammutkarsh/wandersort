@@ -150,7 +150,7 @@ func TestConfig(t *testing.T) {
 		// leaving an edit unsaved changes nothing.
 		{"SettingsListEditsOneRow", func(t *testing.T) {
 			a := &app{Session: library.Session{Config: testConfig(t), Log: logger.NewNoopLogger(), LogFile: testLogFile(t, t.TempDir())}}
-			if err := a.openLibrary(context.Background()); err != nil {
+			if err := a.Open(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			defer a.closeDBs()

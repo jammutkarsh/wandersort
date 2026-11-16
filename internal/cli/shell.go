@@ -133,17 +133,19 @@ type depsDoneMsg struct{ err error }
 // runShell is the one full-screen program hosting scan, settings and review.
 // start says which tab it opens on.
 func (a *app) runShell(start shellStart) error {
-	// on the way out: stop running work, wait for it, then flush and close
 	ctx, cancel := context.WithCancel(context.Background())
-	defer a.closeDBs()
-	defer a.Work.CloseAndWait()
-	defer cancel()
-
 	events := make(chan logger.Event, 4096)
 	tuiLog := logger.NewTUI(a.LogFile, func(e logger.Event) { events <- e })
 	origLog := a.Log
 	a.Log = tuiLog
-	defer func() { a.Log = origLog }()
+	// on the way out: stop running work, wait for it, then flush and close.
+	// The log goes back only once no work is left to read it.
+	defer func() {
+		cancel()
+		a.Work.CloseAndWait()
+		a.Log = origLog
+		a.closeDBs()
+	}()
 
 	gate := tui.NewReadyModel(
 		tui.ReadyItem{Phase: install.PhaseExiftool, Label: depLabels[install.PhaseExiftool]},
@@ -174,18 +176,18 @@ func (a *app) runShell(start shellStart) error {
 	)
 	a.Deps.Start(ctx)
 	// both goroutines end with the session context; shutdown waits for them
-	if a.Work.Start() {
+	if done, ok := a.Work.Start(); ok {
 		go func() {
-			defer a.Work.Done()
+			defer done()
 			err := waitForDeps(ctx, a.Deps)
 			if !errors.Is(err, context.Canceled) {
 				prog.Send(depsDoneMsg{err: err})
 			}
 		}()
 	}
-	if a.Work.Start() {
+	if done, ok := a.Work.Start(); ok {
 		go func() {
-			defer a.Work.Done()
+			defer done()
 			for {
 				select {
 				case e := <-events:
@@ -237,7 +239,7 @@ func (m shellModel) updateGate(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds := []tea.Cmd{m.place(tabScan, m.screens[tabScan]), m.startCmd()}
 			// the last run's library opens straight away, so nothing asks for it
 			if m.a.DB() == nil && m.a.LibraryExists() {
-				if err := m.a.openLibrary(m.ctx); err != nil {
+				if err := m.a.Open(m.ctx); err != nil {
 					cmds = append(cmds, m.forward(tabScan, tui.HomeErrMsg{Err: err}))
 				}
 				m.refresh()
@@ -322,7 +324,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tui.StartScanMsg:
 		// opened here, on the UI goroutine, which is the only one that writes
 		// the app's library fields; opening is quick (the lock never waits)
-		if err := m.a.openLibrary(m.ctx); err != nil {
+		if err := m.a.Open(m.ctx); err != nil {
 			return m, msgCmd(scanReadyMsg{err: err})
 		}
 		// a folder overlapping the library is refused before the scan screen
@@ -673,10 +675,11 @@ type replanDoneMsg struct{ err error }
 func (m *shellModel) replan() tea.Cmd {
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
-		if !a.Work.StartOnLibrary() {
+		done, ok := a.Work.StartOnLibrary()
+		if !ok {
 			return nil
 		}
-		defer a.Work.DoneOnLibrary()
+		defer done()
 		if _, err := a.rebuildTree(ctx); err != nil {
 			// logged as well as shown: a failed re-plan leaves copy with the old settings' plan
 			a.Log.Warn("Re-plan failed; copy would use the old plan. Save the settings again.",
@@ -794,14 +797,15 @@ func (m *shellModel) openReview() tea.Cmd {
 	a, ctx := m.a, m.ctx
 	// open on the UI goroutine (see StartScanMsg); building the tree is the
 	// slow part and runs off it
-	if err := a.openLibrary(ctx); err != nil {
+	if err := a.Open(ctx); err != nil {
 		return msgCmd(reviewOpenMsg{err: err})
 	}
 	return func() tea.Msg {
-		if !a.Work.StartOnLibrary() {
+		done, ok := a.Work.StartOnLibrary()
+		if !ok {
 			return nil
 		}
-		defer a.Work.DoneOnLibrary()
+		defer done()
 		model, err := a.newReviewScreen(ctx)
 		return reviewOpenMsg{model: model, err: err}
 	}
@@ -944,20 +948,22 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 		Paths:   paths,
 		LogPath: path.New().Friendly(a.LogFile.Path()),
 		Pipeline: func() error {
-			if !a.Work.StartOnLibrary() {
+			done, ok := a.Work.StartOnLibrary()
+			if !ok {
 				return context.Canceled
 			}
-			defer a.Work.DoneOnLibrary()
+			defer done()
 			res, err := wf.RunScan(ctx, paths, force)
 			a.RememberSources(res.Roots)
 			return err
 		},
 		Cancel: cancel,
 		ReviewNext: func() (tui.Tab, error) {
-			if !a.Work.StartOnLibrary() {
+			done, ok := a.Work.StartOnLibrary()
+			if !ok {
 				return nil, context.Canceled
 			}
-			defer a.Work.DoneOnLibrary()
+			defer done()
 			return a.newReviewScreen(ctx)
 		},
 	})
@@ -968,7 +974,7 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 // none, it shows the defaults and the first save creates the library.
 func (a *app) newSettingsScreen(ctx context.Context) (tui.Tab, error) {
 	if a.DB() == nil && a.LibraryExists() {
-		if err := a.openLibrary(ctx); err != nil {
+		if err := a.Open(ctx); err != nil {
 			return nil, err
 		}
 	}

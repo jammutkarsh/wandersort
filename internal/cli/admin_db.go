@@ -75,7 +75,7 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 		return fmt.Errorf("restore cancelled")
 	}
 
-	// not openLibrary: Restore refuses while any connection, ours included,
+	// not Open: Restore refuses while any connection, ours included,
 	// has the database open
 	a.LogFile.Persist()
 	l, err := a.lockOutput()
@@ -105,7 +105,7 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 
 	ctx, cancel := interruptible()
 	defer cancel()
-	if err := a.openLibrary(ctx); err != nil {
+	if err := a.Open(ctx); err != nil {
 		return err
 	}
 	defer a.closeDBs()

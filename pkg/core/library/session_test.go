@@ -13,6 +13,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
+	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -169,6 +170,38 @@ func TestSwitch(t *testing.T) {
 	}
 }
 
+// A switch that fails leaves the session as it was: nothing open stays nothing
+// open, and an open library is reopened.
+func TestSwitchFailureRestores(t *testing.T) {
+	ctx := context.Background()
+	busy := filepath.Join(t.TempDir(), "busy")
+	held, err := lock.AcquireOutput(busy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Unlock()
+
+	s := testSession(t)
+	old := s.Config.OutputDir()
+	if err := s.Switch(ctx, busy); err == nil {
+		t.Fatal("switched to a library another process holds")
+	}
+	if s.DB() != nil || s.LibraryExists() || s.Config.OutputDir() != old {
+		t.Errorf("with nothing open: open=%v exists=%v dir=%q, want nothing opened or created at %q",
+			s.DB() != nil, s.LibraryExists(), s.Config.OutputDir(), old)
+	}
+
+	if err := s.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Switch(ctx, busy); err == nil {
+		t.Fatal("switched to a library another process holds")
+	}
+	if s.DB() == nil || s.Config.OutputDir() != old {
+		t.Errorf("with a library open: open=%v dir=%q, want %q reopened", s.DB() != nil, s.Config.OutputDir(), old)
+	}
+}
+
 func TestState(t *testing.T) {
 	tests := []struct {
 		name string
@@ -306,14 +339,15 @@ func writeDraft(t *testing.T, dir string, edits ...vfs.Edit) {
 // Shutdown waits for running work and refuses work that starts after it.
 func TestWorkGroupShutdown(t *testing.T) {
 	var g WorkGroup
-	if !g.Start() {
+	done, ok := g.Start()
+	if !ok {
 		t.Fatal("Start refused before shutdown")
 	}
 	finished := make(chan struct{})
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		close(finished)
-		g.Done()
+		done()
 	}()
 	g.CloseAndWait()
 	select {
@@ -321,7 +355,7 @@ func TestWorkGroupShutdown(t *testing.T) {
 	default:
 		t.Fatal("CloseAndWait returned before the running work finished")
 	}
-	if g.Start() {
+	if _, ok := g.Start(); ok {
 		t.Error("work started after shutdown")
 	}
 }
@@ -329,22 +363,23 @@ func TestWorkGroupShutdown(t *testing.T) {
 // The library can't be switched while work runs on it, and work waits out a switch.
 func TestWorkGroupHoldLibrary(t *testing.T) {
 	var g WorkGroup
-	if !g.StartOnLibrary() {
+	done, ok := g.StartOnLibrary()
+	if !ok {
 		t.Fatal("StartOnLibrary refused")
 	}
 	if _, ok := g.HoldLibrary(); ok {
 		t.Fatal("library held while work ran on it")
 	}
-	g.DoneOnLibrary()
+	done()
 	release, ok := g.HoldLibrary()
 	if !ok {
 		t.Fatal("library not held once the work finished")
 	}
 	started := make(chan struct{})
 	go func() {
-		g.StartOnLibrary()
+		done, _ := g.StartOnLibrary()
 		close(started)
-		g.DoneOnLibrary()
+		done()
 	}()
 	select {
 	case <-started:

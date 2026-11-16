@@ -72,7 +72,7 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 
 	ctx, cancel := interruptible()
 	defer cancel()
-	if err := a.openLibrary(ctx); err != nil {
+	if err := a.Open(ctx); err != nil {
 		return err
 	}
 	defer a.closeDBs()
@@ -113,7 +113,7 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 
 // newCopyScreen opens the library and builds the Copy tab over what waits to be copied; stop ends its context.
 func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop context.CancelFunc, err error) {
-	if err := a.openLibrary(session); err != nil {
+	if err := a.Open(session); err != nil {
 		return nil, nil, err
 	}
 	outputDir := a.Config.OutputDir()
@@ -137,10 +137,11 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 		Plan:    plan,
 		Cancel:  cancel,
 		Run: func(onStep func(string), onProgress func(string, int64, int, int)) (tui.CopyResult, error) {
-			if !a.Work.StartOnLibrary() {
+			done, ok := a.Work.StartOnLibrary()
+			if !ok {
 				return tui.CopyResult{}, context.Canceled
 			}
-			defer a.Work.DoneOnLibrary()
+			defer done()
 			rep, err := execute.Run(ctx, a.DB(), a.Log, outputDir, execute.Options{
 				OnApplied:  a.cleanPreviews,
 				OnStep:     onStep,

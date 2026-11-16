@@ -52,7 +52,7 @@ wandersort check`,
 			return a.runRoot(cmd)
 		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// settings live in the library and are read by openLibrary; this
+			// settings live in the library and are read by Open; this
 			// only picks which library (this flag, else the last one used)
 			cfg, err := config.New()
 			if err != nil {

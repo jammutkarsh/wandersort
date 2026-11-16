@@ -86,9 +86,6 @@ func TestLockOutputSucceedsWhenFree(t *testing.T) {
 	defer l.Unlock()
 }
 
-// TestOpenLibraryIdempotent covers the early-return branch: calling it twice
-// must not replace an already-open handle (which would leak the first one's
-// file descriptor).
 // TestCloseDBsNilSafe is the "nothing was ever opened" path — closeDBs runs
 // unconditionally in every command's deferred cleanup, including the
 // no-database-found early-return paths, so it must not panic on a bare app.

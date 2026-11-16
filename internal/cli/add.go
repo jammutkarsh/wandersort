@@ -137,7 +137,7 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 	defer cancel()
 
 	isNew := !a.LibraryExists()
-	if err := a.openLibrary(ctx); err != nil {
+	if err := a.Open(ctx); err != nil {
 		return err
 	}
 	defer a.closeDBs()

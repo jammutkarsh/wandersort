@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/install"
@@ -97,10 +98,32 @@ func (a *app) lockOutput() (*lock.Lock, error) {
 	return l, nil
 }
 
-// openLibrary is Session.Open with a library held elsewhere explained for the terminal.
-func (a *app) openLibrary(ctx context.Context) error {
-	return explainBusy(a.Open(ctx))
+// Open, Switch and SaveSettings are the Session's, with a library held
+// elsewhere explained for the terminal; shadowing them leaves no unexplained way in.
+func (a *app) Open(ctx context.Context) error {
+	return explainBusy(a.Session.Open(ctx))
 }
+
+func (a *app) Switch(ctx context.Context, dir string) error {
+	return explainBusy(a.Session.Switch(ctx, dir))
+}
+
+func (a *app) SaveSettings(ctx context.Context, outputDir string, settings config.Settings) error {
+	return explainBusy(a.Session.SaveSettings(ctx, outputDir, settings))
+}
+
+// busyError words a library held by another process for the terminal, keeping the cause in the chain.
+type busyError struct {
+	cause error
+	pid   int
+}
+
+func (e *busyError) Error() string {
+	return tui.Bad.Render(fmt.Sprintf("Another wandersort is already running here (PID %d).", e.pid)) + "\n" +
+		tui.FaintTxt.Render("Stop it, then try again.")
+}
+
+func (e *busyError) Unwrap() error { return e.cause }
 
 // explainBusy turns a library held by another process into the styled message
 // and busy exit code; any other error passes through.
@@ -109,8 +132,7 @@ func explainBusy(err error) error {
 	if !ok {
 		return err
 	}
-	return withCode(exitBusy, fmt.Errorf("%s", tui.Bad.Render(fmt.Sprintf("Another wandersort is already running here (PID %d).", running.PID))+"\n"+
-		tui.FaintTxt.Render("Stop it, then try again.")))
+	return withCode(exitBusy, &busyError{cause: err, pid: running.PID})
 }
 
 // closeDBs closes the library and the location database; safe when neither is open.

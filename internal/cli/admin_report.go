@@ -165,7 +165,7 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 }
 
 // exportErrors reads the errors table for the report, opening the database
-// read-only on its own (no lock, no openLibrary). A missing or busy database
+// read-only on its own (no lock, no Open). A missing or busy database
 // costs the error report, never the logs.
 func (a *app) exportErrors(redactPaths bool) ([]report.Row, []string) {
 	if !a.LibraryExists() {

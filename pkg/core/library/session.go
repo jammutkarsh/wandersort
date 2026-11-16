@@ -119,9 +119,10 @@ func (s *Session) SaveSettings(ctx context.Context, outputDir string, settings c
 	return nil
 }
 
-// Switch makes dir the session's library, reopening the old one if dir can't
-// be opened. An organised folder opens with its own settings; any other
-// starts a new library with the current ones.
+// Switch makes dir the session's library; if dir can't be opened the session
+// is left as it was, the old library reopened only if one was open. An
+// organised folder opens with its own settings; any other starts a new
+// library with the current ones.
 func (s *Session) Switch(ctx context.Context, dir string) error {
 	old := s.Config.OutputDir()
 	if dir == old {
@@ -138,11 +139,15 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 	_, statErr := os.Stat(filepath.Join(dir, filepath.Base(s.Config.AppDBPath)))
 	isNew := statErr != nil
 	carry := s.Config.Settings
+	wasOpen := s.db != nil
 
 	s.Close()
 	s.Config.SetOutput(dir)
 	if err := s.Open(ctx); err != nil {
 		s.Config.SetOutput(old)
+		if !wasOpen {
+			return err
+		}
 		return errors.Join(err, s.Open(ctx))
 	}
 	if isNew {
@@ -233,33 +238,28 @@ type WorkGroup struct {
 	library sync.RWMutex
 }
 
-// Start registers one piece of work, or reports false once shutdown began.
-func (g *WorkGroup) Start() bool {
+// Start registers one piece of work, ended by done, or reports false once shutdown began.
+func (g *WorkGroup) Start() (done func(), ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.closed {
-		return false
+		return nil, false
 	}
 	g.wg.Add(1)
-	return true
+	return g.wg.Done, true
 }
-
-// Done ends work registered with Start.
-func (g *WorkGroup) Done() { g.wg.Done() }
 
 // StartOnLibrary is Start for work on the open library; the library can't be switched while it runs.
-func (g *WorkGroup) StartOnLibrary() bool {
-	if !g.Start() {
-		return false
+func (g *WorkGroup) StartOnLibrary() (done func(), ok bool) {
+	stop, ok := g.Start()
+	if !ok {
+		return nil, false
 	}
 	g.library.RLock()
-	return true
-}
-
-// DoneOnLibrary ends work registered with StartOnLibrary.
-func (g *WorkGroup) DoneOnLibrary() {
-	g.library.RUnlock()
-	g.Done()
+	return func() {
+		g.library.RUnlock()
+		stop()
+	}, true
 }
 
 // HoldLibrary takes the library from all work, or reports false while any runs on it.

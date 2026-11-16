@@ -74,7 +74,7 @@ func (a *app) check(full bool, res *checkResult) error {
 
 	ctx, cancel := interruptible()
 	defer cancel()
-	if err := a.openLibrary(ctx); err != nil {
+	if err := a.Open(ctx); err != nil {
 		return err
 	}
 	defer a.closeDBs()

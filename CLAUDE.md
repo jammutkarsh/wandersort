@@ -12,7 +12,7 @@ Flow: `add` (scan → metadata → vfs) proposes a plan, `organise` edits it, `c
 
 ## Commands (`internal/cli`)
 
-One file per command, plus `app.go` (the `app` struct embedding `library.Session`, `openLibrary`, `confirm`), `root.go` (flags, library choice), `exit.go` (exit codes, `--json`) and `shell.go` (the TUI).
+One file per command, plus `app.go` (the `app` struct embedding `library.Session`, `confirm`), `root.go` (flags, library choice), `exit.go` (exit codes, `--json`) and `shell.go` (the TUI).
 
 | Command | File | What |
 |---|---|---|
@@ -24,7 +24,7 @@ One file per command, plus `app.go` (the `app` struct embedding `library.Session
 | `admin clear\|db\|report` | `admin_*.go` | Preview cache, `--reset`/`--restore`, issue zip |
 
 - Settings live in the library (`library_settings`), not a global file. The only per-run choice is which library: `--output-path`, else the most recent (`~/.wandersort/libraries`).
-- `library.Session.Open` is the one way to open a library: check folder, take lock, open DB, load settings, remember it. A session that never opens one writes nothing. The CLI's `openLibrary` wraps it to explain a busy library in the terminal.
+- `library.Session.Open` is the one way to open a library: check folder, take lock, open DB, load settings, remember it. A session that never opens one writes nothing. The CLI's `app` shadows `Open`, `Switch` and `SaveSettings` to explain a busy library in the terminal.
 - The shell opens on the getting-ready screen (`tui.ReadyModel`) until exiftool and the locationDB are installed: `install.MaxTries` tries, asking for a better network between them; giving up exits 1. Then it opens the last library, if there is one.
 - The shell opens on the Add tab. A folder dropped on the terminal arrives as a paste; `path.Resolver.Dropped` unquotes and unescapes it. Path completion (tab, dropdown) stays beside drop on Add and in the library field. `ctrl+o` on Add opens the system folder window (`tui.PickFolder`, passed in on `HomeConfig`; absent when the system has none). `esc esc` quits when no scan or copy runs, else warns in the tab bar; `esc` on a running scan or copy stops it. A scan with nothing to copy skips the folders-ready screen and returns to Add (`tui.ErrNothingNew`).
 - Library reset is CLI only (`admin db --reset`); no key binding.
