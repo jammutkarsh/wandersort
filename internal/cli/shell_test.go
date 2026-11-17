@@ -405,6 +405,32 @@ func TestShellModel(t *testing.T) {
 				t.Error("a review built over the old plan was shown mid re-plan")
 			}
 		}},
+		// Quitting cancels the session's work; a re-plan cut short leaves the
+		// new settings saved over the old plan, which a later copy would use.
+		{"QuitWaitsForAReplan", func(t *testing.T) {
+			m := testShell(t)
+			enter, _ := m.a.Work.StartRewrite()
+			quits := func(msgs ...tea.Msg) bool {
+				var cmd tea.Cmd
+				for _, msg := range msgs {
+					var next tea.Model
+					next, cmd = m.Update(msg)
+					m = next.(shellModel)
+				}
+				return slices.ContainsFunc(flattenTeaCmd(cmd), func(msg tea.Msg) bool {
+					_, quit := msg.(tea.QuitMsg)
+					return quit
+				})
+			}
+			esc := tea.KeyMsg{Type: tea.KeyEsc}
+			if quits(esc, esc) || quits(tui.Leave{Quit: true}) {
+				t.Error("the shell quit while a re-plan was running")
+			}
+			enter()()
+			if !quits(tui.Leave{Quit: true}) {
+				t.Error("the shell must quit once the re-plan has landed")
+			}
+		}},
 		// Two rows saved in a row are two re-plans; the first one landing must
 		// not reopen the plan under the second.
 		{"PlanReopensOnlyAfterTheLastReplan", func(t *testing.T) {

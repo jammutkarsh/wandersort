@@ -494,6 +494,10 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.escArmed = false
 			return m, tea.Batch(m.forward(m.tab, k), m.setNotice("busy — esc stops it on its own tab"))
 		}
+		if m.a.Work.Rewriting() {
+			m.escArmed = false
+			return m, tea.Batch(m.forward(m.tab, k), m.setNotice(replanQuitNotice))
+		}
 		if !m.escArmed {
 			m.escArmed = true
 			return m, tea.Batch(m.forward(m.tab, k), m.setNotice("esc again to quit"))
@@ -592,6 +596,10 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 	// Quit first: a scan can hand back asynchronously from a tab the user
 	// isn't on, so this must not be read as the current tab finishing.
 	if l.Quit {
+		// a re-plan cut short leaves the new settings with the old plan
+		if m.a.Work.Rewriting() {
+			return m, m.setNotice(replanQuitNotice)
+		}
 		return m, tea.Quit
 	}
 
@@ -682,6 +690,9 @@ func (m *shellModel) onLibrary(what string, run func(context.Context) (string, e
 
 // replanDoneMsg reports a settings re-plan ending; only a failure says anything.
 type replanDoneMsg struct{ err error }
+
+// replanQuitNotice answers a quit asked for while a re-plan runs.
+const replanQuitNotice = "re-planning with the new settings — quit when it's done"
 
 // errReplanning refuses whatever would read or replace the plan mid re-plan.
 var errReplanning = errors.New("still re-planning with the new settings; try again in a moment")
