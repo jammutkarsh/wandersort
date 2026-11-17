@@ -113,8 +113,18 @@ type busyError struct {
 }
 
 func (e *busyError) Error() string {
-	return tui.Bad.Render(fmt.Sprintf("Another wandersort is already running here (PID %d).", e.pid)) + "\n" +
+	msg := tui.Bad.Render(fmt.Sprintf("Another wandersort is already running here (PID %d).", e.pid)) + "\n" +
 		tui.FaintTxt.Render("Stop it, then try again.")
+	// a failed switch joins the busy folder with why the old library did not
+	// reopen; that second failure must not hide behind the first
+	if joined, ok := e.cause.(interface{ Unwrap() []error }); ok {
+		for _, part := range joined.Unwrap() {
+			if _, busy := errors.AsType[*lock.AlreadyRunningError](part); !busy {
+				msg += "\n" + part.Error()
+			}
+		}
+	}
+	return msg
 }
 
 func (e *busyError) Unwrap() error { return e.cause }
