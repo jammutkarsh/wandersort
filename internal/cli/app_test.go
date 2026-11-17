@@ -28,10 +28,6 @@ func testConfig(t *testing.T) *config.Configuration {
 	return cfg
 }
 
-// TestOpenLibraryLoadsThatLibrarysSettings: a library's rules come back with it,
-// and opening it makes it the most recently used one.
-// testConfigAt is testConfig pointed at an existing library, without moving
-// $HOME (which would lose the history the first session wrote).
 // TestIsTuiEnabled pins the --plain escape hatch: it must short-circuit the
 // terminal check rather than merely influence it, since `go test` never runs
 // with a terminal on stderr and the branch would otherwise be untestable.
