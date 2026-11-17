@@ -398,10 +398,31 @@ func TestShellModel(t *testing.T) {
 			if ready, ok := cmd().(scanReadyMsg); !ok || !errors.Is(ready.err, errReplanning) {
 				t.Errorf("a scan started mid re-plan: %#v", cmd())
 			}
+			// an Organise screen whose build was already running when the
+			// setting was saved shows the plan being replaced
+			next, _ := m.Update(reviewOpenMsg{model: &probe{name: "review"}})
+			if m = next.(shellModel); m.screens[tabReview] != nil || m.tab != tabScan {
+				t.Error("a review built over the old plan was shown mid re-plan")
+			}
+		}},
+		// Two rows saved in a row are two re-plans; the first one landing must
+		// not reopen the plan under the second.
+		{"PlanReopensOnlyAfterTheLastReplan", func(t *testing.T) {
+			m := testShell(t)
+			seedProposal(t, m.a)
+			m.refresh()
+			first, _ := m.a.Work.StartRewrite()
+			second, _ := m.a.Work.StartRewrite()
 
+			first()()
 			next, _ := m.Update(replanDoneMsg{})
+			if m = next.(shellModel); m.canReview() {
+				t.Error("the plan reopened while a second re-plan was still to run")
+			}
+			second()()
+			next, _ = m.Update(replanDoneMsg{})
 			if m = next.(shellModel); !m.canReview() {
-				t.Error("the new plan must be reviewable once the re-plan lands")
+				t.Error("the new plan must be reviewable once the last re-plan lands")
 			}
 		}},
 		// shift+tab builds the settings list, even before a library exists: the

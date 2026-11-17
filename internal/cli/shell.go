@@ -90,9 +90,6 @@ type shellModel struct {
 	w, h int
 
 	opening bool // a review is being built off the UI goroutine
-	// replanning is a settings re-plan rewriting the plan off the UI goroutine;
-	// until it lands nothing may read the old plan or start another
-	replanning bool
 
 	// notice replaces the library name in the tab bar for escWindow; escArmed
 	// is the same window, in which a second esc quits
@@ -325,7 +322,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleLeave(msg)
 
 	case tui.StartScanMsg:
-		if m.replanning {
+		if m.a.Work.Rewriting() {
 			return m, msgCmd(scanReadyMsg{err: errReplanning})
 		}
 		// opened here, on the UI goroutine, which is the only one that writes
@@ -432,7 +429,6 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, m.forward(tabScan, tui.HomeNoteMsg{Text: msg.note}))
 
 	case replanDoneMsg:
-		m.replanning = false
 		m.refresh() // the plan was just rewritten
 		if msg.err != nil {
 			return m, m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})
@@ -441,6 +437,9 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reviewOpenMsg:
 		m.opening = false
+		if m.a.Work.Rewriting() {
+			return m, nil // built over the plan a re-plan is replacing
+		}
 		if errors.Is(msg.err, tui.ErrNothingNew) {
 			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: tui.Explain(msg.err)})
 		}
@@ -644,8 +643,13 @@ func (m *shellModel) settingsSaved(before config.Settings) tea.Cmd {
 		return cmd // a visit that changed nothing throws no plan away
 	}
 	m.screens[tabReview] = nil
-	m.replanning = true
-	return tea.Batch(cmd, m.replan())
+	// registered here, on the UI goroutine, so the very next message already
+	// finds the plan shut (see planChanging)
+	enter, ok := m.a.Work.StartRewrite()
+	if !ok {
+		return cmd
+	}
+	return tea.Batch(cmd, m.replan(enter))
 }
 
 // libraryEmptiedMsg reports a discarded plan or a reset: what to tell
@@ -682,15 +686,13 @@ type replanDoneMsg struct{ err error }
 // errReplanning refuses whatever would read or replace the plan mid re-plan.
 var errReplanning = errors.New("still re-planning with the new settings; try again in a moment")
 
-// replan re-proposes the whole library under the saved settings, off the UI goroutine.
-func (m *shellModel) replan() tea.Cmd {
+// replan re-proposes the whole library under the saved settings, off the UI
+// goroutine. enter is the rewrite settingsSaved registered: it waits for work
+// on the library (and any earlier re-plan) before this one runs alone.
+func (m *shellModel) replan(enter func() func()) tea.Cmd {
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
-		done, ok := a.Work.StartOnLibrary()
-		if !ok {
-			return replanDoneMsg{}
-		}
-		defer done()
+		defer enter()()
 		if _, err := a.rebuildTree(ctx); err != nil {
 			// logged as well as shown: a failed re-plan leaves copy with the old settings' plan
 			a.Log.Warn("Re-plan failed; copy would use the old plan. Save the settings again.",
@@ -789,7 +791,7 @@ func homeMsg(s library.State) tui.HomeLibraryMsg {
 // openSettings places the settings wizard, seeded from the library's own
 // settings (opening an existing library first). Rebuilt on every entry.
 func (m *shellModel) openSettings() tea.Cmd {
-	if m.replanning {
+	if m.a.Work.Rewriting() {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: errReplanning})
 	}
 	screen, err := m.a.newSettingsScreen(m.ctx)
@@ -804,7 +806,7 @@ func (m *shellModel) openSettings() tea.Cmd {
 // openReview builds the review over the database off the UI goroutine (lock,
 // DB open and BuildTree are slow).
 func (m *shellModel) openReview() tea.Cmd {
-	if m.replanning {
+	if m.a.Work.Rewriting() {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: errReplanning})
 	}
 	if m.opening {
@@ -840,7 +842,7 @@ func (m *shellModel) openCopy() tea.Cmd {
 		m.tab = tabCopy
 		return nil
 	}
-	if m.replanning {
+	if m.a.Work.Rewriting() {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: errReplanning})
 	}
 	screen, stop, err := m.a.newCopyScreen(m.ctx)
@@ -862,7 +864,7 @@ func (m shellModel) scanRunning() bool {
 }
 
 // planChanging reports whether a scan or a settings re-plan is rewriting the plan.
-func (m shellModel) planChanging() bool { return m.scanRunning() || m.replanning }
+func (m shellModel) planChanging() bool { return m.scanRunning() || m.a.Work.Rewriting() }
 
 // place installs a new screen, sized to the current window, and inits it.
 func (m *shellModel) place(tab int, s tui.Tab) tea.Cmd {

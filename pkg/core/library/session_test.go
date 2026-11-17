@@ -284,6 +284,54 @@ func seedPlannedFile(t *testing.T, dbPath string) {
 	}
 }
 
+// A plan rewrite waits for work already on the library, keeps other work off
+// it while it runs, and two of them run one after the other. Rewriting stays
+// true until the last one ends.
+func TestWorkGroupRewrite(t *testing.T) {
+	var g WorkGroup
+	reading, _ := g.StartOnLibrary()
+	enterFirst, ok := g.StartRewrite()
+	enterSecond, ok2 := g.StartRewrite()
+	if !ok || !ok2 || !g.Rewriting() {
+		t.Fatalf("rewrites registered: %v %v, rewriting=%v", ok, ok2, g.Rewriting())
+	}
+
+	firstIn := make(chan func())
+	go func() { firstIn <- enterFirst() }()
+	select {
+	case <-firstIn:
+		t.Fatal("a rewrite started beside work running on the library")
+	case <-time.After(50 * time.Millisecond):
+	}
+	reading()
+	endFirst := <-firstIn
+
+	secondIn := make(chan func())
+	go func() { secondIn <- enterSecond() }()
+	started := make(chan struct{})
+	go func() {
+		done, _ := g.StartOnLibrary()
+		close(started)
+		done()
+	}()
+	select {
+	case <-secondIn:
+		t.Fatal("two rewrites ran at once")
+	case <-started:
+		t.Fatal("work started on a library whose plan is being rewritten")
+	case <-time.After(50 * time.Millisecond):
+	}
+	endFirst()
+	if !g.Rewriting() {
+		t.Error("Rewriting cleared while a second rewrite was still to run")
+	}
+	(<-secondIn)()
+	<-started
+	if g.Rewriting() {
+		t.Error("Rewriting still set after the last rewrite ended")
+	}
+}
+
 // Shutdown waits for running work and refuses work that starts after it.
 func TestWorkGroupShutdown(t *testing.T) {
 	var g WorkGroup

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
@@ -251,8 +252,11 @@ type WorkGroup struct {
 	mu     sync.Mutex
 	closed bool
 	wg     sync.WaitGroup
-	// library is read-held by work on the open library and write-held while it is swapped
+	// library is read-held by work on the open library and write-held while
+	// it is swapped or its plan is rewritten
 	library sync.RWMutex
+	// rewrites counts plan rewrites registered and not yet ended
+	rewrites atomic.Int32
 }
 
 // Start registers one piece of work, ended by done, or reports false once shutdown began.
@@ -278,6 +282,30 @@ func (g *WorkGroup) StartOnLibrary() (done func(), ok bool) {
 		stop()
 	}, true
 }
+
+// StartRewrite registers work that replaces the library's whole plan, so
+// anything built over the plan before it is stale. Rewriting is true from
+// this call until the work ends. enter waits for the work already running on
+// the library, then holds it alone: rewrites run one at a time and no other
+// work starts on the library beside one. enter returns the func that ends it.
+func (g *WorkGroup) StartRewrite() (enter func() (done func()), ok bool) {
+	stop, ok := g.Start()
+	if !ok {
+		return nil, false
+	}
+	g.rewrites.Add(1)
+	return func() func() {
+		g.library.Lock()
+		return func() {
+			g.library.Unlock()
+			g.rewrites.Add(-1)
+			stop()
+		}
+	}, true
+}
+
+// Rewriting reports whether a plan rewrite is waiting or running.
+func (g *WorkGroup) Rewriting() bool { return g.rewrites.Load() > 0 }
 
 // HoldLibrary takes the library from all work, or reports false while any runs on it.
 func (g *WorkGroup) HoldLibrary() (release func(), ok bool) {
