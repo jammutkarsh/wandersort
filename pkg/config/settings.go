@@ -75,6 +75,17 @@ func LoadSettings(ctx context.Context, database *db.DB) (Settings, error) {
 	return s, nil
 }
 
+// SettingsSaved reports whether the library has settings of its own, rather
+// than the defaults LoadSettings answers with for one that never saved any.
+func SettingsSaved(ctx context.Context, database *db.DB) (bool, error) {
+	var saved bool
+	err := database.SQL.GetContext(ctx, &saved, `SELECT EXISTS (SELECT 1 FROM library_settings WHERE id = 1)`)
+	if err != nil {
+		return false, fmt.Errorf("read library settings: %w", err)
+	}
+	return saved, nil
+}
+
 // SaveSettings writes the library's settings, replacing whatever was there:
 // the wizard always submits every setting, so there is nothing to merge.
 func SaveSettings(ctx context.Context, database *db.DB, s Settings) error {

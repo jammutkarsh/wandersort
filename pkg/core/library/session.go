@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -121,10 +120,12 @@ func (s *Session) SaveSettings(ctx context.Context, outputDir string, settings c
 	return nil
 }
 
-// Switch makes dir the session's library. An organised folder opens with its
-// own settings; any other starts a new library with the current ones. If dir
-// can't be opened, or a new library can't take the settings, the session is
-// left as it was, the old library reopened only if one was open.
+// Switch makes dir the session's library. A library there opens with its own
+// settings; a new one takes the current ones. New means no settings saved and
+// nothing recorded, not "no database yet", so a library a failed switch left
+// half made takes them on the next try. If dir can't be opened, or a new
+// library can't take the settings, the session is left as it was, the old
+// library reopened only if one was open.
 func (s *Session) Switch(ctx context.Context, dir string) error {
 	old := s.Config.OutputDir()
 	if dir == old {
@@ -138,16 +139,17 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 		return errors.New("busy with this library; change it when it's done")
 	}
 	defer release()
-	_, statErr := os.Stat(filepath.Join(dir, filepath.Base(s.Config.AppDBPath)))
-	isNew := statErr != nil
 	carry := s.Config.Settings
 	wasOpen := s.db != nil
 
 	s.Close()
 	s.Config.SetOutput(dir)
 	err := s.Open(ctx)
-	if err == nil && isNew {
-		err = s.SaveSettings(ctx, dir, carry)
+	if err == nil {
+		var isNew bool
+		if isNew, err = s.isNew(ctx); err == nil && isNew {
+			err = s.SaveSettings(ctx, dir, carry)
+		}
 	}
 	if err == nil {
 		return nil
@@ -159,6 +161,16 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 		return err
 	}
 	return errors.Join(err, s.Open(ctx))
+}
+
+// isNew reports whether the open library has never been used: no settings
+// saved and no file, folder or label recorded.
+func (s *Session) isNew(ctx context.Context) (bool, error) {
+	saved, err := config.SettingsSaved(ctx, s.db)
+	if err != nil || saved {
+		return false, err
+	}
+	return s.db.IsEmpty(ctx)
 }
 
 // Restore puts the library's backup back over its database (see Restore),

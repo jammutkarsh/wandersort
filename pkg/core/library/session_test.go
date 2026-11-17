@@ -144,6 +144,46 @@ func TestSwitch(t *testing.T) {
 	}
 }
 
+// "New" is decided by what the library holds, not by its file being there: a
+// library left half made (created, settings never written) still takes the
+// current settings, and one already holding files keeps the defaults it runs on.
+func TestSwitchCarriesSettingsOnlyIntoAnUnusedLibrary(t *testing.T) {
+	ctx := context.Background()
+	carried := []string{"device"}
+	for _, tc := range []struct {
+		name string
+		make func(t *testing.T, dbPath string)
+		want []string
+	}{
+		{"half made", func(t *testing.T, dbPath string) {
+			d, err := db.New(ctx, dbPath, logger.NewNoopLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := d.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}, carried},
+		{"holding files", seedPlannedFile, config.DefaultSettings().Rules},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testSession(t)
+			s.Config.Rules = carried
+			dir := filepath.Join(t.TempDir(), "library")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.make(t, filepath.Join(dir, filepath.Base(s.Config.AppDBPath)))
+			if err := s.Switch(ctx, dir); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(s.Config.Rules, tc.want) {
+				t.Errorf("rules = %v, want %v", s.Config.Rules, tc.want)
+			}
+		})
+	}
+}
+
 // A switch that fails leaves the session as it was: nothing open stays nothing
 // open, and an open library is reopened.
 func TestSwitchFailureRestores(t *testing.T) {
