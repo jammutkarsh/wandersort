@@ -98,9 +98,6 @@ func TestWorkflowDepsReadsThroughToCoordinator(t *testing.T) {
 	}
 }
 
-// TestOpenLibraryRefusedWritesNothing: the check runs before the lock, so a
-// folder that is not a library gets no lock file and no database. The attempt
-// itself is worth a log, so the run's log is persisted all the same.
 // TestConfirmPlainPrompt exercises the --plain y/N stdin path directly,
 // both answers, without going through a command.
 func TestConfirmPlainPrompt(t *testing.T) {
@@ -140,9 +137,6 @@ func TestConfirmPlainPrompt(t *testing.T) {
 	}
 }
 
-// Shutdown waits for running work and refuses work that starts after it.
-// The library can't be switched while work runs on it, and work waits out a switch.
-// A new folder starts an empty library with the same settings; an organised one opens with its own.
 // testLogFile is a log file in dir, closed before the test's temp folders are
 // removed: Windows can't remove an open file.
 func testLogFile(t *testing.T, dir string) *logger.File {
