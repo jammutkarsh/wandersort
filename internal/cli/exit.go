@@ -77,8 +77,8 @@ func (a *app) emitJSON(res jsonResult, start time.Time, err error) error {
 		return err
 	}
 	o := res.outcome()
-	if a.Config != nil {
-		o.Library = a.Config.OutputDir()
+	if a.Session != nil {
+		o.Library = a.OutputDir()
 	}
 	if !start.IsZero() {
 		o.ElapsedMS = time.Since(start).Milliseconds()

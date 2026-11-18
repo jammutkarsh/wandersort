@@ -59,7 +59,7 @@ func (a *app) runAdminDB(cmd *cobra.Command) error {
 }
 
 func (a *app) restoreDB(cmd *cobra.Command) error {
-	backup := filepath.Join(filepath.Dir(a.Config.AppDBPath), db.BackupFileName)
+	backup := filepath.Join(a.OutputDir(), db.BackupFileName)
 	info, err := os.Stat(backup)
 	if os.IsNotExist(err) {
 		return fmt.Errorf("no backup at %s", backup)
@@ -136,12 +136,12 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 
 // resetLibrary empties the open library's database (settings kept) and the preview copies.
 func (a *app) resetLibrary(ctx context.Context) error {
-	if err := library.Reset(ctx, a.DB(), a.Config.OutputDir(), a.Log); err != nil {
+	if err := library.Reset(ctx, a.DB(), a.OutputDir(), a.Log()); err != nil {
 		return err
 	}
 	// preview copies outlive a session, so a wipe has to take them too
 	if err := review.CleanPreviews(); err != nil {
-		a.Log.Warn("could not remove the preview copies", "error", err)
+		a.Log().Warn("could not remove the preview copies", "error", err)
 	}
 	return nil
 }

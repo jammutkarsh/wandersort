@@ -61,10 +61,7 @@ func TestOpenExplainsABusyLibrary(t *testing.T) {
 	}
 	defer held.Unlock()
 
-	a := &app{Session: library.Session{
-		Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")},
-		Log:    logger.NewNoopLogger(),
-	}}
+	a := &app{Session: library.New(&config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}, logger.NewNoopLogger(), nil)}
 	err = a.Open(context.Background())
 	if err == nil {
 		t.Fatal("Open must fail while another process holds the library")
@@ -78,7 +75,7 @@ func TestOpenExplainsABusyLibrary(t *testing.T) {
 // unconditionally in every command's deferred cleanup, including the
 // no-database-found early-return paths, so it must not panic on a bare app.
 func TestCloseDBsNilSafe(t *testing.T) {
-	a := &app{Session: library.Session{Log: logger.NewNoopLogger()}}
+	a := &app{Session: library.New(&config.Configuration{}, logger.NewNoopLogger(), nil)}
 	a.closeDBs() // must not panic
 }
 
@@ -87,7 +84,7 @@ func TestCloseDBsNilSafe(t *testing.T) {
 // closures are built — the TUI path constructs the workflow before a.Deps
 // exists, and relies on exactly this indirection.
 func TestWorkflowDepsReadsThroughToCoordinator(t *testing.T) {
-	a := &app{Session: library.Session{Config: testConfig(t), Log: logger.NewNoopLogger()}}
+	a := &app{Session: library.New(testConfig(t), logger.NewNoopLogger(), nil)}
 	deps := a.workflowDeps()
 	a.Deps = a.newDeps(nil, nil)
 

@@ -73,7 +73,7 @@ func (a *app) newSettingsForm(ctx context.Context, geonames func() (*location.Re
 	f := &settingsForm{
 		a: a, ctx: ctx, geonames: geonames, paths: paths,
 		// prefilled with the last library, or the default one
-		out:      paths.RelativeToHome(a.Config.OutputDir()),
+		out:      paths.RelativeToHome(a.OutputDir()),
 		layout:   layoutChoice(s.Rules),
 		collapse: s.CollapseLevels, dateOnly: s.SavedPlacesDateOnly, mergeDays: s.MergeSameLocationDays,
 		home: s.HomeTown,
@@ -134,7 +134,7 @@ func (f *settingsForm) libraryField() *tui.Field {
 	homeDir := f.paths.HomeDir
 	// recently used libraries first, then common locations whose parent exists
 	var suggestions []string
-	for _, dir := range f.a.Config.History() {
+	for _, dir := range f.a.Configuration().History() {
 		suggestions = append(suggestions, f.paths.RelativeToHome(dir))
 	}
 	for _, c := range []string{
@@ -305,7 +305,7 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 			tuning = "all on"
 		}
 		return []tui.SettingRow{
-			{Label: "Library folder", Value: path.New().Friendly(a.Config.OutputDir()), Edit: func() ([]*tui.Field, func() error) {
+			{Label: "Library folder", Value: path.New().Friendly(a.OutputDir()), Edit: func() ([]*tui.Field, func() error) {
 				f := a.newSettingsForm(ctx, geonames)
 				return []*tui.Field{f.libraryField()}, func() error {
 					return a.Switch(ctx, f.libraryDir(f.out))

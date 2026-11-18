@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func testSession(t *testing.T) *Session {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Session{Config: cfg, Log: logger.NewNoopLogger(), LogFile: testLogFile(t, t.TempDir())}
+	s := New(cfg, logger.NewNoopLogger(), testLogFile(t, t.TempDir()))
 	t.Cleanup(s.Close) // Windows can't remove an open database
 	return s
 }
@@ -61,8 +62,8 @@ func TestOpenLoadsThatLibrarysSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.SetOutput(s.Config.OutputDir())
-	next := &Session{Config: cfg, Log: logger.NewNoopLogger()}
+	cfg.SetOutput(s.OutputDir())
+	next := New(cfg, logger.NewNoopLogger(), nil)
 	if err := next.Open(ctx); err != nil {
 		t.Fatalf("Open (second session): %v", err)
 	}
@@ -70,7 +71,7 @@ func TestOpenLoadsThatLibrarysSettings(t *testing.T) {
 	if !next.Settings().Equal(want) {
 		t.Errorf("settings = %+v, want the library's own %+v", next.Settings(), want)
 	}
-	if hist := next.Config.History(); len(hist) == 0 || hist[0] != cfg.OutputDir() {
+	if hist := next.Configuration().History(); len(hist) == 0 || hist[0] != cfg.OutputDir() {
 		t.Errorf("history = %v, want the library just opened at the front", hist)
 	}
 }
@@ -83,11 +84,11 @@ func TestOpenRefusedWritesNothing(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "IMG_0001.JPG"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := &Session{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}, Log: logger.NewNoopLogger(), LogFile: testLogFile(t, t.TempDir())}
+	s := New(&config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}, logger.NewNoopLogger(), testLogFile(t, t.TempDir()))
 	if err := s.Open(context.Background()); err == nil {
 		t.Fatal("Open must refuse a folder holding someone else's files")
 	}
-	if s.LogFile.Path() == "" {
+	if s.LogFile().Path() == "" {
 		t.Error("Open must persist the run's log")
 	}
 	entries, err := os.ReadDir(dir)
@@ -166,7 +167,7 @@ func TestSwitch(t *testing.T) {
 	if err := s.Open(ctx); err != nil {
 		t.Fatal(err)
 	}
-	first := s.Config.OutputDir()
+	first := s.OutputDir()
 	settings := s.Settings()
 	settings.Rules = []string{"date"}
 	if err := s.SaveSettings(ctx, settings, noPlaces); err != nil {
@@ -182,8 +183,8 @@ func TestSwitch(t *testing.T) {
 	if err := s.DB().SQL.GetContext(ctx, &files, `SELECT COUNT(*) FROM file_registry`); err != nil {
 		t.Fatal(err)
 	}
-	if s.Config.OutputDir() != second || files != 0 || !slices.Equal(s.Settings().Rules, []string{"date"}) {
-		t.Errorf("new library at %q: files=%d rules=%v, want empty with the old rules", s.Config.OutputDir(), files, s.Settings().Rules)
+	if s.OutputDir() != second || files != 0 || !slices.Equal(s.Settings().Rules, []string{"date"}) {
+		t.Errorf("new library at %q: files=%d rules=%v, want empty with the old rules", s.OutputDir(), files, s.Settings().Rules)
 	}
 
 	settings = s.Settings()
@@ -238,7 +239,7 @@ func TestSwitchCarriesSettingsOnlyIntoAnUnusedLibrary(t *testing.T) {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			tc.make(t, filepath.Join(dir, filepath.Base(s.Config.AppDBPath)))
+			tc.make(t, filepath.Join(dir, filepath.Base(config.DBPath(s.OutputDir()))))
 			if err := s.Switch(ctx, dir); err != nil {
 				t.Fatal(err)
 			}
@@ -261,13 +262,13 @@ func TestSwitchFailureRestores(t *testing.T) {
 	defer held.Unlock()
 
 	s := testSession(t)
-	old := s.Config.OutputDir()
+	old := s.OutputDir()
 	if err := s.Switch(ctx, busy); err == nil {
 		t.Fatal("switched to a library another process holds")
 	}
-	if s.DB() != nil || s.LibraryExists() || s.Config.OutputDir() != old {
+	if s.DB() != nil || s.LibraryExists() || s.OutputDir() != old {
 		t.Errorf("with nothing open: open=%v exists=%v dir=%q, want nothing opened or created at %q",
-			s.DB() != nil, s.LibraryExists(), s.Config.OutputDir(), old)
+			s.DB() != nil, s.LibraryExists(), s.OutputDir(), old)
 	}
 
 	if err := s.Open(ctx); err != nil {
@@ -277,8 +278,8 @@ func TestSwitchFailureRestores(t *testing.T) {
 	if err := s.Switch(ctx, busy); err == nil {
 		t.Fatal("switched to a library another process holds")
 	}
-	if s.DB() != before || s.Config.OutputDir() != old {
-		t.Errorf("with a library open: same handle=%v dir=%q, want %q left open", s.DB() == before, s.Config.OutputDir(), old)
+	if s.DB() != before || s.OutputDir() != old {
+		t.Errorf("with a library open: same handle=%v dir=%q, want %q left open", s.DB() == before, s.OutputDir(), old)
 	}
 }
 
@@ -290,7 +291,7 @@ func TestSwitchToTheOpenLibrarySpelledOtherwise(t *testing.T) {
 	if err := s.Open(ctx); err != nil {
 		t.Fatal(err)
 	}
-	old, before := s.Config.OutputDir(), s.DB()
+	old, before := s.OutputDir(), s.DB()
 	alias := filepath.Join(t.TempDir(), "alias")
 	if err := os.Symlink(old, alias); err != nil {
 		t.Skipf("no symlinks here: %v", err)
@@ -298,8 +299,8 @@ func TestSwitchToTheOpenLibrarySpelledOtherwise(t *testing.T) {
 	if err := s.Switch(ctx, alias); err != nil {
 		t.Fatalf("Switch to the open library through a symlink: %v", err)
 	}
-	if s.DB() != before || s.Config.OutputDir() != old {
-		t.Errorf("same handle=%v dir=%q, want the open library kept at %q", s.DB() == before, s.Config.OutputDir(), old)
+	if s.DB() != before || s.OutputDir() != old {
+		t.Errorf("same handle=%v dir=%q, want the open library kept at %q", s.DB() == before, s.OutputDir(), old)
 	}
 }
 
@@ -316,7 +317,7 @@ func TestState(t *testing.T) {
 			if st.Exists || st.Open {
 				t.Errorf("state = %+v, want an empty folder", st)
 			}
-			if _, err := os.Stat(s.Config.AppDBPath); !os.IsNotExist(err) {
+			if _, err := os.Stat(config.DBPath(s.OutputDir())); !os.IsNotExist(err) {
 				t.Error("reading the state created a database")
 			}
 			if st.CanReview() {
@@ -328,7 +329,7 @@ func TestState(t *testing.T) {
 		// caller is deciding whether to do.
 		{"AClosedLibraryIsAnsweredByItsFile", func(t *testing.T) {
 			s := testSession(t)
-			fakeLibrary(t, s.Config.AppDBPath)
+			fakeLibrary(t, config.DBPath(s.OutputDir()))
 			st := s.State(context.Background())
 			if !st.Exists || st.Open || st.Planned != 0 {
 				t.Errorf("state = %+v, want exists and shut", st)
@@ -341,7 +342,7 @@ func TestState(t *testing.T) {
 		// left to plan stops claiming to have something to review.
 		{"AnOpenLibraryIsAnsweredByItsCount", func(t *testing.T) {
 			s := testSession(t)
-			seedPlannedFile(t, s.Config.AppDBPath)
+			seedPlannedFile(t, config.DBPath(s.OutputDir()))
 			if err := s.Open(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -363,14 +364,14 @@ func TestState(t *testing.T) {
 		// where that surfaces, and the user needs telling either way.
 		{"AnUnreadableDraftStillCounts", func(t *testing.T) {
 			s := testSession(t)
-			fakeLibrary(t, s.Config.AppDBPath)
+			fakeLibrary(t, config.DBPath(s.OutputDir()))
 			// A bad line that is not the last one: a torn final line is a
 			// crash mid-append and heals itself, this is corruption.
-			draft := filepath.Join(s.Config.OutputDir(), vfs.DraftFileName)
+			draft := filepath.Join(s.OutputDir(), vfs.DraftFileName)
 			if err := os.WriteFile(draft, []byte("{not json\n{\"seq\":2,\"op\":\"drop\"}\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := vfs.OpenDraft(s.Config.OutputDir(), nil); err == nil {
+			if _, err := vfs.OpenDraft(s.OutputDir(), nil); err == nil {
 				t.Fatal("this draft should be unreadable, or the test proves nothing")
 			}
 			if st := s.State(context.Background()); !st.HasEdits() {
@@ -555,4 +556,88 @@ func TestWorkGroupHoldLibrary(t *testing.T) {
 	}
 	release()
 	<-started
+}
+
+// Any goroutine may use the session while another switches libraries and
+// saves settings: readers never see the library half swapped (none open, or a
+// closed handle), and -race sees every field read under the session's lock.
+func TestSessionConcurrentUse(t *testing.T) {
+	ctx := context.Background()
+	s := testSession(t)
+	if err := s.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	dirs := []string{s.OutputDir(), filepath.Join(t.TempDir(), "other")}
+
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	read := func(check func() bool) {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if !check() {
+					return
+				}
+			}
+		}()
+	}
+	for range 2 {
+		read(func() bool {
+			if !s.State(ctx).Open || s.DB() == nil {
+				t.Error("a reader saw no library open mid switch")
+				return false
+			}
+			return true
+		})
+		// getters alone: a lock taken just before would hide an unguarded read from -race
+		read(func() bool { _ = s.Settings(); return true })
+		read(func() bool { _ = s.OutputDir(); return true })
+		read(func() bool { _ = s.Configuration(); return true })
+	}
+
+	for i := range 20 {
+		if err := s.Switch(ctx, dirs[(i+1)%2]); err != nil {
+			t.Fatal(err)
+		}
+		settings := s.Settings()
+		settings.CollapseLevels = i%2 == 0
+		if err := s.SaveSettings(ctx, settings, noPlaces); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	readers.Wait()
+}
+
+// Close waits for work running on the library before shutting its database.
+func TestCloseWaitsForWorkOnTheLibrary(t *testing.T) {
+	s := testSession(t)
+	if err := s.Open(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	done, _ := s.Work.StartOnLibrary()
+	closed := make(chan struct{})
+	go func() {
+		s.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Close shut the library under running work")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if s.DB() == nil {
+		t.Fatal("the database closed under running work")
+	}
+	done()
+	<-closed
+	if s.DB() != nil {
+		t.Error("Close left the library open")
+	}
 }

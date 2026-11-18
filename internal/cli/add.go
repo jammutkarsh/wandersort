@@ -141,11 +141,11 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 		return err
 	}
 	defer a.closeDBs()
-	library := path.New().RelativeToHome(a.Config.OutputDir())
+	library := path.New().RelativeToHome(a.OutputDir())
 	if isNew {
 		library += " (new, default settings)"
 	}
-	a.Log.Info(fmt.Sprintf("wandersort add · library %s · layout %s", library, layoutName(vfs.ConfigFor(a.Config).Rules, "/")),
+	a.Log().Info(fmt.Sprintf("wandersort add · library %s · layout %s", library, layoutName(vfs.ConfigFor(a.Configuration()).Rules, "/")),
 		logger.UserKey, true)
 
 	a.Deps = a.newDeps(nil, nil)
@@ -154,7 +154,7 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 		return err
 	}
 
-	wf := workflow.NewWorkflow(a.DB(), a.Log, a.Config, a.workflowDeps())
+	wf := workflow.NewWorkflow(a.DB(), a.Log(), a.Configuration(), a.workflowDeps())
 	scan, err := wf.RunScan(ctx, paths, force)
 	a.RememberSources(scan.Roots)
 	res.Found, res.Read, res.Planned = scan.Found, scan.Read, scan.Planned
@@ -167,7 +167,7 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 		return err
 	}
 	res.Unreadable = len(left)
-	a.Log.Info("next: wandersort organise to correct the plan, or wandersort copy to copy it in", logger.UserKey, true)
+	a.Log().Info("next: wandersort organise to correct the plan, or wandersort copy to copy it in", logger.UserKey, true)
 	if len(left) > 0 {
 		return withCode(exitPartial, fmt.Errorf("%s not be read; the next add tries again", human.Plural(len(left), "file could", "files could")))
 	}

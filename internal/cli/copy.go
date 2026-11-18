@@ -68,7 +68,7 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 		return fmt.Errorf("no database found — run 'wandersort add' first")
 	}
 
-	outputDir := a.Config.OutputDir()
+	outputDir := a.OutputDir()
 
 	ctx, cancel := interruptible()
 	defer cancel()
@@ -77,7 +77,7 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	}
 	defer a.closeDBs()
 
-	a.Log.Info("wandersort copy · library "+wspath.New().RelativeToHome(outputDir), logger.UserKey, true)
+	a.Log().Info("wandersort copy · library "+wspath.New().RelativeToHome(outputDir), logger.UserKey, true)
 	left, err := execute.LeftBehind(ctx, a.DB())
 	if err != nil {
 		return err
@@ -85,7 +85,7 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	res.NotRead = len(left)
 	defer a.reportLeftBehind(left)
 
-	rep, err := execute.Run(ctx, a.DB(), a.Log, outputDir, execute.Options{
+	rep, err := execute.Run(ctx, a.DB(), a.Log(), outputDir, execute.Options{
 		DryRun:    dryRun,
 		OnApplied: a.cleanPreviews,
 	})
@@ -116,7 +116,7 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 	if err := a.Open(session); err != nil {
 		return nil, nil, err
 	}
-	outputDir := a.Config.OutputDir()
+	outputDir := a.OutputDir()
 	files, bytes, err := execute.Pending(session, a.DB())
 	if err != nil {
 		return nil, nil, err
@@ -142,7 +142,7 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 				return tui.CopyResult{}, context.Canceled
 			}
 			defer done()
-			rep, err := execute.Run(ctx, a.DB(), a.Log, outputDir, execute.Options{
+			rep, err := execute.Run(ctx, a.DB(), a.Log(), outputDir, execute.Options{
 				OnApplied:  a.cleanPreviews,
 				OnStep:     onStep,
 				OnProgress: onProgress,
@@ -170,7 +170,7 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 func (a *app) copyProblems(ctx context.Context) []tui.CopyProblem {
 	failures, err := report.Failures(ctx, a.DB().SQL)
 	if err != nil {
-		a.Log.Warn("could not list the files left out", "error", err)
+		a.Log().Warn("could not list the files left out", "error", err)
 		return nil
 	}
 	var out []tui.CopyProblem
@@ -194,27 +194,27 @@ func (a *app) copyProblems(ctx context.Context) []tui.CopyProblem {
 // cleanPreviews removes the review's peek copies once the edits are applied.
 func (a *app) cleanPreviews() {
 	if err := review.CleanPreviews(); err != nil {
-		a.Log.Warn("could not remove the preview copies", "error", err)
+		a.Log().Warn("could not remove the preview copies", "error", err)
 	}
 }
 
 // saveFailurePage writes the failure page beside this run's log and returns its path; "" if it couldn't.
 func (a *app) saveFailurePage(ctx context.Context) string {
-	page := a.LogFile.Page()
+	page := a.LogFile().Page()
 	if page == "" {
 		return ""
 	}
 	failures, err := report.Failures(ctx, a.DB().SQL)
 	if err == nil {
 		err = report.SaveHTML(page, failures, report.PageInfo{
-			Library: a.Config.OutputDir(), When: time.Now(), LogPath: a.LogFile.Path(),
+			Library: a.OutputDir(), When: time.Now(), LogPath: a.LogFile().Path(),
 		})
 	}
 	if err != nil {
-		a.Log.Warn("could not write the failure report", "error", err)
+		a.Log().Warn("could not write the failure report", "error", err)
 		return ""
 	}
-	a.Log.Info("Report: "+page, logger.UserKey, true)
+	a.Log().Info("Report: "+page, logger.UserKey, true)
 	return page
 }
 
@@ -227,7 +227,7 @@ func (a *app) reportLeftBehind(left []string) {
 		return
 	}
 	for _, p := range left {
-		a.Log.Info("never read, so not transferred", "source", p)
+		a.Log().Info("never read, so not transferred", "source", p)
 	}
 	paths := wspath.New()
 	fmt.Fprintf(os.Stderr, "%s %d source files could not be read, so they are not in the library:\n",

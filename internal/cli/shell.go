@@ -136,15 +136,15 @@ type depsDoneMsg struct{ err error }
 func (a *app) runShell(start shellStart) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	events := make(chan logger.Event, 4096)
-	tuiLog := logger.NewTUI(a.LogFile, func(e logger.Event) { events <- e })
-	origLog := a.Log
-	a.Log = tuiLog
-	// on the way out: stop running work, wait for it, then flush and close.
-	// The log goes back only once no work is left to read it.
+	// the shell runs on its own session, whose log also reaches the screen;
+	// the run's session has opened nothing, so nothing is left behind in it
+	shell := *a
+	shell.Session = library.New(a.Configuration(), logger.NewTUI(a.LogFile(), func(e logger.Event) { events <- e }), a.LogFile())
+	a = &shell
+	// on the way out: stop running work, wait for it, then flush and close
 	defer func() {
 		cancel()
 		a.Work.CloseAndWait()
-		a.Log = origLog
 		a.closeDBs()
 	}()
 
@@ -164,7 +164,7 @@ func (a *app) runShell(start shellStart) error {
 			prog.Send(tui.InstallProgressMsg{Phase: p.Phase, Done: p.Done, Total: p.Total, Ready: p.Ready})
 		},
 		func(ctx context.Context, next int, err error) error {
-			a.Log.Warn("Download failed, asking for a better network", "try", next-1, "error", err)
+			a.Log().Warn("Download failed, asking for a better network", "try", next-1, "error", err)
 			retry := make(chan struct{})
 			prog.Send(tui.RetryMsg{Failed: failedDeps(err), Next: next, Tries: install.MaxTries, Wait: install.RetryDelay, Go: retry})
 			select {
@@ -334,7 +334,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// replaces the folder list, so the list stays to fix; switching to
 		// another library in Settings runs the scan there
 		m.pendingScan = nil
-		if _, err := workflow.CheckRoots(path.New(), m.a.Config.OutputDir(), msg.Paths); err != nil {
+		if _, err := workflow.CheckRoots(path.New(), m.a.OutputDir(), msg.Paths); err != nil {
 			if errors.Is(err, workflow.ErrOverlapsLibrary) {
 				m.pendingScan = &msg
 				err = fmt.Errorf("%w, or another library in Settings", err)
@@ -367,7 +367,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.openCopy()
 
 	case tui.SettingsSavedMsg:
-		if dir := m.a.Config.OutputDir(); dir != m.libraryBefore {
+		if dir := m.a.OutputDir(); dir != m.libraryBefore {
 			// another library: screens built over the old one are stale, and
 			// its plan is already its own
 			m.libraryBefore = dir
@@ -409,7 +409,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tui.DiscardPlanMsg:
 		a := m.a
 		return m, m.onLibrary("discard the current plan", func(ctx context.Context) (string, error) {
-			n, err := library.Discard(ctx, a.DB(), a.Config.OutputDir())
+			n, err := library.Discard(ctx, a.DB(), a.OutputDir())
 			return "Started over: " + human.Plural(n, "file", "files") + " taken off the list.", err
 		})
 
@@ -624,7 +624,7 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 		m.refresh()
 		if m.lib.HasEdits() {
 			note = "Your edits are saved. Copy uses them."
-			m.a.Log.Info(note, logger.UserKey, true)
+			m.a.Log().Info(note, logger.UserKey, true)
 		}
 		m.screens[tabReview] = nil
 	case tabCopy:
@@ -698,7 +698,7 @@ func (m *shellModel) saveSettings(s config.Settings) tea.Cmd {
 	return func() tea.Msg {
 		if err := a.SaveSettings(ctx, s); err != nil {
 			// logged as well as shown: the library keeps the settings its plan was built from
-			a.Log.Warn("Settings not saved; the library keeps its old settings and plan. Save them again.",
+			a.Log().Warn("Settings not saved; the library keeps its old settings and plan. Save them again.",
 				logger.UserKey, true, "error", err)
 			return replanDoneMsg{err: err}
 		}
@@ -804,7 +804,7 @@ func (m *shellModel) openSettings() tea.Cmd {
 	if err != nil {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: err})
 	}
-	m.libraryBefore = m.a.Config.OutputDir()
+	m.libraryBefore = m.a.OutputDir()
 	m.tab = tabSettings
 	return m.place(tabSettings, screen)
 }
@@ -921,7 +921,7 @@ func (m shellModel) tabBar() string {
 	case m.notice != "":
 		right = tui.Attn.Render(m.notice)
 	case m.a.DB() != nil || m.lib.Exists:
-		right = tui.FaintTxt.Render(filepath.Base(m.a.Config.OutputDir()))
+		right = tui.FaintTxt.Render(filepath.Base(m.a.OutputDir()))
 	}
 	return tui.Row(strings.Join(parts, "  "), right, tui.Inner(m.w))
 }
@@ -962,11 +962,11 @@ func (a *app) newHomeScreen(ctx context.Context, lastScan []string) tui.HomeMode
 	return tui.NewHomeModel(tui.HomeConfig{
 		Suggest:    func(typed string) []string { return suggestDirs(paths, typed) },
 		LastScan:   lastScan,
-		History:    a.Config.SourceHistory(),
+		History:    a.Configuration().SourceHistory(),
 		PickFolder: pickFolder,
 		// only the library overlap: anything else is the scan's to report
 		Check: func(dir string) error {
-			if _, err := workflow.CheckRoots(paths, a.Config.OutputDir(), []string{dir}); errors.Is(err, workflow.ErrOverlapsLibrary) {
+			if _, err := workflow.CheckRoots(paths, a.OutputDir(), []string{dir}); errors.Is(err, workflow.ErrOverlapsLibrary) {
 				return err
 			}
 			return nil
@@ -978,10 +978,10 @@ func (a *app) newHomeScreen(ctx context.Context, lastScan []string) tui.HomeMode
 func (a *app) newScanScreen(session context.Context, paths []string, force bool) tui.ScanModel {
 	// the scan's own context: its ctrl+c must not cancel the session's
 	ctx, cancel := context.WithCancel(session)
-	wf := workflow.NewWorkflow(a.DB(), a.Log, a.Config, a.workflowDeps())
+	wf := workflow.NewWorkflow(a.DB(), a.Log(), a.Configuration(), a.workflowDeps())
 	return tui.NewScanModel(tui.ScanConfig{
 		Paths:   paths,
-		LogPath: path.New().Friendly(a.LogFile.Path()),
+		LogPath: path.New().Friendly(a.LogFile().Path()),
 		Pipeline: func() error {
 			done, ok := a.Work.StartOnLibrary()
 			if !ok {

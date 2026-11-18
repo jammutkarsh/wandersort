@@ -48,7 +48,7 @@ func TestRunExecuteAppliesDraft(t *testing.T) {
 	}
 	seedDraft(t, dir, vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: day, From: "03", To: "Goa-Trip"})
 
-	a := &app{Session: library.Session{Log: logger.NewNoopLogger(), Config: cfg}}
+	a := &app{Session: library.New(cfg, logger.NewNoopLogger(), nil)}
 	err = a.runCopy(execCmd(t))
 	a.closeDBs()
 	if err != nil {

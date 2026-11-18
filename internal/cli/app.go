@@ -25,9 +25,10 @@ import (
 )
 
 type app struct {
-	// Session is the library this run works on: Config, Log, the run's log
-	// file, the open database and the work running on it.
-	library.Session
+	// Session is the library this run works on: its configuration, log, the
+	// run's log file, the open database and the work running on it. Nil until
+	// the root command's PreRun builds it.
+	*library.Session
 	Deps *install.Coordinator
 	// settingsToSave is a settings form's answer on its way to the library:
 	// the form hands it over, the shell saves it off the UI goroutine
@@ -43,7 +44,11 @@ type app struct {
 func Execute(version string) error {
 	a := &app{Version: version}
 	err := a.newRootCmd().Execute()
-	defer a.LogFile.Close() // after the result below, which may still log
+	defer func() { // after the result below, which may still log
+		if a.Session != nil {
+			a.LogFile().Close()
+		}
+	}()
 
 	// a failure before the command printed its own result still gets one; a
 	// bad flag or argument fails before PersistentPreRunE reads --json
@@ -70,9 +75,9 @@ func interruptible() (context.Context, context.CancelFunc) {
 // newDeps builds a Coordinator for this app; nil callbacks mean no progress and a logged wait between tries.
 func (a *app) newDeps(onProgress func(install.Progress), beforeRetry install.RetryFunc) *install.Coordinator {
 	return install.New(install.Options{
-		ExecutablePath: a.Config.ExecutablePath,
-		LocationDBPath: a.Config.LocationDBPath,
-		Log:            a.Log,
+		ExecutablePath: a.Configuration().ExecutablePath,
+		LocationDBPath: a.Configuration().LocationDBPath,
+		Log:            a.Log(),
 		OnProgress:     onProgress,
 		BeforeRetry:    beforeRetry,
 	})
@@ -144,7 +149,7 @@ func (a *app) closeDBs() {
 	a.Close()
 	if a.Deps != nil {
 		if err := a.Deps.Close(); err != nil {
-			a.Log.Error("failed to close location database", "error", err)
+			a.Log().Error("failed to close location database", "error", err)
 		}
 	}
 }

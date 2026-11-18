@@ -52,10 +52,10 @@ func (p *probe) got(msg tea.Msg) bool {
 // the output path says. LibraryExists only stats it, so it needn't be a real one.
 func fakeProposal(t *testing.T, a *app) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(a.Config.AppDBPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(config.DBPath(a.OutputDir())), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(a.Config.AppDBPath, nil, 0o644); err != nil {
+	if err := os.WriteFile(config.DBPath(a.OutputDir()), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -83,10 +83,10 @@ func finishedScan(t *testing.T, err error) tui.ScanModel {
 // review.
 func seedProposal(t *testing.T, a *app) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(a.Config.AppDBPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(config.DBPath(a.OutputDir())), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	d, err := db.New(context.Background(), a.Config.AppDBPath, logger.NewNoopLogger())
+	d, err := db.New(context.Background(), config.DBPath(a.OutputDir()), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func seedProposal(t *testing.T, a *app) {
 
 func testShell(t *testing.T) shellModel {
 	t.Helper()
-	a := &app{Session: library.Session{Config: testConfig(t), Log: logger.NewNoopLogger()}}
+	a := &app{Session: library.New(testConfig(t), logger.NewNoopLogger(), nil)}
 	t.Cleanup(a.closeDBs) // a refresh may open the library; Windows can't remove it open
 	m := shellModel{a: a, ctx: context.Background(), w: 80, h: 24}
 	m.screens[tabScan] = a.newHomeScreen(context.Background(), nil)
@@ -285,7 +285,7 @@ func TestShellModel(t *testing.T) {
 		{"AnOverlappingScanRunsInTheNextLibrary", func(t *testing.T) {
 			m := testShell(t)
 			t.Cleanup(m.a.Close)
-			lib := m.a.Config.OutputDir()
+			lib := m.a.OutputDir()
 
 			next, cmd := m.Update(tui.StartScanMsg{Paths: []string{lib}})
 			m = next.(shellModel)
@@ -604,7 +604,7 @@ func TestShellModel(t *testing.T) {
 			leave := func(t *testing.T, withEdit bool) string {
 				m := testShell(t)
 				if withEdit {
-					seedDraft(t, m.a.Config.OutputDir(), vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: 1, To: "x"})
+					seedDraft(t, m.a.OutputDir(), vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: 1, To: "x"})
 				}
 				m.screens[tabReview] = &probe{name: "review"}
 				m.tab = tabReview
@@ -808,7 +808,7 @@ func TestConfigSavedReplansOnlyOnAChange(t *testing.T) {
 // Cancelling one scan leaves the session's context alive for the next scan,
 // review and download.
 func TestScanCancelLeavesSessionAlive(t *testing.T) {
-	a := &app{Session: library.Session{Config: testConfig(t), Log: logger.NewNoopLogger()}}
+	a := &app{Session: library.New(testConfig(t), logger.NewNoopLogger(), nil)}
 	session, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

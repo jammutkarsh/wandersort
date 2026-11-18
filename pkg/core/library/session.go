@@ -20,27 +20,49 @@ import (
 
 // Session is one process's hold on at most one library: its database, the
 // output lock that keeps other processes out, and the work running on it.
-// Open, Close, Switch and Work.StartRewrite belong to one goroutine; work
-// started through Work and SaveSettings may run on others.
+// Every method may be called from any goroutine.
 type Session struct {
-	Config *config.Configuration
-	Log    logger.Logger
-	// LogFile is this process's log, buffered in memory until a library opens
-	// (or a warning) persists it. Nil means no file log.
-	LogFile *logger.File
-	// Work is background work on the library; shutdown waits for it before
-	// closing the database.
+	// Work is background work on the library; Close waits for work on it.
 	Work WorkGroup
 
-	// mu guards db, lock and Config.Settings: SaveSettings may change them
-	// off the goroutine that reads them
+	log     logger.Logger
+	logFile *logger.File
+
+	// mu guards the fields below. Taken after Work's library lock, never
+	// before it.
 	mu   sync.RWMutex
+	cfg  config.Configuration
 	db   *db.DB
 	lock *lock.Lock
 }
 
-// DB is the open library's database, or nil while none is open. A getter, not
-// a field, so only Open and Close change the handle, always with the lock.
+// New is a session over cfg's output folder with no library open yet. It
+// keeps its own copy of cfg. logFile is this process's log, buffered in memory
+// until a library opens (or a warning) persists it; nil means no file log.
+func New(cfg *config.Configuration, log logger.Logger, logFile *logger.File) *Session {
+	return &Session{cfg: copyConfig(*cfg), log: log, logFile: logFile}
+}
+
+// copyConfig is c sharing nothing a caller could change underneath it.
+func copyConfig(c config.Configuration) config.Configuration {
+	c.Settings = copySettings(c.Settings)
+	return c
+}
+
+func copySettings(s config.Settings) config.Settings {
+	s.Rules = slices.Clone(s.Rules)
+	return s
+}
+
+// Log is the session's logger.
+func (s *Session) Log() logger.Logger { return s.log }
+
+// LogFile is this process's log file, or nil.
+func (s *Session) LogFile() *logger.File { return s.logFile }
+
+// DB is the open library's database, or nil while none is open. Work that
+// queries it runs under Work.StartOnLibrary, so no switch or close shuts it
+// meanwhile.
 func (s *Session) DB() *db.DB {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -51,13 +73,28 @@ func (s *Session) DB() *db.DB {
 func (s *Session) Settings() config.Settings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.Config.Settings
+	return copySettings(s.cfg.Settings)
+}
+
+// OutputDir is the library folder the session works in.
+func (s *Session) OutputDir() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg.OutputDir()
+}
+
+// Configuration is a copy of the session's configuration as it is now.
+func (s *Session) Configuration() *config.Configuration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c := copyConfig(s.cfg)
+	return &c
 }
 
 // LibraryExists reports whether the output folder already holds a library
 // (its database file exists). Opens nothing.
 func (s *Session) LibraryExists() bool {
-	_, err := os.Stat(s.Config.AppDBPath)
+	_, err := os.Stat(config.DBPath(s.OutputDir()))
 	return err == nil
 }
 
@@ -73,8 +110,8 @@ func (s *Session) Open(ctx context.Context) error {
 		return nil
 	}
 	// From here the run touches (or tried to touch) user data: keep its log.
-	s.LogFile.Persist()
-	outputDir := s.Config.OutputDir()
+	s.logFile.Persist()
+	outputDir := s.cfg.OutputDir()
 	if err := config.CheckLibrary(outputDir); err != nil {
 		return err
 	}
@@ -83,10 +120,10 @@ func (s *Session) Open(ctx context.Context) error {
 		return err
 	}
 	s.db, s.lock = appDB, l
-	s.Config.Settings = settings
+	s.cfg.Settings = settings
 	// only a real library goes in the recent list
-	if err := s.Config.Remember(outputDir); err != nil {
-		s.Log.Warn("could not record this library as recently used", "error", err)
+	if err := s.cfg.Remember(outputDir); err != nil {
+		s.log.Warn("could not record this library as recently used", "error", err)
 	}
 	return nil
 }
@@ -99,7 +136,7 @@ func (s *Session) openLibrary(ctx context.Context, dir string) (*db.DB, *lock.Lo
 	if err != nil {
 		return nil, nil, config.Settings{}, fmt.Errorf("acquire lock: %w", err)
 	}
-	appDB, err := db.New(ctx, config.DBPath(dir), s.Log)
+	appDB, err := db.New(ctx, config.DBPath(dir), s.log)
 	if err != nil {
 		l.Unlock()
 		return nil, nil, config.Settings{}, fmt.Errorf("app db: %w", err)
@@ -113,9 +150,11 @@ func (s *Session) openLibrary(ctx context.Context, dir string) (*db.DB, *lock.Lo
 	return appDB, l, settings, nil
 }
 
-// Close flushes and closes the open library and releases its lock; with none
-// open it does nothing.
+// Close flushes and closes the open library and releases its lock, once work
+// on it has finished; with none open it does nothing.
 func (s *Session) Close() {
+	s.Work.library.Lock()
+	defer s.Work.library.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closeLibrary(s.db, s.lock)
@@ -127,11 +166,11 @@ func (s *Session) closeLibrary(d *db.DB, l *lock.Lock) {
 	// a failed Close can leave WAL/SHM locked (locking_mode=EXCLUSIVE); log it
 	if d != nil {
 		if err := d.Writer.Flush(); err != nil {
-			s.Log.Error("some writes were lost before closing", "error", err)
+			s.log.Error("some writes were lost before closing", "error", err)
 		}
-		s.Log.Info("Closing databases")
+		s.log.Info("Closing databases")
 		if err := d.Close(); err != nil {
-			s.Log.Error("failed to close app database", "error", err)
+			s.log.Error("failed to close app database", "error", err)
 		}
 	}
 	l.Unlock() // nil-safe; after Close, so no other process opens the database mid-close
@@ -178,16 +217,15 @@ func (s *Session) SaveSettings(ctx context.Context, settings config.Settings, pl
 	if err != nil {
 		return fmt.Errorf("location database: %w", err)
 	}
-	s.mu.RLock()
-	cfg := *s.Config
-	s.mu.RUnlock()
-	cfg.Settings = settings
-	s.Log.Info("Settings changed — re-proposing the folder structure", logger.UserKey, true)
-	if _, err := vfs.Propose(ctx, s.DB(), resolver, &cfg, s.Log); err != nil {
+	// the library can't be switched or closed while this holds it
+	cfg := s.Configuration()
+	cfg.Settings = copySettings(settings)
+	s.log.Info("Settings changed — re-proposing the folder structure", logger.UserKey, true)
+	if _, err := vfs.Propose(ctx, s.DB(), resolver, cfg, s.log); err != nil {
 		return fmt.Errorf("re-plan: %w", err)
 	}
 	s.mu.Lock()
-	s.Config.Settings = settings
+	s.cfg.Settings = cfg.Settings
 	s.mu.Unlock()
 	return nil
 }
@@ -198,7 +236,7 @@ func (s *Session) SaveSettings(ctx context.Context, settings config.Settings, pl
 // half made takes them on the next try. The new library is ready before the
 // old one closes, so a switch that fails leaves the session as it was.
 func (s *Session) Switch(ctx context.Context, dir string) error {
-	if sameFolder(dir, s.Config.OutputDir()) {
+	if sameFolder(dir, s.OutputDir()) {
 		return nil
 	}
 	if s.Work.Rewriting() {
@@ -213,7 +251,7 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 	}
 	defer release()
 
-	s.LogFile.Persist()
+	s.logFile.Persist()
 	appDB, l, settings, err := s.openLibrary(ctx, dir)
 	if err != nil {
 		return err
@@ -227,14 +265,15 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 		s.closeLibrary(appDB, l)
 		return err
 	}
-	s.Close()
+	// one step: no reader ever sees the old library half closed or none open
 	s.mu.Lock()
-	s.Config.SetOutput(dir)
+	defer s.mu.Unlock()
+	s.closeLibrary(s.db, s.lock)
+	s.cfg.SetOutput(dir)
 	s.db, s.lock = appDB, l
-	s.Config.Settings = settings
-	s.mu.Unlock()
-	if err := s.Config.Remember(dir); err != nil {
-		s.Log.Warn("could not record this library as recently used", "error", err)
+	s.cfg.Settings = settings
+	if err := s.cfg.Remember(dir); err != nil {
+		s.log.Warn("could not record this library as recently used", "error", err)
 	}
 	return nil
 }
@@ -265,23 +304,30 @@ func isNew(ctx context.Context, d *db.DB) (bool, error) {
 }
 
 // Restore puts the library's backup back over its database (see Restore),
-// holding the output lock meanwhile. The session must have no library open:
-// a restore refuses any open connection, db.ErrInUse.
+// holding the output lock meanwhile. With the library open it refuses,
+// db.ErrInUse: a restore needs every connection closed.
 func (s *Session) Restore(ctx context.Context) error {
-	s.LogFile.Persist()
-	l, err := lock.AcquireOutput(s.Config.OutputDir())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		return fmt.Errorf("restore: %w", db.ErrInUse)
+	}
+	s.logFile.Persist()
+	l, err := lock.AcquireOutput(s.cfg.OutputDir())
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
 	defer l.Unlock()
-	return Restore(ctx, s.Config.AppDBPath, s.Log)
+	return Restore(ctx, s.cfg.AppDBPath, s.log)
 }
 
 // RememberSources records the folders a scan walked; the first given ends up newest.
 func (s *Session) RememberSources(roots []string) {
+	s.mu.Lock() // one writer of the history files at a time
+	defer s.mu.Unlock()
 	for _, root := range slices.Backward(roots) {
-		if err := s.Config.RememberSource(root); err != nil {
-			s.Log.Warn("could not record a scanned folder as recently used", "error", err)
+		if err := s.cfg.RememberSource(root); err != nil {
+			s.log.Warn("could not record a scanned folder as recently used", "error", err)
 			return
 		}
 	}
@@ -322,16 +368,20 @@ func (st State) HasEdits() bool { return st.Edits > 0 }
 // State reads what the session can cheaply know about the library. Opens,
 // locks and writes nothing.
 func (s *Session) State(ctx context.Context) State {
-	st := State{Exists: s.LibraryExists()}
+	// held throughout, so the counts are of the library the folder names
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, err := os.Stat(s.cfg.AppDBPath)
+	st := State{Exists: err == nil}
 
 	// no plan to replay onto: this only counts the journal
-	if d, err := vfs.OpenDraft(s.Config.OutputDir(), nil); err != nil {
+	if d, err := vfs.OpenDraft(s.cfg.OutputDir(), nil); err != nil {
 		st.Edits = 1 // unreadable: something is there, and execute will say what
 	} else {
 		st.Edits = len(d.Edits())
 	}
 
-	d := s.DB()
+	d := s.db
 	if d == nil {
 		return st
 	}
@@ -341,11 +391,11 @@ func (s *Session) State(ctx context.Context) State {
 	if err != nil {
 		// A library we can't count is still a library; the caller keeps it
 		// reachable and the screen behind it reports the real error.
-		s.Log.Warn("could not count the planned files", "error", err)
+		s.log.Warn("could not count the planned files", "error", err)
 		st.Planned = 1
 	}
 	if st.Placed, err = d.PlacedCount(ctx); err != nil {
-		s.Log.Warn("could not count the placed files", "error", err)
+		s.log.Warn("could not count the placed files", "error", err)
 	}
 	return st
 }

@@ -40,10 +40,10 @@ func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
 	// rename completion is just disabled
 	resolver, err := a.Deps.Location(ctx)
 	if err != nil {
-		a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
+		a.Log().Warn("Location resolver unavailable, rename completions disabled", "error", err)
 	}
 	resolver = resolver.WithAnchors(resolver.BuildAnchors(ctx, a.Settings().SavedPlaces()))
-	outputDir := a.Config.OutputDir()
+	outputDir := a.OutputDir()
 	tree, err := vfs.BuildTree(ctx, a.DB())
 	if err != nil {
 		return nil, err
@@ -60,6 +60,6 @@ func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
 		DB:       a.DB(),
 		Draft:    draft,
 		Resolver: resolver,
-		Log:      a.Log,
+		Log:      a.Log(),
 	}), nil
 }

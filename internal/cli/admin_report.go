@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
+
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/report"
@@ -76,10 +78,10 @@ const issueLogs = 5
 func (a *app) runIssue(includeDB, redactPaths bool) error {
 	home, _ := os.UserHomeDir()
 	var entries []zipEntry
-	for _, p := range logger.Recent(a.Config.LogDir, 0) {
+	for _, p := range logger.Recent(a.Configuration().LogDir, 0) {
 		// This run's own log says nothing about the problem; an empty one is a
 		// run that died before logging anything.
-		if info, err := os.Stat(p); p == a.LogFile.Path() || err != nil || info.Size() == 0 {
+		if info, err := os.Stat(p); p == a.LogFile().Path() || err != nil || info.Size() == 0 {
 			continue
 		}
 		entries = append(entries, zipEntry{p, "logs/" + filepath.Base(p), home})
@@ -88,7 +90,7 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 		}
 	}
 	if len(entries) == 0 {
-		return fmt.Errorf("no log data found in %s — run a scan first", a.Config.LogDir)
+		return fmt.Errorf("no log data found in %s — run a scan first", a.Configuration().LogDir)
 	}
 	if redactPaths {
 		// logs are free text and can't be reliably redacted, so they're left out
@@ -99,13 +101,13 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 	if includeDB {
 		// Include the SQLite sidecars too so the copied DB opens cleanly.
 		for _, suffix := range []string{"", "-wal", "-shm"} {
-			src := a.Config.AppDBPath + suffix
+			src := config.DBPath(a.OutputDir()) + suffix
 			if _, err := os.Stat(src); err == nil {
 				entries = append(entries, zipEntry{src, "wandersort.db" + suffix, ""})
 			}
 		}
 		if len(entries) == logCount {
-			a.Log.Warn("database not found; packaging logs only", "path", a.Config.AppDBPath)
+			a.Log().Warn("database not found; packaging logs only", "path", config.DBPath(a.OutputDir()))
 		}
 	}
 
@@ -143,7 +145,7 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 				_, err = io.WriteString(w, "\n")
 			}
 			if err != nil {
-				a.Log.Warn("could not write the error report", "error", err)
+				a.Log().Warn("could not write the error report", "error", err)
 			}
 		}
 	}
@@ -171,19 +173,19 @@ func (a *app) exportErrors(redactPaths bool) ([]report.Row, []string) {
 	if !a.LibraryExists() {
 		return nil, nil
 	}
-	conn, err := db.OpenReadOnly(a.Config.AppDBPath)
+	conn, err := db.OpenReadOnly(config.DBPath(a.OutputDir()))
 	if err != nil {
-		a.Log.Warn("could not open the database for the error report", "error", err)
+		a.Log().Warn("could not open the database for the error report", "error", err)
 		return nil, nil
 	}
 	defer conn.Close()
 
 	home, _ := os.UserHomeDir()
 	rows, summary, err := report.Errors(context.Background(), conn.SQL, report.Options{
-		Home: home, Library: a.Config.OutputDir(), Redact: redactPaths,
+		Home: home, Library: a.OutputDir(), Redact: redactPaths,
 	})
 	if err != nil {
-		a.Log.Warn("could not read the error report; packaging logs only", "error", err)
+		a.Log().Warn("could not read the error report; packaging logs only", "error", err)
 		return nil, nil
 	}
 	if rows == nil {
