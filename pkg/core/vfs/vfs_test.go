@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
@@ -993,5 +995,53 @@ func TestLibraryFolders(t *testing.T) {
 	want := map[string]bool{"2024": true, "2024/06_June": true, "2024/06_June/<city>": true}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("LibraryFolders = %v, want %v", got, want)
+	}
+}
+
+// A proposal writes the settings it was built from in its own transaction: a
+// proposal that fails mid-write leaves the old settings over the old plan.
+func TestProposeWritesSettingsWithThePlan(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	id := h.addFile(t, "d/IMG_0001.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 15.5439, 73.7553, 3024, 4032))
+	geo := installtest.Resolver(t)
+	propose := func(rules ...string) error {
+		appCfg := &config.Configuration{Settings: config.DefaultSettings()}
+		appCfg.Rules = rules
+		_, err := Propose(ctx, h.d, geo, appCfg, logger.NewNoopLogger())
+		return err
+	}
+	state := func() (config.Settings, string) {
+		t.Helper()
+		settings, err := config.LoadSettings(ctx, h.d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var target string
+		if err := h.d.SQL.GetContext(ctx, &target, `SELECT target_path FROM virtual_fs_entries WHERE file_id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+		return settings, target
+	}
+
+	if err := propose(RuleDate); err != nil {
+		t.Fatal(err)
+	}
+	oldSettings, oldTarget := state()
+	if !slices.Equal(oldSettings.Rules, []string{RuleDate}) {
+		t.Fatalf("settings after a proposal = %v, want the ones it was built from", oldSettings.Rules)
+	}
+
+	// the plan's insert fails after the settings were written in the same transaction
+	if _, err := h.d.SQL.ExecContext(ctx, `CREATE TRIGGER fail_plan BEFORE INSERT ON virtual_fs_entries
+		BEGIN SELECT RAISE(ABORT, 'disk gone'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := propose(RuleNone); err == nil {
+		t.Fatal("proposal succeeded despite the failing insert")
+	}
+	settings, target := state()
+	if !settings.Equal(oldSettings) || target != oldTarget {
+		t.Errorf("after a failed proposal: rules %v, target %q; want %v, %q", settings.Rules, target, oldSettings.Rules, oldTarget)
 	}
 }
