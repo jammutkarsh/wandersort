@@ -88,14 +88,12 @@ func (a *app) workflowDeps() workflow.Deps {
 	}
 }
 
-// Open, Switch, SaveSettings and Restore are the Session's, with a library held
-// elsewhere explained for the terminal; shadowing them leaves no unexplained way in.
+// Open, SaveSettings and Restore are the Session's, with a library held
+// elsewhere explained for the terminal; shadowing them leaves no unexplained
+// way in. Switch is not shadowed: only the Settings tab calls it, and the
+// tab words its failures with tui.Explain.
 func (a *app) Open(ctx context.Context) error {
 	return explainBusy(a.Session.Open(ctx))
-}
-
-func (a *app) Switch(ctx context.Context, dir string) error {
-	return explainBusy(a.Session.Switch(ctx, dir))
 }
 
 func (a *app) Restore(ctx context.Context) error {
@@ -113,18 +111,8 @@ type busyError struct {
 }
 
 func (e *busyError) Error() string {
-	msg := tui.Bad.Render(fmt.Sprintf("Another wandersort is already running here (PID %d).", e.pid)) + "\n" +
+	return tui.Bad.Render(fmt.Sprintf("Another wandersort is already running here (PID %d).", e.pid)) + "\n" +
 		tui.FaintTxt.Render("Stop it, then try again.")
-	// a failed switch joins the busy folder with why the old library did not
-	// reopen; that second failure must not hide behind the first
-	if joined, ok := e.cause.(interface{ Unwrap() []error }); ok {
-		for _, part := range joined.Unwrap() {
-			if _, busy := errors.AsType[*lock.AlreadyRunningError](part); !busy {
-				msg += "\n" + part.Error()
-			}
-		}
-	}
-	return msg
 }
 
 func (e *busyError) Unwrap() error { return e.cause }

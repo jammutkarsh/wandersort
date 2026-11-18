@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,19 +71,6 @@ func TestOpenExplainsABusyLibrary(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already running") || ExitCode(err) != exitBusy {
 		t.Errorf("Open error = %q (exit %d), want the already-running message and exit %d", err.Error(), ExitCode(err), exitBusy)
-	}
-}
-
-// A switch to a busy folder that then fails to reopen the old library has two
-// things to say; the second leaves the session with nothing open.
-func TestBusyErrorKeepsTheOtherFailure(t *testing.T) {
-	busy := fmt.Errorf("acquire lock: %w", &lock.AlreadyRunningError{PID: 42})
-	err := explainBusy(errors.Join(busy, errors.New("app db: disk gone")))
-	if msg := err.Error(); !strings.Contains(msg, "already running") || !strings.Contains(msg, "disk gone") {
-		t.Errorf("error = %q, want the busy message and the reopen failure", msg)
-	}
-	if only := explainBusy(errors.Join(busy)).Error(); strings.Contains(only, "acquire lock") {
-		t.Errorf("error = %q, want the busy message alone", only)
 	}
 }
 
