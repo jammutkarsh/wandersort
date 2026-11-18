@@ -90,6 +90,9 @@ type shellModel struct {
 	w, h int
 
 	opening bool // a review is being built off the UI goroutine
+	// scanPlan is Work.Plan when the scan screen started; its prefetched
+	// review is stale once a re-plan moves Plan on
+	scanPlan uint64
 
 	// notice replaces the library name in the tab bar for escWindow; escArmed
 	// is the same window, in which a second esc quits
@@ -110,6 +113,7 @@ type scanReadyMsg struct {
 type reviewOpenMsg struct {
 	model tui.Tab
 	err   error
+	plan  uint64 // Work.Plan when the build was asked for
 }
 
 // depLabels names each dependency on screen.
@@ -402,6 +406,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// the new scan re-proposes everything, so a prefetched review is stale
 		m.screens[tabReview] = nil
+		m.scanPlan = m.a.Work.Plan()
 		m.refresh() // the library is open now, so the counts are real
 		m.tab = tabScan
 		screen := m.a.newScanScreen(m.ctx, msg.paths, msg.force)
@@ -437,8 +442,8 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reviewOpenMsg:
 		m.opening = false
-		if m.a.Work.Rewriting() {
-			return m, nil // built over the plan a re-plan is replacing
+		if msg.plan != m.a.Work.Plan() {
+			return m, nil // built over the plan a re-plan replaced
 		}
 		if errors.Is(msg.err, tui.ErrNothingNew) {
 			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: tui.Explain(msg.err)})
@@ -723,6 +728,9 @@ func (m shellModel) handleSwitch(msg tui.SwitchMsg) (tea.Model, tea.Cmd) {
 	}
 	// kept, and the tab bar marks it; opened only when the user picked it
 	m.refresh() // the scan that produced it is done
+	if m.a.Work.Plan() != m.scanPlan {
+		return m, nil // built over the plan a re-plan replaced
+	}
 	cmd := m.place(tabReview, msg.Next)
 	if msg.Open {
 		m.tab = tabReview
@@ -825,11 +833,11 @@ func (m *shellModel) openReview() tea.Cmd {
 		return nil // a second shift+tab while the first is still building
 	}
 	m.opening = true
-	a, ctx := m.a, m.ctx
+	a, ctx, plan := m.a, m.ctx, m.a.Work.Plan()
 	// open on the UI goroutine (see StartScanMsg); building the tree is the
 	// slow part and runs off it
 	if err := a.Open(ctx); err != nil {
-		return msgCmd(reviewOpenMsg{err: err})
+		return msgCmd(reviewOpenMsg{err: err, plan: plan})
 	}
 	return func() tea.Msg {
 		done, ok := a.Work.StartOnLibrary()
@@ -838,7 +846,7 @@ func (m *shellModel) openReview() tea.Cmd {
 		}
 		defer done()
 		model, err := a.newReviewScreen(ctx)
-		return reviewOpenMsg{model: model, err: err}
+		return reviewOpenMsg{model: model, err: err, plan: plan}
 	}
 }
 

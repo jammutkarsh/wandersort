@@ -279,6 +279,8 @@ type WorkGroup struct {
 	library sync.RWMutex
 	// rewrites counts plan rewrites registered and not yet ended
 	rewrites atomic.Int32
+	// plan counts plan rewrites ever registered (see Plan)
+	plan atomic.Uint64
 }
 
 // Start registers one piece of work, ended by done, or reports false once shutdown began.
@@ -305,13 +307,12 @@ func (g *WorkGroup) StartOnLibrary() (done func(), ok bool) {
 	}, true
 }
 
-// StartRewrite registers work that replaces the library's whole plan, so
-// anything built over the plan before it is stale. Rewriting is true from
-// this call until the work ends. enter, called where the work runs, registers
-// it with shutdown, waits for the work already on the library, then holds it
-// alone: rewrites run one at a time and nothing else runs beside one.
-// Shutdown waits only for a rewrite that entered, so one never entered can't
-// hang it; enter refuses once shutdown began.
+// StartRewrite registers work that replaces the library's whole plan: from
+// this call Rewriting is true until the work ends, and Plan moves on. enter,
+// called where the work runs, registers it with shutdown, waits for the work
+// already on the library, then holds it alone: rewrites run one at a time and
+// nothing else runs beside one. Shutdown waits only for a rewrite that
+// entered, so one never entered can't hang it; enter refuses once shutdown began.
 func (g *WorkGroup) StartRewrite() (enter func() (done func(), ok bool), ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -319,6 +320,7 @@ func (g *WorkGroup) StartRewrite() (enter func() (done func(), ok bool), ok bool
 		return nil, false
 	}
 	g.rewrites.Add(1)
+	g.plan.Add(1)
 	return func() (func(), bool) {
 		stop, ok := g.Start()
 		if !ok {
@@ -336,6 +338,10 @@ func (g *WorkGroup) StartRewrite() (enter func() (done func(), ok bool), ok bool
 
 // Rewriting reports whether a plan rewrite is waiting or running.
 func (g *WorkGroup) Rewriting() bool { return g.rewrites.Load() > 0 }
+
+// Plan is how many plan rewrites were ever registered: anything built over
+// the plan when Plan read n is stale once it reads more.
+func (g *WorkGroup) Plan() uint64 { return g.plan.Load() }
 
 // HoldLibrary takes the library from all work, or reports false while any runs on it.
 func (g *WorkGroup) HoldLibrary() (release func(), ok bool) {

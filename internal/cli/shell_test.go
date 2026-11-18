@@ -454,6 +454,28 @@ func TestShellModel(t *testing.T) {
 				t.Error("the new plan must be reviewable once the last re-plan lands")
 			}
 		}},
+		// A review whose build began before a re-plan (a scan's prefetch, or
+		// Organise opening) can land after the re-plan did; it shows folders
+		// that are gone, so it is dropped however late it arrives.
+		{"AReviewBuiltBeforeAReplanIsDroppedAfterItLands", func(t *testing.T) {
+			m := testShell(t)
+			seedProposal(t, m.a)
+			m.refresh()
+			built := m.a.Work.Plan()
+			m.scanPlan = built
+			enter, _ := m.a.Work.StartRewrite()
+			done, _ := enter()
+			done()
+			next, _ := m.Update(replanDoneMsg{})
+			m = next.(shellModel)
+
+			next, _ = m.Update(reviewOpenMsg{model: &probe{name: "review"}, plan: built})
+			m = next.(shellModel)
+			next, _ = m.Update(tui.SwitchMsg{Next: &probe{name: "review"}, Open: true})
+			if m = next.(shellModel); m.screens[tabReview] != nil || m.tab == tabReview {
+				t.Error("a review built over the replaced plan was kept")
+			}
+		}},
 		// shift+tab builds the settings list, even before a library exists: the
 		// first save creates it.
 		{"SettingsTabOpensTheList", func(t *testing.T) {
