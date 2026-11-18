@@ -61,21 +61,8 @@ func (s *Session) Open(ctx context.Context) error {
 	if err := config.CheckLibrary(outputDir); err != nil {
 		return err
 	}
-	l, err := lock.AcquireOutput(outputDir)
+	appDB, l, settings, err := s.openLibrary(ctx, outputDir)
 	if err != nil {
-		return fmt.Errorf("acquire lock: %w", err)
-	}
-	appDB, err := db.New(ctx, s.Config.AppDBPath, s.Log)
-	if err != nil {
-		l.Unlock()
-		return fmt.Errorf("app db: %w", err)
-	}
-	// The library's own settings (defaults if never saved). Read before
-	// publishing the handle, so a failure leaves the library unopened.
-	settings, err := config.LoadSettings(ctx, appDB)
-	if err != nil {
-		appDB.Close()
-		l.Unlock()
 		return err
 	}
 	s.db, s.lock = appDB, l
@@ -87,21 +74,48 @@ func (s *Session) Open(ctx context.Context) error {
 	return nil
 }
 
+// openLibrary takes the lock of the library in dir, opens its database and
+// reads its settings (defaults if never saved). It publishes nothing, so a
+// failure leaves nothing held.
+func (s *Session) openLibrary(ctx context.Context, dir string) (*db.DB, *lock.Lock, config.Settings, error) {
+	l, err := lock.AcquireOutput(dir)
+	if err != nil {
+		return nil, nil, config.Settings{}, fmt.Errorf("acquire lock: %w", err)
+	}
+	appDB, err := db.New(ctx, config.DBPath(dir), s.Log)
+	if err != nil {
+		l.Unlock()
+		return nil, nil, config.Settings{}, fmt.Errorf("app db: %w", err)
+	}
+	settings, err := config.LoadSettings(ctx, appDB)
+	if err != nil {
+		appDB.Close()
+		l.Unlock()
+		return nil, nil, config.Settings{}, err
+	}
+	return appDB, l, settings, nil
+}
+
 // Close flushes and closes the open library and releases its lock; with none
 // open it does nothing.
 func (s *Session) Close() {
+	s.closeLibrary(s.db, s.lock)
+	s.db, s.lock = nil, nil
+}
+
+// closeLibrary flushes and closes d, then releases l; either may be nil.
+func (s *Session) closeLibrary(d *db.DB, l *lock.Lock) {
 	// a failed Close can leave WAL/SHM locked (locking_mode=EXCLUSIVE); log it
-	if s.db != nil {
-		if err := s.db.Writer.Flush(); err != nil {
+	if d != nil {
+		if err := d.Writer.Flush(); err != nil {
 			s.Log.Error("some writes were lost before closing", "error", err)
 		}
 		s.Log.Info("Closing databases")
-		if err := s.db.Close(); err != nil {
+		if err := d.Close(); err != nil {
 			s.Log.Error("failed to close app database", "error", err)
 		}
 	}
-	s.lock.Unlock() // nil-safe; after Close, so no other process opens the database mid-close
-	s.db, s.lock = nil, nil
+	l.Unlock() // nil-safe; after Close, so no other process opens the database mid-close
 }
 
 // ErrReplanning refuses changing the settings or the library while a plan
@@ -130,12 +144,10 @@ func (s *Session) SaveSettings(ctx context.Context, outputDir string, settings c
 // Switch makes dir the session's library. A library there opens with its own
 // settings; a new one takes the current ones. New means no settings saved and
 // nothing recorded, not "no database yet", so a library a failed switch left
-// half made takes them on the next try. If dir can't be opened, or a new
-// library can't take the settings, the session is left as it was, the old
-// library reopened only if one was open.
+// half made takes them on the next try. The new library is ready before the
+// old one closes, so a switch that fails leaves the session as it was.
 func (s *Session) Switch(ctx context.Context, dir string) error {
-	old := s.Config.OutputDir()
-	if dir == old {
+	if sameFolder(dir, s.Config.OutputDir()) {
 		return nil
 	}
 	if s.Work.Rewriting() {
@@ -149,38 +161,54 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 		return errors.New("busy with this library; change it when it's done")
 	}
 	defer release()
-	carry := s.Config.Settings
-	wasOpen := s.db != nil
 
-	s.Close()
-	s.Config.SetOutput(dir)
-	err := s.Open(ctx)
-	if err == nil {
-		var isNew bool
-		if isNew, err = s.isNew(ctx); err == nil && isNew {
-			err = s.SaveSettings(ctx, dir, carry)
-		}
-	}
-	if err == nil {
-		return nil
-	}
-	s.Close()
-	s.Config.SetOutput(old)
-	s.Config.Settings = carry
-	if !wasOpen {
+	s.LogFile.Persist()
+	appDB, l, settings, err := s.openLibrary(ctx, dir)
+	if err != nil {
 		return err
 	}
-	return errors.Join(err, s.Open(ctx))
+	fresh, err := isNew(ctx, appDB)
+	if err == nil && fresh {
+		settings = s.Config.Settings
+		err = config.SaveSettings(ctx, appDB, settings)
+	}
+	if err != nil {
+		s.closeLibrary(appDB, l)
+		return err
+	}
+	s.Close()
+	s.Config.SetOutput(dir)
+	s.db, s.lock = appDB, l
+	s.Config.Settings = settings
+	if err := s.Config.Remember(dir); err != nil {
+		s.Log.Warn("could not record this library as recently used", "error", err)
+	}
+	return nil
 }
 
-// isNew reports whether the open library has never been used: no settings
+// sameFolder reports whether a and b name one folder however spelled (a
+// symlink, another letter case): its lock is ours, so opening it again would
+// find it busy.
+func sameFolder(a, b string) bool {
+	if a == b {
+		return true
+	}
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	return err == nil && os.SameFile(fa, fb)
+}
+
+// isNew reports whether the library in d has never been used: no settings
 // saved and no file, folder or label recorded.
-func (s *Session) isNew(ctx context.Context) (bool, error) {
-	saved, err := config.SettingsSaved(ctx, s.db)
+func isNew(ctx context.Context, d *db.DB) (bool, error) {
+	saved, err := config.SettingsSaved(ctx, d)
 	if err != nil || saved {
 		return false, err
 	}
-	return s.db.IsEmpty(ctx)
+	return d.IsEmpty(ctx)
 }
 
 // Restore puts the library's backup back over its database (see Restore),

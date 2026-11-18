@@ -70,8 +70,11 @@ func New() (*Configuration, error) {
 // SetOutput points the configuration at an output folder. Only before the
 // library is open: a library's folder never moves.
 func (cfg *Configuration) SetOutput(dir string) {
-	cfg.AppDBPath = filepath.Join(dir, defaultDBFileName)
+	cfg.AppDBPath = DBPath(dir)
 }
+
+// DBPath is the database of the library in the output folder dir.
+func DBPath(dir string) string { return filepath.Join(dir, defaultDBFileName) }
 
 // OutputDir is the library folder this run works in.
 func (cfg *Configuration) OutputDir() string { return filepath.Dir(cfg.AppDBPath) }

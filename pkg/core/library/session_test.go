@@ -186,7 +186,7 @@ func TestSwitchCarriesSettingsOnlyIntoAnUnusedLibrary(t *testing.T) {
 }
 
 // A switch that fails leaves the session as it was: nothing open stays nothing
-// open, and an open library is reopened.
+// open, and an open library is never closed.
 func TestSwitchFailureRestores(t *testing.T) {
 	ctx := context.Background()
 	busy := filepath.Join(t.TempDir(), "busy")
@@ -209,11 +209,33 @@ func TestSwitchFailureRestores(t *testing.T) {
 	if err := s.Open(ctx); err != nil {
 		t.Fatal(err)
 	}
+	before := s.DB()
 	if err := s.Switch(ctx, busy); err == nil {
 		t.Fatal("switched to a library another process holds")
 	}
-	if s.DB() == nil || s.Config.OutputDir() != old {
-		t.Errorf("with a library open: open=%v dir=%q, want %q reopened", s.DB() != nil, s.Config.OutputDir(), old)
+	if s.DB() != before || s.Config.OutputDir() != old {
+		t.Errorf("with a library open: same handle=%v dir=%q, want %q left open", s.DB() == before, s.Config.OutputDir(), old)
+	}
+}
+
+// The open library named another way (here a symlink) is the same library:
+// opening it beside itself would find its own lock taken.
+func TestSwitchToTheOpenLibrarySpelledOtherwise(t *testing.T) {
+	ctx := context.Background()
+	s := testSession(t)
+	if err := s.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	old, before := s.Config.OutputDir(), s.DB()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(old, alias); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	if err := s.Switch(ctx, alias); err != nil {
+		t.Fatalf("Switch to the open library through a symlink: %v", err)
+	}
+	if s.DB() != before || s.Config.OutputDir() != old {
+		t.Errorf("same handle=%v dir=%q, want the open library kept at %q", s.DB() == before, s.Config.OutputDir(), old)
 	}
 }
 
