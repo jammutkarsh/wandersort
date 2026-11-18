@@ -79,7 +79,11 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 	// has the database open
 	ctx, cancel := interruptible()
 	defer cancel()
-	if err := a.Restore(ctx); errors.Is(err, db.ErrInUse) {
+	err = a.Restore(ctx)
+	if _, busy := errors.AsType[*busyError](err); busy {
+		return err // already worded for the terminal
+	}
+	if errors.Is(err, db.ErrInUse) {
 		return fmt.Errorf("%w; close other apps using it and retry", err)
 	} else if err != nil {
 		return fmt.Errorf("restore failed: %w", err)
