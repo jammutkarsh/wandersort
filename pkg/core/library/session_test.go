@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -389,6 +390,30 @@ func TestWorkGroupShutdownSkipsARewriteNeverEntered(t *testing.T) {
 	}
 	if _, ok := enter(); ok || g.Rewriting() {
 		t.Errorf("a rewrite entered after shutdown, or still counts: rewriting=%v", g.Rewriting())
+	}
+}
+
+// A plan rewrite reads the settings and the library while it waits or runs,
+// so neither changes under it.
+func TestRewriteRefusesSettingsAndSwitch(t *testing.T) {
+	ctx := context.Background()
+	s := testSession(t)
+	if err := s.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	settings := s.Config.Settings
+	settings.Rules = []string{"date"}
+	enter, _ := s.Work.StartRewrite()
+	if err := s.SaveSettings(ctx, s.Config.OutputDir(), settings); !errors.Is(err, ErrReplanning) {
+		t.Errorf("SaveSettings mid rewrite = %v, want ErrReplanning", err)
+	}
+	if err := s.Switch(ctx, filepath.Join(t.TempDir(), "other")); !errors.Is(err, ErrReplanning) {
+		t.Errorf("Switch mid rewrite = %v, want ErrReplanning", err)
+	}
+	done, _ := enter()
+	done()
+	if err := s.SaveSettings(ctx, s.Config.OutputDir(), settings); err != nil {
+		t.Errorf("SaveSettings once the rewrite ended: %v", err)
 	}
 }
 

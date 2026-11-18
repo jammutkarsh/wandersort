@@ -395,7 +395,7 @@ func TestShellModel(t *testing.T) {
 				}
 			}
 			_, cmd := m.Update(tui.StartScanMsg{})
-			if ready, ok := cmd().(scanReadyMsg); !ok || !errors.Is(ready.err, errReplanning) {
+			if ready, ok := cmd().(scanReadyMsg); !ok || !errors.Is(ready.err, library.ErrReplanning) {
 				t.Errorf("a scan started mid re-plan: %#v", cmd())
 			}
 			// an Organise screen whose build was already running when the

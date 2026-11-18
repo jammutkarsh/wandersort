@@ -104,9 +104,16 @@ func (s *Session) Close() {
 	s.db, s.lock = nil, nil
 }
 
+// ErrReplanning refuses changing the settings or the library while a plan
+// rewrite, which reads both, is waiting or running.
+var ErrReplanning = errors.New("still re-planning with the new settings; try again in a moment")
+
 // SaveSettings writes settings into the library at outputDir, opening it
 // first if none is open; a settings-first session picks its library here.
 func (s *Session) SaveSettings(ctx context.Context, outputDir string, settings config.Settings) error {
+	if s.Work.Rewriting() {
+		return ErrReplanning
+	}
 	if s.db == nil {
 		s.Config.SetOutput(outputDir)
 		if err := s.Open(ctx); err != nil {
@@ -130,6 +137,9 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 	old := s.Config.OutputDir()
 	if dir == old {
 		return nil
+	}
+	if s.Work.Rewriting() {
+		return ErrReplanning
 	}
 	if err := config.CheckLibrary(dir); err != nil {
 		return err

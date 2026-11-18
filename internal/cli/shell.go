@@ -323,7 +323,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tui.StartScanMsg:
 		if m.a.Work.Rewriting() {
-			return m, msgCmd(scanReadyMsg{err: errReplanning})
+			return m, msgCmd(scanReadyMsg{err: library.ErrReplanning})
 		}
 		// opened here, on the UI goroutine, which is the only one that writes
 		// the app's library fields; opening is quick (the lock never waits)
@@ -694,9 +694,6 @@ type replanDoneMsg struct{ err error }
 // replanQuitNotice answers a quit asked for while a re-plan runs.
 const replanQuitNotice = "re-planning with the new settings — quit when it's done"
 
-// errReplanning refuses whatever would read or replace the plan mid re-plan.
-var errReplanning = errors.New("still re-planning with the new settings; try again in a moment")
-
 // replan re-proposes the whole library under the saved settings, off the UI
 // goroutine. enter is the rewrite settingsSaved registered: it waits for work
 // on the library (and any earlier re-plan) before this one runs alone.
@@ -807,7 +804,7 @@ func homeMsg(s library.State) tui.HomeLibraryMsg {
 // settings (opening an existing library first). Rebuilt on every entry.
 func (m *shellModel) openSettings() tea.Cmd {
 	if m.a.Work.Rewriting() {
-		return m.forward(tabScan, tui.HomeErrMsg{Err: errReplanning})
+		return m.forward(tabScan, tui.HomeErrMsg{Err: library.ErrReplanning})
 	}
 	screen, err := m.a.newSettingsScreen(m.ctx)
 	if err != nil {
@@ -822,7 +819,7 @@ func (m *shellModel) openSettings() tea.Cmd {
 // DB open and BuildTree are slow).
 func (m *shellModel) openReview() tea.Cmd {
 	if m.a.Work.Rewriting() {
-		return m.forward(tabScan, tui.HomeErrMsg{Err: errReplanning})
+		return m.forward(tabScan, tui.HomeErrMsg{Err: library.ErrReplanning})
 	}
 	if m.opening {
 		return nil // a second shift+tab while the first is still building
@@ -858,7 +855,7 @@ func (m *shellModel) openCopy() tea.Cmd {
 		return nil
 	}
 	if m.a.Work.Rewriting() {
-		return m.forward(tabScan, tui.HomeErrMsg{Err: errReplanning})
+		return m.forward(tabScan, tui.HomeErrMsg{Err: library.ErrReplanning})
 	}
 	screen, stop, err := m.a.newCopyScreen(m.ctx)
 	if err != nil {
