@@ -700,10 +700,14 @@ var errReplanning = errors.New("still re-planning with the new settings; try aga
 // replan re-proposes the whole library under the saved settings, off the UI
 // goroutine. enter is the rewrite settingsSaved registered: it waits for work
 // on the library (and any earlier re-plan) before this one runs alone.
-func (m *shellModel) replan(enter func() func()) tea.Cmd {
+func (m *shellModel) replan(enter func() (func(), bool)) tea.Cmd {
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
-		defer enter()()
+		done, ok := enter()
+		if !ok {
+			return nil // shutting down
+		}
+		defer done()
 		if _, err := a.rebuildTree(ctx); err != nil {
 			// logged as well as shown: a failed re-plan leaves copy with the old settings' plan
 			a.Log.Warn("Re-plan failed; copy would use the old plan. Save the settings again.",

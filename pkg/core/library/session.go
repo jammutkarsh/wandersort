@@ -19,8 +19,8 @@ import (
 
 // Session is one process's hold on at most one library: its database, the
 // output lock that keeps other processes out, and the work running on it.
-// Open, Close, Switch and SaveSettings belong to one goroutine; work started
-// through Work may run on others.
+// Open, Close, Switch, SaveSettings and Work.StartRewrite belong to one
+// goroutine; work started through Work may run on others.
 type Session struct {
 	Config *config.Configuration
 	Log    logger.Logger
@@ -297,22 +297,30 @@ func (g *WorkGroup) StartOnLibrary() (done func(), ok bool) {
 
 // StartRewrite registers work that replaces the library's whole plan, so
 // anything built over the plan before it is stale. Rewriting is true from
-// this call until the work ends. enter waits for the work already running on
-// the library, then holds it alone: rewrites run one at a time and no other
-// work starts on the library beside one. enter returns the func that ends it.
-func (g *WorkGroup) StartRewrite() (enter func() (done func()), ok bool) {
-	stop, ok := g.Start()
-	if !ok {
+// this call until the work ends. enter, called where the work runs, registers
+// it with shutdown, waits for the work already on the library, then holds it
+// alone: rewrites run one at a time and nothing else runs beside one.
+// Shutdown waits only for a rewrite that entered, so one never entered can't
+// hang it; enter refuses once shutdown began.
+func (g *WorkGroup) StartRewrite() (enter func() (done func(), ok bool), ok bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
 		return nil, false
 	}
 	g.rewrites.Add(1)
-	return func() func() {
+	return func() (func(), bool) {
+		stop, ok := g.Start()
+		if !ok {
+			g.rewrites.Add(-1)
+			return nil, false
+		}
 		g.library.Lock()
 		return func() {
 			g.library.Unlock()
 			g.rewrites.Add(-1)
 			stop()
-		}
+		}, true
 	}, true
 }
 

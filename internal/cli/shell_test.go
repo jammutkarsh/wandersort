@@ -426,7 +426,8 @@ func TestShellModel(t *testing.T) {
 			if quits(esc, esc) || quits(tui.Leave{Quit: true}) {
 				t.Error("the shell quit while a re-plan was running")
 			}
-			enter()()
+			done, _ := enter()
+			done()
 			if !quits(tui.Leave{Quit: true}) {
 				t.Error("the shell must quit once the re-plan has landed")
 			}
@@ -440,12 +441,14 @@ func TestShellModel(t *testing.T) {
 			first, _ := m.a.Work.StartRewrite()
 			second, _ := m.a.Work.StartRewrite()
 
-			first()()
+			done, _ := first()
+			done()
 			next, _ := m.Update(replanDoneMsg{})
 			if m = next.(shellModel); m.canReview() {
 				t.Error("the plan reopened while a second re-plan was still to run")
 			}
-			second()()
+			done, _ = second()
+			done()
 			next, _ = m.Update(replanDoneMsg{})
 			if m = next.(shellModel); !m.canReview() {
 				t.Error("the new plan must be reviewable once the last re-plan lands")

@@ -337,7 +337,7 @@ func TestWorkGroupRewrite(t *testing.T) {
 	}
 
 	firstIn := make(chan func())
-	go func() { firstIn <- enterFirst() }()
+	go func() { done, _ := enterFirst(); firstIn <- done }()
 	select {
 	case <-firstIn:
 		t.Fatal("a rewrite started beside work running on the library")
@@ -347,7 +347,7 @@ func TestWorkGroupRewrite(t *testing.T) {
 	endFirst := <-firstIn
 
 	secondIn := make(chan func())
-	go func() { secondIn <- enterSecond() }()
+	go func() { done, _ := enterSecond(); secondIn <- done }()
 	started := make(chan struct{})
 	go func() {
 		done, _ := g.StartOnLibrary()
@@ -369,6 +369,26 @@ func TestWorkGroupRewrite(t *testing.T) {
 	<-started
 	if g.Rewriting() {
 		t.Error("Rewriting still set after the last rewrite ended")
+	}
+}
+
+// A rewrite registered but never entered (the program ended before its work
+// ran) does not hold up shutdown, and entering it afterwards is refused.
+func TestWorkGroupShutdownSkipsARewriteNeverEntered(t *testing.T) {
+	var g WorkGroup
+	enter, _ := g.StartRewrite()
+	closed := make(chan struct{})
+	go func() {
+		g.CloseAndWait()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown waited for a rewrite that never entered")
+	}
+	if _, ok := enter(); ok || g.Rewriting() {
+		t.Errorf("a rewrite entered after shutdown, or still counts: rewriting=%v", g.Rewriting())
 	}
 }
 
