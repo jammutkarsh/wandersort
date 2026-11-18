@@ -76,10 +76,7 @@ type shellModel struct {
 	// another library runs it
 	pendingScan *tui.StartScanMsg
 
-	// settingsBefore is the library's settings as the wizard opened on them,
-	// so a save that changes nothing costs nothing (see settingsSaved).
-	settingsBefore config.Settings
-	libraryBefore  string // the library folder the settings tab opened on
+	libraryBefore string // the library folder the settings tab opened on
 
 	start shellStart
 
@@ -326,11 +323,10 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleLeave(msg)
 
 	case tui.StartScanMsg:
-		if m.a.Work.Rewriting() {
+		if m.replanning() {
 			return m, msgCmd(scanReadyMsg{err: library.ErrReplanning})
 		}
-		// opened here, on the UI goroutine, which is the only one that writes
-		// the app's library fields; opening is quick (the lock never waits)
+		// opened here, before the scan screen: opening is quick (the lock never waits)
 		if err := m.a.Open(m.ctx); err != nil {
 			return m, msgCmd(scanReadyMsg{err: err})
 		}
@@ -374,7 +370,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if dir := m.a.Config.OutputDir(); dir != m.libraryBefore {
 			// another library: screens built over the old one are stale, and
 			// its plan is already its own
-			m.libraryBefore, m.settingsBefore = dir, m.a.Config.Settings
+			m.libraryBefore = dir
 			m.screens[tabReview] = nil
 			m.screens[tabCopy] = nil
 			m.refresh()
@@ -386,9 +382,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, note
 		}
 		// a row of the settings list saved: re-plan if it changed anything
-		cmd := m.settingsSaved(m.settingsBefore)
-		m.settingsBefore = m.a.Config.Settings
-		return m, cmd
+		return m, m.settingsSaved()
 
 	case tui.CopyFinishedMsg:
 		// files moved into the library: the counts changed and a kept review
@@ -434,15 +428,23 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, m.forward(tabScan, tui.HomeNoteMsg{Text: msg.note}))
 
 	case replanDoneMsg:
-		m.refresh() // the plan was just rewritten
-		if msg.err != nil {
-			return m, m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})
+		m.a.settingsToSave = nil // landed or not, the library's own settings are the ones to show
+		m.refresh()              // the plan was just rewritten
+		if msg.err == nil {
+			return m, nil
 		}
-		return m, nil
+		cmd := m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})
+		if m.screens[tabSettings] != nil {
+			// its list still shows what failed to save
+			if screen, err := m.a.newSettingsScreen(m.ctx); err == nil {
+				cmd = tea.Batch(cmd, m.place(tabSettings, screen))
+			}
+		}
+		return m, cmd
 
 	case reviewOpenMsg:
 		m.opening = false
-		if msg.plan != m.a.Work.Plan() {
+		if msg.plan != m.a.Work.Plan() || m.replanning() {
 			return m, nil // built over the plan a re-plan replaced
 		}
 		if errors.Is(msg.err, tui.ErrNothingNew) {
@@ -499,13 +501,13 @@ func (m shellModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.escArmed = false
 			return m, tea.Batch(m.forward(m.tab, k), m.setNotice("busy — esc stops it on its own tab"))
 		}
-		if m.a.Work.Rewriting() {
-			m.escArmed = false
-			return m, tea.Batch(m.forward(m.tab, k), m.setNotice(replanQuitNotice))
-		}
 		if !m.escArmed {
 			m.escArmed = true
-			return m, tea.Batch(m.forward(m.tab, k), m.setNotice("esc again to quit"))
+			notice := "esc again to quit"
+			if m.replanning() {
+				notice = "esc again to quit — stops the re-plan, the settings stay as they were"
+			}
+			return m, tea.Batch(m.forward(m.tab, k), m.setNotice(notice))
 		}
 		return m, tea.Quit
 	}
@@ -601,11 +603,7 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 	// Quit first: a scan can hand back asynchronously from a tab the user
 	// isn't on, so this must not be read as the current tab finishing.
 	if l.Quit {
-		// a re-plan cut short leaves the new settings with the old plan
-		if m.a.Work.Rewriting() {
-			return m, m.setNotice(replanQuitNotice)
-		}
-		return m, tea.Quit
+		return m, tea.Quit // a re-plan cut short leaves the old settings and plan
 	}
 
 	var cmd tea.Cmd
@@ -618,7 +616,7 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 		case l.Err != nil:
 			cmd = m.forward(tabScan, tui.HomeErrMsg{Err: l.Err})
 		case !l.Aborted:
-			cmd = m.settingsSaved(m.settingsBefore)
+			cmd = m.settingsSaved()
 		}
 	case tabReview:
 		// review edits live in the draft; the home screen says where they go
@@ -644,25 +642,22 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmd, m.homeAgain(note))
 }
 
-// settingsSaved applies a wizard save: a changed setting re-plans the library
-// at once and drops any stashed review screen (its folder IDs are gone). The
-// settings tab is unreachable during a scan, so no workflow is retargeted.
-func (m *shellModel) settingsSaved(before config.Settings) tea.Cmd {
+// settingsSaved saves what a settings form handed over: a changed setting
+// re-plans the library at once and drops any stashed review screen (its folder
+// IDs are gone). The settings tab is unreachable during a scan, so no workflow
+// is retargeted.
+func (m *shellModel) settingsSaved() tea.Cmd {
 	// only the home screen shows the receipt, so it is lost if a
 	// finished scan screen still holds the tab
 	cmd := m.forward(tabScan, tui.HomeNoteMsg{Text: "Settings saved."})
 
-	if m.a.Config.Settings.Equal(before) {
+	s := m.a.settingsToSave
+	if s == nil || (m.a.DB() != nil && s.Equal(m.a.Settings())) {
+		m.a.settingsToSave = nil
 		return cmd // a visit that changed nothing throws no plan away
 	}
 	m.screens[tabReview] = nil
-	// registered here, on the UI goroutine, so the very next message already
-	// finds the plan shut (see planChanging)
-	enter, ok := m.a.Work.StartRewrite()
-	if !ok {
-		return cmd
-	}
-	return tea.Batch(cmd, m.replan(enter))
+	return tea.Batch(cmd, m.saveSettings(*s))
 }
 
 // libraryEmptiedMsg reports a discarded plan or a reset: what to tell
@@ -693,26 +688,17 @@ func (m *shellModel) onLibrary(what string, run func(context.Context) (string, e
 	}
 }
 
-// replanDoneMsg reports a settings re-plan ending; only a failure says anything.
+// replanDoneMsg reports a settings save ending; only a failure says anything.
 type replanDoneMsg struct{ err error }
 
-// replanQuitNotice answers a quit asked for while a re-plan runs.
-const replanQuitNotice = "re-planning with the new settings — quit when it's done"
-
-// replan re-proposes the whole library under the saved settings, off the UI
-// goroutine. enter is the rewrite settingsSaved registered: it waits for work
-// on the library (and any earlier re-plan) before this one runs alone.
-func (m *shellModel) replan(enter func() (func(), bool)) tea.Cmd {
+// saveSettings saves s into the library with the plan rebuilt from it, off the
+// UI goroutine.
+func (m *shellModel) saveSettings(s config.Settings) tea.Cmd {
 	a, ctx := m.a, m.ctx
 	return func() tea.Msg {
-		done, ok := enter()
-		if !ok {
-			return nil // shutting down
-		}
-		defer done()
-		if _, err := a.rebuildTree(ctx); err != nil {
-			// logged as well as shown: a failed re-plan leaves copy with the old settings' plan
-			a.Log.Warn("Re-plan failed; copy would use the old plan. Save the settings again.",
+		if err := a.SaveSettings(ctx, s); err != nil {
+			// logged as well as shown: the library keeps the settings its plan was built from
+			a.Log.Warn("Settings not saved; the library keeps its old settings and plan. Save them again.",
 				logger.UserKey, true, "error", err)
 			return replanDoneMsg{err: err}
 		}
@@ -728,7 +714,7 @@ func (m shellModel) handleSwitch(msg tui.SwitchMsg) (tea.Model, tea.Cmd) {
 	}
 	// kept, and the tab bar marks it; opened only when the user picked it
 	m.refresh() // the scan that produced it is done
-	if m.a.Work.Plan() != m.scanPlan {
+	if m.a.Work.Plan() != m.scanPlan || m.replanning() {
 		return m, nil // built over the plan a re-plan replaced
 	}
 	cmd := m.place(tabReview, msg.Next)
@@ -811,14 +797,14 @@ func homeMsg(s library.State) tui.HomeLibraryMsg {
 // openSettings places the settings wizard, seeded from the library's own
 // settings (opening an existing library first). Rebuilt on every entry.
 func (m *shellModel) openSettings() tea.Cmd {
-	if m.a.Work.Rewriting() {
+	if m.replanning() {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: library.ErrReplanning})
 	}
 	screen, err := m.a.newSettingsScreen(m.ctx)
 	if err != nil {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: err})
 	}
-	m.settingsBefore, m.libraryBefore = m.a.Config.Settings, m.a.Config.OutputDir()
+	m.libraryBefore = m.a.Config.OutputDir()
 	m.tab = tabSettings
 	return m.place(tabSettings, screen)
 }
@@ -826,7 +812,7 @@ func (m *shellModel) openSettings() tea.Cmd {
 // openReview builds the review over the database off the UI goroutine (lock,
 // DB open and BuildTree are slow).
 func (m *shellModel) openReview() tea.Cmd {
-	if m.a.Work.Rewriting() {
+	if m.replanning() {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: library.ErrReplanning})
 	}
 	if m.opening {
@@ -862,7 +848,7 @@ func (m *shellModel) openCopy() tea.Cmd {
 		m.tab = tabCopy
 		return nil
 	}
-	if m.a.Work.Rewriting() {
+	if m.replanning() {
 		return m.forward(tabScan, tui.HomeErrMsg{Err: library.ErrReplanning})
 	}
 	screen, stop, err := m.a.newCopyScreen(m.ctx)
@@ -884,7 +870,11 @@ func (m shellModel) scanRunning() bool {
 }
 
 // planChanging reports whether a scan or a settings re-plan is rewriting the plan.
-func (m shellModel) planChanging() bool { return m.scanRunning() || m.a.Work.Rewriting() }
+func (m shellModel) planChanging() bool { return m.scanRunning() || m.replanning() }
+
+// replanning reports a settings save handed over or running: the plan is about
+// to be replaced. Set on the UI goroutine, so the very next message finds it.
+func (m shellModel) replanning() bool { return m.a.settingsToSave != nil || m.a.Work.Rewriting() }
 
 // place installs a new screen, sized to the current window, and inits it.
 func (m *shellModel) place(tab int, s tui.Tab) tea.Cmd {

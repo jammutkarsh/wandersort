@@ -379,9 +379,10 @@ func TestShellModel(t *testing.T) {
 			m := testShell(t)
 			seedProposal(t, m.a)
 			m.refresh()
-			before := m.a.Config.Settings
-			m.a.Config.Rules = []string{"device"}
-			m.settingsSaved(before)
+			s := m.a.Settings()
+			s.Rules = []string{"device"}
+			m.a.settingsToSave = &s
+			m.settingsSaved()
 
 			if m.canReview() || m.nextTab() != tabScan {
 				t.Errorf("mid re-plan: canReview=%v nextTab=%d, want every other tab shut", m.canReview(), m.nextTab())
@@ -404,32 +405,32 @@ func TestShellModel(t *testing.T) {
 			if m = next.(shellModel); m.screens[tabReview] != nil || m.tab != tabScan {
 				t.Error("a review built over the old plan was shown mid re-plan")
 			}
+			next, _ = m.Update(replanDoneMsg{})
+			if m = next.(shellModel); m.replanning() || !m.canReview() {
+				t.Error("the plan must reopen once the save lands")
+			}
 		}},
-		// Quitting cancels the session's work; a re-plan cut short leaves the
-		// new settings saved over the old plan, which a later copy would use.
-		{"QuitWaitsForAReplan", func(t *testing.T) {
-			m := testShell(t)
-			enter, _ := m.a.Work.StartRewrite()
-			quits := func(msgs ...tea.Msg) bool {
+		// Quitting mid re-plan is allowed: shutdown cancels it, and a re-plan
+		// cut short writes neither the new settings nor the new plan.
+		{"QuitStopsAReplan", func(t *testing.T) {
+			for _, keys := range [][]tea.Msg{
+				{tea.KeyMsg{Type: tea.KeyEsc}, tea.KeyMsg{Type: tea.KeyEsc}},
+				{tui.Leave{Quit: true}},
+			} {
+				m := testShell(t)
+				m.a.Work.StartRewrite()
 				var cmd tea.Cmd
-				for _, msg := range msgs {
+				for _, msg := range keys {
 					var next tea.Model
 					next, cmd = m.Update(msg)
 					m = next.(shellModel)
 				}
-				return slices.ContainsFunc(flattenTeaCmd(cmd), func(msg tea.Msg) bool {
+				if !slices.ContainsFunc(flattenTeaCmd(cmd), func(msg tea.Msg) bool {
 					_, quit := msg.(tea.QuitMsg)
 					return quit
-				})
-			}
-			esc := tea.KeyMsg{Type: tea.KeyEsc}
-			if quits(esc, esc) || quits(tui.Leave{Quit: true}) {
-				t.Error("the shell quit while a re-plan was running")
-			}
-			done, _ := enter()
-			done()
-			if !quits(tui.Leave{Quit: true}) {
-				t.Error("the shell must quit once the re-plan has landed")
+				}) {
+					t.Errorf("%v during a re-plan did not quit", keys)
+				}
 			}
 		}},
 		// Two rows saved in a row are two re-plans; the first one landing must
@@ -538,9 +539,7 @@ func TestShellModel(t *testing.T) {
 			form := tui.NewFormModel([]*tui.Field{{Kind: tui.FieldConfirm, Title: "Only step", BoolValue: &yes}}, nil)
 			m.screens[tabSettings] = form
 			m.tab = tabSettings
-			// What openSettings records when it places the wizard: this stand-in
-			// changes nothing, so the save must not kick off a re-plan.
-			m.settingsBefore = m.a.Config.Settings
+			// this stand-in hands no settings over, so the save must not kick off a re-plan
 
 			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 			m = next.(shellModel)
@@ -604,9 +603,8 @@ func TestShellModel(t *testing.T) {
 		{"ReviewNoteOnlyWithDraftEdits", func(t *testing.T) {
 			leave := func(t *testing.T, withEdit bool) string {
 				m := testShell(t)
-				m.a.Config.AppDBPath = filepath.Join(t.TempDir(), ".wandersort.db")
 				if withEdit {
-					seedDraft(t, filepath.Dir(m.a.Config.AppDBPath), vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: 1, To: "x"})
+					seedDraft(t, m.a.Config.OutputDir(), vfs.Edit{Seq: 1, Op: vfs.OpRename, Node: 1, To: "x"})
 				}
 				m.screens[tabReview] = &probe{name: "review"}
 				m.tab = tabReview
@@ -762,30 +760,32 @@ func flattenTeaCmd(cmd tea.Cmd) []tea.Msg {
 // TestConfigSavedReplansOnlyOnAChange: a settings save re-plans at once,
 // without asking, but *only* when the settings really moved — a trip through
 // the wizard that lands back where it started must not throw away the plan or
-// the review edits made against it. The library is open by the time this
-// runs: the save itself writes into it (see Session.SaveSettings), which is why
-// the re-plan can go straight to rebuildTree.
+// the review edits made against it.
 func TestConfigSavedReplansOnlyOnAChange(t *testing.T) {
-	before := config.Settings{Rules: []string{"date", "location"}, CollapseLevels: true}
 	for _, tc := range []struct {
 		name       string
-		after      config.Settings
+		change     func(*config.Settings)
 		wantReplan bool
 	}{
-		{"net-zero edit — plan and edits kept", before, false},
-		{"changed rules — re-planned", config.Settings{Rules: []string{"device"}, CollapseLevels: true}, true},
+		{"net-zero edit — plan and edits kept", func(*config.Settings) {}, false},
+		{"changed rules — re-planned", func(s *config.Settings) { s.Rules = []string{"device"} }, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := testShell(t)
-			m.a.Config.Settings = tc.after
+			if err := m.a.Open(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			s := m.a.Settings()
+			tc.change(&s)
+			m.a.settingsToSave = &s
 			open := &probe{name: "review"}
 			m.screens[tabReview] = open
 
 			// The Cmd is deliberately not run: it re-plans against the open
-			// library, which this shell has no Deps or database for. Dropping
-			// the stale review screen is the observable half, and the half a
-			// shift+tab can race.
-			m.settingsSaved(before)
+			// library, which this shell has no Deps for. Dropping the stale
+			// review screen is the observable half, and the half a shift+tab
+			// can race.
+			cmd := m.settingsSaved()
 			if v := ansi.Strip(m.screens[tabScan].View()); !strings.Contains(v, "Settings saved") {
 				t.Errorf("the save is only confirmed on the home screen, and it didn't say so:\n%s", v)
 			}
@@ -793,11 +793,13 @@ func TestConfigSavedReplansOnlyOnAChange(t *testing.T) {
 				// The drop happens in settingsSaved itself, not inside the Cmd:
 				// a shift+tab before the re-plan finishes must not find a screen
 				// built over folder IDs that no longer exist.
-				if m.screens[tabReview] != nil {
-					t.Error("the stale review screen must be dropped before the re-plan runs")
+				if m.screens[tabReview] != nil || !m.replanning() {
+					t.Error("the stale review screen must be dropped and the plan shut before the re-plan runs")
 				}
-			} else if m.screens[tabReview] != open {
-				t.Error("a save that changed nothing must not drop the open review")
+				return
+			}
+			if m.screens[tabReview] != open || m.replanning() || cmd == nil {
+				t.Error("a save that changed nothing must not drop the open review or shut the plan")
 			}
 		})
 	}
@@ -829,6 +831,9 @@ func seedDraft(t *testing.T, dir string, edits ...vfs.Edit) {
 			t.Fatal(err)
 		}
 		buf = append(append(buf, line...), '\n')
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, vfs.DraftFileName), buf, 0o644); err != nil {
 		t.Fatal(err)

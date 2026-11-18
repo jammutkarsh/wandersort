@@ -29,6 +29,9 @@ type app struct {
 	// file, the open database and the work running on it.
 	library.Session
 	Deps *install.Coordinator
+	// settingsToSave is a settings form's answer on its way to the library:
+	// the form hands it over, the shell saves it off the UI goroutine
+	settingsToSave *config.Settings
 	// Version is the build main.go stamps via -ldflags; `wandersort --version` prints it
 	Version string
 
@@ -100,8 +103,17 @@ func (a *app) Restore(ctx context.Context) error {
 	return explainBusy(a.Session.Restore(ctx))
 }
 
-func (a *app) SaveSettings(ctx context.Context, outputDir string, settings config.Settings) error {
-	return explainBusy(a.Session.SaveSettings(ctx, outputDir, settings))
+func (a *app) SaveSettings(ctx context.Context, settings config.Settings) error {
+	places := func(ctx context.Context) (*location.Resolver, error) { return a.Deps.Location(ctx) }
+	return explainBusy(a.Session.SaveSettings(ctx, settings, places))
+}
+
+// shownSettings is what the settings screens show: a save on its way, else the library's.
+func (a *app) shownSettings() config.Settings {
+	if a.settingsToSave != nil {
+		return *a.settingsToSave
+	}
+	return a.Settings()
 }
 
 // busyError words a library held by another process for the terminal, keeping the cause in the chain.

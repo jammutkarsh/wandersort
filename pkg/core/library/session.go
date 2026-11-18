@@ -13,14 +13,15 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
 // Session is one process's hold on at most one library: its database, the
 // output lock that keeps other processes out, and the work running on it.
-// Open, Close, Switch, SaveSettings and Work.StartRewrite belong to one
-// goroutine; work started through Work may run on others.
+// Open, Close, Switch and Work.StartRewrite belong to one goroutine; work
+// started through Work and SaveSettings may run on others.
 type Session struct {
 	Config *config.Configuration
 	Log    logger.Logger
@@ -31,13 +32,27 @@ type Session struct {
 	// closing the database.
 	Work WorkGroup
 
+	// mu guards db, lock and Config.Settings: SaveSettings may change them
+	// off the goroutine that reads them
+	mu   sync.RWMutex
 	db   *db.DB
 	lock *lock.Lock
 }
 
 // DB is the open library's database, or nil while none is open. A getter, not
 // a field, so only Open and Close change the handle, always with the lock.
-func (s *Session) DB() *db.DB { return s.db }
+func (s *Session) DB() *db.DB {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.db
+}
+
+// Settings is the open library's settings: what its plan was built from.
+func (s *Session) Settings() config.Settings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Config.Settings
+}
 
 // LibraryExists reports whether the output folder already holds a library
 // (its database file exists). Opens nothing.
@@ -52,6 +67,8 @@ func (s *Session) LibraryExists() bool {
 // nothing into the folder. A library another process holds fails with a
 // *lock.AlreadyRunningError in the chain.
 func (s *Session) Open(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.db != nil {
 		return nil
 	}
@@ -99,6 +116,8 @@ func (s *Session) openLibrary(ctx context.Context, dir string) (*db.DB, *lock.Lo
 // Close flushes and closes the open library and releases its lock; with none
 // open it does nothing.
 func (s *Session) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.closeLibrary(s.db, s.lock)
 	s.db, s.lock = nil, nil
 }
@@ -122,22 +141,54 @@ func (s *Session) closeLibrary(d *db.DB, l *lock.Lock) {
 // rewrite, which reads both, is waiting or running.
 var ErrReplanning = errors.New("still re-planning with the new settings; try again in a moment")
 
-// SaveSettings writes settings into the library at outputDir, opening it
-// first if none is open; a settings-first session picks its library here.
-func (s *Session) SaveSettings(ctx context.Context, outputDir string, settings config.Settings) error {
+// ErrClosing refuses work once the session is shutting down.
+var ErrClosing = errors.New("shutting down")
+
+// SaveSettings makes settings the library's, opening it first if none is
+// open. A change rebuilds the plan from them and writes both in one
+// transaction, so the library never holds settings its plan was not built
+// from: a save that fails or is cancelled leaves the library and Settings as
+// they were. It waits for work running on the library, may take minutes on a
+// large one, and meanwhile refuses other saves and switches (ErrReplanning).
+// places opens the location database the plan names places from.
+func (s *Session) SaveSettings(ctx context.Context, settings config.Settings, places func(context.Context) (*location.Resolver, error)) error {
 	if s.Work.Rewriting() {
 		return ErrReplanning
 	}
-	if s.db == nil {
-		s.Config.SetOutput(outputDir)
-		if err := s.Open(ctx); err != nil {
-			return err
-		}
+	if s.DB() != nil && settings.Equal(s.Settings()) {
+		return nil // nothing changed: the plan and its review edits stay
 	}
-	if err := config.SaveSettings(ctx, s.db, settings); err != nil {
+	enter, ok := s.Work.StartRewrite()
+	if !ok {
+		return ErrClosing
+	}
+	done, ok := enter()
+	if !ok {
+		return ErrClosing
+	}
+	defer done()
+	if err := s.Open(ctx); err != nil {
 		return err
 	}
+	if settings.Equal(s.Settings()) {
+		return nil
+	}
+
+	resolver, err := places(ctx)
+	if err != nil {
+		return fmt.Errorf("location database: %w", err)
+	}
+	s.mu.RLock()
+	cfg := *s.Config
+	s.mu.RUnlock()
+	cfg.Settings = settings
+	s.Log.Info("Settings changed — re-proposing the folder structure", logger.UserKey, true)
+	if _, err := vfs.Propose(ctx, s.DB(), resolver, &cfg, s.Log); err != nil {
+		return fmt.Errorf("re-plan: %w", err)
+	}
+	s.mu.Lock()
 	s.Config.Settings = settings
+	s.mu.Unlock()
 	return nil
 }
 
@@ -169,7 +220,7 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 	}
 	fresh, err := isNew(ctx, appDB)
 	if err == nil && fresh {
-		settings = s.Config.Settings
+		settings = s.Settings()
 		err = config.SaveSettings(ctx, appDB, settings)
 	}
 	if err != nil {
@@ -177,9 +228,11 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 		return err
 	}
 	s.Close()
+	s.mu.Lock()
 	s.Config.SetOutput(dir)
 	s.db, s.lock = appDB, l
 	s.Config.Settings = settings
+	s.mu.Unlock()
 	if err := s.Config.Remember(dir); err != nil {
 		s.Log.Warn("could not record this library as recently used", "error", err)
 	}
@@ -278,11 +331,12 @@ func (s *Session) State(ctx context.Context) State {
 		st.Edits = len(d.Edits())
 	}
 
-	if s.db == nil {
+	d := s.DB()
+	if d == nil {
 		return st
 	}
 	st.Open = true
-	planned, _, err := execute.Pending(ctx, s.db)
+	planned, _, err := execute.Pending(ctx, d)
 	st.Planned = planned
 	if err != nil {
 		// A library we can't count is still a library; the caller keeps it
@@ -290,7 +344,7 @@ func (s *Session) State(ctx context.Context) State {
 		s.Log.Warn("could not count the planned files", "error", err)
 		st.Planned = 1
 	}
-	if st.Placed, err = s.db.PlacedCount(ctx); err != nil {
+	if st.Placed, err = d.PlacedCount(ctx); err != nil {
 		s.Log.Warn("could not count the placed files", "error", err)
 	}
 	return st

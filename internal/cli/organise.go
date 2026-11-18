@@ -8,7 +8,6 @@ import (
 
 	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
-	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -34,21 +33,6 @@ wandersort organise`,
 	}
 }
 
-// rebuildTree re-proposes the whole hierarchy under the current settings
-// (after a wizard save) and returns the new tree. Placed and failed rows keep
-// theirs.
-func (a *app) rebuildTree(ctx context.Context) ([]vfs.Node, error) {
-	resolver, err := a.Deps.Location(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("dependencies: %w", err)
-	}
-	a.Log.Info("Settings changed — re-proposing the folder structure", logger.UserKey, true)
-	if _, err := vfs.Propose(ctx, a.DB(), resolver, a.Config, a.Log); err != nil {
-		return nil, fmt.Errorf("re-plan proposal: %w", err)
-	}
-	return vfs.BuildTree(ctx, a.DB())
-}
-
 // newReviewScreen builds the review over the current proposal using the open
 // DB. An empty tree means everything is already placed.
 func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
@@ -58,7 +42,7 @@ func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
 	if err != nil {
 		a.Log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
 	}
-	resolver = resolver.WithAnchors(resolver.BuildAnchors(ctx, a.Config.SavedPlaces()))
+	resolver = resolver.WithAnchors(resolver.BuildAnchors(ctx, a.Settings().SavedPlaces()))
 	outputDir := a.Config.OutputDir()
 	tree, err := vfs.BuildTree(ctx, a.DB())
 	if err != nil {

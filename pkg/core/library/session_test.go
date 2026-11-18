@@ -13,6 +13,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -66,8 +67,8 @@ func TestOpenLoadsThatLibrarysSettings(t *testing.T) {
 		t.Fatalf("Open (second session): %v", err)
 	}
 	defer next.Close()
-	if !next.Config.Settings.Equal(want) {
-		t.Errorf("settings = %+v, want the library's own %+v", next.Config.Settings, want)
+	if !next.Settings().Equal(want) {
+		t.Errorf("settings = %+v, want the library's own %+v", next.Settings(), want)
 	}
 	if hist := next.Config.History(); len(hist) == 0 || hist[0] != cfg.OutputDir() {
 		t.Errorf("history = %v, want the library just opened at the front", hist)
@@ -82,11 +83,7 @@ func TestOpenRefusedWritesNothing(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "IMG_0001.JPG"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := &Session{
-		Config:  &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")},
-		Log:     logger.NewNoopLogger(),
-		LogFile: testLogFile(t, t.TempDir()),
-	}
+	s := &Session{Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}, Log: logger.NewNoopLogger(), LogFile: testLogFile(t, t.TempDir())}
 	if err := s.Open(context.Background()); err == nil {
 		t.Fatal("Open must refuse a folder holding someone else's files")
 	}
@@ -102,6 +99,66 @@ func TestOpenRefusedWritesNothing(t *testing.T) {
 	}
 }
 
+// noPlaces stands in for the location database: these libraries name no places.
+func noPlaces(context.Context) (*location.Resolver, error) { return nil, nil }
+
+// A setting reaches the library together with the plan built from it; a save
+// that fails leaves the library's settings and the session's as they were.
+func TestSaveSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		saved bool
+	}{
+		{"saved with the plan", true},
+		{"a write that fails keeps the old settings", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := testSession(t)
+			if err := s.Open(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.saved {
+				// aborts the save's transaction from inside, where the plan is written
+				if _, err := s.DB().SQL.ExecContext(ctx, `CREATE TRIGGER fail_save BEFORE INSERT ON library_settings
+					BEGIN SELECT RAISE(ABORT, 'disk gone'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			old := s.Settings()
+			changed := old
+			changed.Rules = []string{"device"}
+			// saved off the goroutine that keeps reading, as a UI would
+			result := make(chan error, 1)
+			go func() { result <- s.SaveSettings(ctx, changed, noPlaces) }()
+			var err error
+		reading:
+			for {
+				select {
+				case err = <-result:
+					break reading
+				default:
+					_, _ = s.Settings(), s.DB()
+				}
+			}
+			if (err == nil) != tc.saved {
+				t.Fatalf("SaveSettings = %v, want saved %v", err, tc.saved)
+			}
+			want := old
+			if tc.saved {
+				want = changed
+			}
+			onDisk, err := config.LoadSettings(ctx, s.DB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !onDisk.Equal(want) || !s.Settings().Equal(want) {
+				t.Errorf("library %v, session %v; want %v in both", onDisk.Rules, s.Settings().Rules, want.Rules)
+			}
+		})
+	}
+}
+
 // A new folder starts an empty library with the same settings; an organised one opens with its own.
 func TestSwitch(t *testing.T) {
 	ctx := context.Background()
@@ -110,9 +167,9 @@ func TestSwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := s.Config.OutputDir()
-	settings := s.Config.Settings
+	settings := s.Settings()
 	settings.Rules = []string{"date"}
-	if err := s.SaveSettings(ctx, first, settings); err != nil {
+	if err := s.SaveSettings(ctx, settings, noPlaces); err != nil {
 		t.Fatal(err)
 	}
 	dbtest.SeedFile(t, s.DB(), 1, "/src", "a.jpg", 1)
@@ -125,13 +182,13 @@ func TestSwitch(t *testing.T) {
 	if err := s.DB().SQL.GetContext(ctx, &files, `SELECT COUNT(*) FROM file_registry`); err != nil {
 		t.Fatal(err)
 	}
-	if s.Config.OutputDir() != second || files != 0 || !slices.Equal(s.Config.Rules, []string{"date"}) {
-		t.Errorf("new library at %q: files=%d rules=%v, want empty with the old rules", s.Config.OutputDir(), files, s.Config.Rules)
+	if s.Config.OutputDir() != second || files != 0 || !slices.Equal(s.Settings().Rules, []string{"date"}) {
+		t.Errorf("new library at %q: files=%d rules=%v, want empty with the old rules", s.Config.OutputDir(), files, s.Settings().Rules)
 	}
 
-	settings = s.Config.Settings
+	settings = s.Settings()
 	settings.Rules = []string{"location"}
-	if err := s.SaveSettings(ctx, second, settings); err != nil {
+	if err := s.SaveSettings(ctx, settings, noPlaces); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Switch(ctx, first); err != nil {
@@ -140,8 +197,8 @@ func TestSwitch(t *testing.T) {
 	if err := s.DB().SQL.GetContext(ctx, &files, `SELECT COUNT(*) FROM file_registry`); err != nil {
 		t.Fatal(err)
 	}
-	if files != 1 || !slices.Equal(s.Config.Rules, []string{"date"}) {
-		t.Errorf("back in the first library: files=%d rules=%v, want its own file and rules", files, s.Config.Rules)
+	if files != 1 || !slices.Equal(s.Settings().Rules, []string{"date"}) {
+		t.Errorf("back in the first library: files=%d rules=%v, want its own file and rules", files, s.Settings().Rules)
 	}
 }
 
@@ -169,7 +226,14 @@ func TestSwitchCarriesSettingsOnlyIntoAnUnusedLibrary(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testSession(t)
-			s.Config.Rules = carried
+			if err := s.Open(ctx); err != nil {
+				t.Fatal(err)
+			}
+			settings := s.Settings()
+			settings.Rules = carried
+			if err := s.SaveSettings(ctx, settings, noPlaces); err != nil {
+				t.Fatal(err)
+			}
 			dir := filepath.Join(t.TempDir(), "library")
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)
@@ -178,8 +242,8 @@ func TestSwitchCarriesSettingsOnlyIntoAnUnusedLibrary(t *testing.T) {
 			if err := s.Switch(ctx, dir); err != nil {
 				t.Fatal(err)
 			}
-			if !slices.Equal(s.Config.Rules, tc.want) {
-				t.Errorf("rules = %v, want %v", s.Config.Rules, tc.want)
+			if !slices.Equal(s.Settings().Rules, tc.want) {
+				t.Errorf("rules = %v, want %v", s.Settings().Rules, tc.want)
 			}
 		})
 	}
@@ -423,10 +487,10 @@ func TestRewriteRefusesSettingsAndSwitch(t *testing.T) {
 	if err := s.Open(ctx); err != nil {
 		t.Fatal(err)
 	}
-	settings := s.Config.Settings
+	settings := s.Settings()
 	settings.Rules = []string{"date"}
 	enter, _ := s.Work.StartRewrite()
-	if err := s.SaveSettings(ctx, s.Config.OutputDir(), settings); !errors.Is(err, ErrReplanning) {
+	if err := s.SaveSettings(ctx, settings, noPlaces); !errors.Is(err, ErrReplanning) {
 		t.Errorf("SaveSettings mid rewrite = %v, want ErrReplanning", err)
 	}
 	if err := s.Switch(ctx, filepath.Join(t.TempDir(), "other")); !errors.Is(err, ErrReplanning) {
@@ -434,7 +498,7 @@ func TestRewriteRefusesSettingsAndSwitch(t *testing.T) {
 	}
 	done, _ := enter()
 	done()
-	if err := s.SaveSettings(ctx, s.Config.OutputDir(), settings); err != nil {
+	if err := s.SaveSettings(ctx, settings, noPlaces); err != nil {
 		t.Errorf("SaveSettings once the rewrite ended: %v", err)
 	}
 }
