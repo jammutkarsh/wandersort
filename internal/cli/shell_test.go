@@ -618,18 +618,6 @@ func TestShellModel(t *testing.T) {
 				t.Errorf("draft edits, yet no note on the home screen:\n%s", v)
 			}
 		}},
-		// exitStatus reads the scan model the container kept — tui.Shell's
-		// Current() never sees it, since the ScanModel lives inside a tab.
-		{"ExitStatusReportsACancelledScan", func(t *testing.T) {
-			m := testShell(t)
-			sm := tui.NewScanModel(tui.ScanConfig{Cancel: func() {}})
-			cancelled, _ := sm.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-			m.screens[tabScan] = cancelled.(tui.Tab)
-
-			if err := m.exitStatus(); err == nil || !strings.Contains(err.Error(), "cancelled") {
-				t.Errorf("exitStatus() = %v, want a cancellation", err)
-			}
-		}},
 		// every subcommand is the same shell opened on its own tab
 		{"SubcommandStartsOpenTheirOwnTab", func(t *testing.T) {
 			for _, tc := range []struct {

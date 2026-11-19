@@ -51,6 +51,8 @@ type copyResult struct {
 	Failed  int    `json:"failed"`
 	NotRead int    `json:"notRead"`
 	Bytes   int64  `json:"bytes"`
+	// Targets is where a dry run would place each file, library-relative.
+	Targets []string `json:"targets,omitempty"`
 }
 
 func (a *app) runCopy(cmd *cobra.Command) error {
@@ -85,11 +87,17 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	res.NotRead = len(left)
 	defer a.reportLeftBehind(left)
 
-	rep, err := execute.Run(ctx, a.DB(), a.Log(), outputDir, execute.Options{
-		DryRun:    dryRun,
-		OnApplied: a.cleanPreviews,
-	})
+	opts := execute.Options{DryRun: dryRun, OnApplied: a.cleanPreviews}
+	if dryRun {
+		opts.OnProgress = func(target string, _ int64, _, _ int) { res.Targets = append(res.Targets, target) }
+	}
+	rep, err := execute.Run(ctx, a.DB(), a.Log(), outputDir, opts)
 	res.Copied, res.Failed, res.Bytes = rep.Done, rep.Failed, rep.Bytes
+	if !a.jsonOut {
+		for _, t := range res.Targets {
+			fmt.Println(t)
+		}
+	}
 	if errors.Is(err, context.Canceled) {
 		// every file not yet reached is still pending; nothing is half-placed
 		return fmt.Errorf("stopped after %d files; run copy again to resume", rep.Done)

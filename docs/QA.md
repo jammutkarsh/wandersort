@@ -21,7 +21,7 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 8. `[H]` Settings → Folder layout → layouts are plain rows (no numbers), ↑↓ enter or a click picks one, the example tree follows the option under the cursor; `Custom…` adds the "Which folders inside each month?" step with Day, Place, Camera, Portrait or landscape, Photo or video; `ctrl+b` goes back a step.
 9c. `[H]` Settings → Extra options → "Skip folders", "No home town folder", "One folder per trip" each sit on one row with equal-width yes/no buttons at the same right edge; ↑/↓ move between the three rows without changing any answer and ←/→ set yes/no on the focused one; the focused one's description is above the footer; the example shows only in the side panel (terminal ≥ 100 columns) and a narrower screen has none; a click on any button (even a question not in focus) picks that side, the example updates, and the form stays on screen; the first question's example shows the same three files with and without the camera, orientation and photo/video folders.
 9. `[H]` Settings with a library open → a list of answers (the library as "<folder>, in your home folder", the layout by its folders, e.g. "Year › Month › Day › Place", "Extra options 2 of 3 on"); enter changes one row and returns to the list with "Saved"; `esc save` saves what's on screen without asking; Extra options shows its three questions under one heading, no "1)" title, answers read "One folder per trip yes"; a changed setting re-plans at once, an unchanged save re-plans nothing and keeps review edits; `ctrl+c` leaves without saving.
-9a. `[H]` Settings → Library folder → an empty folder starts a new library with the same settings and nothing planned ("Now using the library <folder>"); a folder WanderSort organised opens with its own; the old library is untouched and opens again when chosen.
+9a. `[H]` Settings → Library folder → an empty folder starts a new library with the same settings and nothing planned (Settings says "Saved.", Add says "Now using the library <folder>"); a folder WanderSort organised opens with its own; the old library is untouched and opens again when chosen.
 
 Settings and the plan are written together: a library never holds settings its plan was not built from. Use a library of a few thousand files so a re-plan lasts long enough to act during it; close the app before any `sqlite3` step (the app holds the database exclusively).
 
@@ -32,7 +32,7 @@ Settings and the plan are written together: a library never holds settings its p
 9h. `[H]` review edits in Organise, then change a setting → the edits go with the old plan; Organise shows the new layout and no edits.
 9i. `[H]` scan a folder, open Organise while the plan builds, change a setting before the review appears → that review is never shown.
 9j. `[H]` Settings → Library folder → the open library by another spelling (a symlink to it, or other letter case on macOS) → nothing happens, no "busy".
-9k. `[H]` `wandersort -o <B>` in a second terminal, then switch to `<B>` in the first → error naming the other process's PID; the first library stays open and usable.
+9k. `[H]` `wandersort -o <B>` in a second terminal, then switch to `<B>` in the first → "WanderSort is already open on this library. Close the other window first."; the first library stays open and usable.
 9l. `[A]` a library folder whose database holds no settings and no files (`sqlite3 <B>/.wandersort.db "select 1"`; clean up: delete `<B>`) → switching to it takes the current settings, like an empty folder.
 10. `[A]` delete the exiftool binary, then `add` → it is downloaded again before the run starts.
 
@@ -76,7 +76,7 @@ Settings and the plan are written together: a library never holds settings its p
 
 ## 5. Organise (review)
 
-40. `[H]` no plan yet → home screen says so; the app stays open.
+40. `[H]` no plan yet → `shift+tab` skips Organise and Copy; `organise` opens on Add; the app stays open.
 41. `[H]` tree renders with box-drawing guides, a blank line under the tabs, `+` and blue on folders the copy makes, file counts right-aligned, scrolls; footer shows five keys; `?` draws the full list over the tree, any key closes it; an edit shows "✓ … · u undo" until the next key.
 42. `[H]` `→`/`←` (or `n`/`N`) → next/previous row at the same depth across branches; stops at the ends.
 43. `[H]` `r` → rename with ranked place suggestions; `↑/↓` pick, `tab` fills, `ctrl+e` (more places) widens the radius; names typed in earlier reviews are offered.
@@ -104,7 +104,7 @@ Settings and the plan are written together: a library never holds settings its p
 
 ## 7. Check
 
-61. `[A]` `check` → existence and size of every placed file; says `--full` re-reads contents.
+61. `[A]` `check` → existence and size of every placed file; `check --help` says `--full` re-reads contents; a mismatch ends with "Run 'wandersort check --full'…".
 62. `[A]` truncate a placed file → listed under its problem heading, non-zero exit; corrupt bytes → only `check --full` finds it.
 63. `[A]` delete a placed file → listed as gone and forgotten; the next check doesn't list it; `add` can bring a source copy back.
 64. `[A]` leftover `.copy-*` file → listed as safe to delete, exit 0.

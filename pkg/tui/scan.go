@@ -110,11 +110,6 @@ var scanKeys = []KeyGroup{
 	}},
 }
 
-// Cancelled reports whether the user's ctrl+c ended the screen.
-func (m ScanModel) Cancelled() bool {
-	return m.state == scanCancelling || m.state == scanCancelled
-}
-
 // Running reports that the pipeline hasn't returned yet.
 func (m ScanModel) Running() bool {
 	return m.state == scanRunning || m.state == scanCancelling

@@ -68,8 +68,12 @@ func New() (*Configuration, error) {
 }
 
 // SetOutput points the configuration at an output folder. Only before the
-// library is open: a library's folder never moves.
+// library is open: a library's folder never moves. A relative dir is taken
+// from the working directory: SQLite reads a relative file: URI as a host.
 func (cfg *Configuration) SetOutput(dir string) {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
 	cfg.AppDBPath = DBPath(dir)
 }
 

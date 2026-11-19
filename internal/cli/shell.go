@@ -210,18 +210,9 @@ func (a *app) runShell(start shellStart) error {
 	return nil
 }
 
-// exitStatus is how the session ended, read off the screens it kept.
-func (m shellModel) exitStatus() error {
-	if m.depsErr != nil {
-		return m.depsErr
-	}
-	if s, ok := m.screens[tabScan].(tui.ScanModel); ok {
-		if s.Cancelled() {
-			return errors.New("scan cancelled")
-		}
-	}
-	return nil
-}
+// exitStatus is how the session ended: only a setup that gave up is a failure;
+// a quit the user asked for, mid scan or not, is not.
+func (m shellModel) exitStatus() error { return m.depsErr }
 
 // Init shows the getting-ready screen; the tabs start once it lifts.
 func (m shellModel) Init() tea.Cmd { return m.gate.Init() }

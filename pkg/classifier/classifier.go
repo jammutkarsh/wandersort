@@ -135,6 +135,8 @@ var (
 		`|^new folder(\s*\(\d+\))?$` +
 		`|^(old\s+)?backup[\s_-]*\d*$` +
 		`|^(dcim|temp|tmp|misc|downloads?)[\s_-]*\d*$` +
+		// DCF camera-roll folders: 100apple, 101canon, 100d3300 (3 digits + 5 chars)
+		`|^\d{3}[a-z_][a-z0-9_]{4}$` +
 		`|^(whatsapp|telegram|signal)[\s_-]*(images?|videos?|media)$`)
 )
 

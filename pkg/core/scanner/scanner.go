@@ -14,6 +14,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
@@ -198,6 +199,7 @@ func (g walkGaps) empty() bool { return len(g.dirs) == 0 && len(g.files) == 0 }
 // root, and gets its own volume.
 func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, output chan<- FileDiscovery) (walkResult, error) {
 	var gaps walkGaps
+	unsupported := 0 // summed into one warning: a folder of documents is not a flood of problems
 
 	// drives[0] is the root's own; the rest are mounted inside it, in walk
 	// order, so an inner drive always comes after the one holding it. Empty
@@ -272,10 +274,11 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 		mediaType := s.classifier.ClassifyName(d.Name())
 		switch mediaType {
 		case classifier.MediaTypeIgnored:
-			s.log.Warn("Ignoring file", "inputPath", absRoot, "walkingPath", s.path.RelativeToHome(p))
+			s.log.Debug("Ignoring file", "walkingPath", s.path.RelativeToHome(p))
 			return nil
 		case classifier.MediaTypeUnknown:
-			s.log.Warn("Unsupported file type", "walkingPath", s.path.RelativeToHome(p))
+			unsupported++
+			s.log.Debug("Unsupported file type", "walkingPath", s.path.RelativeToHome(p))
 			return nil
 		}
 
@@ -313,6 +316,10 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 
 		return nil
 	})
+	if unsupported > 0 {
+		s.log.Warn("Skipped "+human.Plural(unsupported, "file that is not a photo or video", "files that are not photos or videos"),
+			"inputPath", s.path.RelativeToHome(absRoot))
+	}
 	if err != nil {
 		return walkResult{gaps: gaps}, fmt.Errorf("walk %q: %w", absRoot, err)
 	}

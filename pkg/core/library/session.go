@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -236,6 +237,9 @@ func (s *Session) SaveSettings(ctx context.Context, settings config.Settings, pl
 // half made takes them on the next try. The new library is ready before the
 // old one closes, so a switch that fails leaves the session as it was.
 func (s *Session) Switch(ctx context.Context, dir string) error {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs // as SetOutput: the history and the database URI need it absolute
+	}
 	if sameFolder(dir, s.OutputDir()) {
 		return nil
 	}

@@ -20,8 +20,11 @@ var (
 	// Ref: https://en.wikipedia.org/wiki/Design_rule_for_Camera_File_system
 	cameraPattern = regexp.MustCompile(`^(_?[A-Z]{1,5}_?)\d+(_\d+)*$`)
 
-	// Catches copy-artifact suffixes: "IMG_1234 (1)", "Photo - Copy", "Photo copy 2".
-	duplicateSuffixPattern = regexp.MustCompile(`(?i)[ _-]*\(\d+\)$|[ _-]copy(\s*\(?\d*\)?)?$`)
+	// Catches copy-artifact suffixes: "IMG_1234 (1)", "Photo - Copy", "Photo copy 2",
+	// Finder's "Photo 2".
+	// ponytail: " 2" also catches a name like "Day 2"; still beats a camera name,
+	// loses only to its own unnumbered twin.
+	duplicateSuffixPattern = regexp.MustCompile(`(?i)[ _-]*\(\d+\)$|[ _-]copy(\s*\(?\d*\)?)?$| \d{1,2}$`)
 
 	// Possibly human-readable names
 	hasLetterPattern = regexp.MustCompile(`[a-zA-Z]`)
@@ -84,6 +87,12 @@ func perFileScore(filePath string) int {
 	stem := strings.TrimSuffix(name, filepath.Ext(name))
 
 	score := 0
+	// Judge the name without its copy suffix: "IMG_1234 (1)" is a camera name
+	// copied, not a meaningful one.
+	if loc := duplicateSuffixPattern.FindStringIndex(stem); loc != nil {
+		stem = stem[:loc[0]]
+		score += penaltyDuplicateTag
+	}
 	if !cameraPattern.MatchString(stem) && hasLetterPattern.MatchString(stem) {
 		score += scoreMeaningful
 	}
@@ -95,10 +104,6 @@ func perFileScore(filePath string) int {
 	// disqualify a meaningful leaf folder
 	if !classifier.IsGenericDirName(filepath.Base(dir)) {
 		score += scoreDirBonus
-	}
-	// Penalize duplicate-copy suffixes, which are common in camera roll imports and cloud syncs.
-	if duplicateSuffixPattern.MatchString(stem) {
-		score += penaltyDuplicateTag
 	}
 	return score
 }
