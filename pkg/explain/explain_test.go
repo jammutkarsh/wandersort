@@ -1,4 +1,4 @@
-package tui
+package explain
 
 import (
 	"errors"
@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestExplain(t *testing.T) {
+func TestError(t *testing.T) {
 	denied := &fs.PathError{Op: "open", Path: "/x", Err: syscall.EACCES}
 	_, missing := os.Open("/definitely/not/here")
 	tests := []struct {
@@ -32,8 +32,8 @@ func TestExplain(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		if got := Explain(tt.err); got != tt.want {
-			t.Errorf("%s: Explain = %q, want %q", tt.name, got, tt.want)
+		if got := Error(tt.err); got != tt.want {
+			t.Errorf("%s: Error = %q, want %q", tt.name, got, tt.want)
 		}
 	}
 }

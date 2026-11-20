@@ -21,6 +21,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/preview"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -47,10 +48,10 @@ func usePreviewRoot(t *testing.T) string {
 	t.Setenv("TMPDIR", tmp)
 	t.Setenv("TMP", tmp) // Windows reads the temp folder from TMP, then TEMP
 	t.Setenv("TEMP", tmp)
-	if err := os.MkdirAll(PreviewRoot(), 0o755); err != nil {
+	if err := os.MkdirAll(preview.Root(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return PreviewRoot()
+	return preview.Root()
 }
 
 // testModel opens a review over tree with an empty draft in a temp dir.
@@ -132,28 +133,9 @@ func TestReview(t *testing.T) {
 			if len(parentFiles) != 2 || len(leafFiles) != 2 {
 				t.Fatalf("parentFiles = %v, leafFiles = %v, want 2 files each", parentFiles, leafFiles)
 			}
-			if previewDirFor(parentFiles) != previewDirFor(leafFiles) {
+			if preview.DirFor(parentFiles) != preview.DirFor(leafFiles) {
 				t.Errorf("preview dirs differ: parent %q vs leaf %q, want equal so both peeks share one temp copy",
-					previewDirFor(parentFiles), previewDirFor(leafFiles))
-			}
-		}},
-		// TestCleanPreviewsRemovesEverything covers the sweep a saved plan and
-		// `wandersort admin clear` both run: copies survive an unsaved exit, but once the
-		// plan is written there is nothing left to peek at.
-		{"CleanPreviewsRemovesEverything", func(t *testing.T) {
-			root := usePreviewRoot(t)
-			for _, name := range []string{"a", "b"} {
-				if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			if err := CleanPreviews(); err != nil {
-				t.Fatal(err)
-			}
-
-			if _, err := os.Stat(root); !os.IsNotExist(err) {
-				t.Errorf("%s still exists after CleanPreviews", root)
+					preview.DirFor(parentFiles), preview.DirFor(leafFiles))
 			}
 		}},
 		// TestMergeWithoutVisualModeIsRejectedLoudly covers the reported "merge
@@ -1158,7 +1140,7 @@ func TestReview(t *testing.T) {
 		}},
 		// TestPeekCmdCopiesFilesToTheDeterministicDir drives peekCmd end to end
 		// against a real DB: it should copy the node's files into the dir
-		// previewDirFor names, leaving no .copying- staging dir behind.
+		// preview.DirFor names, leaving no .copying- staging dir behind.
 		{"PeekCmdCopiesFilesToTheDeterministicDir", func(t *testing.T) {
 			ctx := context.Background()
 			usePreviewRoot(t)
@@ -1177,13 +1159,13 @@ func TestReview(t *testing.T) {
 			if pm.err != nil {
 				t.Fatalf("peekCmd: %v", pm.err)
 			}
-			if want := previewDirFor([]string{srcFile}); pm.dir != want {
+			if want := preview.DirFor([]string{srcFile}); pm.dir != want {
 				t.Errorf("dir = %q, want the deterministic %q", pm.dir, want)
 			}
 			if _, err := os.Stat(filepath.Join(pm.dir, "a.jpg")); err != nil {
 				t.Errorf("expected a.jpg copied into %s: %v", pm.dir, err)
 			}
-			entries, err := os.ReadDir(PreviewRoot())
+			entries, err := os.ReadDir(preview.Root())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1210,7 +1192,7 @@ func TestReview(t *testing.T) {
 				t.Fatalf("first peek: %v", pm.err)
 			}
 			// a fresh copy would wipe the directory first, taking this with it
-			dir := previewDirFor([]string{srcFile})
+			dir := preview.DirFor([]string{srcFile})
 			witness := filepath.Join(dir, "witness")
 			if err := os.WriteFile(witness, nil, 0o644); err != nil {
 				t.Fatal(err)
@@ -1255,10 +1237,10 @@ func TestReview(t *testing.T) {
 			if pm.err == nil {
 				t.Fatal("expected an error copying a missing source file")
 			}
-			if _, err := os.Stat(previewDirFor([]string{present, missing})); !os.IsNotExist(err) {
+			if _, err := os.Stat(preview.DirFor([]string{present, missing})); !os.IsNotExist(err) {
 				t.Error("a failed copy left a directory under the hash name, which a later peek would reuse")
 			}
-			entries, err := os.ReadDir(PreviewRoot())
+			entries, err := os.ReadDir(preview.Root())
 			if err != nil {
 				t.Fatal(err)
 			}

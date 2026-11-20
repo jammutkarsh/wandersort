@@ -9,6 +9,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/explain"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
@@ -159,7 +160,7 @@ func newModel(draft *vfs.Draft, ctx context.Context, database *db.DB, resolver *
 // database is untouched — it never held the edits.
 func (m Model) reset() Model {
 	if err := m.draft.Reset(); err != nil {
-		m.statusMsg, m.statusIsErr = tui.Explain(err), true
+		m.statusMsg, m.statusIsErr = explain.Error(err), true
 		return m
 	}
 	m.cursor, m.offset = 0, 0

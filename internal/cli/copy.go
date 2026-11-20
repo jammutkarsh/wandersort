@@ -9,11 +9,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
+	"github.com/jammutkarsh/wandersort/pkg/preview"
 	"github.com/jammutkarsh/wandersort/pkg/report"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
@@ -201,7 +201,7 @@ func (a *app) copyProblems(ctx context.Context) []tui.CopyProblem {
 
 // cleanPreviews removes the review's peek copies once the edits are applied.
 func (a *app) cleanPreviews() {
-	if err := review.CleanPreviews(); err != nil {
+	if err := preview.Clean(); err != nil {
 		a.Log().Warn("could not remove the preview copies", "error", err)
 	}
 }

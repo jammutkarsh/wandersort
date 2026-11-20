@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/jammutkarsh/wandersort/pkg/explain"
 	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
@@ -512,7 +513,7 @@ func (m HomeModel) footer() string {
 		b.WriteString("\n")
 	}
 	if m.err != nil {
-		b.WriteString(row(Attn.Render("⚠ "+Explain(m.err)), "", m.w))
+		b.WriteString(row(Attn.Render("⚠ "+explain.Error(m.err)), "", m.w))
 		b.WriteString("\n")
 	}
 	var hints []string

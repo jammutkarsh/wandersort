@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/explain"
 	"github.com/jammutkarsh/wandersort/pkg/human"
-	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
 // undo drops the last edit from the draft; the tree comes back as the plan
@@ -13,7 +13,7 @@ import (
 func (m *Model) undo() {
 	last, err := m.draft.Undo()
 	if err != nil {
-		m.statusMsg, m.statusIsErr = tui.Explain(err), true
+		m.statusMsg, m.statusIsErr = explain.Error(err), true
 		return
 	}
 	m.reflow()
@@ -39,7 +39,7 @@ func (m *Model) applyEdit(e vfs.Edit, status func(vfs.Outcome) string) (vfs.Outc
 	out, err := m.draft.Apply(e)
 	m.reflow()
 	if err != nil {
-		m.statusMsg, m.statusIsErr = tui.Explain(err), true
+		m.statusMsg, m.statusIsErr = explain.Error(err), true
 		return out, false
 	}
 	m.visualMode = false

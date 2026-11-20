@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jammutkarsh/wandersort/internal/review"
+	"github.com/jammutkarsh/wandersort/pkg/preview"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -27,7 +27,7 @@ To delete the library's own data, that is 'wandersort admin db --reset'.`,
 }
 
 func (a *app) runAdminClear() error {
-	if err := review.CleanPreviews(); err != nil {
+	if err := preview.Clean(); err != nil {
 		return fmt.Errorf("could not remove the preview copies: %w", err)
 	}
 	fmt.Fprintln(os.Stderr, tui.OK.Render("Preview cache cleared."))

@@ -16,6 +16,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
+	"github.com/jammutkarsh/wandersort/pkg/explain"
 	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
@@ -439,7 +440,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // built over the plan a re-plan replaced
 		}
 		if errors.Is(msg.err, tui.ErrNothingNew) {
-			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: tui.Explain(msg.err)})
+			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: explain.Error(msg.err)})
 		}
 		if msg.err != nil {
 			return m, m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})

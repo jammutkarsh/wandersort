@@ -2,14 +2,10 @@ package review
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,6 +13,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
+	"github.com/jammutkarsh/wandersort/pkg/preview"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
@@ -36,25 +33,6 @@ const (
 type previewDoneMsg struct {
 	err error
 	dir string
-}
-
-// PreviewRoot is where every peek copy lives, under the system temp folder
-// ($TMPDIR); fixed so copies are reused across sessions. Cleaned by execute
-// and `admin clear`.
-func PreviewRoot() string { return filepath.Join(os.TempDir(), "wandersort-previews") }
-
-// CleanPreviews removes every preview copy.
-func CleanPreviews() error {
-	return os.RemoveAll(PreviewRoot())
-}
-
-// previewDirFor keys a preview by a hash of its file list, so a parent and its
-// only-child leaf share one copy, in every session.
-func previewDirFor(files []string) string {
-	sorted := slices.Clone(files)
-	sort.Strings(sorted)
-	sum := sha256.Sum256([]byte(strings.Join(sorted, "\x00")))
-	return filepath.Join(PreviewRoot(), hex.EncodeToString(sum[:8]))
 }
 
 // peekCmd copies a folder's files to its preview dir (reusing an existing copy)
@@ -79,26 +57,26 @@ func peekCmd(ctx context.Context, database *db.DB, node *vfs.Node) tea.Cmd {
 			return previewDoneMsg{err: fmt.Errorf("no files under %s", node.Name)}
 		}
 
-		dir := previewDirFor(files)
+		dir := preview.DirFor(files)
 		if _, err := os.Stat(dir); err == nil {
 			touch(dir) // makeRoom evicts by mtime, so a reuse is a use
 			return previewDoneMsg{dir: dir}
 		}
 
-		if err := os.MkdirAll(PreviewRoot(), 0o755); err != nil {
+		if err := os.MkdirAll(preview.Root(), 0o755); err != nil {
 			return previewDoneMsg{err: err}
 		}
 		// Best-effort: a volume that won't report its free space evicts nothing
 		// rather than refusing the peek.
-		if free, err := volume.FreeBytes(PreviewRoot()); err == nil {
-			if err := makeRoom(PreviewRoot(), plannedBytes(files), int64(free)); err != nil {
+		if free, err := volume.FreeBytes(preview.Root()); err == nil {
+			if err := makeRoom(preview.Root(), plannedBytes(files), int64(free)); err != nil {
 				return previewDoneMsg{err: err}
 			}
 		}
 
 		// copy aside, then rename into place (same filesystem, atomic); a
 		// killed copy leaves only a .copying- dir, never a cache hit
-		tmp, err := os.MkdirTemp(PreviewRoot(), copyingPrefix+"*")
+		tmp, err := os.MkdirTemp(preview.Root(), copyingPrefix+"*")
 		if err != nil {
 			return previewDoneMsg{err: err}
 		}
