@@ -392,11 +392,12 @@ func (s *Session) State(ctx context.Context) State {
 	_, err := os.Stat(s.cfg.AppDBPath)
 	st := State{Exists: err == nil}
 
-	// no plan to replay onto: this only counts the journal
-	if d, err := vfs.OpenDraft(s.cfg.OutputDir(), nil); err != nil {
+	// counts without repairing: a torn draft is the holder's to fix, and this
+	// session may not hold the library
+	if n, err := vfs.CountEdits(s.cfg.OutputDir()); err != nil {
 		st.Edits = 1 // unreadable: something is there, and execute will say what
 	} else {
-		st.Edits = len(d.Edits())
+		st.Edits = n
 	}
 
 	d := s.db

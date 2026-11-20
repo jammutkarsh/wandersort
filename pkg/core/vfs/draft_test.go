@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/v2"
 	"errors"
@@ -47,6 +48,15 @@ func TestDraftFile(t *testing.T) {
 	}
 	f.WriteString(`{"seq":3,"op":"dr`)
 	f.Close()
+	// counting is for callers that may not hold the library: it counts the
+	// whole edits and leaves the torn line to the holder
+	torn, _ := os.ReadFile(filepath.Join(dir, DraftFileName))
+	if n, err := CountEdits(dir); err != nil || n != 2 {
+		t.Fatalf("CountEdits on a torn draft = %d, %v; want 2", n, err)
+	}
+	if now, _ := os.ReadFile(filepath.Join(dir, DraftFileName)); !bytes.Equal(now, torn) {
+		t.Fatal("CountEdits rewrote the draft")
+	}
 	if got, err := readDraft(dir); err != nil || !reflect.DeepEqual(got, want[:2]) {
 		t.Fatalf("torn last line: %+v, %v; want %+v", got, err, want[:2])
 	}

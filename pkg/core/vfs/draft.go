@@ -45,20 +45,37 @@ func draftPath(outputDir string) string { return filepath.Join(outputDir, DraftF
 
 // readDraft returns the journalled edits in order; no file is no edits. A torn
 // last line (crash mid-append) is dropped and the file rewritten without it, so
-// the next append can't glue onto it. A bad line elsewhere is an error.
+// the next append can't glue onto it. A bad line elsewhere is an error. Only
+// the library's holder may call it: the rewrite would race its appends.
 func readDraft(outputDir string) ([]Edit, error) {
+	edits, torn, err := parseDraft(outputDir)
+	if err != nil || !torn {
+		return edits, err
+	}
+	return edits, writeDraft(outputDir, edits)
+}
+
+// CountEdits is how many complete edits the journal holds. It writes nothing,
+// so anyone may call it, holding the library or not.
+func CountEdits(outputDir string) (int, error) {
+	edits, _, err := parseDraft(outputDir)
+	return len(edits), err
+}
+
+// parseDraft reads the journal; torn reports a last line that is cut short or
+// missing its newline, which the next append would glue onto.
+func parseDraft(outputDir string) (edits []Edit, torn bool, err error) {
 	data, err := os.ReadFile(draftPath(outputDir))
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read review draft: %w", err)
+		return nil, false, fmt.Errorf("read review draft: %w", err)
 	}
 	if len(data) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n"))
-	var edits []Edit
 	for i, line := range lines {
 		if len(line) == 0 {
 			continue
@@ -66,22 +83,13 @@ func readDraft(outputDir string) ([]Edit, error) {
 		var e Edit
 		if err := json.Unmarshal(line, &e); err != nil {
 			if i == len(lines)-1 {
-				if err := writeDraft(outputDir, edits); err != nil {
-					return nil, err
-				}
-				break
+				return edits, true, nil
 			}
-			return nil, fmt.Errorf("review draft line %d: %w", i+1, err)
+			return nil, false, fmt.Errorf("review draft line %d: %w", i+1, err)
 		}
 		edits = append(edits, e)
 	}
-	// a complete last edit missing its newline would also glue onto the next
-	if data[len(data)-1] != '\n' {
-		if err := writeDraft(outputDir, edits); err != nil {
-			return nil, err
-		}
-	}
-	return edits, nil
+	return edits, data[len(data)-1] != '\n', nil
 }
 
 // appendDraft records one edit and syncs it to disk before returning, so an
