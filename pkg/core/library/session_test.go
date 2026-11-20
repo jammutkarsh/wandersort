@@ -480,6 +480,43 @@ func TestWorkGroupShutdownSkipsARewriteNeverEntered(t *testing.T) {
 	}
 }
 
+// A library opened before whose folder is gone (its drive unplugged) is
+// refused, not started afresh there or replaced by the default one.
+func TestOpenRefusesAMissingRememberedLibrary(t *testing.T) {
+	ctx := context.Background()
+	s := testSession(t)
+	gone := filepath.Join(t.TempDir(), "on-a-drive")
+	if err := s.Switch(ctx, gone); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OutputDir() != gone {
+		t.Fatalf("library chosen = %q, want the most recent %q", cfg.OutputDir(), gone)
+	}
+	next := New(cfg, logger.NewNoopLogger(), nil)
+	t.Cleanup(next.Close)
+	if err := next.Open(ctx); !errors.Is(err, config.ErrLibraryMissing) {
+		t.Fatalf("Open = %v, want ErrLibraryMissing", err)
+	}
+	if _, err := os.Stat(gone); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a new library was started in the missing folder: %v", err)
+	}
+	if err := s.Switch(ctx, filepath.Join(t.TempDir(), "other")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Switch(ctx, gone); !errors.Is(err, config.ErrLibraryMissing) {
+		t.Errorf("Switch = %v, want ErrLibraryMissing", err)
+	}
+}
+
 // A plan rewrite reads the settings and the library while it waits or runs,
 // so neither changes under it.
 func TestRewriteRefusesSettingsAndSwitch(t *testing.T) {

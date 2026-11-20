@@ -1,10 +1,13 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 const (
@@ -16,6 +19,25 @@ const (
 
 // History is the output folders this machine has opened, newest first.
 func (cfg *Configuration) History() []string { return cfg.present(historyFileName) }
+
+// ErrLibraryMissing refuses a library this machine opened before whose folder
+// is gone: its drive is likely unplugged, and starting a new library there
+// would scatter one collection over two.
+var ErrLibraryMissing = errors.New("this library's folder is missing; plug in its drive, or pick another library")
+
+// CheckRemembered refuses dir if it is a library this machine opened before
+// and its folder is gone. A folder never opened is free to become one.
+func (cfg *Configuration) CheckRemembered(dir string) error {
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		return nil
+	}
+	for _, d := range cfg.readHistory(historyFileName) {
+		if d == dir {
+			return fmt.Errorf("%s: %w", path.New().Friendly(dir), ErrLibraryMissing)
+		}
+	}
+	return nil
+}
 
 // Remember puts dir at the front of the library history. Called once a library
 // is really opened.

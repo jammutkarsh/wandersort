@@ -42,7 +42,8 @@ type Configuration struct {
 }
 
 // New builds the runtime configuration with default settings and, as the
-// output folder, the most recently used library that still exists.
+// output folder, the most recently used library, even when its drive is
+// unplugged: opening it then says so rather than starting another library.
 func New() (*Configuration, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -60,7 +61,7 @@ func New() (*Configuration, error) {
 	}
 
 	out := filepath.Join(home, DefaultLibrary)
-	if recent := cfg.History(); len(recent) > 0 {
+	if recent := cfg.readHistory(historyFileName); len(recent) > 0 {
 		out = recent[0]
 	}
 	cfg.SetOutput(out)

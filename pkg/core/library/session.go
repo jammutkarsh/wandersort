@@ -113,6 +113,9 @@ func (s *Session) Open(ctx context.Context) error {
 	// From here the run touches (or tried to touch) user data: keep its log.
 	s.logFile.Persist()
 	outputDir := s.cfg.OutputDir()
+	if err := s.cfg.CheckRemembered(outputDir); err != nil {
+		return err
+	}
 	if err := config.CheckLibrary(outputDir); err != nil {
 		return err
 	}
@@ -254,6 +257,9 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 	}
 	if s.Work.Rewriting() {
 		return ErrReplanning
+	}
+	if err := s.Configuration().CheckRemembered(dir); err != nil {
+		return err
 	}
 	if err := config.CheckLibrary(dir); err != nil {
 		return err
