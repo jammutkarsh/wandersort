@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	stdpath "path"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -73,12 +74,14 @@ func (d *DB) Forget(ctx context.Context, fileIDs []int64) error {
 }
 
 // ForgetChanged forgets the registry row at dir/name when the file there is no
-// longer the one recorded (size or modification time differs), or always when
-// force is set; dependants cascade.
-func ForgetChanged(ctx context.Context, tx *sqlx.Tx, dir, name string, size int64, modifiedAt string, force bool) error {
+// longer the one recorded, or always when force is set; dependants cascade.
+// Changed means another size, or a modification time that differs both as an
+// instant and as wall clock: a time zone change moves only one of the two.
+func ForgetChanged(ctx context.Context, tx *sqlx.Tx, dir, name string, size int64, modified time.Time, force bool) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM file_registry
-		WHERE file_dir = ? AND file_name = ? AND (file_size != ? OR file_modified_at != ? OR ?)`,
-		dir, name, size, modifiedAt, force); err != nil {
+		WHERE file_dir = ? AND file_name = ?
+		AND (file_size != ? OR (file_mtime_ns != ? AND file_modified_at != ?) OR ?)`,
+		dir, name, size, modified.UnixNano(), FormatTime(modified), force); err != nil {
 		return fmt.Errorf("forget changed file: %w", err)
 	}
 	return nil

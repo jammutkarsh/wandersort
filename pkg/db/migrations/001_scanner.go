@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS file_registry (
     file_name        TEXT    NOT NULL,
     file_size        INTEGER NOT NULL,
     file_modified_at TEXT    NOT NULL,
+    -- The same time as an instant (Unix nanoseconds), for change detection:
+    -- the wall-clock column moves with the computer's time zone on APFS/NTFS,
+    -- this one on FAT/exFAT (which store wall clock), never both at once
+    file_mtime_ns    INTEGER NOT NULL DEFAULT 0,
 
     -- Volume the file lives on; lets a future re-anchor pass rewrite paths
     -- when an external drive remounts elsewhere. NULL when unresolvable
