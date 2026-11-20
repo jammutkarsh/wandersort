@@ -227,3 +227,32 @@ func TestVFSPhaseWrapsLocationDepsError(t *testing.T) {
 		t.Errorf("got %v, want wrapped \"location resolver: download failed\"", err)
 	}
 }
+
+// A save that lands after the workflow was built survives its plan step: the
+// plan is built from, and keeps, the library's settings, not the workflow's copy.
+func TestVFSPhaseKeepsSettingsSavedSinceItWasBuilt(t *testing.T) {
+	ctx := context.Background()
+	wf, d := newTestWorkflow(t)
+	wf.deps = Deps{Location: func(context.Context) (*location.Resolver, error) { return nil, nil }}
+	saved := config.DefaultSettings()
+	saved.Rules = []string{"date"}
+	if err := config.SaveSettings(ctx, d, saved); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, phase := range wf.workflowPhases(&Result{}, false) {
+		if phase.kind != workflowPhaseVFS {
+			continue
+		}
+		if _, err := phase.run(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := config.LoadSettings(ctx, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(saved) {
+		t.Errorf("library settings after a scan = %v, want the saved %v", got.Rules, saved.Rules)
+	}
+}

@@ -969,7 +969,6 @@ func (a *app) newHomeScreen(ctx context.Context, lastScan []string) tui.HomeMode
 func (a *app) newScanScreen(session context.Context, paths []string, force bool) tui.ScanModel {
 	// the scan's own context: its ctrl+c must not cancel the session's
 	ctx, cancel := context.WithCancel(session)
-	wf := workflow.NewWorkflow(a.DB(), a.Log(), a.Configuration(), a.workflowDeps())
 	return tui.NewScanModel(tui.ScanConfig{
 		Paths:   paths,
 		LogPath: path.New().Friendly(a.LogFile().Path()),
@@ -979,6 +978,8 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 				return context.Canceled
 			}
 			defer done()
+			// built under the hold: the library it reads can't be switched now
+			wf := workflow.NewWorkflow(a.DB(), a.Log(), a.Configuration(), a.workflowDeps())
 			res, err := wf.RunScan(ctx, paths, force)
 			a.RememberSources(res.Roots)
 			return err
