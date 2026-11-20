@@ -392,18 +392,23 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// the new scan re-proposes everything, so a prefetched review is stale
 		m.screens[tabReview] = nil
-		m.scanPlan = m.a.Work.Plan()
+		// the scan this starts moves Plan on once (StartJob); its own review
+		// is built over that plan
+		m.scanPlan = m.a.Work.Plan() + 1
 		m.refresh() // the library is open now, so the counts are real
 		m.tab = tabScan
 		screen := m.a.newScanScreen(m.ctx, msg.paths, msg.force)
 		return m, m.place(tabScan, screen)
 
 	case tui.DiscardPlanMsg:
-		a := m.a
-		return m, m.onLibrary("discard the current plan", func(ctx context.Context) (string, error) {
-			n, err := library.Discard(ctx, a.DB(), a.OutputDir())
-			return "Started over: " + human.Plural(n, "file", "files") + " taken off the list.", err
-		})
+		a, ctx := m.a, m.ctx
+		return m, func() tea.Msg {
+			n, err := a.Discard(ctx)
+			if err != nil {
+				return libraryEmptiedMsg{err: fmt.Errorf("discard the current plan: %w", err)}
+			}
+			return libraryEmptiedMsg{note: "Started over: " + human.Plural(n, "file", "files") + " taken off the list."}
+		}
 
 	case libraryEmptiedMsg:
 		if msg.err != nil {
@@ -652,32 +657,11 @@ func (m *shellModel) settingsSaved() tea.Cmd {
 	return tea.Batch(cmd, m.saveSettings(*s))
 }
 
-// libraryEmptiedMsg reports a discarded plan or a reset: what to tell
-// the user, or why it failed.
+// libraryEmptiedMsg reports a discarded plan: what to tell the user, or why
+// it failed.
 type libraryEmptiedMsg struct {
 	err  error
 	note string
-}
-
-// onLibrary runs a discard or a reset off the UI goroutine, with the
-// library held from all other work.
-func (m *shellModel) onLibrary(what string, run func(context.Context) (string, error)) tea.Cmd {
-	a, ctx := m.a, m.ctx
-	return func() tea.Msg {
-		release, ok := a.Work.HoldLibrary()
-		if !ok {
-			return libraryEmptiedMsg{err: fmt.Errorf("busy with this library; %s when it's done", what)}
-		}
-		defer release()
-		if a.DB() == nil {
-			return libraryEmptiedMsg{err: errors.New("no library is open")}
-		}
-		note, err := run(ctx)
-		if err != nil {
-			return libraryEmptiedMsg{err: fmt.Errorf("%s: %w", what, err)}
-		}
-		return libraryEmptiedMsg{note: note}
-	}
 }
 
 // replanDoneMsg reports a settings save ending; only a failure says anything.
@@ -974,15 +958,10 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 		Paths:   paths,
 		LogPath: path.New().Friendly(a.LogFile().Path()),
 		Pipeline: func() error {
-			done, ok := a.Work.StartOnLibrary()
-			if !ok {
-				return context.Canceled
+			_, err := a.Scan(ctx, paths, force, a.workflowDeps())
+			if errors.Is(err, library.ErrClosing) {
+				return context.Canceled // quitting: the screen is going too
 			}
-			defer done()
-			// built under the hold: the library it reads can't be switched now
-			wf := workflow.NewWorkflow(a.DB(), a.Log(), a.Configuration(), a.workflowDeps())
-			res, err := wf.RunScan(ctx, paths, force)
-			a.RememberSources(res.Roots)
 			return err
 		},
 		Cancel: cancel,

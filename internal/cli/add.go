@@ -10,7 +10,6 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
-	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -154,9 +153,7 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 		return err
 	}
 
-	wf := workflow.NewWorkflow(a.DB(), a.Log(), a.Configuration(), a.workflowDeps())
-	scan, err := wf.RunScan(ctx, paths, force)
-	a.RememberSources(scan.Roots)
+	scan, err := a.Scan(ctx, paths, force, a.workflowDeps())
 	res.Found, res.Read, res.Planned = scan.Found, scan.Read, scan.Planned
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
