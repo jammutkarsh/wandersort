@@ -660,7 +660,8 @@ func TestScanner(t *testing.T) {
 			}
 		}},
 		// Another card mounted at the same path does not sweep the first
-		// card's rows; unknown volumes (either side) sweep as before
+		// card's rows. A root whose volume can't be read might be that other
+		// card, so it sweeps only rows of no known volume.
 		{"SweepKeepsRowsOfAnotherVolume", func(t *testing.T) {
 			tests := []struct {
 				name       string
@@ -670,7 +671,7 @@ func TestScanner(t *testing.T) {
 			}{
 				{"different card at the same path", "card-A", "card-B", true},
 				{"same card", "card-A", "card-A", false},
-				{"root volume unknown", "card-A", "", false},
+				{"root volume unknown", "card-A", "", true},
 				{"row volume unknown", "", "card-B", false},
 			}
 			for _, tt := range tests {

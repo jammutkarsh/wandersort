@@ -388,9 +388,11 @@ func (s *Scanner) sweep(ctx context.Context, scan int64, r sweptRoot, gaps walkG
 		}
 	}
 
+	// a root whose volume can't be read may be another card at the same path:
+	// it sweeps only rows of no known volume (volume_uuid = '' matches none)
 	query := `SELECT id FROM file_registry WHERE last_seen_scan < ? AND ` + underDir +
-		` AND (volume_uuid IS NULL OR ? = '' OR volume_uuid = ?)`
-	args := []any{scan, trimmed, prefix, prefixEnd, r.volume, r.volume}
+		` AND (volume_uuid IS NULL OR volume_uuid = ?)`
+	args := []any{scan, trimmed, prefix, prefixEnd, r.volume}
 	if !gaps.empty() {
 		for _, d := range gaps.dirs {
 			d = strings.TrimSuffix(d, "/")
