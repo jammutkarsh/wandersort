@@ -633,6 +633,53 @@ func TestPlaceCommitsOnlyOnceTheFileIsInPlace(t *testing.T) {
 	}
 }
 
+// A record whose COMMIT fails may still be on disk, so the verified copy stays
+// and no failure is recorded over it; the next run records the copy where it
+// is, not a second one at _1.
+func TestRunKeepsTheCopyWhenItsRecordIsInDoubt(t *testing.T) {
+	ctx := context.Background()
+	d := dbtest.New(t)
+	out := t.TempDir()
+	seedApproved(t, d, 1, "2024/A.jpg", "hello")
+	// a deferred foreign key fails at COMMIT, after every statement succeeded
+	for _, stmt := range []string{
+		`CREATE TABLE commit_fails (file_id INTEGER REFERENCES file_registry(id) DEFERRABLE INITIALLY DEFERRED)`,
+		`CREATE TRIGGER fail_commit AFTER UPDATE OF placed ON file_registry BEGIN INSERT INTO commit_fails VALUES (-1); END`,
+	} {
+		if _, err := d.SQL.ExecContext(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rep, err := Run(ctx, d, logger.NewNoopLogger(), out, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Done != 0 || rep.Failed != 1 {
+		t.Fatalf("run with a failing commit = %+v, want 1 failed", rep)
+	}
+	dst := filepath.Join(out, "2024", "A.jpg")
+	if _, err := os.Stat(dst); err != nil {
+		t.Fatalf("the verified copy was removed: %v", err)
+	}
+	if status, _ := rowStatus(t, d, 1); status != statePending {
+		t.Errorf("status = %q, want %q: nothing recorded over a record in doubt", status, statePending)
+	}
+
+	if _, err := d.SQL.ExecContext(ctx, `DROP TRIGGER fail_commit`); err != nil {
+		t.Fatal(err)
+	}
+	if rep, err = Run(ctx, d, logger.NewNoopLogger(), out, Options{}); err != nil || rep.Done != 1 {
+		t.Fatalf("next run = %+v, %v; want the copy recorded", rep, err)
+	}
+	if status, _ := rowStatus(t, d, 1); status != statePlaced {
+		t.Errorf("status = %q, want %q", status, statePlaced)
+	}
+	if _, err := os.Stat(filepath.Join(out, "2024", "A_1.jpg")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a second copy landed at _1: %v", err)
+	}
+}
+
 // Stopping between files leaves every file not yet reached pending, says so,
 // and records nothing about it.
 func TestRunStopsBetweenFilesWhenCancelled(t *testing.T) {

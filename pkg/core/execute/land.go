@@ -142,7 +142,8 @@ func withSuffix(p string, n int) string {
 
 // place copies src to exactly dst, failing with fs.ErrExist if dst is taken.
 // The copy lands only if its bytes hash to want, and is removed again if it
-// can't be recorded.
+// was surely not recorded. A commit of unknown outcome keeps it: the record may
+// be on disk, and if not, the next run finds the copy at this name and records it.
 func place(src, dst, want string, commit func() error) error {
 	h := metadata.NewHasher()
 	if _, err := atomicfile.Copy(src, dst, h, func() error {
@@ -154,6 +155,9 @@ func place(src, dst, want string, commit func() error) error {
 		return &stepError{opCopy, err}
 	}
 	if err := commit(); err != nil {
+		if errors.Is(err, db.ErrCommitUnknown) {
+			return fmt.Errorf("the copy stays at %s until the next copy records it: %w", dst, err)
+		}
 		// not recorded, so not kept: this name was free until the copy took it
 		if rerr := os.Remove(dst); rerr != nil {
 			return errors.Join(err, fmt.Errorf("the copy stays at %s, unrecorded: %w", dst, rerr))
