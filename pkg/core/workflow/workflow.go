@@ -213,7 +213,15 @@ func (wf *Workflow) workflowPhases(res *Result, force bool) []workflowPhase {
 				if err != nil {
 					return 0, fmt.Errorf("location resolver: %w", err)
 				}
-				return vfs.Propose(ctx, wf.db, resolver, wf.appCfg, wf.log)
+				// the library's settings now, not the copy this workflow was
+				// built with: a save that landed since must not be undone
+				settings, err := config.LoadSettings(ctx, wf.db)
+				if err != nil {
+					return 0, err
+				}
+				cfg := *wf.appCfg
+				cfg.Settings = settings
+				return vfs.Propose(ctx, wf.db, resolver, &cfg, wf.log)
 			},
 			summary: func(count int) string {
 				s := "Sorted " + human.Plural(count, "file", "files") + " into folders"

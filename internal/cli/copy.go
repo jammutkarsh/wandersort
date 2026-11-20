@@ -51,6 +51,8 @@ type copyResult struct {
 	Failed  int    `json:"failed"`
 	NotRead int    `json:"notRead"`
 	Bytes   int64  `json:"bytes"`
+	// Targets is where a dry run would place each file, library-relative.
+	Targets []string `json:"targets,omitempty"`
 }
 
 func (a *app) runCopy(cmd *cobra.Command) error {
@@ -64,32 +66,38 @@ func (a *app) runCopy(cmd *cobra.Command) error {
 }
 
 func (a *app) copyPlain(dryRun bool, res *copyResult) error {
-	if !a.libraryExists() {
+	if !a.LibraryExists() {
 		return fmt.Errorf("no database found — run 'wandersort add' first")
 	}
 
-	outputDir := a.Config.OutputDir()
+	outputDir := a.OutputDir()
 
 	ctx, cancel := interruptible()
 	defer cancel()
-	if err := a.openLibrary(ctx); err != nil {
+	if err := a.Open(ctx); err != nil {
 		return err
 	}
 	defer a.closeDBs()
 
-	a.Log.Info("wandersort copy · library "+wspath.New().RelativeToHome(outputDir), logger.UserKey, true)
-	left, err := execute.LeftBehind(ctx, a.AppDB)
+	a.Log().Info("wandersort copy · library "+wspath.New().RelativeToHome(outputDir), logger.UserKey, true)
+	left, err := execute.LeftBehind(ctx, a.DB())
 	if err != nil {
 		return err
 	}
 	res.NotRead = len(left)
 	defer a.reportLeftBehind(left)
 
-	rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{
-		DryRun:    dryRun,
-		OnApplied: a.cleanPreviews,
-	})
+	opts := execute.Options{DryRun: dryRun, OnApplied: a.cleanPreviews}
+	if dryRun {
+		opts.OnProgress = func(target string, _ int64, _, _ int) { res.Targets = append(res.Targets, target) }
+	}
+	rep, err := execute.Run(ctx, a.DB(), a.Log(), outputDir, opts)
 	res.Copied, res.Failed, res.Bytes = rep.Done, rep.Failed, rep.Bytes
+	if !a.jsonOut {
+		for _, t := range res.Targets {
+			fmt.Println(t)
+		}
+	}
 	if errors.Is(err, context.Canceled) {
 		// every file not yet reached is still pending; nothing is half-placed
 		return fmt.Errorf("stopped after %d files; run copy again to resume", rep.Done)
@@ -113,20 +121,20 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 
 // newCopyScreen opens the library and builds the Copy tab over what waits to be copied; stop ends its context.
 func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop context.CancelFunc, err error) {
-	if err := a.openLibrary(session); err != nil {
+	if err := a.Open(session); err != nil {
 		return nil, nil, err
 	}
-	outputDir := a.Config.OutputDir()
-	files, bytes, err := execute.Pending(session, a.AppDB)
+	outputDir := a.OutputDir()
+	files, bytes, err := execute.Pending(session, a.DB())
 	if err != nil {
 		return nil, nil, err
 	}
-	space, err := execute.SpaceFor(session, a.AppDB, outputDir)
+	space, err := execute.SpaceFor(session, a.DB(), outputDir)
 	if err != nil {
 		return nil, nil, err
 	}
 	plan := tui.CopyPlan{
-		Files: files, Bytes: bytes, Edits: a.readState(session).Edits,
+		Files: files, Bytes: bytes, Edits: a.State(session).Edits,
 		Free: int64(space.Free), FreeKnown: space.Known, Fits: space.Fits(),
 	}
 
@@ -137,11 +145,12 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 		Plan:    plan,
 		Cancel:  cancel,
 		Run: func(onStep func(string), onProgress func(string, int64, int, int)) (tui.CopyResult, error) {
-			if !a.work.startOnLibrary() {
+			done, ok := a.Work.StartOnLibrary()
+			if !ok {
 				return tui.CopyResult{}, context.Canceled
 			}
-			defer a.work.doneOnLibrary()
-			rep, err := execute.Run(ctx, a.AppDB, a.Log, outputDir, execute.Options{
+			defer done()
+			rep, err := execute.Run(ctx, a.DB(), a.Log(), outputDir, execute.Options{
 				OnApplied:  a.cleanPreviews,
 				OnStep:     onStep,
 				OnProgress: onProgress,
@@ -150,7 +159,7 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 			if err != nil {
 				return res, err
 			}
-			left, lerr := execute.LeftBehind(ctx, a.AppDB)
+			left, lerr := execute.LeftBehind(ctx, a.DB())
 			if lerr != nil {
 				return res, lerr
 			}
@@ -167,9 +176,9 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 
 // copyProblems groups the files a copy left out by reason, for the screen.
 func (a *app) copyProblems(ctx context.Context) []tui.CopyProblem {
-	failures, err := report.Failures(ctx, a.AppDB.SQL)
+	failures, err := report.Failures(ctx, a.DB().SQL)
 	if err != nil {
-		a.Log.Warn("could not list the files left out", "error", err)
+		a.Log().Warn("could not list the files left out", "error", err)
 		return nil
 	}
 	var out []tui.CopyProblem
@@ -193,27 +202,27 @@ func (a *app) copyProblems(ctx context.Context) []tui.CopyProblem {
 // cleanPreviews removes the review's peek copies once the edits are applied.
 func (a *app) cleanPreviews() {
 	if err := review.CleanPreviews(); err != nil {
-		a.Log.Warn("could not remove the preview copies", "error", err)
+		a.Log().Warn("could not remove the preview copies", "error", err)
 	}
 }
 
 // saveFailurePage writes the failure page beside this run's log and returns its path; "" if it couldn't.
 func (a *app) saveFailurePage(ctx context.Context) string {
-	page := a.logFile.Page()
+	page := a.LogFile().Page()
 	if page == "" {
 		return ""
 	}
-	failures, err := report.Failures(ctx, a.AppDB.SQL)
+	failures, err := report.Failures(ctx, a.DB().SQL)
 	if err == nil {
 		err = report.SaveHTML(page, failures, report.PageInfo{
-			Library: a.Config.OutputDir(), When: time.Now(), LogPath: a.logFile.Path(),
+			Library: a.OutputDir(), When: time.Now(), LogPath: a.LogFile().Path(),
 		})
 	}
 	if err != nil {
-		a.Log.Warn("could not write the failure report", "error", err)
+		a.Log().Warn("could not write the failure report", "error", err)
 		return ""
 	}
-	a.Log.Info("Report: "+page, logger.UserKey, true)
+	a.Log().Info("Report: "+page, logger.UserKey, true)
 	return page
 }
 
@@ -226,7 +235,7 @@ func (a *app) reportLeftBehind(left []string) {
 		return
 	}
 	for _, p := range left {
-		a.Log.Info("never read, so not transferred", "source", p)
+		a.Log().Info("never read, so not transferred", "source", p)
 	}
 	paths := wspath.New()
 	fmt.Fprintf(os.Stderr, "%s %d source files could not be read, so they are not in the library:\n",

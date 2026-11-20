@@ -75,18 +75,33 @@ func LoadSettings(ctx context.Context, database *db.DB) (Settings, error) {
 	return s, nil
 }
 
+// SettingsSaved reports whether the library has settings of its own, rather
+// than the defaults LoadSettings answers with for one that never saved any.
+func SettingsSaved(ctx context.Context, database *db.DB) (bool, error) {
+	var saved bool
+	err := database.SQL.GetContext(ctx, &saved, `SELECT EXISTS (SELECT 1 FROM library_settings WHERE id = 1)`)
+	if err != nil {
+		return false, fmt.Errorf("read library settings: %w", err)
+	}
+	return saved, nil
+}
+
 // SaveSettings writes the library's settings, replacing whatever was there:
 // the wizard always submits every setting, so there is nothing to merge.
 func SaveSettings(ctx context.Context, database *db.DB, s Settings) error {
+	return database.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
+		return WriteSettings(ctx, tx, s)
+	})
+}
+
+// WriteSettings is SaveSettings inside the caller's transaction.
+func WriteSettings(ctx context.Context, tx *sqlx.Tx, s Settings) error {
 	encoded, err := json.Marshal(s, json.Deterministic(true))
 	if err != nil {
 		return fmt.Errorf("save library settings: %w", err)
 	}
-	if err := database.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO library_settings (id, settings) VALUES (1, ?)
-			ON CONFLICT(id) DO UPDATE SET settings = excluded.settings`, string(encoded))
-		return err
-	}); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO library_settings (id, settings) VALUES (1, ?)
+		ON CONFLICT(id) DO UPDATE SET settings = excluded.settings`, string(encoded)); err != nil {
 		return fmt.Errorf("save library settings: %w", err)
 	}
 	return nil

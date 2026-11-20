@@ -21,6 +21,15 @@ func TestExplain(t *testing.T) {
 		{"missing path", missing, explanations[5].sentence},
 		{"full drive", fmt.Errorf("copy: %w", syscall.ENOSPC), explanations[2].sentence},
 		{"already plain", errors.New("that folder is inside the library"), "that folder is inside the library"},
+		// a known cause in one failure must not hide the others
+		{
+			"joined", errors.Join(fmt.Errorf("copy: %w", syscall.ENOSPC), errors.New("could not reopen")),
+			explanations[2].sentence + "\ncould not reopen",
+		},
+		{
+			"several %w stay whole", fmt.Errorf("%w: worker 2: %w", errors.New("exiftool stopped"), errors.New("broken pipe")),
+			"exiftool stopped: worker 2: broken pipe",
+		},
 	}
 	for _, tt := range tests {
 		if got := Explain(tt.err); got != tt.want {

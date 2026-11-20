@@ -15,6 +15,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -35,10 +36,10 @@ func issueApp(t *testing.T, logs map[string]string) (*app, string) {
 			t.Fatal(err)
 		}
 	}
-	return &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
+	return &app{Session: library.New(&config.Configuration{
 		LogDir:    logDir,
 		AppDBPath: filepath.Join(dir, "lib", ".wandersort.db"),
-	}}, dir
+	}, logger.NewNoopLogger(), nil)}, dir
 }
 
 func TestRunIssueNoLogData(t *testing.T) {
@@ -65,9 +66,9 @@ func TestRunIssuePackagesRecentLogs(t *testing.T) {
 		logs[fmt.Sprintf("2026-01-0%dT10-00-00_1.log", i)] = "some log data\n"
 	}
 	a, dir := issueApp(t, logs)
-	a.logFile = testLogFile(t, a.Config.LogDir)
-	a.logFile.Persist() // this run's own log, newest of all: must not be packaged
-	if _, err := a.logFile.Write([]byte("wandersort started\n")); err != nil {
+	a.Session = library.New(a.Configuration(), a.Log(), testLogFile(t, a.Configuration().LogDir))
+	a.LogFile().Persist() // this run's own log, newest of all: must not be packaged
+	if _, err := a.LogFile().Write([]byte("wandersort started\n")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -126,10 +127,10 @@ func TestRunIssueScrubsOrOmitsLogs(t *testing.T) {
 
 func TestRunIssueIncludesDBWhenRequested(t *testing.T) {
 	a, dir := issueApp(t, map[string]string{"2026-01-01T10-00-00_1.log": "some log data\n"})
-	if err := os.MkdirAll(filepath.Dir(a.Config.AppDBPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(config.DBPath(a.OutputDir())), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(a.Config.AppDBPath, []byte("fake db bytes"), 0o644); err != nil {
+	if err := os.WriteFile(config.DBPath(a.OutputDir()), []byte("fake db bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -149,10 +150,10 @@ func TestRunIssueShipsScrubbedErrors(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	a, dir := issueApp(t, map[string]string{"2026-01-01T10-00-00_1.log": "some log data\n"})
-	if err := os.MkdirAll(filepath.Dir(a.Config.AppDBPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(config.DBPath(a.OutputDir())), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	d, err := db.New(context.Background(), a.Config.AppDBPath, logger.NewNoopLogger())
+	d, err := db.New(context.Background(), config.DBPath(a.OutputDir()), logger.NewNoopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

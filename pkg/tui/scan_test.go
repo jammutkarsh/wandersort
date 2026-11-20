@@ -145,8 +145,8 @@ func TestScanModel(t *testing.T) {
 			if cmd != nil {
 				t.Fatal("the first ctrl+c should cancel and wait, not quit")
 			}
-			if cancelled != 1 || !m.Cancelled() {
-				t.Fatalf("first ctrl+c should cancel the pipeline: calls=%d cancelled=%v", cancelled, m.Cancelled())
+			if cancelled != 1 || m.state != scanCancelling {
+				t.Fatalf("first ctrl+c should cancel the pipeline: calls=%d state=%v", cancelled, m.state)
 			}
 			if v := viewText(m.View()); !strings.Contains(v, "Stopping") || !strings.Contains(v, "quit now") {
 				t.Errorf("want the stop note and the way to quit now:\n%s", v)
@@ -167,8 +167,8 @@ func TestScanModel(t *testing.T) {
 			m := NewScanModel(ScanConfig{Cancel: func() { cancelled++ }})
 			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 			m = next.(ScanModel)
-			if cmd != nil || cancelled != 1 || !m.Cancelled() {
-				t.Fatalf("esc should stop the scan: cmd=%v calls=%d cancelled=%v", cmd, cancelled, m.Cancelled())
+			if cmd != nil || cancelled != 1 || m.state != scanCancelling {
+				t.Fatalf("esc should stop the scan: cmd=%v calls=%d state=%v", cmd, cancelled, m.state)
 			}
 			next, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 			if _, left := leaveOf(cmd); left || cancelled != 1 {

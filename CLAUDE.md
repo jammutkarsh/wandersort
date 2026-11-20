@@ -12,28 +12,29 @@ Flow: `add` (scan → metadata → vfs) proposes a plan, `organise` edits it, `c
 
 ## Commands (`internal/cli`)
 
-One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`), `root.go` (flags, library choice), `exit.go` (exit codes, `--json`) and `shell.go` (the TUI).
+One file per command, plus `app.go` (the `app` struct embedding `*library.Session`, `confirm`), `root.go` (flags, library choice), `exit.go` (exit codes, `--json`) and `shell.go` (the TUI).
 
 | Command | File | What |
 |---|---|---|
 | `wandersort` | `shell.go` | Full-screen shell: getting ready, then Add / Organise / Copy / Settings tabs, `shift+tab` or a click cycles |
 | `add -p …` | `add.go` | Runs the pipeline (shell on the Add tab, or plain with `--plain`/`--json`/no terminal) |
-| `organise` | `organise.go` | Shell on the Organise tab; also `rebuildTree`, `newReviewScreen` |
+| `organise` | `organise.go` | Shell on the Organise tab; also `newReviewScreen` |
 | `copy` | `copy.go` | Applies the draft and copies files in (shell on the Copy tab, or plain; `--dry-run`, `--json`) |
 | `check` | `check.go` | Verifies placed files (`--full` re-hashes, `--json`) |
 | `admin clear\|db\|report` | `admin_*.go` | Preview cache, `--reset`/`--restore`, issue zip |
 
 - Settings live in the library (`library_settings`), not a global file. The only per-run choice is which library: `--output-path`, else the most recent (`~/.wandersort/libraries`).
-- `openLibrary` is the one way to open a library: check folder, take lock, open DB, load settings, remember it. A session that never opens one writes nothing.
+- `library.Session.Open` is the one way to open a library (`Switch` shares its steps): check folder, take lock, open DB, load settings, remember it. A session that never opens one writes nothing. `library.New` builds a session around its own copy of the configuration; every method is safe from any goroutine, and its state is read through getters (`OutputDir`, `Settings`, `Configuration`, `DB`, `Log`, `LogFile`). The shell runs on its own session, whose log also reaches the screen. The CLI's `app` shadows `Open`, `SaveSettings` and `Restore` to explain a busy library in the terminal; `Switch` (Settings tab only) is left to `tui.Explain`.
 - The shell opens on the getting-ready screen (`tui.ReadyModel`) until exiftool and the locationDB are installed: `install.MaxTries` tries, asking for a better network between them; giving up exits 1. Then it opens the last library, if there is one.
 - The shell opens on the Add tab. A folder dropped on the terminal arrives as a paste; `path.Resolver.Dropped` unquotes and unescapes it. Path completion (tab, dropdown) stays beside drop on Add and in the library field. `ctrl+o` on Add opens the system folder window (`tui.PickFolder`, passed in on `HomeConfig`; absent when the system has none). `esc esc` quits when no scan or copy runs, else warns in the tab bar; `esc` on a running scan or copy stops it. A scan with nothing to copy skips the folders-ready screen and returns to Add (`tui.ErrNothingNew`).
 - Library reset is CLI only (`admin db --reset`); no key binding.
-- Settings is a shell tab (`settings_form.go`, `settings_examples.go`): one list of rows (library folder, folder layout, home, extra options) edited one at a time; with no library open it shows the defaults and the first save creates the library. Work is off: it saves as home. Saving a changed setting re-plans at once. Changing the library folder switches libraries (`app.switchLibrary`): an organised folder opens with its own settings, any other starts a new library with the current settings; nothing planned comes along and the old library is left as it is.
+- Settings is a shell tab (`settings_form.go`, `settings_examples.go`): one list of rows (library folder, folder layout, home, extra options) edited one at a time; with no library open it shows the defaults and the first save creates the library. Work is off: it saves as home. Saving goes through `Session.SaveSettings`, one blocking call any goroutine may make: a change rebuilds the plan and writes it with the settings in one transaction (`vfs.Propose`), so the library never holds settings its plan was not built from, and a failed or cancelled save changes nothing. The form hands its answer over (`app.settingsToSave`) and the shell runs the save off the UI goroutine. The save registers a `WorkGroup.StartRewrite`: it runs alone on the library, and from the hand-over until the last one lands (`shellModel.replanning`) Organise, Copy, Settings and a new scan are refused, and the session itself refuses settings saves and switches (`library.ErrReplanning`). Quitting cancels it. Every registered re-plan moves `WorkGroup.Plan` on; a review built when it read less is dropped however late it lands. Changing the library folder switches libraries (`Session.Switch`): a library opens with its own settings, a new one (no settings saved, nothing recorded) takes the current settings; nothing planned comes along and the old library is left as it is. The new library is ready before the old one closes, so a failed switch changes nothing.
 - Exit codes (`exit.go`): 0 done, 1 error, 2 bad usage, 3 finished with failed files, 4 library busy. `--json` prints one result object on stdout at the end.
 - A copy that leaves files out writes an HTML page (`report.Failures`, `report.SaveHTML`) beside the run's log, same name, `.html` (`logger.File.Page`).
 - The shell draws the top line and owns the gutters: screens get `tui.Inner(w)` and draw from column 0; `tui.Frame` adds the margin. Mouse: a click on a tab opens it, the wheel is ↑/↓, and a click on any `tui.Clickable` span (every `KeyHint`, numbered choice, settings row, Organise row, confirm button, the `?` list) presses its keys (`tui.ClickTargets` reads them back from the drawn view). Errors shown to the user go through `tui.Explain`.
-- `state.go` answers "what can the user do next" (`libraryState`).
+- `Session.State` answers "what can the user do next" (`library.State`).
 - Screens never call `tea.Quit`; they hand back with `tui.Leave`. The shell owns the program.
+- `internal/review` is the Organise screen (`review.Screen`): keys, edits against the draft, rename completion, previews, rendering.
 
 ## Pipeline (`pkg/core`)
 
@@ -43,7 +44,7 @@ One file per command, plus `app.go` (the `app` struct, `openLibrary`, `confirm`)
 - `vfs`: plans every unplaced master. `elect.go` picks one copy per hash each run; `plan.go`'s `Plan` derives facts, resolves locations, then `assignTargetPaths` (numbered steps, order is the rule). Plan is persisted as `folder_nodes` (folder tree with ids and `bounds`) + `virtual_fs_entries`. `route.go` sends new files into matching placed folders. `draft.go` is the review edit journal (`.wandersort.draft`); `edit.go` holds merge/drop/flatten.
 - `execute` (the `copy` command's engine): `Run` checks space, applies the draft, backs up the DB, transfers each pending row (`land.go`: hash-verified copy that never replaces an existing file), then forgets duplicates of placed files. Sequential and resumable.
 - `verify`: `check`'s engine; forgets placed files that are gone, records damage as `VERIFY` errors.
-- `library`: whole-library maintenance: `Reset` (backup, wipe, drop the draft) and `Restore` (restore, prove it opens, drop the draft).
+- `library`: one process's hold on a library (`Session`: open, close, switch, save settings, state, `WorkGroup` for work running on it, `Restore` under the lock) and whole-library maintenance: `Reset` (backup, wipe, drop the draft) and `Restore` (restore, prove it opens, drop the draft).
 
 ## Supporting packages (`pkg`)
 

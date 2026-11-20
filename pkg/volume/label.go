@@ -21,7 +21,7 @@ var mountRoots = []struct {
 
 // Label names a path's drive from the path alone: mount folder, Windows drive letter, or ThisComputer.
 func Label(path string) string {
-	// ponytail: a drive mounted anywhere else reads as ThisComputer; ask the OS for the mount point if that misleads
+	// a drive mounted anywhere else reads as ThisComputer; ask the OS for the mount point if that misleads
 	if v := filepath.VolumeName(path); v != "" {
 		return v
 	}

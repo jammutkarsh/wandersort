@@ -153,7 +153,7 @@ func Rename(oldpath, newpath string) error {
 		return fmt.Errorf("%s: %w", newpath, fs.ErrExist)
 	}
 	// no hard links here (exFAT, some network mounts)
-	// ponytail: check-then-rename races a newpath created in between;
+	// check-then-rename races a newpath created in between;
 	// renameat2(RENAME_NOREPLACE)/renamex_np(RENAME_EXCL) would close it
 	if _, err := os.Lstat(newpath); err == nil {
 		return fmt.Errorf("%s: %w", newpath, fs.ErrExist)

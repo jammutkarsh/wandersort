@@ -2,6 +2,7 @@ package cli
 
 import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/spf13/cobra"
@@ -52,7 +53,7 @@ wandersort check`,
 			return a.runRoot(cmd)
 		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// settings live in the library and are read by openLibrary; this
+			// settings live in the library and are read by Open; this
 			// only picks which library (this flag, else the last one used)
 			cfg, err := config.New()
 			if err != nil {
@@ -61,14 +62,13 @@ wandersort check`,
 			if out := flagStr(cmd, flagOutputPath); out != "" {
 				cfg.SetOutput(path.New().ExpandPath(out))
 			}
-			a.Config = cfg
 			a.jsonOut, _ = cmd.Flags().GetBool(flagJSON)
 			// Build the logger after the output folder is settled, so the
 			// startup line can name it.
-			a.logFile = logger.NewFile(a.Config.LogDir)
-			a.Log = logger.New(a.logFile)
+			logFile := logger.NewFile(cfg.LogDir)
+			a.Session = library.New(cfg, logger.New(logFile), logFile)
 			// The log no longer sits in the library, so say which one this run is about.
-			a.Log.Info("wandersort started", "command", cmd.CommandPath(), "output", a.Config.OutputDir())
+			a.Log().Info("wandersort started", "command", cmd.CommandPath(), "output", a.OutputDir())
 			return nil
 		},
 	}

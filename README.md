@@ -109,4 +109,8 @@ Run `wandersort --help`, or `wandersort <command> --help`, for the full command 
 `--json` prints one result object on stdout at the end, failures included; progress stays on stderr. A copy that leaves files out writes an HTML page listing each one, grouped by the drive it came from, beside that run's log in `~/.wandersort/logs/`.
 -->
 
+## License
+
+[PolyForm Shield 1.0.0](LICENSE): you may use, change and share WanderSort, but not to build a product that competes with it, free or paid. The license does not cover the WanderSort name; a fork must use a different one.
+
 *Inspired by [@WanderWithSky](https://drive.google.com/file/d/1QIDtm5rTkwzkQxyVaPqPN8J81vGuS-AF/view?usp=sharing)*

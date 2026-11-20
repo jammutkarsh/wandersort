@@ -47,7 +47,7 @@ const maxReadBudget = 16
 // every run (most failures are a cable or card reader); the forward-only cursor
 // tries it once per run.
 //
-// ponytail: a file exiftool hangs on costs its full timeout every add; skip
+// a file exiftool hangs on costs its full timeout every add; skip
 // after N attempts (errors.attempts) if that adds up.
 const unreadFiles = `
 	FROM file_registry f
@@ -76,7 +76,7 @@ type Extractor struct {
 	// reads admits byte reads by storage class: a spinning disk charges the
 	// whole budget, an SSD charges 1.
 	//
-	// ponytail: one shared budget couples independent devices (an HDD read
+	// one shared budget couples independent devices (an HDD read
 	// throttles an idle SSD), only at volume boundaries since volumes drain
 	// one at a time. Per-volume budgets if a mixed library measures badly.
 	reads *semaphore.Weighted

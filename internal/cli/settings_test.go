@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/install/installtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
@@ -51,7 +52,7 @@ func TestConfig(t *testing.T) {
 		fn   func(t *testing.T)
 	}{
 		// The layout (a custom rule list opens the rule step) and home answers
-		// are saved together, and the save creates the library if none is open.
+		// are handed over together, for the shell to save.
 		{"SaveWritesEverySetting", func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
@@ -60,7 +61,7 @@ func TestConfig(t *testing.T) {
 			cfg := testConfig(t)
 			cfg.Rules = []string{"date", "device"}
 			cfg.CollapseLevels = false
-			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
+			a := &app{Session: library.New(cfg, logger.NewNoopLogger(), testLogFile(t, t.TempDir()))}
 			defer a.closeDBs()
 
 			// a place-name database that never opened must not trap the user
@@ -94,10 +95,10 @@ func TestConfig(t *testing.T) {
 			if err := save(); err != nil {
 				t.Fatalf("save: %v", err)
 			}
-			got, err := config.LoadSettings(context.Background(), a.AppDB)
-			if err != nil {
-				t.Fatal(err)
+			if a.settingsToSave == nil {
+				t.Fatal("the save handed nothing over")
 			}
+			got := *a.settingsToSave
 			wantSettings := config.Settings{
 				Rules:                 []string{"date", "device"},
 				CollapseLevels:        false,
@@ -107,10 +108,7 @@ func TestConfig(t *testing.T) {
 				WorkTown:              "Indore", // work is off: same as home
 			}
 			if !got.Equal(wantSettings) {
-				t.Fatalf("saved settings = %+v, want %+v", got, wantSettings)
-			}
-			if _, err := os.Stat(cfg.AppDBPath); err != nil {
-				t.Errorf("the save must create the library it writes to: %v", err)
+				t.Fatalf("handed-over settings = %+v, want %+v", got, wantSettings)
 			}
 		}},
 		{"LayoutPresetsMapToRules", func(t *testing.T) {
@@ -133,7 +131,7 @@ func TestConfig(t *testing.T) {
 				}
 			}
 
-			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
+			a := &app{Session: library.New(testConfig(t), logger.NewNoopLogger(), nil)}
 			f := a.newSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
 			f.layout = "Year › Month › Place"
 			if got := f.rules(); !reflect.DeepEqual(got, []string{"location"}) {
@@ -148,8 +146,8 @@ func TestConfig(t *testing.T) {
 		// An open library's settings are a list; each row edits a fresh copy, so
 		// leaving an edit unsaved changes nothing.
 		{"SettingsListEditsOneRow", func(t *testing.T) {
-			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
-			if err := a.openLibrary(context.Background()); err != nil {
+			a := &app{Session: library.New(testConfig(t), logger.NewNoopLogger(), testLogFile(t, t.TempDir()))}
+			if err := a.Open(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			defer a.closeDBs()
@@ -181,14 +179,14 @@ func TestConfig(t *testing.T) {
 			if err := save(); err != nil {
 				t.Fatal(err)
 			}
-			if a.Config.MergeSameLocationDays {
-				t.Error("saving the fine-tuning row must write the new answer")
+			if a.settingsToSave == nil || a.settingsToSave.MergeSameLocationDays {
+				t.Error("saving the fine-tuning row must hand the new answer over")
 			}
 		}},
 		// A folder dropped on the terminal arrives quoted or backslash-escaped;
 		// the library field takes it as the folder it names.
 		{"LibraryFieldTakesADroppedFolder", func(t *testing.T) {
-			a := &app{Config: testConfig(t), Log: logger.NewNoopLogger()}
+			a := &app{Session: library.New(testConfig(t), logger.NewNoopLogger(), nil)}
 			f := a.newSettingsForm(context.Background(), func() (*location.Resolver, error) { return nil, install.ErrPending })
 			dir := filepath.Join(t.TempDir(), "My Library")
 			if err := os.Mkdir(dir, 0o755); err != nil {
@@ -215,7 +213,7 @@ func TestConfig(t *testing.T) {
 			resolver := installtest.Resolver(t)
 
 			cfg := testConfig(t)
-			a := &app{Config: cfg, Log: logger.NewNoopLogger(), logFile: testLogFile(t, t.TempDir())}
+			a := &app{Session: library.New(cfg, logger.NewNoopLogger(), testLogFile(t, t.TempDir()))}
 			defer a.closeDBs()
 
 			fields, save := setupFields(a, func() (*location.Resolver, error) { return resolver, nil })
@@ -261,12 +259,8 @@ func TestConfig(t *testing.T) {
 			if err := save(); err != nil {
 				t.Fatalf("save: %v", err)
 			}
-			g, err := config.LoadSettings(context.Background(), a.AppDB)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if g.HomeTown != "Indore, Madhya Pradesh, India" {
-				t.Errorf("saved home town = %q, want the canonical geonames spelling", g.HomeTown)
+			if g := a.settingsToSave; g == nil || g.HomeTown != "Indore, Madhya Pradesh, India" {
+				t.Errorf("handed-over settings = %+v, want the canonical geonames spelling of home", g)
 			}
 		}},
 		// TestTreeExample covers the wizard's example renderer: sibling paths must

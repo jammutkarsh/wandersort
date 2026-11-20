@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"strings"
 	"syscall"
 
 	"github.com/jammutkarsh/wandersort/pkg/lock"
@@ -27,6 +28,18 @@ var explanations = []struct {
 // Explain is err as a sentence a person can act on. Errors it does not know
 // are already worded for people, so they pass through; the log keeps every cause.
 func Explain(err error) string {
+	// errors.Join is several failures, one per line, each explained on its
+	// own; a fmt.Errorf with several %w reads differently and stays whole
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var raw, lines []string
+		for _, part := range joined.Unwrap() {
+			raw = append(raw, part.Error())
+			lines = append(lines, Explain(part))
+		}
+		if strings.Join(raw, "\n") == err.Error() {
+			return strings.Join(lines, "\n")
+		}
+	}
 	for _, e := range explanations {
 		if errors.Is(err, e.cause) {
 			return e.sentence

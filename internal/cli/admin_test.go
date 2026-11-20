@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/spf13/cobra"
@@ -57,7 +58,7 @@ func TestRunResetWithoutDBFlagKeepsDatabase(t *testing.T) {
 	}
 
 	// No stdin answer and no --yes: a prompt here would read EOF and cancel.
-	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{AppDBPath: dbPath}}
+	a := &app{Session: library.New(&config.Configuration{AppDBPath: dbPath}, logger.NewNoopLogger(), nil)}
 	if err := a.runAdminClear(); err != nil {
 		t.Fatalf("admin db: %v", err)
 	}
@@ -75,9 +76,9 @@ func TestRunResetWithoutDBFlagKeepsDatabase(t *testing.T) {
 
 func TestRunResetNoDatabase(t *testing.T) {
 	dir := t.TempDir()
-	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
+	a := &app{Session: library.New(&config.Configuration{
 		AppDBPath: filepath.Join(dir, ".wandersort.db"),
-	}}
+	}, logger.NewNoopLogger(), nil)}
 	if err := a.runAdminDB(newAdminTestCmd(t, flagReset, flagYes)); err == nil {
 		t.Fatal("admin db --reset with no database on disk must fail")
 	}
@@ -90,9 +91,9 @@ func TestRunResetCancelledWithoutYes(t *testing.T) {
 
 	answerStdin(t, "n\n") // the plain confirm prompt's decline path
 
-	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
+	a := &app{Session: library.New(&config.Configuration{
 		AppDBPath: dbPath,
-	}}
+	}, logger.NewNoopLogger(), nil)}
 	if err := a.runAdminDB(newAdminTestCmd(t, flagReset)); err == nil {
 		t.Fatal("declining the confirm prompt must cancel the reset")
 	}
@@ -103,9 +104,9 @@ func TestRunResetYesWipesDatabase(t *testing.T) {
 	dbPath := filepath.Join(dir, ".wandersort.db")
 	seedDB(t, dbPath)
 
-	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{
+	a := &app{Session: library.New(&config.Configuration{
 		AppDBPath: dbPath,
-	}}
+	}, logger.NewNoopLogger(), nil)}
 	if err := a.runAdminDB(newAdminTestCmd(t, flagReset, flagYes)); err != nil {
 		t.Fatalf("admin db: %v", err)
 	}
@@ -123,12 +124,11 @@ func TestRecoverUndoesReset(t *testing.T) {
 			dbPath := filepath.Join(t.TempDir(), ".wandersort.db")
 			seedDB(t, dbPath)
 
-			a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{AppDBPath: dbPath}}
+			a := &app{Session: library.New(&config.Configuration{AppDBPath: dbPath}, logger.NewNoopLogger(), nil)}
 			for range resets {
 				if err := a.runAdminDB(newAdminTestCmd(t, flagReset, flagYes)); err != nil {
 					t.Fatalf("admin db: %v", err)
 				}
-				a.AppDB = nil // closeDBs closes but doesn't clear it
 			}
 			if err := a.runAdminDB(newAdminTestCmd(t, flagRestore, flagYes)); err != nil {
 				t.Fatalf("admin db --restore: %v", err)
@@ -152,7 +152,7 @@ func TestRecoverUndoesReset(t *testing.T) {
 
 func TestRecoverWithoutBackupFails(t *testing.T) {
 	dir := t.TempDir()
-	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}}
+	a := &app{Session: library.New(&config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}, logger.NewNoopLogger(), nil)}
 	if err := a.runAdminDB(newAdminTestCmd(t, flagRestore, flagYes)); err == nil {
 		t.Fatal("recover with no backup must fail")
 	}
@@ -165,7 +165,7 @@ func TestRecoverCancelledWithoutYes(t *testing.T) {
 		t.Fatal(err)
 	}
 	answerStdin(t, "n\n")
-	a := &app{Log: logger.NewNoopLogger(), Config: &config.Configuration{AppDBPath: dbPath}}
+	a := &app{Session: library.New(&config.Configuration{AppDBPath: dbPath}, logger.NewNoopLogger(), nil)}
 	if err := a.runAdminDB(newAdminTestCmd(t, flagRestore)); err == nil {
 		t.Fatal("declining the prompt must cancel the recover")
 	}

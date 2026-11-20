@@ -627,7 +627,7 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 // dropNodes removes each node in ids, lifting its children onto its parent.
 // Returns the dropped nodes' names, in order.
 //
-// ponytail: a drop (or flatten) doesn't survive a re-plan while some of its
+// a drop (or flatten) doesn't survive a re-plan while some of its
 // files are untransferred: the folder is gone, so the re-plan proposes the
 // level again for the leftovers. Dropping again fixes it; finishing the copy
 // first avoids it.

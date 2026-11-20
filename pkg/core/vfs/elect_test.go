@@ -78,11 +78,13 @@ func TestDuplicateSuffixPattern(t *testing.T) {
 		{"document copy 3", true},
 		{"presentation Copy (1)", true},
 		{"wedding_photo (1)", true},
+		{"clip 1", true}, // Finder's copy
 		// No match
 		{"IMG_3162", false},
 		{"sunset", false},
 		{"copy-of-file", false}, // "copy" as prefix, not suffix
 		{"(1) at start", false}, // not at end
+		{"Paris 2019", false},
 	}
 
 	for _, tt := range tests {
@@ -151,6 +153,29 @@ func TestElectMastersKeepsOnePerHash(t *testing.T) {
 	// The meaningful leaf folder earns the dir bonus; a generic one does not.
 	if masters[0].FileDir != "/photos/Goa Trip 2024" {
 		t.Errorf("master for hash a = %q, want the meaningfully-named folder", masters[0].FileDir)
+	}
+}
+
+// The original beats its copies, and a named folder beats a camera roll.
+func TestElectMastersPrefersOriginals(t *testing.T) {
+	tests := []struct {
+		name          string
+		loser, winner [2]string // dir, file name
+	}{
+		{"camera roll folder", [2]string{"/dup/DCIM/100APPLE", "IMG_1.jpg"}, [2]string{"/dup/Trip", "IMG_1.jpg"}},
+		{"Finder copy", [2]string{"/dup", "clip 1.MOV"}, [2]string{"/dup", "clip.MOV"}},
+		{"numbered camera copy", [2]string{"/dup", "IMG_1234 (1).jpg"}, [2]string{"/dup", "IMG_1234.jpg"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			masters, _ := electMasters([]masterFile{
+				dupe("h", tt.loser[0], tt.loser[1]),
+				dupe("h", tt.winner[0], tt.winner[1]),
+			})
+			if len(masters) != 1 || masters[0].FileDir != tt.winner[0] || masters[0].FileName != tt.winner[1] {
+				t.Errorf("elected %v, want %s/%s", electedNames(masters), tt.winner[0], tt.winner[1])
+			}
+		})
 	}
 }
 

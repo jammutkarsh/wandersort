@@ -24,6 +24,9 @@ type VFS struct {
 	resolver *location.Resolver
 	log      logger.Logger
 	cfg      Config
+	// settings, when set, are written in the plan's own transaction: the
+	// library never holds settings its plan was not built from
+	settings *config.Settings
 }
 
 func New(db *db.DB, resolver *location.Resolver, log logger.Logger, cfg Config) *VFS {
@@ -35,8 +38,9 @@ func New(db *db.DB, resolver *location.Resolver, log logger.Logger, cfg Config) 
 	}
 }
 
-// Propose builds the proposal for the whole library from the library's
-// settings: config, anchors, then Run.
+// Propose builds the proposal for the whole library from appCfg's settings
+// (config, anchors, then Run) and writes those settings with it, in one
+// transaction: a proposal that fails or is cut short leaves both as they were.
 func Propose(ctx context.Context, database *db.DB, resolver *location.Resolver, appCfg *config.Configuration, log logger.Logger) (int, error) {
 	// a new proposal has new folder IDs, so old review edits are void
 	if appCfg.AppDBPath != "" {
@@ -47,7 +51,10 @@ func Propose(ctx context.Context, database *db.DB, resolver *location.Resolver, 
 	cfg := ConfigFor(appCfg)
 	cfg.Anchors = resolver.BuildAnchors(ctx, appCfg.SavedPlaces())
 	log.Info("Proposing destination folders", "rules", cfg.Rules, "anchors", len(cfg.Anchors))
-	return New(database, resolver, log, cfg).Run(ctx)
+	v := New(database, resolver, log, cfg)
+	settings := appCfg.Settings // the ones this plan is built from, whatever Config holds later
+	v.settings = &settings
+	return v.Run(ctx)
 }
 
 // Run builds and persists the proposal for every master in the library.
@@ -60,7 +67,10 @@ func (v *VFS) Run(ctx context.Context) (int, error) {
 	}
 	if len(masters) == 0 {
 		v.log.Info("No master files to organize")
-		return 0, nil
+		if v.settings == nil {
+			return 0, nil
+		}
+		return 0, config.SaveSettings(ctx, v.db, *v.settings)
 	}
 
 	cfg := v.cfg
@@ -185,6 +195,11 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 // a failed row whose file is no longer an elected master.
 func (v *VFS) persist(ctx context.Context, masters []masterFile) (int, error) {
 	err := v.db.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
+		if v.settings != nil {
+			if err := config.WriteSettings(ctx, tx, *v.settings); err != nil {
+				return err
+			}
+		}
 		// A placed file's row is kept unconditionally. A failed row stays only
 		// while its file is still the elected master of its hash.
 		var failedIDs []int64

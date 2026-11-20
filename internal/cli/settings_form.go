@@ -68,12 +68,12 @@ type settingsForm struct {
 }
 
 func (a *app) newSettingsForm(ctx context.Context, geonames func() (*location.Resolver, error)) *settingsForm {
-	s := a.Config.Settings
+	s := a.shownSettings()
 	paths := path.New()
 	f := &settingsForm{
 		a: a, ctx: ctx, geonames: geonames, paths: paths,
 		// prefilled with the last library, or the default one
-		out:      paths.RelativeToHome(a.Config.OutputDir()),
+		out:      paths.RelativeToHome(a.OutputDir()),
 		layout:   layoutChoice(s.Rules),
 		collapse: s.CollapseLevels, dateOnly: s.SavedPlacesDateOnly, mergeDays: s.MergeSameLocationDays,
 		home: s.HomeTown,
@@ -134,7 +134,7 @@ func (f *settingsForm) libraryField() *tui.Field {
 	homeDir := f.paths.HomeDir
 	// recently used libraries first, then common locations whose parent exists
 	var suggestions []string
-	for _, dir := range f.a.Config.History() {
+	for _, dir := range f.a.Configuration().History() {
 		suggestions = append(suggestions, f.paths.RelativeToHome(dir))
 	}
 	for _, c := range []string{
@@ -262,7 +262,7 @@ func (f *settingsForm) canonicalTown(typed string) string {
 	}
 }
 
-// save writes the answers, opening or creating the library if the form asked where it goes.
+// save hands the answers to the shell, which saves them into the library.
 func (f *settingsForm) save() error {
 	home := f.canonicalTown(f.home)
 	s := config.Settings{
@@ -273,9 +273,7 @@ func (f *settingsForm) save() error {
 		HomeTown:              home,
 		WorkTown:              home, // work is off for now: it is the same place as home
 	}
-	if err := f.a.saveSettings(f.ctx, f.libraryDir(f.out), s); err != nil {
-		return fmt.Errorf("save settings: %w", err)
-	}
+	f.a.settingsToSave = &s
 	return nil
 }
 
@@ -288,7 +286,7 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 		}
 	}
 	return func() []tui.SettingRow {
-		s := a.Config.Settings
+		s := a.shownSettings()
 		orNotSet := func(v string) string {
 			if v == "" {
 				return "not set"
@@ -307,10 +305,10 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 			tuning = "all on"
 		}
 		return []tui.SettingRow{
-			{Label: "Library folder", Value: path.New().Friendly(a.Config.OutputDir()), Edit: func() ([]*tui.Field, func() error) {
+			{Label: "Library folder", Value: path.New().Friendly(a.OutputDir()), Edit: func() ([]*tui.Field, func() error) {
 				f := a.newSettingsForm(ctx, geonames)
 				return []*tui.Field{f.libraryField()}, func() error {
-					return a.switchLibrary(ctx, f.libraryDir(f.out))
+					return a.Switch(ctx, f.libraryDir(f.out))
 				}
 			}},
 			{Label: "Folder layout", Value: layoutLabel(s.Rules), Edit: edit((*settingsForm).layoutFields)},

@@ -7,105 +7,48 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
-	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
 
 type app struct {
-	Config *config.Configuration
-	Log    logger.Logger
-	AppDB  *db.DB
-	Deps   *install.Coordinator
+	// Session is the library this run works on: its configuration, log, the
+	// run's log file, the open database and the work running on it. Nil until
+	// the root command's PreRun builds it.
+	*library.Session
+	Deps *install.Coordinator
+	// settingsToSave is a settings form's answer on its way to the library:
+	// the form hands it over, the shell saves it off the UI goroutine
+	settingsToSave *config.Settings
 	// Version is the build main.go stamps via -ldflags; `wandersort --version` prints it
 	Version string
-	// outLock is the output-dir lock, taken with the database by openLibrary
-	// and released with it by closeDBs.
-	outLock *lock.Lock
-	// logFile is this process's log, shared by the startup and TUI loggers.
-	// Buffered in memory until openLibrary (or a warning) persists it.
-	logFile *logger.File
 
 	// jsonOut is --json: plain output, plus one result object on stdout;
 	// jsonPrinted makes sure it is only one
 	jsonOut, jsonPrinted bool
-	// work is background work on the library; shutdown waits for it before
-	// closing the database.
-	work workGroup
-}
-
-// workGroup tracks background work so shutdown can wait for it; work that
-// would start after shutdown began is refused instead.
-type workGroup struct {
-	mu     sync.Mutex
-	closed bool
-	wg     sync.WaitGroup
-	// library is read-held by work on the open library and write-held while it is swapped
-	library sync.RWMutex
-}
-
-// start registers one piece of work, or reports false once shutdown began.
-func (g *workGroup) start() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.closed {
-		return false
-	}
-	g.wg.Add(1)
-	return true
-}
-
-func (g *workGroup) done() { g.wg.Done() }
-
-// startOnLibrary is start for work on the open library; the library can't be switched while it runs.
-func (g *workGroup) startOnLibrary() bool {
-	if !g.start() {
-		return false
-	}
-	g.library.RLock()
-	return true
-}
-
-func (g *workGroup) doneOnLibrary() {
-	g.library.RUnlock()
-	g.done()
-}
-
-// holdLibrary takes the library from all work, or reports false while any runs on it.
-func (g *workGroup) holdLibrary() (release func(), ok bool) {
-	if !g.library.TryLock() {
-		return nil, false
-	}
-	return g.library.Unlock, true
-}
-
-// closeAndWait refuses new work and waits for what is running.
-func (g *workGroup) closeAndWait() {
-	g.mu.Lock()
-	g.closed = true
-	g.mu.Unlock()
-	g.wg.Wait()
 }
 
 func Execute(version string) error {
 	a := &app{Version: version}
 	err := a.newRootCmd().Execute()
-	defer a.logFile.Close() // after the result below, which may still log
+	defer func() { // after the result below, which may still log
+		if a.Session != nil {
+			a.LogFile().Close()
+		}
+	}()
 
 	// a failure before the command printed its own result still gets one; a
 	// bad flag or argument fails before PersistentPreRunE reads --json
@@ -132,9 +75,9 @@ func interruptible() (context.Context, context.CancelFunc) {
 // newDeps builds a Coordinator for this app; nil callbacks mean no progress and a logged wait between tries.
 func (a *app) newDeps(onProgress func(install.Progress), beforeRetry install.RetryFunc) *install.Coordinator {
 	return install.New(install.Options{
-		ExecutablePath: a.Config.ExecutablePath,
-		LocationDBPath: a.Config.LocationDBPath,
-		Log:            a.Log,
+		ExecutablePath: a.Configuration().ExecutablePath,
+		LocationDBPath: a.Configuration().LocationDBPath,
+		Log:            a.Log(),
 		OnProgress:     onProgress,
 		BeforeRetry:    beforeRetry,
 	})
@@ -153,139 +96,60 @@ func (a *app) workflowDeps() workflow.Deps {
 	}
 }
 
-// lockOutput takes the exclusive output-dir lock and styles the "already
-// running" error.
-func (a *app) lockOutput() (*lock.Lock, error) {
-	l, err := lock.AcquireOutput(filepath.Dir(a.Config.AppDBPath))
-	var running *lock.AlreadyRunningError
-	if errors.As(err, &running) {
-		return nil, withCode(exitBusy, fmt.Errorf("%s", tui.Bad.Render(fmt.Sprintf("Another wandersort is already running here (PID %d).", running.PID))+"\n"+
-			tui.FaintTxt.Render("Stop it, then try again.")))
-	}
-	if err != nil {
-		return nil, fmt.Errorf("acquire lock: %w", err)
-	}
-	return l, nil
+// Open, SaveSettings and Restore are the Session's, with a library held
+// elsewhere explained for the terminal; shadowing them leaves no unexplained
+// way in. Switch is not shadowed: only the Settings tab calls it, and the
+// tab words its failures with tui.Explain.
+func (a *app) Open(ctx context.Context) error {
+	return explainBusy(a.Session.Open(ctx))
 }
 
-// openLibrary opens the output folder as a library, once per session: check it
-// may be one, take the output lock, open the database, load its settings, then
-// remember it. In that order, a refused folder or a lost lock race writes
-// nothing into the folder.
-func (a *app) openLibrary(ctx context.Context) error {
-	if a.AppDB != nil {
-		return nil
-	}
-	// From here the run touches (or tried to touch) user data: keep its log.
-	a.logFile.Persist()
-	outputDir := a.Config.OutputDir()
-	if err := config.CheckLibrary(outputDir); err != nil {
-		return err
-	}
-	l, err := a.lockOutput()
-	if err != nil {
-		return err
-	}
-	appDB, err := db.New(ctx, a.Config.AppDBPath, a.Log)
-	if err != nil {
-		l.Unlock()
-		return fmt.Errorf("app db: %w", err)
-	}
-	// The library's own settings (defaults if never saved). Read before
-	// publishing the handle, so a failure leaves the library unopened.
-	settings, err := config.LoadSettings(ctx, appDB)
-	if err != nil {
-		appDB.Close()
-		l.Unlock()
-		return err
-	}
-	a.AppDB, a.outLock = appDB, l
-	a.Config.Settings = settings
-	// only a real library goes in the recent list
-	if err := a.Config.Remember(outputDir); err != nil {
-		a.Log.Warn("could not record this library as recently used", "error", err)
-	}
-	return nil
+func (a *app) Restore(ctx context.Context) error {
+	return explainBusy(a.Session.Restore(ctx))
 }
 
-// rememberSources records the folders a scan walked; the first given ends up newest.
-func (a *app) rememberSources(roots []string) {
-	for _, root := range slices.Backward(roots) {
-		if err := a.Config.RememberSource(root); err != nil {
-			a.Log.Warn("could not record a scanned folder as recently used", "error", err)
-			return
-		}
-	}
+func (a *app) SaveSettings(ctx context.Context, settings config.Settings) error {
+	places := func(ctx context.Context) (*location.Resolver, error) { return a.Deps.Location(ctx) }
+	return explainBusy(a.Session.SaveSettings(ctx, settings, places))
 }
 
-// saveSettings writes the wizard's settings into their library, opening it
-// first if needed; a settings-first session picks its output folder here.
-func (a *app) saveSettings(ctx context.Context, outputDir string, s config.Settings) error {
-	if a.AppDB == nil {
-		a.Config.SetOutput(outputDir)
-		if err := a.openLibrary(ctx); err != nil {
-			return err
-		}
+// shownSettings is what the settings screens show: a save on its way, else the library's.
+func (a *app) shownSettings() config.Settings {
+	if a.settingsToSave != nil {
+		return *a.settingsToSave
 	}
-	if err := config.SaveSettings(ctx, a.AppDB, s); err != nil {
-		return err
-	}
-	a.Config.Settings = s
-	return nil
+	return a.Settings()
 }
 
-// closeLibrary flushes and closes the open library and releases its lock.
-func (a *app) closeLibrary() {
-	// a failed Close can leave WAL/SHM locked (locking_mode=EXCLUSIVE); log it
-	if a.AppDB != nil {
-		if err := a.AppDB.Writer.Flush(); err != nil {
-			a.Log.Error("some writes were lost before closing", "error", err)
-		}
-		a.Log.Info("Closing databases")
-		if err := a.AppDB.Close(); err != nil {
-			a.Log.Error("failed to close app database", "error", err)
-		}
-	}
-	a.outLock.Unlock() // nil-safe; after Close, so no other process opens the database mid-close
-	a.AppDB, a.outLock = nil, nil
+// busyError words a library held by another process for the terminal, keeping the cause in the chain.
+type busyError struct {
+	cause error
+	pid   int
 }
 
-// switchLibrary makes dir the session's library, reopening the old one if dir can't be opened.
-func (a *app) switchLibrary(ctx context.Context, dir string) error {
-	old := a.Config.OutputDir()
-	if dir == old {
-		return nil
-	}
-	if err := config.CheckLibrary(dir); err != nil {
-		return err
-	}
-	release, ok := a.work.holdLibrary()
+func (e *busyError) Error() string {
+	return tui.Bad.Render(fmt.Sprintf("Another wandersort is already running here (PID %d).", e.pid)) + "\n" +
+		tui.FaintTxt.Render("Stop it, then try again.")
+}
+
+func (e *busyError) Unwrap() error { return e.cause }
+
+// explainBusy turns a library held by another process into the styled message
+// and busy exit code; any other error passes through.
+func explainBusy(err error) error {
+	running, ok := errors.AsType[*lock.AlreadyRunningError](err)
 	if !ok {
-		return errors.New("busy with this library; change it when it's done")
+		return err
 	}
-	defer release()
-	// an organised folder keeps its own settings; any other starts a new library with these
-	_, statErr := os.Stat(filepath.Join(dir, filepath.Base(a.Config.AppDBPath)))
-	isNew := statErr != nil
-	carry := a.Config.Settings
-
-	a.closeLibrary()
-	a.Config.SetOutput(dir)
-	if err := a.openLibrary(ctx); err != nil {
-		a.Config.SetOutput(old)
-		return errors.Join(err, a.openLibrary(ctx))
-	}
-	if isNew {
-		return a.saveSettings(ctx, dir, carry)
-	}
-	return nil
+	return withCode(exitBusy, &busyError{cause: err, pid: running.PID})
 }
 
+// closeDBs closes the library and the location database; safe when neither is open.
 func (a *app) closeDBs() {
-	a.closeLibrary()
+	a.Close()
 	if a.Deps != nil {
 		if err := a.Deps.Close(); err != nil {
-			a.Log.Error("failed to close location database", "error", err)
+			a.Log().Error("failed to close location database", "error", err)
 		}
 	}
 }

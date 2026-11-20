@@ -225,7 +225,7 @@ func appDSN(dbPath string) string {
 // slashes and a leading one (file:///C:/dir/x.db); SQLite reads anything else
 // before the first slash as a URI authority and refuses it.
 //
-// ponytail: UNC paths (\\server\share) are passed through as-is; SQLite wants
+// UNC paths (\\server\share) are passed through as-is; SQLite wants
 // file:////server/share/... for those.
 func fileURI(path, rawQuery string) string {
 	if v := filepath.VolumeName(path); len(v) == 2 && v[1] == ':' {

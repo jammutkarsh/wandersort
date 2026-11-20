@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -146,6 +147,6 @@ func (m *Model) flattenFolders(targets []*reviewRow) {
 		if len(names) > 1 {
 			into = fmt.Sprintf("%d folders", len(names))
 		}
-		return fmt.Sprintf("Gathered %d subfolders into %s", o.Absorbed, into)
+		return fmt.Sprintf("Gathered %s into %s", human.Plural(o.Absorbed, "subfolder", "subfolders"), into)
 	})
 }

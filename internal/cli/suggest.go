@@ -52,7 +52,7 @@ func suggestDirs(paths *path.Resolver, typed string) []string {
 }
 
 // bundleExts are macOS package dirs that report IsDir() but aren't folders.
-// ponytail: extension list, not a bundle-detection API.
+// extension list, not a bundle-detection API.
 var bundleExts = map[string]bool{".app": true}
 
 func isBundleDir(name string) bool {

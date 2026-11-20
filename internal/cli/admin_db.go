@@ -59,7 +59,7 @@ func (a *app) runAdminDB(cmd *cobra.Command) error {
 }
 
 func (a *app) restoreDB(cmd *cobra.Command) error {
-	backup := filepath.Join(filepath.Dir(a.Config.AppDBPath), db.BackupFileName)
+	backup := filepath.Join(a.OutputDir(), db.BackupFileName)
 	info, err := os.Stat(backup)
 	if os.IsNotExist(err) {
 		return fmt.Errorf("no backup at %s", backup)
@@ -75,18 +75,15 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 		return fmt.Errorf("restore cancelled")
 	}
 
-	// not openLibrary: Restore refuses while any connection, ours included,
+	// not Open: Restore refuses while any connection, ours included,
 	// has the database open
-	a.logFile.Persist()
-	l, err := a.lockOutput()
-	if err != nil {
-		return err
-	}
-	defer l.Unlock()
-
 	ctx, cancel := interruptible()
 	defer cancel()
-	if err := library.Restore(ctx, a.Config.AppDBPath, a.Log); errors.Is(err, db.ErrInUse) {
+	err = a.Restore(ctx)
+	if _, busy := errors.AsType[*busyError](err); busy {
+		return err // already worded for the terminal
+	}
+	if errors.Is(err, db.ErrInUse) {
 		return fmt.Errorf("%w; close other apps using it and retry", err)
 	} else if err != nil {
 		return fmt.Errorf("restore failed: %w", err)
@@ -99,26 +96,26 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 
 // resetDB empties the library's data but keeps its settings.
 func (a *app) resetDB(cmd *cobra.Command) error {
-	if !a.libraryExists() {
+	if !a.LibraryExists() {
 		return fmt.Errorf("no database found — nothing to reset")
 	}
 
 	ctx, cancel := interruptible()
 	defer cancel()
-	if err := a.openLibrary(ctx); err != nil {
+	if err := a.Open(ctx); err != nil {
 		return err
 	}
 	defer a.closeDBs()
 
 	// already empty: nothing to ask about
-	if empty, err := a.AppDB.IsEmpty(ctx); err != nil {
+	if empty, err := a.DB().IsEmpty(ctx); err != nil {
 		return err
 	} else if empty {
 		fmt.Fprintln(os.Stderr, "Nothing to reset — the database is already empty.")
 		return nil
 	}
 
-	placed, err := a.AppDB.PlacedCount(ctx)
+	placed, err := a.DB().PlacedCount(ctx)
 	if err != nil {
 		return err
 	}
@@ -139,12 +136,12 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 
 // resetLibrary empties the open library's database (settings kept) and the preview copies.
 func (a *app) resetLibrary(ctx context.Context) error {
-	if err := library.Reset(ctx, a.AppDB, a.Config.OutputDir(), a.Log); err != nil {
+	if err := library.Reset(ctx, a.DB(), a.OutputDir(), a.Log()); err != nil {
 		return err
 	}
 	// preview copies outlive a session, so a wipe has to take them too
 	if err := review.CleanPreviews(); err != nil {
-		a.Log.Warn("could not remove the preview copies", "error", err)
+		a.Log().Warn("could not remove the preview copies", "error", err)
 	}
 	return nil
 }

@@ -256,7 +256,7 @@ func confirm(ctx context.Context, tx *sqlx.Tx, roots []Node) error {
 	// Moved folders can land two files on one name: unmoved rows and placed
 	// files keep theirs, moved rows take the next _N, one per capture group.
 	//
-	// ponytail: groups are rebuilt from source dir + captureStem (no time
+	// groups are rebuilt from source dir + captureStem (no time
 	// window) and numbered in row order, not capture time. Stable, but a pair
 	// split across folders stays matched only when both move. Persist the
 	// pair key if that bites.
