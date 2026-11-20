@@ -59,6 +59,29 @@ func TestCopyCreatesDest(t *testing.T) {
 	}
 }
 
+// The check gets the synced temp file, holding every byte, before it takes
+// dest's name: what a read-back verifies is what lands.
+func TestCopyCheckReadsTheTempFile(t *testing.T) {
+	dir := t.TempDir()
+	src, dest := filepath.Join(dir, "src"), filepath.Join(dir, "dest")
+	write(t, src, "hello")
+
+	var read string
+	if _, err := Copy(src, dest, nil, func(tmp string) error {
+		b, err := os.ReadFile(tmp)
+		read = string(b)
+		if _, statErr := os.Stat(dest); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Error("dest named before the check ran")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if read != "hello" {
+		t.Errorf("check read %q, want every byte", read)
+	}
+}
+
 // A failed check leaves nothing behind: no dest, no temp file. The tee saw
 // every byte before the check ran.
 func TestCopyCheckFailureLeavesNoDest(t *testing.T) {
@@ -68,7 +91,7 @@ func TestCopyCheckFailureLeavesNoDest(t *testing.T) {
 
 	var seen strings.Builder
 	errBad := errors.New("bad")
-	if _, err := Copy(src, dest, &seen, func() error { return errBad }); !errors.Is(err, errBad) {
+	if _, err := Copy(src, dest, &seen, func(string) error { return errBad }); !errors.Is(err, errBad) {
 		t.Fatalf("err = %v, want the check's error", err)
 	}
 	if seen.String() != "hello" {
