@@ -504,6 +504,60 @@ func TestRewriteRefusesSettingsAndSwitch(t *testing.T) {
 	}
 }
 
+// A save waiting for the library while a switch takes it is refused, not
+// written into the library the switch opened.
+func TestSaveSettingsBoundToItsLibrary(t *testing.T) {
+	ctx := context.Background()
+	s := testSession(t)
+	if err := s.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first := s.OutputDir()
+	second := filepath.Join(t.TempDir(), "second")
+	if err := s.Switch(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Switch(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	stored := s.Settings()
+
+	// hold the library as a switch does after its checks, then let a save queue behind it
+	release, ok := s.Work.HoldLibrary()
+	if !ok {
+		t.Fatal("library not held")
+	}
+	settings := s.Settings()
+	settings.Rules = []string{"date"}
+	result := make(chan error, 1)
+	go func() { result <- s.SaveSettings(ctx, settings, noPlaces) }()
+	for !s.Work.Rewriting() {
+		time.Sleep(time.Millisecond)
+	}
+	// the switch's swap, as Switch makes it under the hold
+	appDB, l, own, err := s.openLibrary(ctx, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.closeLibrary(s.db, s.lock)
+	s.cfg.SetOutput(second)
+	s.db, s.lock, s.cfg.Settings = appDB, l, own
+	s.mu.Unlock()
+	release()
+
+	if err := <-result; !errors.Is(err, ErrLibraryChanged) {
+		t.Fatalf("save queued behind a switch = %v, want ErrLibraryChanged", err)
+	}
+	got, err := config.LoadSettings(ctx, s.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(stored) {
+		t.Errorf("library switched to holds rules %v, want its own %v", got.Rules, stored.Rules)
+	}
+}
+
 // Shutdown waits for running work and refuses work that starts after it.
 func TestWorkGroupShutdown(t *testing.T) {
 	var g WorkGroup

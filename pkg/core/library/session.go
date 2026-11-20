@@ -181,6 +181,10 @@ func (s *Session) closeLibrary(d *db.DB, l *lock.Lock) {
 // rewrite, which reads both, is waiting or running.
 var ErrReplanning = errors.New("still re-planning with the new settings; try again in a moment")
 
+// ErrLibraryChanged refuses a settings save whose library was switched away
+// while the save waited: the settings were chosen for the other one.
+var ErrLibraryChanged = errors.New("the library changed before these settings were saved; nothing was saved")
+
 // ErrClosing refuses work once the session is shutting down.
 var ErrClosing = errors.New("shutting down")
 
@@ -198,6 +202,7 @@ func (s *Session) SaveSettings(ctx context.Context, settings config.Settings, pl
 	if s.DB() != nil && settings.Equal(s.Settings()) {
 		return nil // nothing changed: the plan and its review edits stay
 	}
+	dir := s.OutputDir() // the library these settings were chosen for
 	enter, ok := s.Work.StartRewrite()
 	if !ok {
 		return ErrClosing
@@ -207,6 +212,10 @@ func (s *Session) SaveSettings(ctx context.Context, settings config.Settings, pl
 		return ErrClosing
 	}
 	defer done()
+	// a switch may have taken the library while this waited
+	if s.OutputDir() != dir {
+		return ErrLibraryChanged
+	}
 	if err := s.Open(ctx); err != nil {
 		return err
 	}
@@ -254,6 +263,11 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 		return errors.New("busy with this library; change it when it's done")
 	}
 	defer release()
+	// a save registered after the check above waits for this hold; refuse
+	// rather than hand it a library it was not meant for
+	if s.Work.Rewriting() {
+		return ErrReplanning
+	}
 
 	s.logFile.Persist()
 	appDB, l, settings, err := s.openLibrary(ctx, dir)
