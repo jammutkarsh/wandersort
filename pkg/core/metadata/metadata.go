@@ -64,6 +64,7 @@ type fileRecord struct {
 	mediaType string
 	id        int64
 	cost      int64
+	size      int64 // as the scan recorded it
 }
 
 // Extractor hashes discovered files and reads their EXIF in one pass
@@ -317,7 +318,7 @@ func (e *Extractor) classOf(uuid, sampleDir string) volume.Class {
 // files in flight when a run stops are simply read again.
 func (e *Extractor) nextBatch(ctx context.Context, v pendingVolume, cursor int64, excluded string) ([]fileRecord, error) {
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT f.id, f.file_dir, f.file_name, COALESCE(f.media_type, ''), COALESCE(f.volume_uuid, '') `+unreadFiles+`
+		SELECT f.id, f.file_dir, f.file_name, COALESCE(f.media_type, ''), COALESCE(f.volume_uuid, ''), f.file_size `+unreadFiles+`
 		  AND (? OR COALESCE(f.volume_uuid, '') = ?)
 		  AND COALESCE(f.volume_uuid, '') NOT IN (SELECT value FROM json_each(?))
 		  AND f.id > ?
@@ -332,7 +333,8 @@ func (e *Extractor) nextBatch(ctx context.Context, v pendingVolume, cursor int64
 	for rows.Next() {
 		var id int64
 		var fileDir, fileName, mediaType, uuid string
-		if err := rows.Scan(&id, &fileDir, &fileName, &mediaType, &uuid); err != nil {
+		var size int64
+		if err := rows.Scan(&id, &fileDir, &fileName, &mediaType, &uuid, &size); err != nil {
 			return nil, fmt.Errorf("scan unread file: %w", err)
 		}
 		fileDir = wspath.FromSourcePath(fileDir)
@@ -347,6 +349,7 @@ func (e *Extractor) nextBatch(ctx context.Context, v pendingVolume, cursor int64
 			absPath:   filepath.Join(fileDir, fileName),
 			mediaType: mediaType,
 			cost:      cost,
+			size:      size,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -442,6 +445,11 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 	return true
 }
 
+// ErrChangedSinceScan means a file's bytes are not the size the scan
+// recorded: it was still being written. Its hash would not describe the row,
+// so the file waits for the next scan to record it afresh.
+var ErrChangedSinceScan = errors.New("file changed since it was scanned")
+
 // readFile gates the byte read on the storage budget. exiftool stays outside
 // the gate: it reads a warm header and is CPU-bound.
 func (e *Extractor) readFile(ctx context.Context, file fileRecord) (string, error) {
@@ -449,7 +457,14 @@ func (e *Extractor) readFile(ctx context.Context, file fileRecord) (string, erro
 		return "", err // cancelled
 	}
 	defer e.reads.Release(file.cost)
-	return HashFile(file.absPath)
+	sum, n, err := hashFile(file.absPath)
+	if err != nil {
+		return "", err
+	}
+	if n != file.size {
+		return "", fmt.Errorf("%w: read %d bytes, scanned %d", ErrChangedSinceScan, n, file.size)
+	}
+	return sum, nil
 }
 
 // hashBufferSize is bytes per read syscall: 32× fewer syscalls than io.Copy's
@@ -481,9 +496,15 @@ func HashString(h hash.Hash) string {
 // HashFile computes a file's file_hash, streaming it through a pooled buffer
 // so memory stays flat whatever the file size
 func HashFile(filePath string) (string, error) {
+	sum, _, err := hashFile(filePath)
+	return sum, err
+}
+
+// hashFile is HashFile and the bytes it hashed.
+func hashFile(filePath string) (string, int64, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to open file: %w", err)
+		return "", 0, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
@@ -491,10 +512,11 @@ func HashFile(filePath string) (string, error) {
 
 	buf := hashBuffers.Get().(*[]byte)
 	defer hashBuffers.Put(buf)
-	if _, err := io.CopyBuffer(hasher, readerOnly{file}, *buf); err != nil {
-		return "", fmt.Errorf("failed to hash file: %w", err)
+	n, err := io.CopyBuffer(hasher, readerOnly{file}, *buf)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to hash file: %w", err)
 	}
-	return HashString(hasher), nil
+	return HashString(hasher), n, nil
 }
 
 // store writes the hash and the EXIF columns as one row — which is what marks
