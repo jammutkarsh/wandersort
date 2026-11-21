@@ -144,9 +144,10 @@ func explainBusy(err error) error {
 	return withCode(exitBusy, &busyError{cause: err, pid: running.PID})
 }
 
-// closeDBs closes the library and the location database; safe when neither is open.
+// closeDBs stops the library's work and closes it, then the location
+// database; safe when neither is open.
 func (a *app) closeDBs() {
-	a.Close()
+	a.Shutdown()
 	if a.Deps != nil {
 		if err := a.Deps.Close(); err != nil {
 			a.Log().Error("failed to close location database", "error", err)

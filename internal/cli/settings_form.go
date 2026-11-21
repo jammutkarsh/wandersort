@@ -17,27 +17,18 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
-// layoutPresets are the ready-made folder layouts; any other rule list is Custom.
-var layoutPresets = []struct {
-	name  string
-	rules []string
-}{
-	{"Year › Month › Day › Place", []string{vfs.RuleDate, vfs.RuleLocation}},
-	{"Year › Month › Place", []string{vfs.RuleLocation}},
-	{"Year › Month › Day", []string{vfs.RuleDate}},
-}
-
 // customLayout is the layout choice that opens the full rule list.
 const customLayout = "Custom…"
 
-// layoutChoice is the option for rules: a preset's name (no rules = the first), or customLayout.
+// layoutChoice is the option for rules: a ready-made layout's name (no rules =
+// the first), or customLayout.
 func layoutChoice(rules []string) string {
 	if len(rules) == 0 {
-		return layoutPresets[0].name
+		return layoutName(vfs.Layouts()[0], " › ")
 	}
-	for _, p := range layoutPresets {
-		if slices.Equal(p.rules, rules) {
-			return p.name
+	for _, l := range vfs.Layouts() {
+		if slices.Equal(l, rules) {
+			return layoutName(l, " › ")
 		}
 	}
 	return customLayout
@@ -86,9 +77,9 @@ func (a *app) newSettingsForm(ctx context.Context, geonames func() (*location.Re
 	for _, r := range custom {
 		selected[ruleNames[r]] = true
 	}
-	options := make([]string, len(ruleOrder))
-	for i, r := range ruleOrder {
-		options[i] = ruleNames[r]
+	var options []string
+	for _, r := range vfs.RuleOrder() {
+		options = append(options, ruleNames[r])
 	}
 	f.rulesField = &tui.Field{
 		Kind:        tui.FieldMultiSelect,
@@ -105,21 +96,12 @@ func (a *app) newSettingsForm(ctx context.Context, geonames func() (*location.Re
 
 // rules is the folder levels the form's answers stand for.
 func (f *settingsForm) rules() []string {
-	for _, p := range layoutPresets {
-		if f.layout == p.name {
-			return p.rules
+	for _, l := range vfs.Layouts() {
+		if f.layout == layoutName(l, " › ") {
+			return l
 		}
 	}
-	var out []string
-	for _, r := range ruleOrder {
-		if f.rulesField.Selected[ruleNames[r]] {
-			out = append(out, r)
-		}
-	}
-	if len(out) == 0 {
-		return []string{vfs.RuleNone}
-	}
-	return out
+	return vfs.CustomLayout(func(rule string) bool { return f.rulesField.Selected[ruleNames[rule]] })
 }
 
 // libraryDir is the folder typed, pasted or dropped into the library field.
@@ -164,9 +146,9 @@ func (f *settingsForm) libraryField() *tui.Field {
 }
 
 func (f *settingsForm) layoutFields() []*tui.Field {
-	options := make([]string, 0, len(layoutPresets)+1)
-	for _, p := range layoutPresets {
-		options = append(options, p.name)
+	var options []string
+	for _, l := range vfs.Layouts() {
+		options = append(options, layoutName(l, " › "))
 	}
 	options = append(options, customLayout)
 	return []*tui.Field{{
@@ -174,7 +156,7 @@ func (f *settingsForm) layoutFields() []*tui.Field {
 		Title:       "How should folders be laid out?",
 		Description: "You can change this later. Files already copied stay where they are.",
 		Options:     options,
-		Recommended: layoutPresets[0].name,
+		Recommended: layoutChoice(nil),
 		Value:       &f.layout,
 		Example:     f.ex.Rules,
 	}, f.rulesField}
@@ -224,55 +206,26 @@ func (f *settingsForm) fineTuning() *tui.Field {
 	}
 }
 
-// validateTown rejects a typo but accepts an unknown name, or any name when the locationDB failed to open.
+// validateTown rejects a typo (see location.Resolver.CheckTown); a locationDB
+// still downloading is asked to wait, one that failed to open accepts any name.
 func (f *settingsForm) validateTown(s string) error {
-	if strings.TrimSpace(s) == "" {
-		return nil // blank = skip
-	}
 	resolver, err := f.geonames()
-	if err != nil {
-		if errors.Is(err, install.ErrPending) {
-			return err
-		}
-		return nil
+	if errors.Is(err, install.ErrPending) && strings.TrimSpace(s) != "" {
+		return err
 	}
-	_, err = resolver.Canonical(f.ctx, s)
-	return err
-}
-
-// canonicalTown is the locationDB's spelling when they can give one, else
-// what was typed: dropping a town the user already had is data loss.
-func (f *settingsForm) canonicalTown(typed string) string {
-	typed = strings.TrimSpace(typed)
-	if typed == "" {
-		return ""
-	}
-	resolver, err := f.geonames()
-	if err != nil {
-		return typed
-	}
-	name, err := resolver.Canonical(f.ctx, typed)
-	switch {
-	case err == nil:
-		return name
-	case errors.Is(err, location.ErrNotExact):
-		return "" // a near-miss the validator would have rejected
-	default:
-		return typed
-	}
+	return resolver.CheckTown(f.ctx, s)
 }
 
 // save hands the answers to the shell, which saves them into the library.
 func (f *settingsForm) save() error {
-	home := f.canonicalTown(f.home)
+	resolver, _ := f.geonames() // none: the typed town is kept as typed
 	s := config.Settings{
 		Rules:                 f.rules(),
 		CollapseLevels:        f.collapse,
 		SavedPlacesDateOnly:   f.dateOnly,
 		MergeSameLocationDays: f.mergeDays,
-		HomeTown:              home,
-		WorkTown:              home, // work is off for now: it is the same place as home
 	}
+	s.SetHome(resolver.TownName(f.ctx, f.home))
 	f.a.settingsToSave = &s
 	return nil
 }
@@ -320,9 +273,6 @@ func (a *app) settingsRows(ctx context.Context, geonames func() (*location.Resol
 
 // extraOptions names the settings row and screen of the three on/off choices.
 const extraOptions = "Extra options"
-
-// ruleOrder is the folder levels a custom layout offers, in their order.
-var ruleOrder = []string{vfs.RuleDate, vfs.RuleLocation, vfs.RuleDevice, vfs.RuleOrientation, vfs.RuleMedia}
 
 // ruleNames is how each folder level reads, in a layout and as a choice.
 var ruleNames = map[string]string{

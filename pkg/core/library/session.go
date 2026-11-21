@@ -29,6 +29,10 @@ type Session struct {
 	log     logger.Logger
 	logFile *logger.File
 
+	// stopping ends with Shutdown; work the session runs stops with it
+	stopping context.Context
+	stop     context.CancelFunc
+
 	// mu guards the fields below. Taken after Work's library lock, never
 	// before it.
 	mu   sync.RWMutex
@@ -41,7 +45,23 @@ type Session struct {
 // keeps its own copy of cfg. logFile is this process's log, buffered in memory
 // until a library opens (or a warning) persists it; nil means no file log.
 func New(cfg *config.Configuration, log logger.Logger, logFile *logger.File) *Session {
-	return &Session{cfg: copyConfig(*cfg), log: log, logFile: logFile}
+	stopping, stop := context.WithCancel(context.Background())
+	return &Session{cfg: copyConfig(*cfg), log: log, logFile: logFile, stopping: stopping, stop: stop}
+}
+
+// Shutdown stops the work running on the library, waits for it, then closes
+// the library. Nothing new starts once it has begun (ErrClosing).
+func (s *Session) Shutdown() {
+	s.stop()
+	s.Work.CloseAndWait()
+	s.Close()
+}
+
+// bound is ctx, also cancelled once Shutdown begins.
+func (s *Session) bound(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	unhook := context.AfterFunc(s.stopping, cancel)
+	return ctx, func() { unhook(); cancel() }
 }
 
 // copyConfig is c sharing nothing a caller could change underneath it.
@@ -161,6 +181,10 @@ func (s *Session) Close() {
 	defer s.Work.library.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.db != nil {
+		// another process may hold the library next: an open review is stale
+		s.Work.plan.Add(1)
+	}
 	s.closeLibrary(s.db, s.lock)
 	s.db, s.lock = nil, nil
 }
@@ -198,6 +222,13 @@ var ErrNotOpen = errors.New("no library is open")
 // scans, a scan and a copy, or a switch while either runs.
 var ErrBusy = errors.New("busy with this library; try again when it's done")
 
+// BusyError is ErrBusy naming the job in the way, so a front end can say which.
+type BusyError struct{ Job Job }
+
+func (e *BusyError) Error() string { return fmt.Sprintf("%s (a %s is running)", ErrBusy, e.Job) }
+
+func (e *BusyError) Unwrap() error { return ErrBusy }
+
 // SaveSettings makes settings the library's, opening it first if none is
 // open. A change rebuilds the plan from them and writes both in one
 // transaction, so the library never holds settings its plan was not built
@@ -208,6 +239,8 @@ var ErrBusy = errors.New("busy with this library; try again when it's done")
 // database the plan names places from; it is waited for before the library is
 // held, so a download never keeps other work off the library.
 func (s *Session) SaveSettings(ctx context.Context, settings config.Settings, places func(context.Context) (*location.Resolver, error)) error {
+	ctx, cancel := s.bound(ctx)
+	defer cancel()
 	if s.Work.Rewriting() {
 		return ErrReplanning
 	}
@@ -372,7 +405,7 @@ func (s *Session) Restore(ctx context.Context) error {
 	}
 	defer l.Unlock()
 	defer s.Work.plan.Add(1) // the plan is the backup's now
-	return Restore(ctx, dbPath, s.log)
+	return restore(ctx, dbPath, s.log)
 }
 
 // RememberSources records the folders a scan walked; the first given ends up newest.
@@ -406,6 +439,34 @@ type State struct {
 
 	// Open is whether the session has the library open.
 	Open bool
+
+	// Running is the job running on the library, "" for none.
+	Running Job
+	// Replanning is a plan rewrite (a settings save) waiting or running.
+	Replanning bool
+}
+
+// Idle reports no job and no re-plan on the library: nothing is about to
+// change the plan or apply the draft.
+func (st State) Idle() bool { return st.Running == "" && !st.Replanning }
+
+// CanOrganise reports whether review edits can be made now. Never while a
+// copy runs: it applies the draft and removes it, so an edit then is lost.
+func (st State) CanOrganise() bool { return st.Idle() && st.CanReview() }
+
+// CanCopy reports whether a copy can start now: files planned, nothing running.
+func (st State) CanCopy() bool { return st.Idle() && st.Planned > 0 }
+
+// CanScan reports whether a scan can start now.
+func (st State) CanScan() bool { return st.Idle() }
+
+// CanChangeSettings reports whether settings can be saved or the library switched now.
+func (st State) CanChangeSettings() bool { return st.Idle() }
+
+// Live is st with the work running now, read without touching the database.
+func (s *Session) Live(st State) State {
+	st.Running, st.Replanning = s.Work.Running(), s.Work.Rewriting()
+	return st
 }
 
 // CanReview reports whether there is a plan worth reviewing: "probably" while
@@ -427,7 +488,7 @@ func (s *Session) State(ctx context.Context) State {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	_, err := os.Stat(s.cfg.AppDBPath)
-	st := State{Exists: err == nil}
+	st := s.Live(State{Exists: err == nil})
 
 	// counts without repairing: a torn draft is the holder's to fix, and this
 	// session may not hold the library
@@ -463,6 +524,8 @@ func (s *Session) State(ctx context.Context) State {
 // WorkGroup tracks background work so shutdown can wait for it; work that
 // would start after shutdown began is refused instead.
 type WorkGroup struct {
+	// mu is taken last: nothing else is locked while it is held, except the
+	// non-blocking TryRLock in whileIdle and a Review's own snapshot lock.
 	mu     sync.Mutex
 	closed bool
 	wg     sync.WaitGroup
@@ -481,8 +544,9 @@ type WorkGroup struct {
 type Job string
 
 const (
-	JobScan Job = "scan"
-	JobCopy Job = "copy"
+	JobScan  Job = "scan"
+	JobCopy  Job = "copy"
+	JobCheck Job = "check"
 )
 
 // StartJob registers j on the open library, ended by done. It refuses once
@@ -498,7 +562,7 @@ func (g *WorkGroup) StartJob(j Job) (done func(), err error) {
 	case g.rewrites.Load() > 0:
 		err = ErrReplanning
 	case g.job != "":
-		err = fmt.Errorf("%w (a %s is running)", ErrBusy, g.job)
+		err = &BusyError{Job: g.job}
 	}
 	if err != nil {
 		g.mu.Unlock()
@@ -563,7 +627,7 @@ func (g *WorkGroup) StartRewrite() (enter func() (done func(), err error), err e
 		return nil, ErrClosing
 	}
 	if g.job != "" {
-		return nil, fmt.Errorf("%w (a %s is running)", ErrBusy, g.job)
+		return nil, &BusyError{Job: g.job}
 	}
 	g.rewrites.Add(1)
 	g.plan.Add(1)

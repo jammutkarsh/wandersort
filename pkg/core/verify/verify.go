@@ -213,7 +213,7 @@ func record(database *db.DB, fileID int64, p *Problem) error {
 		}
 	}
 	if !database.Writer.Write(op) {
-		return errors.New("database writer closed")
+		return fmt.Errorf("database %w", db.ErrWriterClosed)
 	}
 	return nil
 }

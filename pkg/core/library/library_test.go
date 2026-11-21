@@ -35,7 +35,7 @@ func TestRestoreDropsTheDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Restore(ctx, live, logger.NewNoopLogger()); err != nil {
+	if err := restore(ctx, live, logger.NewNoopLogger()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(draft); !os.IsNotExist(err) {
@@ -57,7 +57,7 @@ func TestRestoreDropsTheDraft(t *testing.T) {
 func TestResetOfAnEmptyLibraryKeepsTheBackup(t *testing.T) {
 	d := dbtest.New(t)
 	dir := t.TempDir()
-	err := Reset(context.Background(), d, dir, logger.NewNoopLogger())
+	err := reset(context.Background(), d, dir, logger.NewNoopLogger())
 	if !errors.Is(err, ErrNothingToReset) {
 		t.Fatalf("Reset = %v, want ErrNothingToReset", err)
 	}
@@ -84,7 +84,7 @@ func TestDiscardKeepsPlacedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err := Discard(ctx, d, dir)
+	n, err := discard(ctx, d, dir)
 	if err != nil || n != 2 {
 		t.Fatalf("Discard = %d, %v; want 2 files forgotten", n, err)
 	}

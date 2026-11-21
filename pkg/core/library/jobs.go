@@ -4,6 +4,10 @@ import (
 	"context"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+
+	"github.com/jammutkarsh/wandersort/pkg/core/verify"
+
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -16,6 +20,8 @@ import (
 // other scan or re-plan overlaps it, and reads the database, folder and
 // settings only once it holds the library.
 func (s *Session) Scan(ctx context.Context, paths []string, force bool, deps workflow.Deps) (workflow.Result, error) {
+	ctx, cancel := s.bound(ctx)
+	defer cancel()
 	done, err := s.Work.StartJob(JobScan)
 	if err != nil {
 		return workflow.Result{}, err
@@ -46,6 +52,8 @@ type CopyResult struct {
 // once it holds the library. A real run that leaves files out writes the
 // failure page; a dry run writes nothing.
 func (s *Session) Copy(ctx context.Context, o execute.Options) (CopyResult, error) {
+	ctx, cancel := s.bound(ctx)
+	defer cancel()
 	done, err := s.Work.StartJob(JobCopy)
 	if err != nil {
 		return CopyResult{}, err
@@ -58,7 +66,7 @@ func (s *Session) Copy(ctx context.Context, o execute.Options) (CopyResult, erro
 	applied := o.OnApplied
 	o.OnApplied = func() {
 		// the peeks showed the plan before its edits; nothing is left to peek at
-		if err := preview.Clean(); err != nil {
+		if err := preview.Clean(outputDir); err != nil {
 			s.log.Warn("could not remove the preview copies", "error", err)
 		}
 		if applied != nil {
@@ -119,5 +127,85 @@ func (s *Session) Discard(ctx context.Context) (int, error) {
 		return 0, ErrNotOpen
 	}
 	defer s.Work.plan.Add(1)
-	return Discard(ctx, d, outputDir)
+	return discard(ctx, d, outputDir)
+}
+
+// Reset empties the open library (see reset) and clears the preview copies,
+// holding the library from all other work; it refuses while any runs (ErrBusy).
+func (s *Session) Reset(ctx context.Context) error {
+	stop, ok := s.Work.Start()
+	if !ok {
+		return ErrClosing
+	}
+	defer stop()
+	release, ok := s.Work.HoldLibrary()
+	if !ok {
+		return ErrBusy
+	}
+	defer release()
+	d, outputDir := s.DB(), s.OutputDir()
+	if d == nil {
+		return ErrNotOpen
+	}
+	defer s.Work.plan.Add(1)
+	if err := reset(ctx, d, outputDir, s.log); err != nil {
+		return err
+	}
+	// preview copies outlive a session, so a wipe has to take them too
+	if err := preview.Clean(outputDir); err != nil {
+		s.log.Warn("could not remove the preview copies", "error", err)
+	}
+	return nil
+}
+
+// Check verifies the files placed in the library, opening it first (see
+// verify.Run). It runs as JobCheck, since it forgets records of files gone
+// from the library: never beside a scan, a copy or a re-plan.
+func (s *Session) Check(ctx context.Context, o verify.Options) (verify.Report, error) {
+	ctx, cancel := s.bound(ctx)
+	defer cancel()
+	done, err := s.Work.StartJob(JobCheck)
+	if err != nil {
+		return verify.Report{}, err
+	}
+	defer done()
+	if err := s.Open(ctx); err != nil {
+		return verify.Report{}, err
+	}
+	return verify.Run(ctx, s.DB(), s.log, s.OutputDir(), o)
+}
+
+// CopyPlan is what a copy would do now: the files and bytes still to copy,
+// the review edits it applies first, and the room for them.
+type CopyPlan struct {
+	Files int
+	Bytes int64
+	Edits int
+	Space execute.Space
+}
+
+// CopyPlan reads what a copy of the open library would do, while the library
+// can't be switched under the read.
+func (s *Session) CopyPlan(ctx context.Context) (CopyPlan, error) {
+	done, ok := s.Work.StartOnLibrary()
+	if !ok {
+		return CopyPlan{}, ErrClosing
+	}
+	defer done()
+	d, outputDir := s.DB(), s.OutputDir()
+	if d == nil {
+		return CopyPlan{}, ErrNotOpen
+	}
+	var p CopyPlan
+	var err error
+	if p.Files, p.Bytes, err = execute.Pending(ctx, d); err != nil {
+		return CopyPlan{}, err
+	}
+	if p.Space, err = execute.SpaceFor(ctx, d, outputDir); err != nil {
+		return CopyPlan{}, err
+	}
+	if p.Edits, err = vfs.CountEdits(outputDir); err != nil {
+		p.Edits = 1 // unreadable: something is there, and the copy will say what
+	}
+	return p, nil
 }

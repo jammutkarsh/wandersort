@@ -1,6 +1,7 @@
 package path
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -251,6 +252,9 @@ func Overlaps(a, b string) bool {
 		strings.HasPrefix(a, strings.TrimSuffix(b, sep)+sep)
 }
 
+// ErrNotDirectory refuses a root that is a file.
+var ErrNotDirectory = errors.New("path is not a directory")
+
 // ReduceRoots canonicalizes paths, checks they are directories, deduplicates,
 // and drops any nested under another.
 func ReduceRoots(r *Resolver, paths []string) ([]string, error) {
@@ -268,7 +272,7 @@ func ReduceRoots(r *Resolver, paths []string) ([]string, error) {
 			return nil, err
 		}
 		if !isDir {
-			return nil, fmt.Errorf("path is not a directory: %s", resolved)
+			return nil, fmt.Errorf("%w: %s", ErrNotDirectory, resolved)
 		}
 
 		canonicalSet[resolved] = struct{}{}

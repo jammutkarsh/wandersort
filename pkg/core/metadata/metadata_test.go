@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -474,6 +475,16 @@ func TestExtractor(t *testing.T) {
 			}
 			if errorRows != 0 {
 				t.Errorf("%d error rows left after a successful read", errorRows)
+			}
+		}},
+		// Run closes the exiftool pool, so a second Run is refused, not a panic.
+		{"SecondRunRefused", func(t *testing.T) {
+			e := mustNew(t, dbtest.New(t), installtest.Exiftool(t), 1)
+			if _, err := e.Run(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.Run(context.Background()); !errors.Is(err, ErrRanOnce) {
+				t.Errorf("second Run = %v, want ErrRanOnce", err)
 			}
 		}},
 		// A batch whose commit failed may still have landed; the writer then

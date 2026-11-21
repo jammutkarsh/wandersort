@@ -47,6 +47,25 @@ type FailureReport struct {
 // Total is every file the report lists.
 func (r FailureReport) Total() int { return r.NotCopied + r.NotRead }
 
+// ByReason is every failed file grouped by reason across drives, reasons in
+// the order first met.
+func (r FailureReport) ByReason() []FailureGroup {
+	var out []FailureGroup
+	index := map[string]int{}
+	for _, d := range r.Drives {
+		for _, g := range d.Groups {
+			i, ok := index[g.Reason]
+			if !ok {
+				i = len(out)
+				index[g.Reason] = i
+				out = append(out, FailureGroup{Reason: g.Reason, Next: g.Next})
+			}
+			out[i].Files = append(out[i].Files, g.Files...)
+		}
+	}
+	return out
+}
+
 // Reason says in plain words why a file is not in the library and what to do.
 func Reason(stage, kind string) (reason, next string) {
 	switch {

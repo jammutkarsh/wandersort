@@ -8,15 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/jammutkarsh/wandersort/pkg/explain"
 	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
-
-// ErrNothingNew is ReviewNext's answer when the scan left no file to copy.
-var ErrNothingNew = errors.New("No new files to add.")
 
 // NothingNewMsg asks the shell to go back to the folder list with Text once a
 // scan has planned nothing to copy.
@@ -45,7 +44,7 @@ type ScanConfig struct {
 	Pipeline func() error
 	// Cancel cancels the pipeline context on ctrl+c.
 	Cancel context.CancelFunc
-	// ReviewNext builds the review screen once the plan is written; it is
+	// ReviewNext builds the review screen once the scan has returned; it is
 	// handed to the shell, and opened when the user picks it.
 	ReviewNext func() (Tab, error)
 	// Paths are the folders being added, for the heading.
@@ -60,7 +59,7 @@ type ScanModel struct {
 	cfg ScanConfig
 	err error // why the run failed
 
-	// review is prefetched once the vfs phase flushes; reviewErr is why it
+	// review is fetched once the scan returns; reviewErr is why it
 	// could not be built; wantReview is a pick of choice 1 waiting on it
 	review    Tab
 	reviewErr error
@@ -166,7 +165,7 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case m.state == scanCancelling && m.reviewErr != nil:
 			return m, Left(Leave{Quit: true})
-		case errors.Is(m.reviewErr, ErrNothingNew):
+		case errors.Is(m.reviewErr, vfs.ErrNothingNew):
 			return m, m.nothingNew()
 		case m.review == nil:
 			return m, nil
@@ -187,6 +186,11 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sl.FinishRemaining(false, "done")
 		m.state = scanFinished
+		// only now: until the scan has returned it still holds the library,
+		// and the session refuses a review beside it
+		if m.review == nil && m.reviewErr == nil && m.cfg.ReviewNext != nil {
+			return m, m.fetchReview()
+		}
 		return m, m.nothingNew()
 	}
 	return m, m.sl.Update(msg)
@@ -195,10 +199,10 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // nothingNew hands back to the folder list when the finished scan planned
 // nothing to copy; until the run has finished or the review answered, it waits.
 func (m ScanModel) nothingNew() tea.Cmd {
-	if m.state != scanFinished || !errors.Is(m.reviewErr, ErrNothingNew) {
+	if m.state != scanFinished || !errors.Is(m.reviewErr, vfs.ErrNothingNew) {
 		return nil
 	}
-	return func() tea.Msg { return NothingNewMsg{Text: ErrNothingNew.Error()} }
+	return func() tea.Msg { return NothingNewMsg{Text: vfs.ErrNothingNew.Error()} }
 }
 
 func openReview() tea.Msg { return OpenReviewMsg{} }
@@ -260,7 +264,7 @@ func (m ScanModel) choose() (tea.Model, tea.Cmd) {
 	switch m.choice {
 	case 0:
 		if m.review == nil && m.reviewErr == nil && m.cfg.ReviewNext != nil {
-			m.wantReview = true // opens as soon as the prefetch lands
+			m.wantReview = true // opens as soon as the review lands
 			return m, nil
 		}
 		return m, openReview
@@ -289,9 +293,6 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 		case "done":
 			elapsed, _ := e.Attrs[logger.ElapsedKey].(string)
 			m.sl.Done(p, strings.TrimSuffix(e.Message, " in "+elapsed), elapsed)
-			if p == "vfs" && m.cfg.ReviewNext != nil {
-				return m, m.fetchReview()
-			}
 		}
 		return m, nil
 	}

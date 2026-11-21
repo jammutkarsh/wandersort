@@ -305,3 +305,30 @@ func TestCheckLibraryNamesFoldersFriendly(t *testing.T) {
 		t.Errorf("error = %v, want the folders named relative to home with no absolute path", err)
 	}
 }
+
+// An app folder given to NewAt holds the app's own files, library history
+// included; nothing lands in the default one.
+func TestNewAtKeepsAppFilesThere(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	appDir := filepath.Join(t.TempDir(), "app")
+	cfg, err := NewAt(appDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib := filepath.Join(t.TempDir(), "lib")
+	if err := cfg.Remember(lib); err != nil {
+		t.Fatal(err)
+	}
+	again, err := NewAt(appDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.OutputDir() != lib || !strings.HasPrefix(again.LogDir, appDir) {
+		t.Errorf("NewAt(%q): library %q, logs %q; want the remembered library and logs under the app folder", appDir, again.OutputDir(), again.LogDir)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".wandersort")); !os.IsNotExist(err) {
+		t.Errorf("default app folder created: %v", err)
+	}
+}

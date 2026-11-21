@@ -3,6 +3,8 @@ package review
 import (
 	"context"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/library"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -18,15 +20,27 @@ import (
 // Options is everything the review needs. Resolver may be nil (no rename
 // completion). Draft holds the plan plus the edits so far.
 type Options struct {
-	DB       *db.DB
-	Draft    *vfs.Draft
-	Resolver *location.Resolver
-	Log      logger.Logger
+	DB     *db.DB
+	Review *library.Review
+	Log    logger.Logger
+	// Library is the library's folder, which keys its preview copies.
+	Library string
 }
 
 // Screen returns the review as a shell tab; it writes only the draft, which `wandersort copy` applies.
 func Screen(ctx context.Context, o Options) tui.Tab {
-	return newModel(o.Draft, ctx, o.DB, o.Resolver, o.Log)
+	m := newModel(o.Review, ctx, o.DB, o.Review.Resolver, o.Review.Labels, o.Review.Folders, o.Log)
+	m.outputDir = o.Library
+	return m
+}
+
+// editor is what the screen edits: a library.Review, or a bare vfs.Draft in tests.
+type editor interface {
+	Tree() []vfs.Node
+	Edits() []vfs.Edit
+	Apply(vfs.Edit) (vfs.Outcome, error)
+	Undo() (vfs.Edit, error)
+	Reset() error
 }
 
 // Busy is never true for the review: it reads a plan and writes a journal,
@@ -88,10 +102,11 @@ type Model struct {
 
 	previewErr error
 	db         *db.DB
+	outputDir  string // the library's folder, keying its preview copies
 	resolver   *location.Resolver
 	ask        *tui.Ask // [ctrl+r]'s full-screen question
 	// draft owns the base plan, the journal and the tree they make
-	draft *vfs.Draft
+	draft editor
 
 	// library is the folders already copied into, by path; rows outside it are new
 	library map[string]bool
@@ -127,7 +142,7 @@ type Model struct {
 	previewing bool
 }
 
-func newModel(draft *vfs.Draft, ctx context.Context, database *db.DB, resolver *location.Resolver, log logger.Logger) Model {
+func newModel(draft editor, ctx context.Context, database *db.DB, resolver *location.Resolver, labels []string, library map[string]bool, log logger.Logger) Model {
 	// same spinner the scan and install screens run
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -139,20 +154,11 @@ func newModel(draft *vfs.Draft, ctx context.Context, database *db.DB, resolver *
 		ctx:        ctx,
 		db:         database,
 		resolver:   resolver,
+		labels:     labels,
+		library:    library,
 		log:        log,
 	}
-	// read once: nothing is copied in while this screen is up
-	if database != nil {
-		library, err := vfs.LibraryFolders(ctx, database)
-		if err != nil {
-			log.Warn("could not read the library's folders; new ones aren't marked", "error", err)
-		}
-		m.library = library
-	}
 	m.rows = buildRows(draft.Tree(), m.library)
-	// user_labels only changes when execute applies a plan, never while this
-	// screen is up, so load it once instead of querying per keystroke.
-	m.labels = vfs.Labels(ctx, database, log)
 	return m
 }
 

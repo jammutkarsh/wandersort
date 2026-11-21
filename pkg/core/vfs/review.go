@@ -28,6 +28,9 @@ var ErrInvalidTree = errors.New("invalid review tree")
 // rescan replaced the proposal mid-review.
 var ErrNoProposal = errors.New("no proposal to review")
 
+// ErrNothingNew is a review asked for when nothing is left to copy.
+var ErrNothingNew = errors.New("No new files to add.")
+
 // Node is one folder in the proposed hierarchy. ID is its folder_nodes id.
 type Node struct {
 	// One exemplar GPS coordinate (location-depth node only), so the review UI

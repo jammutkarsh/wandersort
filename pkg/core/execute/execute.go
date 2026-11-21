@@ -118,7 +118,8 @@ func LeftBehind(ctx context.Context, database *db.DB) ([]string, error) {
 // Run is the whole transfer: make earlier failures pending again, refuse a plan
 // the output can't hold (*NotEnoughSpaceError, no file or plan changed), apply
 // the review draft, back up the database, then place every pending entry. A dry
-// run writes nothing. The caller holds the output lock.
+// run writes nothing. The caller holds the output lock: front ends call
+// library.Session.Copy, which runs it as the library's one job.
 func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir string, o Options) (Report, error) {
 	xfer := productionTransfer
 	if o.DryRun {

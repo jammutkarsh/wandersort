@@ -87,3 +87,16 @@ func TestFailures(t *testing.T) {
 		}
 	}
 }
+
+// Failures read by reason gather each reason's files across drives, reasons in
+// the order first met.
+func TestFailureReportByReason(t *testing.T) {
+	r := FailureReport{Drives: []DriveFailures{
+		{Drive: "a", Groups: []FailureGroup{{Reason: "full", Files: []FailedFile{{Source: "a/1"}}}, {Reason: "gone", Files: []FailedFile{{Source: "a/2"}}}}},
+		{Drive: "b", Groups: []FailureGroup{{Reason: "gone", Files: []FailedFile{{Source: "b/1"}}}}},
+	}}
+	got := r.ByReason()
+	if len(got) != 2 || got[0].Reason != "full" || got[1].Reason != "gone" || len(got[1].Files) != 2 || got[1].Files[1].Source != "b/1" {
+		t.Errorf("ByReason = %+v, want full then gone, gone holding both drives' files", got)
+	}
+}
