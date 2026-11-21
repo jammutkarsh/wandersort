@@ -476,6 +476,18 @@ func TestExtractor(t *testing.T) {
 				t.Errorf("%d error rows left after a successful read", errorRows)
 			}
 		}},
+		// A batch whose commit failed may still have landed; the writer then
+		// replays its ops, so storing a file's row twice must succeed.
+		{"StoreReplays", func(t *testing.T) {
+			d := dbtest.New(t)
+			dbtest.SeedFile(t, d, 1, t.TempDir(), "photo.jpg", 13)
+			e := mustNew(t, d, installtest.Exiftool(t), 1)
+			for range 2 {
+				if err := d.Writer.WriteSync(context.Background(), e.store(1, "hash", classifier.CommonMetadata{})); err != nil {
+					t.Fatalf("store: %v", err)
+				}
+			}
+		}},
 		// A panic on one file is recorded with its stack and the run finishes.
 		// A nil semaphore panics on the first Acquire, so every file panics.
 		{"RunSurvivesWorkerPanic", func(t *testing.T) {

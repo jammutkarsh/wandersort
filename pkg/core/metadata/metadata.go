@@ -520,7 +520,8 @@ func hashFile(filePath string) (string, int64, error) {
 }
 
 // store writes the hash and the EXIF columns as one row — which is what marks
-// the file read — and clears the READ failure the row's existence supersedes
+// the file read — and clears the READ failure the row's existence supersedes.
+// An upsert: a batch whose commit failed may have landed, and the writer replays it.
 func (e *Extractor) store(fileID int64, sum string, meta classifier.CommonMetadata) db.DBOperation {
 	isScreenshot := 0
 	if meta.IsScreenshot {
@@ -540,7 +541,21 @@ func (e *Extractor) store(fileID int64, sum string, meta classifier.CommonMetada
 				exif_make, exif_model,
 				exif_date_time_original, exif_create_date, exif_creation_date, exif_media_create_date,
 				is_screenshot
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (file_id) DO UPDATE SET
+				file_hash = excluded.file_hash,
+				exif_image_width = excluded.exif_image_width,
+				exif_image_height = excluded.exif_image_height,
+				exif_orientation = excluded.exif_orientation,
+				exif_gps_latitude = excluded.exif_gps_latitude,
+				exif_gps_longitude = excluded.exif_gps_longitude,
+				exif_make = excluded.exif_make,
+				exif_model = excluded.exif_model,
+				exif_date_time_original = excluded.exif_date_time_original,
+				exif_create_date = excluded.exif_create_date,
+				exif_creation_date = excluded.exif_creation_date,
+				exif_media_create_date = excluded.exif_media_create_date,
+				is_screenshot = excluded.is_screenshot`,
 			sum,
 			fileID,
 			db.IntOrNil(meta.ImageWidth),
