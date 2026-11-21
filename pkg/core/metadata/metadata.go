@@ -264,8 +264,8 @@ type pendingVolume struct {
 // pendingVolumes groups the unread files by volume and prices each.
 func (e *Extractor) pendingVolumes(ctx context.Context) ([]pendingVolume, error) {
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT COALESCE(f.volume_uuid, ''), MIN(f.file_dir) `+unreadFiles+`
-		GROUP BY COALESCE(f.volume_uuid, '')`)
+		SELECT f.volume_uuid, MIN(f.file_dir) `+unreadFiles+`
+		GROUP BY f.volume_uuid`)
 	if err != nil {
 		return nil, fmt.Errorf("group pending files by volume: %w", err)
 	}
@@ -318,9 +318,9 @@ func (e *Extractor) classOf(uuid, sampleDir string) volume.Class {
 // files in flight when a run stops are simply read again.
 func (e *Extractor) nextBatch(ctx context.Context, v pendingVolume, cursor int64, excluded string) ([]fileRecord, error) {
 	rows, err := e.db.QueryContext(ctx, `
-		SELECT f.id, f.file_dir, f.file_name, COALESCE(f.media_type, ''), COALESCE(f.volume_uuid, ''), f.file_size `+unreadFiles+`
-		  AND (? OR COALESCE(f.volume_uuid, '') = ?)
-		  AND COALESCE(f.volume_uuid, '') NOT IN (SELECT value FROM json_each(?))
+		SELECT f.id, f.file_dir, f.file_name, COALESCE(f.media_type, ''), f.volume_uuid, f.file_size `+unreadFiles+`
+		  AND (? OR f.volume_uuid = ?)
+		  AND f.volume_uuid NOT IN (SELECT value FROM json_each(?))
 		  AND f.id > ?
 		ORDER BY f.id
 		LIMIT ?`, v.all, v.uuid, excluded, cursor, readBatchSize)

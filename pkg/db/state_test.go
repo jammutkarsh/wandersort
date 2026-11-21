@@ -75,7 +75,7 @@ func TestForgetChanged(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := d.Writer.WriteSync(ctx, func(ctx context.Context, tx *sqlx.Tx) error {
-				return db.ForgetChanged(ctx, tx, "/src", "a.jpg", tt.size, tt.mod, tt.force)
+				return db.ForgetChanged(ctx, tx, "", "/src", "a.jpg", tt.size, tt.mod, tt.force)
 			}); err != nil {
 				t.Fatal(err)
 			}

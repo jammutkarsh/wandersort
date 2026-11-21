@@ -40,7 +40,7 @@ One file per command, plus `app.go` (the `app` struct embedding `*library.Sessio
 ## Pipeline (`pkg/core`)
 
 - `workflow`: `RunScan(ctx, paths, force)` runs scan → metadata → vfs synchronously; refuses roots overlapping the library.
-- `scanner`: walks roots into `file_registry`. Each scan has a counter stamp; rows under a clean root with an older stamp are swept (hard delete, dependants cascade). A changed file (size/mtime) is a new row.
+- `scanner`: walks roots into `file_registry`. Each scan has a counter stamp; rows under a clean root with an older stamp are swept (hard delete, dependants cascade). A file is its volume plus path (two cards mounted in turn at one path are different files); a changed file (size/mtime) is a new row.
 - `metadata`: the only pass that reads bytes: BLAKE3 hash then exiftool per file, one `file_metadata` row. Reads are throttled by storage class; volumes drain fastest first.
 - `vfs`: plans every unplaced master. `elect.go` picks one copy per hash each run; `plan.go`'s `Plan` derives facts, resolves locations, then `assignTargetPaths` (numbered steps, order is the rule). Plan is persisted as `folder_nodes` (folder tree with ids and `bounds`) + `virtual_fs_entries`. `route.go` sends new files into matching placed folders. `draft.go` is the review edit journal (`.wandersort.draft`); `edit.go` holds merge/drop/flatten.
 - `execute` (the `copy` command's engine): `Run` checks space, applies the draft, backs up the DB, transfers each pending row (`land.go`: hash-verified copy that never replaces an existing file), then forgets duplicates of placed files. Sequential and resumable.
