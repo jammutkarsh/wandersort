@@ -354,7 +354,10 @@ func readTree(roots []Node, folders map[int64]folderRow) (treeEdits, error) {
 			}
 			id := n.ID
 			k := folderKey{parent, name}
-			if twin, ok := seen[k]; ok {
+			// keyed like file names: "Trip" and "trip" are one folder on a
+			// case-insensitive volume, so they merge; the first spelling stays
+			seenKey := folderKey{parent, nameKey(name)}
+			if twin, ok := seen[seenKey]; ok {
 				// twin == id when a split mapped two tree nodes onto one folder
 				if twin != id {
 					e.mergedInto[id] = twin
@@ -363,7 +366,7 @@ func readTree(roots []Node, folders map[int64]folderRow) (treeEdits, error) {
 				// the same merge rule mergeNodes applies, since this is one
 				e.bounds[id] = e.bounds[id].Union(n.Bounds)
 			} else {
-				seen[k] = id
+				seen[seenKey] = id
 				e.placeOf[id] = k
 				e.bounds[id] = n.Bounds
 			}
