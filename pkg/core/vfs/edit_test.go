@@ -659,3 +659,36 @@ func TestMergeNodesNamesTheWholeSpan(t *testing.T) {
 		})
 	}
 }
+
+// Folders whose names differ only in letter case are one folder once copied,
+// so the review treats them as one too: a rename onto a sibling's name is
+// refused, and a merge folds such children together.
+func TestFoldersDifferingInCaseAreOne(t *testing.T) {
+	tree := func() []Node {
+		return []Node{{ID: pid("2024"), Name: "2024", Children: []Node{
+			{ID: pid("2024/June"), Name: "June", Children: []Node{
+				{ID: pid("2024/June/Goa"), Name: "Goa", Children: []Node{
+					{ID: pid("2024/June/Goa/Trip"), Name: "Trip", FileCount: 1},
+				}},
+				{ID: pid("2024/June/Beach"), Name: "Beach", Children: []Node{
+					{ID: pid("2024/June/Beach/trip"), Name: "trip", FileCount: 1},
+				}},
+			}},
+		}}}
+	}
+
+	if _, _, err := applyEdit(tree(), Edit{Op: OpRename, Node: pid("2024/June/Beach"), To: "goa"}); !errors.Is(err, ErrNameTaken) {
+		t.Errorf("rename onto a sibling's name in another case = %v, want ErrNameTaken", err)
+	}
+	if _, out, err := applyEdit(tree(), Edit{Op: OpRename, Node: pid("2024/June/Goa"), To: "GOA"}); err != nil || out.Name != "GOA" {
+		t.Errorf("recasing a folder's own name = %q, %v; want GOA", out.Name, err)
+	}
+
+	merged, id, _, _, err := mergeNodes(tree(), pids("2024/June/Goa", "2024/June/Beach"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := FindNode(merged, id); n == nil || len(n.Children) != 1 || n.Children[0].FileCount != 2 {
+		t.Errorf("merged folder = %+v, want one Trip holding both files", n)
+	}
+}

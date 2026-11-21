@@ -57,6 +57,10 @@ type Node struct {
 // files find them by name, so a renamed month would get a twin.
 var ErrFixedFolder = errors.New("year and month folders can't change")
 
+// ErrNameTaken refuses renaming a folder to a sibling's name (ignoring letter
+// case and Unicode form): the copy would make them one folder unasked.
+var ErrNameTaken = errors.New("a folder with that name is already here; merge them instead")
+
 // Fixed reports whether n is a year or month folder, which the review can't
 // rename, merge or drop.
 func (n Node) Fixed() bool {

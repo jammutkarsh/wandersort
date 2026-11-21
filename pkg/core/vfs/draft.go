@@ -301,7 +301,17 @@ func applyEdit(tree []Node, e Edit) ([]Node, Outcome, error) {
 		}
 		// cleaned here, not by the front end, so no name reaches the draft
 		// that the copy's tree check would refuse ("..", "/", a reserved name)
-		n.Name = wspath.ToLibrary(wspath.SanitizeSegment(e.To))
+		name := wspath.ToLibrary(wspath.SanitizeSegment(e.To))
+		siblings := tree
+		if parent := parentOf(tree, n.ID); parent != nil {
+			siblings = parent.Children
+		}
+		for _, sib := range siblings {
+			if sib.ID != n.ID && nameKey(sib.Name) == nameKey(name) {
+				return tree, Outcome{}, ErrNameTaken
+			}
+		}
+		n.Name = name
 		return tree, Outcome{Focus: n.ID, Name: n.Name}, nil
 	case OpMerge:
 		t, id, name, parent, err := mergeNodes(tree, e.Nodes)
