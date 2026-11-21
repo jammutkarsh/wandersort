@@ -2,11 +2,14 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
@@ -367,5 +370,46 @@ func TestNewAtKeepsAppFilesThere(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".wandersort")); !os.IsNotExist(err) {
 		t.Errorf("default app folder created: %v", err)
+	}
+}
+
+// Libraries remembered at once (two processes opening two libraries) are all
+// kept: the history is read and replaced under one lock.
+func TestRememberAtOnceLosesNoLibrary(t *testing.T) {
+	cfg, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const libraries = 20
+	var wg sync.WaitGroup
+	for i := range libraries {
+		wg.Go(func() {
+			if err := cfg.Remember(fmt.Sprintf("/libraries/%02d", i)); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if got := cfg.readHistory(historyFileName); len(got) != libraries {
+		t.Errorf("history holds %d libraries, want %d: %v", len(got), libraries, got)
+	}
+}
+
+// On macOS and Windows a missing library is refused however its letters are
+// cased: the disk would take that spelling for the same folder.
+func TestCheckRememberedIgnoresLetterCase(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("folder names are case-sensitive here")
+	}
+	cfg, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(t.TempDir(), "Photos")
+	if err := cfg.Remember(gone); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.CheckRemembered(filepath.Join(filepath.Dir(gone), "photos")); !errors.Is(err, ErrLibraryMissing) {
+		t.Errorf("CheckRemembered(other case) = %v, want ErrLibraryMissing", err)
 	}
 }

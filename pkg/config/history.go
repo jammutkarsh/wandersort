@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
@@ -38,7 +42,7 @@ func (cfg *Configuration) CheckRemembered(dir string) error {
 		}
 	}
 	for _, d := range cfg.readHistory(historyFileName) {
-		if d == dir {
+		if sameSpelling(d, dir) {
 			return fmt.Errorf("%s: %w", path.New().Friendly(dir), ErrLibraryMissing)
 		}
 	}
@@ -69,8 +73,32 @@ func (cfg *Configuration) present(name string) []string {
 	return out
 }
 
+// sameSpelling reports whether a and b name one folder on a system whose
+// disks usually ignore letter case and Unicode form (macOS, Windows). It
+// errs toward a match: a missing library typed another way is still refused.
+func sameSpelling(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		return false
+	}
+	return strings.EqualFold(norm.NFC.String(a), norm.NFC.String(b))
+}
+
 // readHistory is a history file's folders as stored, newest first, once each.
+// It waits for a history being replaced; with no lock to be had (an app
+// folder it can't write), it reads anyway: a history unread would let a
+// missing library start afresh.
 func (cfg *Configuration) readHistory(name string) []string {
+	if l, err := lock.AcquireHistory(cfg.appDir); err == nil {
+		defer l.Unlock()
+	}
+	return cfg.readHistoryHeld(name)
+}
+
+// readHistoryHeld is readHistory for a caller holding the history lock.
+func (cfg *Configuration) readHistoryHeld(name string) []string {
 	data, err := os.ReadFile(filepath.Join(cfg.appDir, name))
 	if err != nil {
 		return nil
@@ -91,19 +119,24 @@ func (cfg *Configuration) readHistory(name string) []string {
 	return out
 }
 
-// remember moves dir to the front of a history file, capped at maxHistory.
+// remember moves dir to the front of a history file, capped at maxHistory. It
+// holds the history lock from read to replace, so two processes remembering
+// at once never lose an entry, and on Windows no reader holds the file open
+// while it is renamed over.
 func (cfg *Configuration) remember(name, dir string) error {
+	l, err := lock.AcquireHistory(cfg.appDir) // creates the app folder
+	if err != nil {
+		return fmt.Errorf("lock the history: %w", err)
+	}
+	defer l.Unlock()
 	list := []string{dir}
-	for _, d := range cfg.readHistory(name) {
+	for _, d := range cfg.readHistoryHeld(name) {
 		if d != dir {
 			list = append(list, d)
 		}
 	}
 	if len(list) > maxHistory {
 		list = list[:maxHistory]
-	}
-	if err := os.MkdirAll(cfg.appDir, 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", cfg.appDir, err)
 	}
 	path := filepath.Join(cfg.appDir, name)
 	// replaced whole: an emptied history would let a missing library start afresh
