@@ -25,9 +25,10 @@ var ErrNoLocation = errors.New("locationResolver: location not found")
 // Exported: vfs.resolveLocations reuses it for the anchor-fold radius.
 const MaxDistSquared = 0.2025
 
-// gpsRoundingFactor rounds coordinates to 2 decimals (≈ 1.1 km) for Lookup's
-// cache key only; the query uses the real coordinates.
-const gpsRoundingFactor = 100
+// gpsRoundingFactor rounds coordinates to 4 decimals (≈ 11 m): Lookup names
+// the rounded point, so a name depends only on its grid square, never on which
+// photo in the square asked first. Fine enough to name the real point.
+const gpsRoundingFactor = 10_000
 
 // Bounding-box half-widths queryNearest tries in order: tight first, then wide.
 const (
@@ -70,7 +71,7 @@ func (r *Resolver) WithAnchors(anchors []Anchor) *Resolver {
 // Lookup returns the name of the nearest populated place for the given
 // decimal-degree coordinates
 func (r *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error) {
-	// round so photos taken around one place share a cache key despite GPS jitter
+	// round so photos taken around one spot share a lookup despite GPS jitter
 	key := cacheKey{
 		lat: math.Round(lat*gpsRoundingFactor) / gpsRoundingFactor,
 		lon: math.Round(lon*gpsRoundingFactor) / gpsRoundingFactor,
@@ -83,8 +84,7 @@ func (r *Resolver) Lookup(ctx context.Context, lat, lon float64) (string, error)
 		return "", ErrNoLocation
 	}
 
-	// query the real coordinates; the grid only shares cache entries
-	city, err := r.queryNearest(ctx, lat, lon)
+	city, err := r.queryNearest(ctx, key.lat, key.lon)
 	switch {
 	// cache "nothing near" too, but only for ErrNoLocation: a cancelled or
 	// failed query must stay retryable
