@@ -3,7 +3,6 @@ package config
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -165,16 +164,18 @@ func TestRememberNeverRewritesTheHistoryInPlace(t *testing.T) {
 	if err := cfg.Remember(first); err != nil {
 		t.Fatal(err)
 	}
-	old, err := os.Open(filepath.Join(cfg.appDir, historyFileName))
-	if err != nil {
+	// a second name for the old file: a rewrite in place shows through it, a
+	// replacement does not (an open handle would do, but Windows refuses to
+	// rename over an open file)
+	old := filepath.Join(home, "old-history")
+	if err := os.Link(filepath.Join(cfg.appDir, historyFileName), old); err != nil {
 		t.Fatal(err)
 	}
-	defer old.Close()
 
 	if err := cfg.Remember(second); err != nil {
 		t.Fatal(err)
 	}
-	got, err := io.ReadAll(old)
+	got, err := os.ReadFile(old)
 	if err != nil {
 		t.Fatal(err)
 	}
