@@ -22,6 +22,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"golang.org/x/sync/semaphore"
 
+	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/exiftool"
@@ -421,10 +422,11 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 			if ctx.Err() != nil {
 				return false
 			}
-			// exiftool died, hung or could not open the file: tags unknown,
-			// not empty. An empty row would plan the file by its file date for
-			// good, so record a READ error and retry next run.
-			if errors.Is(err, exiftool.ErrProcess) || errors.Is(err, exiftool.ErrUnreadable) {
+			// exiftool died, hung, could not open the file or cannot be given
+			// its path: tags unknown, not empty. An empty row would plan the
+			// file by its file date for good, so record a READ error and retry
+			// next run.
+			if errors.Is(err, exiftool.ErrProcess) || errors.Is(err, exiftool.ErrUnreadable) || errors.Is(err, exiftool.ErrUnsafePath) {
 				e.log.Error("exiftool failed on file", "fileId", file.id, "path", file.absPath, "error", err)
 				e.db.Writer.Write(storeFailure(file.id, opExiftool, db.WithStack(err)))
 				return true
@@ -500,6 +502,17 @@ func HashFile(filePath string) (string, error) {
 	return sum, err
 }
 
+// HashFileContext is HashFile that stops between reads once ctx ends.
+func HashFileContext(ctx context.Context, filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+	sum, _, err := hashReader(atomicfile.ContextReader{Ctx: ctx, R: file})
+	return sum, err
+}
+
 // hashFile is HashFile and the bytes it hashed.
 func hashFile(filePath string) (string, int64, error) {
 	file, err := os.Open(filePath)
@@ -507,12 +520,16 @@ func hashFile(filePath string) (string, int64, error) {
 		return "", 0, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
+	return hashReader(readerOnly{file})
+}
 
+// hashReader hashes r through a pooled buffer; r must not implement WriterTo.
+func hashReader(r io.Reader) (string, int64, error) {
 	hasher := NewHasher()
 
 	buf := hashBuffers.Get().(*[]byte)
 	defer hashBuffers.Put(buf)
-	n, err := io.CopyBuffer(hasher, readerOnly{file}, *buf)
+	n, err := io.CopyBuffer(hasher, r, *buf)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to hash file: %w", err)
 	}

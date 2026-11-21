@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
@@ -105,7 +106,8 @@ func (cfg *Configuration) remember(name, dir string) error {
 		return fmt.Errorf("create %s: %w", cfg.appDir, err)
 	}
 	path := filepath.Join(cfg.appDir, name)
-	if err := os.WriteFile(path, []byte(strings.Join(list, "\n")+"\n"), 0o644); err != nil {
+	// replaced whole: an emptied history would let a missing library start afresh
+	if err := atomicfile.WriteFile(path, []byte(strings.Join(list, "\n")+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

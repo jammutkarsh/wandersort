@@ -3,8 +3,11 @@ package install
 import (
 	"archive/tar"
 	"context"
+	"crypto/rand"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -96,7 +99,7 @@ func TestFindExiftoolNotFound(t *testing.T) {
 }
 
 // buildTarZst writes a tar.zst at dest containing files (name -> content),
-// mirroring the flat layout publish-r2.yml produces.
+// in name order, mirroring the flat layout publish-r2.yml produces.
 func buildTarZst(t *testing.T, dest string, files map[string]string) {
 	t.Helper()
 	f, err := os.Create(dest)
@@ -110,7 +113,8 @@ func buildTarZst(t *testing.T, dest string, files map[string]string) {
 		t.Fatal(err)
 	}
 	tw := tar.NewWriter(zw)
-	for name, content := range files {
+	for _, name := range slices.Sorted(maps.Keys(files)) {
+		content := files[name]
 		hdr := &tar.Header{Name: name, Mode: 0o755, Size: int64(len(content))}
 		if err := tw.WriteHeader(hdr); err != nil {
 			t.Fatal(err)
@@ -164,4 +168,55 @@ func TestExtractTarZstMissingFile(t *testing.T) {
 	if err := extractTarZst(filepath.Join(t.TempDir(), "missing.tar.zst"), t.TempDir()); err == nil {
 		t.Error("extractTarZst() on a missing archive = nil error, want one")
 	}
+}
+
+// An archive cut short (a crash or a bad download) must leave the previous
+// install whole, not the new launcher beside half its library.
+func TestInstallArchiveKeepsTheOldInstallOnAFailedExtract(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const oldLauncher = "old launcher"
+	if err := os.WriteFile(filepath.Join(binDir, "exiftool"), []byte(oldLauncher), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := filepath.Join(dir, "exiftool.tar.zst")
+	buildTarZst(t, archive, map[string]string{
+		"exiftool":      "new launcher",
+		"lib/large.bin": string(randomBytes(t, 1<<20)),
+	})
+	info, err := os.Stat(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(archive, info.Size()/2); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installArchive(archive, binDir); err == nil {
+		t.Fatal("installArchive of a cut-short archive = nil error, want one")
+	}
+	if got, err := os.ReadFile(filepath.Join(binDir, "exiftool")); err != nil || string(got) != oldLauncher {
+		t.Errorf("launcher = %q, %v; want the old install untouched", got, err)
+	}
+
+	buildTarZst(t, archive, map[string]string{"exiftool": "new launcher", "lib/data.txt": "data"})
+	if err := installArchive(archive, binDir); err != nil {
+		t.Fatalf("installArchive: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(binDir, "lib", "data.txt")); err != nil || string(got) != "data" {
+		t.Errorf("lib/data.txt = %q, %v; want the new install in place", got, err)
+	}
+}
+
+func randomBytes(t *testing.T, n int) []byte {
+	t.Helper()
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

@@ -112,7 +112,7 @@ func placeFree(ctx context.Context, src, dst, want string, commit commitFn) (str
 		if _, statErr := os.Lstat(target); statErr == nil {
 			err = fs.ErrExist
 		} else {
-			err = place(src, target, want, func() error { return commit(target) })
+			err = place(ctx, src, target, want, func() error { return commit(target) })
 		}
 		if !errors.Is(err, fs.ErrExist) {
 			return target, err
@@ -145,15 +145,15 @@ func withSuffix(p string, n int) string {
 // the library both hash to want, and is removed again if it
 // was surely not recorded. A commit of unknown outcome keeps it: the record may
 // be on disk, and if not, the next run finds the copy at this name and records it.
-func place(src, dst, want string, commit func() error) error {
+func place(ctx context.Context, src, dst, want string, commit func() error) error {
 	h := metadata.NewHasher()
-	if _, err := atomicfile.Copy(src, dst, h, func(tmp string) error {
+	if _, err := atomicfile.CopyContext(ctx, src, dst, h, func(tmp string) error {
 		if got := metadata.HashString(h); got != want {
 			return fmt.Errorf("source changed since it was scanned: copied %s, scanned %q: %w", got, want, db.ErrChecksumMismatch)
 		}
 		// the hash above saw the bytes read from the source; read back what
 		// the library's drive holds, so a bad write never lands
-		if got, err := metadata.HashFile(tmp); err != nil {
+		if got, err := metadata.HashFileContext(ctx, tmp); err != nil {
 			return fmt.Errorf("read back the copy: %w", err)
 		} else if got != want {
 			return fmt.Errorf("the copy reads back as %s, not the source's %s: %w", got, want, db.ErrChecksumMismatch)

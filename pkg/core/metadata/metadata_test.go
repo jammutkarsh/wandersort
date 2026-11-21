@@ -559,6 +559,25 @@ func TestExtractor(t *testing.T) {
 				t.Errorf("op = %q, want %q", op, opExiftool)
 			}
 		}},
+		// a path exiftool cannot be handed leaves its tags unknown, not empty
+		{"RunRecordsAPathExiftoolCannotTake", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+			root := t.TempDir()
+			name := "line\nbreak.jpg"
+			if err := os.WriteFile(filepath.Join(root, name), []byte("jpg"), 0o644); err != nil {
+				t.Skipf("file system refuses a line break in a name: %v", err)
+			}
+			dbtest.SeedFile(t, d, 1, root, name, 3)
+
+			if _, err := mustNew(t, d, installtest.Exiftool(t), 1).Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			d.Writer.Flush()
+			if got := state(t, d, 1); got != stateFailed {
+				t.Errorf("state = %s, want %s", got, stateFailed)
+			}
+		}},
 		// More files than one page holds: every one is read exactly once, and
 		// the closing unscoped pass does not hand the last ones out again
 		{"RunPagesPastOneBatch", func(t *testing.T) {
