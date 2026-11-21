@@ -2,6 +2,7 @@ package review
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/explain"
@@ -82,11 +83,11 @@ func (m *Model) mergeSelection() {
 func (m *Model) applyRename(name string) {
 	row := m.rows[m.cursor]
 	id, old := row.node.ID, row.node.Name
-	if name == "" || name == old {
+	if strings.TrimSpace(name) == "" || name == old {
 		return
 	}
-	if _, ok := m.applyEdit(vfs.Edit{Op: vfs.OpRename, Node: id, From: old, To: name}, func(vfs.Outcome) string {
-		return fmt.Sprintf("Renamed %s to %s", old, name)
+	if _, ok := m.applyEdit(vfs.Edit{Op: vfs.OpRename, Node: id, From: old, To: name}, func(o vfs.Outcome) string {
+		return fmt.Sprintf("Renamed %s to %s", old, o.Name)
 	}); ok {
 		m.focusNode(id) // the re-sort may have moved it
 	}

@@ -557,7 +557,7 @@ func TestReview(t *testing.T) {
 			m := testModel(t, siblingTree(), nil)
 			// rows: 0=2024, 1=June, 2=03, 3=09. Rename the year, then merge the leaves.
 			m.cursor = 0
-			m.applyRename("Two Thousand Twenty Four")
+			m.applyRename("Two-Thousand-Twenty-Four")
 
 			m.visualMode, m.visualAnchor, m.cursor = true, 2, 3
 			m.mergeSelection()
@@ -565,7 +565,7 @@ func TestReview(t *testing.T) {
 			if m.statusIsErr {
 				t.Fatalf("merge failed: %q", m.statusMsg)
 			}
-			if got := m.rows[0].node.Name; got != "Two Thousand Twenty Four" {
+			if got := m.rows[0].node.Name; got != "Two-Thousand-Twenty-Four" {
 				t.Errorf("after merge, year name = %q, want the rename to survive", got)
 			}
 		}},
@@ -574,14 +574,14 @@ func TestReview(t *testing.T) {
 		{"UndoKeepsEarlierRenames", func(t *testing.T) {
 			m := testModel(t, siblingTree(), nil)
 			m.cursor = 0
-			m.applyRename("Renamed Year")
+			m.applyRename("Renamed-Year")
 			m.visualMode, m.visualAnchor, m.cursor = true, 2, 3
 			m.mergeSelection()
 
 			next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 			rm := next.(Model)
-			if got := rm.rows[0].node.Name; got != "Renamed Year" {
-				t.Errorf("after undo, year name = %q, want %q", got, "Renamed Year")
+			if got := rm.rows[0].node.Name; got != "Renamed-Year" {
+				t.Errorf("after undo, year name = %q, want %q", got, "Renamed-Year")
 			}
 			if nodeByID(rm.rows, pid("2024/June/09")) == nil {
 				t.Error("undo should have restored the folded-away leaf")
@@ -811,14 +811,14 @@ func TestReview(t *testing.T) {
 		{"MergeKeepsAnExplicitRename", func(t *testing.T) {
 			m := testModel(t, siblingTree(), nil)
 			m.cursor = 2
-			m.applyRename("Goa Trip") // the cursor follows the node through the re-sort
+			m.applyRename("Goa-Trip") // the cursor follows the node through the re-sort
 			m.visualAnchor, m.visualMode = m.cursor, true
 			m.cursor = 2 // the other day
 
 			m.mergeSelection()
 
 			row := nodeByID(m.rows, pid("2024/June/03"))
-			if row == nil || row.node.Name != "Goa Trip" {
+			if row == nil || row.node.Name != "Goa-Trip" {
 				t.Fatalf("want the typed rename carried onto the merged folder, got %+v", row)
 			}
 		}},
@@ -1505,13 +1505,13 @@ func TestDraft(t *testing.T) {
 		dir := t.TempDir()
 		m, _ := newDBModel(t, dir)
 		m.focusNode(dayRow(m).node.ID)
-		m.applyRename("Goa Trip")
-		if edits := journal(t, dir); len(edits) != 1 || edits[0].Op != vfs.OpRename || edits[0].To != "Goa Trip" {
+		m.applyRename("Goa-Trip")
+		if edits := journal(t, dir); len(edits) != 1 || edits[0].Op != vfs.OpRename || edits[0].To != "Goa-Trip" {
 			t.Fatalf("draft = %+v, want one rename to Goa Trip", edits)
 		}
 		// a kill here is the same as a clean exit: the file is all there is
 		again, _ := newDBModel(t, dir)
-		if got := dayRow(again).node.Name; got != "Goa Trip" {
+		if got := dayRow(again).node.Name; got != "Goa-Trip" {
 			t.Errorf("reopened day = %q, want the rename replayed", got)
 		}
 	})

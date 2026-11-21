@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 // DraftFileName is the review's edit journal next to the database: one JSON
@@ -252,11 +254,13 @@ func applyEdit(tree []Node, e Edit) ([]Node, Outcome, error) {
 			return tree, Outcome{}, fmt.Errorf("internal error locating folder %d", e.Node)
 		case n.Fixed():
 			return tree, Outcome{}, ErrFixedFolder
-		case e.To == "":
+		case strings.TrimSpace(e.To) == "":
 			return tree, Outcome{}, fmt.Errorf("a folder needs a name")
 		}
-		n.Name = e.To
-		return tree, Outcome{Focus: n.ID, Name: e.To}, nil
+		// cleaned here, not by the front end, so no name reaches the draft
+		// that the copy's tree check would refuse ("..", "/", a reserved name)
+		n.Name = wspath.ToLibrary(wspath.SanitizeSegment(e.To))
+		return tree, Outcome{Focus: n.ID, Name: n.Name}, nil
 	case OpMerge:
 		t, id, name, parent, err := mergeNodes(tree, e.Nodes)
 		return t, Outcome{Focus: id, Name: name, Parent: parent}, err

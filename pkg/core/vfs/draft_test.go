@@ -249,6 +249,37 @@ func draftTree() []Node {
 // lands in the tree and the journal together, a reopen replays it to the same
 // tree, a refusal changes neither, and Undo/Reset go back without touching
 // the plan the draft was opened on.
+// A name the copy's tree check would refuse is cleaned when the edit is made,
+// whichever front end made it, so the draft never blocks a copy.
+func TestRenameCleansNameBeforeTheDraft(t *testing.T) {
+	for _, name := range []string{"..", ".", "a/b", "CON"} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
+			cfg := DefaultConfig()
+			cfg.Rules = []string{RuleLocation}
+			h.build(t, cfg, installtest.Resolver(t))
+			ctx := context.Background()
+			dir := t.TempDir()
+			tree, err := BuildTree(ctx, h.d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d, err := OpenDraft(dir, tree)
+			if err != nil {
+				t.Fatal(err)
+			}
+			leaf := leafNodes(tree)[0]
+			if _, err := d.Apply(Edit{Op: OpRename, Node: leaf.ID, From: leaf.Name, To: name}); err != nil {
+				t.Fatal(err)
+			}
+			if err := ApplyDraft(ctx, h.d, dir); err != nil {
+				t.Errorf("ApplyDraft after renaming to %q: %v", name, err)
+			}
+		})
+	}
+}
+
 func TestDraftSession(t *testing.T) {
 	open := func(t *testing.T, dir string, base []Node) *Draft {
 		t.Helper()
@@ -263,7 +294,7 @@ func TestDraftSession(t *testing.T) {
 		dir := t.TempDir()
 		d := open(t, dir, draftTree())
 		out, err := d.Apply(Edit{Op: OpRename, Node: 3, From: "03", To: "Goa Trip"})
-		if err != nil || out.Focus != 3 || out.Name != "Goa Trip" {
+		if err != nil || out.Focus != 3 || out.Name != "Goa-Trip" {
 			t.Fatalf("rename = %+v, %v", out, err)
 		}
 		out, err = d.Apply(Edit{Op: OpMerge, Nodes: []int64{4, 3}})
