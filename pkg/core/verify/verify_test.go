@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
@@ -32,6 +33,16 @@ func seedPlaced(t *testing.T, d *db.DB, out string, id int64, rel, content strin
 	return abs
 }
 
+// libraryDir is a library folder holding its database file.
+func libraryDir(t *testing.T) string {
+	t.Helper()
+	out := t.TempDir()
+	if err := os.WriteFile(config.DBPath(out), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 func hashOf(content string) string {
 	h := metadata.NewHasher()
 	h.Write([]byte(content))
@@ -48,7 +59,7 @@ func run(t *testing.T, d *db.DB, out string, full bool) Report {
 }
 
 func TestVerifyPassesOnAnIntactLibrary(t *testing.T) {
-	d, out := dbtest.New(t), t.TempDir()
+	d, out := dbtest.New(t), libraryDir(t)
 	seedPlaced(t, d, out, 1, "2024/A.jpg", "hello")
 	seedPlaced(t, d, out, 2, "2024/B.jpg", "world!")
 
@@ -69,7 +80,7 @@ func TestVerifyPassesOnAnIntactLibrary(t *testing.T) {
 // kept as a problem: its rows are deleted, after a backup, so the next check
 // does not list it again and a copy at a source can be planned in again.
 func TestVerifyForgetsAMissingFileWithoutReadingAnything(t *testing.T) {
-	d, out := dbtest.New(t), t.TempDir()
+	d, out := dbtest.New(t), libraryDir(t)
 	abs := seedPlaced(t, d, out, 1, "2024/A.jpg", "hello")
 	seedPlaced(t, d, out, 2, "2024/B.jpg", "world")
 	dbtest.SeedEntry(t, d, 1, "2024/A.jpg", "2024/A.jpg")
@@ -101,10 +112,34 @@ func TestVerifyForgetsAMissingFileWithoutReadingAnything(t *testing.T) {
 	}
 }
 
+// A library unplugged mid-check makes every file look gone; none is forgotten.
+func TestVerifyForgetsNothingWhenTheLibraryIsGone(t *testing.T) {
+	d, out := dbtest.New(t), libraryDir(t)
+	seedPlaced(t, d, out, 1, "2024/A.jpg", "hello")
+	if err := os.RemoveAll(out); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{})
+	if err == nil {
+		t.Fatal("check passed with the library folder gone")
+	}
+	if len(rep.Forgotten) != 0 {
+		t.Errorf("forgotten = %v, want none", rep.Forgotten)
+	}
+	var n int
+	if err := d.SQL.Get(&n, `SELECT COUNT(*) FROM file_registry`); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("file_registry holds %d rows, want 1", n)
+	}
+}
+
 // Same size, different bytes: the one failure only a full pass can see, and
 // the whole reason the hash is stored.
 func TestVerifyFullFindsChangedContents(t *testing.T) {
-	d, out := dbtest.New(t), t.TempDir()
+	d, out := dbtest.New(t), libraryDir(t)
 	abs := seedPlaced(t, d, out, 1, "2024/A.jpg", "hello")
 	if err := os.WriteFile(abs, []byte("HELLO"), 0o644); err != nil {
 		t.Fatal(err)
@@ -122,7 +157,7 @@ func TestVerifyFullFindsChangedContents(t *testing.T) {
 // A file that is there but wrong is damage, not a deletion: it is reported
 // and its records are kept.
 func TestVerifyFindsATruncatedFile(t *testing.T) {
-	d, out := dbtest.New(t), t.TempDir()
+	d, out := dbtest.New(t), libraryDir(t)
 	abs := seedPlaced(t, d, out, 1, "2024/A.jpg", "hello")
 	if err := os.WriteFile(abs, []byte("he"), 0o644); err != nil {
 		t.Fatal(err)
@@ -141,7 +176,7 @@ func TestVerifyFindsATruncatedFile(t *testing.T) {
 // The errors table holds only live problems: a file that fails and is then put
 // right stops being reported.
 func TestVerifyClearsAProblemOnceItIsFixed(t *testing.T) {
-	d, out := dbtest.New(t), t.TempDir()
+	d, out := dbtest.New(t), libraryDir(t)
 	abs := seedPlaced(t, d, out, 1, "2024/A.jpg", "hello")
 	if err := os.WriteFile(abs, []byte("HELLO"), 0o644); err != nil {
 		t.Fatal(err)
@@ -166,7 +201,7 @@ func TestVerifyClearsAProblemOnceItIsFixed(t *testing.T) {
 // A crash mid-copy leaves a full-size temp file in the user's own folders and
 // nothing else in WanderSort ever collects it.
 func TestVerifyReportsLeftoverTempFiles(t *testing.T) {
-	d, out := dbtest.New(t), t.TempDir()
+	d, out := dbtest.New(t), libraryDir(t)
 	seedPlaced(t, d, out, 1, "2024/A.jpg", "hello")
 	if err := os.WriteFile(filepath.Join(out, "2024", ".copy-123456"), []byte("half"), 0o644); err != nil {
 		t.Fatal(err)
@@ -190,7 +225,7 @@ func TestVerifyReportsLeftoverTempFiles(t *testing.T) {
 
 // A source named like a temp copy lands under a name check does not take for one.
 func TestVerifyPassesAFileNamedLikeATempCopy(t *testing.T) {
-	d, out := dbtest.New(t), t.TempDir()
+	d, out := dbtest.New(t), libraryDir(t)
 	seedPlaced(t, d, out, 1, filepath.Join("2024", path.SanitizeFileName(atomicfile.CopyPrefix+"a1b2.jpg")), "hello")
 
 	if rep := run(t, d, out, false); !rep.Sound() {
@@ -201,7 +236,7 @@ func TestVerifyPassesAFileNamedLikeATempCopy(t *testing.T) {
 // An unplaced file still lives at its source, where the user may have changed
 // it since — the plan is a proposal about it, not a record of it.
 func TestVerifyIgnoresUnplacedFiles(t *testing.T) {
-	d, out := dbtest.New(t), t.TempDir()
+	d, out := dbtest.New(t), libraryDir(t)
 	dbtest.SeedFile(t, d, 1, "/somewhere/else", "A.jpg", 5)
 	dbtest.SeedHash(t, d, 1, hashOf("hello"))
 

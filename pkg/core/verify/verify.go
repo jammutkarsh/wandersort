@@ -16,6 +16,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -135,6 +136,14 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		return rep, fmt.Errorf("record verify results: %w", err)
 	}
 
+	// a library folder gone mid-check (drive unplugged) makes every file look
+	// gone; only a library still in place may have its records forgotten
+	if len(gone) > 0 {
+		if _, err := os.Stat(config.DBPath(outputDir)); err != nil {
+			rep.Forgotten = nil
+			return rep, fmt.Errorf("library folder is gone, nothing forgotten: %w", err)
+		}
+	}
 	if err := database.Forget(ctx, gone); err != nil {
 		return rep, err
 	}
