@@ -71,12 +71,3 @@ edits made against it are gone.
 
 **Accepted because:** a re-plan means the user changed settings or added
 files, and the plan is meant to be reviewed again afterwards.
-
-## Scanning the library itself is only refused when the path matches exactly
-
-The "don't add the library as a source" check compares paths byte for byte,
-so on a case-insensitive filesystem a differently-cased path to the library
-gets through.
-
-**Accepted because:** re-scanning a library is not a supported workflow yet;
-the check is revisited when it is.
