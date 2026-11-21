@@ -49,9 +49,11 @@ type RetryFunc func(ctx context.Context, next int, err error) error
 type Options struct {
 	Log logger.Logger
 
-	OnProgress     func(Progress)
-	BeforeRetry    RetryFunc
-	ExecutablePath string // directory exiftool installs into
+	OnProgress  func(Progress)
+	BeforeRetry RetryFunc
+	// ExecutablePath is the folder exiftool installs into. It is the installer's:
+	// an upgrade replaces it whole, and refuses while it holds anything else.
+	ExecutablePath string
 	LocationDBPath string // path to the location database file
 }
 

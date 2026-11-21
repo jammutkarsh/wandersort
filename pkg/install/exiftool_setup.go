@@ -207,6 +207,9 @@ func installArchive(archive, binDir string) error {
 	if err := extractTarZst(archive, extracted); err != nil {
 		return fmt.Errorf("extract: %w", err)
 	}
+	if err := onlyInstalled(binDir, extracted); err != nil {
+		return err
+	}
 	// a crash between the two renames leaves no binDir: the next run installs again
 	retired := binDir + retiredSuffix
 	if err := os.RemoveAll(retired); err != nil {
@@ -222,6 +225,36 @@ func installArchive(archive, binDir string) error {
 		return fmt.Errorf("sync %s: %w", filepath.Dir(binDir), err)
 	}
 	return os.RemoveAll(retired)
+}
+
+// ErrFolderNotOurs refuses to replace an install folder holding anything an
+// exiftool install doesn't: the swap would delete it.
+var ErrFolderNotOurs = errors.New("the exiftool folder holds other files; not replacing it")
+
+// onlyInstalled reports ErrFolderNotOurs if binDir holds a name the new
+// install doesn't: binDir is replaced whole, so only an earlier install may be in it.
+func onlyInstalled(binDir, extracted string) error {
+	old, err := os.ReadDir(binDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read %s: %w", binDir, err)
+	}
+	fresh, err := os.ReadDir(extracted)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", extracted, err)
+	}
+	ours := make(map[string]bool, len(fresh))
+	for _, e := range fresh {
+		ours[e.Name()] = true
+	}
+	for _, e := range old {
+		if !ours[e.Name()] {
+			return fmt.Errorf("%w: %s", ErrFolderNotOurs, filepath.Join(binDir, e.Name()))
+		}
+	}
+	return nil
 }
 
 // extractTarZst extracts a CI-normalized tar.zst (flat layout, launcher

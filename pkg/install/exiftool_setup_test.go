@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"crypto/rand"
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -219,4 +220,28 @@ func randomBytes(t *testing.T, n int) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// The install folder is replaced whole, so an upgrade refuses while it holds
+// a file no exiftool install put there.
+func TestInstallArchiveKeepsAFolderHoldingOtherFiles(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"exiftool": "old launcher", "other-tool": "not exiftool's"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archive := filepath.Join(dir, "exiftool.tar.zst")
+	buildTarZst(t, archive, map[string]string{"exiftool": "new launcher", "lib/data.txt": "data"})
+
+	if err := installArchive(archive, binDir); !errors.Is(err, ErrFolderNotOurs) {
+		t.Fatalf("installArchive = %v, want ErrFolderNotOurs", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(binDir, "other-tool")); err != nil || string(got) != "not exiftool's" {
+		t.Errorf("other-tool = %q, %v; want it untouched", got, err)
+	}
 }
