@@ -379,7 +379,7 @@ func (s *Session) Restore(ctx context.Context) error {
 	}
 	defer l.Unlock()
 	defer s.Work.plan.Add(1) // the plan is the backup's now
-	return Restore(ctx, dbPath, s.log)
+	return restore(ctx, dbPath, s.log)
 }
 
 // RememberSources records the folders a scan walked; the first given ends up newest.

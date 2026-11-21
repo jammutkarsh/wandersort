@@ -43,11 +43,11 @@ func Reset(ctx context.Context, database *db.DB, outputDir string, log logger.Lo
 	return nil
 }
 
-// Discard forgets every file not yet in the library (what scanning learned,
+// discard forgets every file not yet in the library (what scanning learned,
 // the plan, the review draft) and returns how many. Placed files, their
 // folders and the settings stay. No backup: scanning the folders again
 // rebuilds all of it.
-func Discard(ctx context.Context, database *db.DB, outputDir string) (int, error) {
+func discard(ctx context.Context, database *db.DB, outputDir string) (int, error) {
 	var ids []int64
 	if err := database.SQL.SelectContext(ctx, &ids, `SELECT id FROM file_registry WHERE placed = 0`); err != nil {
 		return 0, fmt.Errorf("find files not yet copied: %w", err)
@@ -64,11 +64,11 @@ func Discard(ctx context.Context, database *db.DB, outputDir string) (int, error
 	return len(ids), nil
 }
 
-// Restore puts the backup beside the library database at live back over it,
+// restore puts the backup beside the library database at live back over it,
 // checks the result opens as a library, and drops the review draft: its edits
 // were made against a newer plan. The caller holds the output lock and has no
 // connection open (db.ErrInUse otherwise); Session.Restore is that caller.
-func Restore(ctx context.Context, live string, log logger.Logger) error {
+func restore(ctx context.Context, live string, log logger.Logger) error {
 	outputDir := filepath.Dir(live)
 	if err := db.Restore(ctx, filepath.Join(outputDir, db.BackupFileName), live); err != nil {
 		return err

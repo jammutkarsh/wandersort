@@ -119,5 +119,5 @@ func (s *Session) Discard(ctx context.Context) (int, error) {
 		return 0, ErrNotOpen
 	}
 	defer s.Work.plan.Add(1)
-	return Discard(ctx, d, outputDir)
+	return discard(ctx, d, outputDir)
 }

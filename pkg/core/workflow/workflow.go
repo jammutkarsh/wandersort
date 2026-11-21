@@ -102,7 +102,8 @@ type Result struct {
 	Planned int // files the plan proposes a place for
 }
 
-// RunScan runs the pipeline over paths (nested roots pruned); a stop wraps context.Canceled.
+// RunScan runs the pipeline over paths (nested roots pruned); a stop wraps
+// context.Canceled. Front ends call library.Session.Scan, which runs it as the library's one job.
 func (wf *Workflow) RunScan(ctx context.Context, paths []string, force bool) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
