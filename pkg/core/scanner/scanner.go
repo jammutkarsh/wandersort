@@ -274,6 +274,12 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 			s.log.Warn("Skipping a link; add the folder it points to instead", "walkingPath", s.path.RelativeToHome(p))
 			return nil
 		}
+		// a pipe, socket or device never ends when read, so hashing one would hang
+		if !d.Type().IsRegular() {
+			unsupported++
+			s.log.Debug("Not a regular file", "walkingPath", s.path.RelativeToHome(p))
+			return nil
+		}
 
 		// Classify file and apply ignore rules in one pass
 		mediaType := s.classifier.ClassifyName(d.Name())

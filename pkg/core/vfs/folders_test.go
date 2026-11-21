@@ -168,27 +168,36 @@ func TestConfirmMergeDeletesFoldedFolder(t *testing.T) {
 }
 
 // Two sibling folders renamed to one name become one folder, so the tree
-// read back afterwards shows one, not two same-named rows.
+// read back afterwards shows one, not two same-named rows. Names that differ
+// only in case are one folder on a case-insensitive volume, so they merge too.
 func TestConfirmSameNameSiblingsBecomeOneFolder(t *testing.T) {
-	h := eventTree(t)
-	ctx := context.Background()
-	tree, err := BuildTree(ctx, h.d)
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct{ name, first, second string }{
+		{"same name", "Trip", "Trip"},
+		{"names differing in case", "Trip", "trip"},
 	}
-	leaves := leafNodes(tree)
-	leaves[0].Name, leaves[1].Name = "Manali", "Manali"
-	if err := Confirm(ctx, h.d, tree); err != nil {
-		t.Fatal(err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := eventTree(t)
+			ctx := context.Background()
+			tree, err := BuildTree(ctx, h.d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			leaves := leafNodes(tree)
+			leaves[0].Name, leaves[1].Name = tt.first, tt.second
+			if err := Confirm(ctx, h.d, tree); err != nil {
+				t.Fatal(err)
+			}
 
-	tree, err = BuildTree(ctx, h.d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leaves = leafNodes(tree)
-	if len(leaves) != 1 || leaves[0].Name != "Manali" || leaves[0].FileCount != 2 {
-		t.Errorf("leaves = %+v, want one Manali holding both files", leaves)
+			tree, err = BuildTree(ctx, h.d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			leaves = leafNodes(tree)
+			if len(leaves) != 1 || leaves[0].Name != tt.first || leaves[0].FileCount != 2 {
+				t.Errorf("leaves = %+v, want one %s holding both files", leaves, tt.first)
+			}
+		})
 	}
 }
 

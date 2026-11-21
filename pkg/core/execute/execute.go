@@ -293,6 +293,9 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		}
 
 		landed, size, xerr := xfer(ctx, src, dst, r.scanned(), commit)
+		if xerr != nil && committed == "" && ctx.Err() != nil {
+			break // stopped mid-file: nothing landed, so it stays pending
+		}
 		if xerr != nil && committed == "" {
 			// a record that may have landed is left as it reads: the next run
 			// settles it, and a TRANSFER error would sit on a placed file

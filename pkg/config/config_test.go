@@ -150,6 +150,43 @@ func TestHistory(t *testing.T) {
 	}
 }
 
+// A crash while the history is written must not empty it: the missing-library
+// refusal reads it. The old file stays whole until the new one replaces it.
+func TestRememberNeverRewritesTheHistoryInPlace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	cfg, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, second := filepath.Join(home, "first"), filepath.Join(home, "second")
+	if err := cfg.Remember(first); err != nil {
+		t.Fatal(err)
+	}
+	// a second name for the old file: a rewrite in place shows through it, a
+	// replacement does not (an open handle would do, but Windows refuses to
+	// rename over an open file)
+	old := filepath.Join(home, "old-history")
+	if err := os.Link(filepath.Join(cfg.appDir, historyFileName), old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cfg.Remember(second); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != first+"\n" {
+		t.Errorf("the old history file now reads %q, want it untouched: %q", got, first+"\n")
+	}
+	if h := cfg.readHistory(historyFileName); !slices.Equal(h, []string{second, first}) {
+		t.Errorf("history = %v, want [second first]", h)
+	}
+}
+
 func TestHistoryCap(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

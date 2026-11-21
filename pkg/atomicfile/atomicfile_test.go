@@ -1,6 +1,7 @@
 package atomicfile
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -101,6 +102,37 @@ func TestCopyCheckFailureLeavesNoDest(t *testing.T) {
 		t.Errorf("left behind: %v", entries)
 	}
 }
+
+// Stopping mid-file ends the copy at the next chunk, landing nothing and
+// leaving no temp file.
+func TestCopyContextStopsMidFile(t *testing.T) {
+	dir := t.TempDir()
+	src, dest := filepath.Join(dir, "src"), filepath.Join(dir, "lib", "dest")
+	write(t, src, strings.Repeat("x", 3*copyBufferSize))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	copied := 0
+	stopAtFirstChunk := writerFunc(func(p []byte) (int, error) { copied += len(p); cancel(); return len(p), nil })
+	checked := false
+	_, err := CopyContext(ctx, src, dest, stopAtFirstChunk, func(string) error { checked = true; return nil })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if copied > copyBufferSize {
+		t.Errorf("copied %d bytes, want at most one %d-byte chunk", copied, copyBufferSize)
+	}
+	if checked {
+		t.Error("a stopped copy was checked")
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(dest)); len(entries) != 0 {
+		t.Errorf("left behind: %v", entries)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 func TestCopyKeepsModeAndMtime(t *testing.T) {
 	dir := t.TempDir()

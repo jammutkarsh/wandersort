@@ -86,6 +86,40 @@ func TestSanitizeSegment(t *testing.T) {
 	}
 }
 
+// One folder typed in another case or Unicode form must resolve to one path,
+// or a second scan records its files a second time.
+func TestRealPathUsesTheOnDiskSpelling(t *testing.T) {
+	tests := []struct {
+		name, onDisk, typed string
+	}{
+		{"case", "Photos", "photos"},
+		{"unicode form", "Café", "Café"},
+	}
+	r := New()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(base, tt.onDisk, "sub"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(base, tt.typed)); err != nil {
+				t.Skipf("this volume tells %q and %q apart", tt.onDisk, tt.typed)
+			}
+			want, err := r.RealPath(filepath.Join(base, tt.onDisk, "sub"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := r.RealPath(filepath.Join(base, tt.typed, "sub"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != want {
+				t.Errorf("RealPath(%q) = %q, want %q", tt.typed, got, want)
+			}
+		})
+	}
+}
+
 func TestSanitizeFileName(t *testing.T) {
 	long := strings.Repeat("a", 300) + ".JPG"
 	tests := []struct {
@@ -100,6 +134,7 @@ func TestSanitizeFileName(t *testing.T) {
 		{"reserved with a longer stem is fine", "cone.jpg", "cone.jpg"},
 		{"long stem leaves room for _N", long, strings.Repeat("a", 255-4-8) + ".JPG"},
 		{"empty stem", ".jpg", "-.jpg"},
+		{"copy temp prefix escaped", ".copy-a1b2.jpg", "_.copy-a1b2.jpg"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
