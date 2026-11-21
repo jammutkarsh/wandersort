@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -447,7 +449,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.plan != m.a.Work.Plan() || m.replanning() {
 			return m, nil // built over the plan a re-plan replaced
 		}
-		if errors.Is(msg.err, tui.ErrNothingNew) {
+		if errors.Is(msg.err, vfs.ErrNothingNew) {
 			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: explain.Error(msg.err)})
 		}
 		if msg.err != nil {

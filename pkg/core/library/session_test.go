@@ -642,6 +642,8 @@ func TestWorkGroupJobs(t *testing.T) {
 			wrong() // or the re-plan below waits on it for ever
 		}
 		t.Fatalf("copy beside a scan = %v, want ErrBusy", err)
+	} else if busy, ok := errors.AsType[*BusyError](err); !ok || busy.Job != JobScan {
+		t.Errorf("copy beside a scan = %#v, want a BusyError naming the scan", err)
 	}
 	if _, err := g.StartRewrite(); !errors.Is(err, ErrBusy) {
 		t.Errorf("re-plan beside a scan = %v, want ErrBusy", err)

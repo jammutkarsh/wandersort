@@ -84,6 +84,13 @@ func DBPath(dir string) string { return filepath.Join(dir, defaultDBFileName) }
 // OutputDir is the library folder this run works in.
 func (cfg *Configuration) OutputDir() string { return filepath.Dir(cfg.AppDBPath) }
 
+// CheckLibrary's refusals of a folder that can't be a library.
+var (
+	ErrInsideLibrary = errors.New("inside the library")
+	ErrBackupOnly    = errors.New("has a backup but no database; run 'wandersort admin db --restore'")
+	ErrNotEmpty      = errors.New("isn't empty or a library; pick another folder")
+)
+
 // osClutter is what an OS drops into any folder it has shown; a folder holding
 // only these is still empty as far as the user is concerned.
 var osClutter = map[string]bool{".DS_Store": true, "Thumbs.db": true, "desktop.ini": true}
@@ -114,7 +121,7 @@ func CheckLibrary(dir string) error {
 		return fmt.Errorf("output folder %s: %w", shown(dir), ErrNetworkLibrary)
 	}
 	if root, inside := InsideLibrary(dir); inside {
-		return fmt.Errorf("%s: inside the library %s; pick a folder outside it", shown(dir), shown(root))
+		return fmt.Errorf("%s: %w %s; pick a folder outside it", shown(dir), ErrInsideLibrary, shown(root))
 	}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -130,12 +137,12 @@ func CheckLibrary(dir string) error {
 	}
 	for _, e := range entries {
 		if e.Name() == db.BackupFileName {
-			return fmt.Errorf("%s: has a backup but no database; run 'wandersort admin db --restore'", shown(dir))
+			return fmt.Errorf("%s: %w", shown(dir), ErrBackupOnly)
 		}
 	}
 	for _, e := range entries {
 		if n := e.Name(); !osClutter[n] && n != lock.OutputFileName {
-			return fmt.Errorf("%s: isn't empty or a library; pick another folder", shown(dir))
+			return fmt.Errorf("%s: %w", shown(dir), ErrNotEmpty)
 		}
 	}
 	return nil

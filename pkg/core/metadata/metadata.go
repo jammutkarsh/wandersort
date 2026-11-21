@@ -172,7 +172,7 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 
 	if err := <-producerErr; err != nil {
 		if ctx.Err() == nil && errors.Is(err, context.Canceled) {
-			return 0, errors.New("metadata: the database writer closed before every file was read")
+			return 0, fmt.Errorf("metadata: the database %w before every file was read", db.ErrWriterClosed)
 		}
 		return 0, err
 	}

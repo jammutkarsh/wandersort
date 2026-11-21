@@ -8,15 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/jammutkarsh/wandersort/pkg/explain"
 	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
-
-// ErrNothingNew is ReviewNext's answer when the scan left no file to copy.
-var ErrNothingNew = errors.New("No new files to add.")
 
 // NothingNewMsg asks the shell to go back to the folder list with Text once a
 // scan has planned nothing to copy.
@@ -166,7 +165,7 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case m.state == scanCancelling && m.reviewErr != nil:
 			return m, Left(Leave{Quit: true})
-		case errors.Is(m.reviewErr, ErrNothingNew):
+		case errors.Is(m.reviewErr, vfs.ErrNothingNew):
 			return m, m.nothingNew()
 		case m.review == nil:
 			return m, nil
@@ -195,10 +194,10 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // nothingNew hands back to the folder list when the finished scan planned
 // nothing to copy; until the run has finished or the review answered, it waits.
 func (m ScanModel) nothingNew() tea.Cmd {
-	if m.state != scanFinished || !errors.Is(m.reviewErr, ErrNothingNew) {
+	if m.state != scanFinished || !errors.Is(m.reviewErr, vfs.ErrNothingNew) {
 		return nil
 	}
-	return func() tea.Msg { return NothingNewMsg{Text: ErrNothingNew.Error()} }
+	return func() tea.Msg { return NothingNewMsg{Text: vfs.ErrNothingNew.Error()} }
 }
 
 func openReview() tea.Msg { return OpenReviewMsg{} }

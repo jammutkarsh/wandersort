@@ -198,6 +198,13 @@ var ErrNotOpen = errors.New("no library is open")
 // scans, a scan and a copy, or a switch while either runs.
 var ErrBusy = errors.New("busy with this library; try again when it's done")
 
+// BusyError is ErrBusy naming the job in the way, so a front end can say which.
+type BusyError struct{ Job Job }
+
+func (e *BusyError) Error() string { return fmt.Sprintf("%s (a %s is running)", ErrBusy, e.Job) }
+
+func (e *BusyError) Unwrap() error { return ErrBusy }
+
 // SaveSettings makes settings the library's, opening it first if none is
 // open. A change rebuilds the plan from them and writes both in one
 // transaction, so the library never holds settings its plan was not built
@@ -498,7 +505,7 @@ func (g *WorkGroup) StartJob(j Job) (done func(), err error) {
 	case g.rewrites.Load() > 0:
 		err = ErrReplanning
 	case g.job != "":
-		err = fmt.Errorf("%w (a %s is running)", ErrBusy, g.job)
+		err = &BusyError{Job: g.job}
 	}
 	if err != nil {
 		g.mu.Unlock()
@@ -563,7 +570,7 @@ func (g *WorkGroup) StartRewrite() (enter func() (done func(), err error), err e
 		return nil, ErrClosing
 	}
 	if g.job != "" {
-		return nil, fmt.Errorf("%w (a %s is running)", ErrBusy, g.job)
+		return nil, &BusyError{Job: g.job}
 	}
 	g.rewrites.Add(1)
 	g.plan.Add(1)

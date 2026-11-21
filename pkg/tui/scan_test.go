@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -60,10 +62,10 @@ func TestScanModel(t *testing.T) {
 		// the review answer comes last.
 		{"NothingNewSkipsThePlanReadyScreen", func(t *testing.T) {
 			noNews := func(msgs []tea.Msg) bool {
-				return len(msgs) == 1 && msgs[0] == (NothingNewMsg{Text: ErrNothingNew.Error()})
+				return len(msgs) == 1 && msgs[0] == (NothingNewMsg{Text: vfs.ErrNothingNew.Error()})
 			}
 			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
-			next, cmd := m.Update(reviewReadyMsg{err: ErrNothingNew})
+			next, cmd := m.Update(reviewReadyMsg{err: vfs.ErrNothingNew})
 			if cmd != nil {
 				t.Errorf("the scan is still running, got %v", flattenCmd(cmd))
 			}
@@ -73,7 +75,7 @@ func TestScanModel(t *testing.T) {
 			}
 
 			next, _ = m.Update(scanDoneMsg{})
-			_, cmd = next.(ScanModel).Update(reviewReadyMsg{err: ErrNothingNew})
+			_, cmd = next.(ScanModel).Update(reviewReadyMsg{err: vfs.ErrNothingNew})
 			if msgs := flattenCmd(cmd); !noNews(msgs) {
 				t.Errorf("review answering after the finish = %#v, want NothingNewMsg", msgs)
 			}
