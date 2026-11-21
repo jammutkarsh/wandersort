@@ -1,26 +1,16 @@
 package cli
 
 import (
-	"archive/zip"
-	"bufio"
 	"context"
-	"encoding/json/jsontext"
-	"encoding/json/v2"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"time"
 
-	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/spf13/cobra"
 
-	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/report"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
-	"github.com/spf13/cobra"
 )
 
 func (a *app) newAdminReportCmd() *cobra.Command {
@@ -63,54 +53,7 @@ wandersort admin report --include-db`,
 	return cmd
 }
 
-// zipEntry is a source file on disk and the name it gets inside the archive.
-// home, when set, is written as $HOME wherever it appears.
-type zipEntry struct {
-	src  string
-	name string
-	home string
-}
-
-// issueLogs is how many past runs' logs a report carries: the reported run is
-// rarely the newest.
-const issueLogs = 5
-
 func (a *app) runIssue(includeDB, redactPaths bool) error {
-	home, _ := os.UserHomeDir()
-	var entries []zipEntry
-	for _, p := range logger.Recent(a.Configuration().LogDir, 0) {
-		// This run's own log says nothing about the problem; an empty one is a
-		// run that died before logging anything.
-		if info, err := os.Stat(p); p == a.LogFile().Path() || err != nil || info.Size() == 0 {
-			continue
-		}
-		entries = append(entries, zipEntry{p, "logs/" + filepath.Base(p), home})
-		if len(entries) == issueLogs {
-			break
-		}
-	}
-	if len(entries) == 0 {
-		return fmt.Errorf("no log data found in %s — run a scan first", a.Configuration().LogDir)
-	}
-	if redactPaths {
-		// logs are free text and can't be reliably redacted, so they're left out
-		entries = nil
-	}
-	logCount := len(entries)
-
-	if includeDB {
-		// Include the SQLite sidecars too so the copied DB opens cleanly.
-		for _, suffix := range []string{"", "-wal", "-shm"} {
-			src := config.DBPath(a.OutputDir()) + suffix
-			if _, err := os.Stat(src); err == nil {
-				entries = append(entries, zipEntry{src, "wandersort.db" + suffix, ""})
-			}
-		}
-		if len(entries) == logCount {
-			a.Log().Warn("database not found; packaging logs only", "path", config.DBPath(a.OutputDir()))
-		}
-	}
-
 	zipName := fmt.Sprintf("wandersort-issue-%s.zip", time.Now().Format("20060102-150405"))
 	zipPath, err := filepath.Abs(zipName) // the current directory, not the library
 	if err != nil {
@@ -120,108 +63,20 @@ func (a *app) runIssue(includeDB, redactPaths bool) error {
 	if err != nil {
 		return fmt.Errorf("create zip: %w", err)
 	}
-	defer zf.Close()
-
-	zw := zip.NewWriter(zf)
-
-	errorRows, summary := a.exportErrors(redactPaths)
-	if w, err := zw.Create("about.txt"); err == nil {
-		fmt.Fprintf(w, "wandersort admin report\ncreated: %s\nos: %s/%s\n",
-			time.Now().Format(time.RFC3339), runtime.GOOS, runtime.GOARCH)
-		if redactPaths {
-			fmt.Fprintf(w, "\nlogs: left out (--redact-paths)\n")
-		}
-		if len(summary) > 0 {
-			fmt.Fprintf(w, "\nfile errors (see errors.json):\n")
-			for _, line := range summary {
-				fmt.Fprintf(w, "  %s\n", line)
-			}
-		}
+	home, _ := os.UserHomeDir()
+	err = report.Issue(context.Background(), zf, report.IssueOptions{
+		LogDir: a.Configuration().LogDir, ThisRun: a.LogFile().Path(),
+		Library: a.OutputDir(), Home: home,
+		IncludeDB: includeDB, RedactPaths: redactPaths, Log: a.Log(),
+	})
+	if cerr := zf.Close(); err == nil {
+		err = cerr
 	}
-	if errorRows != nil {
-		if w, err := zw.Create("errors.json"); err == nil {
-			err := json.MarshalWrite(w, errorRows, jsontext.WithIndent("  "), json.Deterministic(true))
-			if err == nil {
-				_, err = io.WriteString(w, "\n")
-			}
-			if err != nil {
-				a.Log().Warn("could not write the error report", "error", err)
-			}
-		}
+	if err != nil {
+		os.Remove(zipPath) // a half-written zip is no report
+		return err
 	}
-
-	for _, e := range entries {
-		if err := addFileToZip(zw, e.src, e.name, e.home); err != nil {
-			zw.Close()
-			return fmt.Errorf("add %s: %w", e.name, err)
-		}
-	}
-
-	if err := zw.Close(); err != nil {
-		return fmt.Errorf("finalize zip: %w", err)
-	}
-
 	fmt.Fprintln(os.Stderr, tui.OK.Render("Created "+zipPath))
 	fmt.Fprintln(os.Stderr, tui.FaintTxt.Render("Attach this file to your bug report or share it with the maintainer."))
 	return nil
-}
-
-// exportErrors reads the errors table for the report, opening the database
-// read-only on its own (no lock, no Open). A missing or busy database
-// costs the error report, never the logs.
-func (a *app) exportErrors(redactPaths bool) ([]report.Row, []string) {
-	if !a.LibraryExists() {
-		return nil, nil
-	}
-	conn, err := db.OpenReadOnly(config.DBPath(a.OutputDir()))
-	if err != nil {
-		a.Log().Warn("could not open the database for the error report", "error", err)
-		return nil, nil
-	}
-	defer conn.Close()
-
-	home, _ := os.UserHomeDir()
-	rows, summary, err := report.Errors(context.Background(), conn.SQL, report.Options{
-		Home: home, Library: a.OutputDir(), Redact: redactPaths,
-	})
-	if err != nil {
-		a.Log().Warn("could not read the error report; packaging logs only", "error", err)
-		return nil, nil
-	}
-	if rows == nil {
-		rows = []report.Row{} // "no errors" is an answer: write [] rather than nothing
-	}
-	return rows, summary
-}
-
-// addFileToZip copies srcPath into the archive as entryName, with home, when
-// set, written as $HOME on every line.
-func addFileToZip(zw *zip.Writer, srcPath, entryName, home string) error {
-	f, err := os.Open(srcPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	w, err := zw.Create(entryName)
-	if err != nil {
-		return err
-	}
-	if home == "" {
-		_, err = io.Copy(w, f)
-		return err
-	}
-	r := bufio.NewReader(f)
-	for {
-		line, err := r.ReadString('\n')
-		if _, werr := io.WriteString(w, report.ScrubHome(line, home)); werr != nil {
-			return werr
-		}
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-	}
 }
