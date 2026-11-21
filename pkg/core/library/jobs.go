@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+
 	"github.com/jammutkarsh/wandersort/pkg/core/verify"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
@@ -171,4 +173,39 @@ func (s *Session) Check(ctx context.Context, o verify.Options) (verify.Report, e
 		return verify.Report{}, err
 	}
 	return verify.Run(ctx, s.DB(), s.log, s.OutputDir(), o)
+}
+
+// CopyPlan is what a copy would do now: the files and bytes still to copy,
+// the review edits it applies first, and the room for them.
+type CopyPlan struct {
+	Files int
+	Bytes int64
+	Edits int
+	Space execute.Space
+}
+
+// CopyPlan reads what a copy of the open library would do, while the library
+// can't be switched under the read.
+func (s *Session) CopyPlan(ctx context.Context) (CopyPlan, error) {
+	done, ok := s.Work.StartOnLibrary()
+	if !ok {
+		return CopyPlan{}, ErrClosing
+	}
+	defer done()
+	d, outputDir := s.DB(), s.OutputDir()
+	if d == nil {
+		return CopyPlan{}, ErrNotOpen
+	}
+	var p CopyPlan
+	var err error
+	if p.Files, p.Bytes, err = execute.Pending(ctx, d); err != nil {
+		return CopyPlan{}, err
+	}
+	if p.Space, err = execute.SpaceFor(ctx, d, outputDir); err != nil {
+		return CopyPlan{}, err
+	}
+	if p.Edits, err = vfs.CountEdits(outputDir); err != nil {
+		p.Edits = 1 // unreadable: something is there, and the copy will say what
+	}
+	return p, nil
 }
