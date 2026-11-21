@@ -358,6 +358,11 @@ func (s *Session) Restore(ctx context.Context) error {
 	if open {
 		return fmt.Errorf("restore: %w", db.ErrInUse)
 	}
+	// taking the output lock creates the folder: refuse first if it is a
+	// remembered library whose drive is unplugged
+	if err := s.Configuration().CheckRemembered(filepath.Dir(dbPath)); err != nil {
+		return err
+	}
 	s.logFile.Persist()
 	// the output lock, not the session's, keeps Open out meanwhile: an Open now
 	// finds the library busy, and getters never wait for the restore

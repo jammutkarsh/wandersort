@@ -480,40 +480,69 @@ func TestWorkGroupShutdownSkipsARewriteNeverEntered(t *testing.T) {
 	}
 }
 
-// A library opened before whose folder is gone (its drive unplugged) is
-// refused, not started afresh there or replaced by the default one.
+// A library opened before that is no longer in its folder (its drive
+// unplugged) is refused, not started afresh there or replaced by the default
+// one: whether the folder went with the drive or an empty mount point stayed.
 func TestOpenRefusesAMissingRememberedLibrary(t *testing.T) {
-	ctx := context.Background()
-	s := testSession(t)
-	gone := filepath.Join(t.TempDir(), "on-a-drive")
-	if err := s.Switch(ctx, gone); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name       string
+		mountPoint bool // an empty folder stays where the drive was mounted
+	}{
+		{"folder gone", false},
+		{"empty mount point", true},
 	}
-	s.Close()
-	if err := os.RemoveAll(gone); err != nil {
-		t.Fatal(err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := testSession(t)
+			gone := filepath.Join(t.TempDir(), "on-a-drive")
+			if err := s.Switch(ctx, gone); err != nil {
+				t.Fatal(err)
+			}
+			s.Close()
+			if err := os.RemoveAll(gone); err != nil {
+				t.Fatal(err)
+			}
+			if tt.mountPoint {
+				if err := os.Mkdir(gone, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			noLibraryStarted := func(step string) {
+				t.Helper()
+				if _, err := os.Stat(config.DBPath(gone)); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("%s started a new library in the missing one's folder: %v", step, err)
+				}
+				if _, err := os.Stat(gone); tt.mountPoint == errors.Is(err, os.ErrNotExist) {
+					t.Errorf("%s changed whether the folder exists: %v", step, err)
+				}
+			}
 
-	cfg, err := config.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.OutputDir() != gone {
-		t.Fatalf("library chosen = %q, want the most recent %q", cfg.OutputDir(), gone)
-	}
-	next := New(cfg, logger.NewNoopLogger(), nil)
-	t.Cleanup(next.Close)
-	if err := next.Open(ctx); !errors.Is(err, config.ErrLibraryMissing) {
-		t.Fatalf("Open = %v, want ErrLibraryMissing", err)
-	}
-	if _, err := os.Stat(gone); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("a new library was started in the missing folder: %v", err)
-	}
-	if err := s.Switch(ctx, filepath.Join(t.TempDir(), "other")); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Switch(ctx, gone); !errors.Is(err, config.ErrLibraryMissing) {
-		t.Errorf("Switch = %v, want ErrLibraryMissing", err)
+			cfg, err := config.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.OutputDir() != gone {
+				t.Fatalf("library chosen = %q, want the most recent %q", cfg.OutputDir(), gone)
+			}
+			next := New(cfg, logger.NewNoopLogger(), nil)
+			t.Cleanup(next.Close)
+			if err := next.Open(ctx); !errors.Is(err, config.ErrLibraryMissing) {
+				t.Fatalf("Open = %v, want ErrLibraryMissing", err)
+			}
+			noLibraryStarted("Open")
+			if err := next.Restore(ctx); !errors.Is(err, config.ErrLibraryMissing) {
+				t.Errorf("Restore = %v, want ErrLibraryMissing", err)
+			}
+			noLibraryStarted("Restore")
+			if err := s.Switch(ctx, filepath.Join(t.TempDir(), "other")); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Switch(ctx, gone); !errors.Is(err, config.ErrLibraryMissing) {
+				t.Errorf("Switch = %v, want ErrLibraryMissing", err)
+			}
+			noLibraryStarted("Switch")
+		})
 	}
 }
 

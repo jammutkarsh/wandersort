@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
@@ -20,16 +21,20 @@ const (
 // History is the output folders this machine has opened, newest first.
 func (cfg *Configuration) History() []string { return cfg.present(historyFileName) }
 
-// ErrLibraryMissing refuses a library this machine opened before whose folder
-// is gone: its drive is likely unplugged, and starting a new library there
-// would scatter one collection over two.
-var ErrLibraryMissing = errors.New("this library's folder is missing; plug in its drive, or pick another library")
+// ErrLibraryMissing refuses a library this machine opened before that is no
+// longer in its folder: its drive is likely unplugged, and starting a new
+// library there would scatter one collection over two.
+var ErrLibraryMissing = errors.New("this library is missing; plug in its drive, or pick another library")
 
 // CheckRemembered refuses dir if it is a library this machine opened before
-// and its folder is gone. A folder never opened is free to become one.
+// and neither its database nor its backup is there. The folder alone proves
+// nothing: an unplugged drive's mount point can stay behind, empty. A folder
+// never opened is free to become one.
 func (cfg *Configuration) CheckRemembered(dir string) error {
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		return nil
+	for _, name := range []string{defaultDBFileName, db.BackupFileName} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			return nil
+		}
 	}
 	for _, d := range cfg.readHistory(historyFileName) {
 		if d == dir {
