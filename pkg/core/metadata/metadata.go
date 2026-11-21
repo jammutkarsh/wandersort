@@ -421,10 +421,11 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 			if ctx.Err() != nil {
 				return false
 			}
-			// exiftool died, hung or could not open the file: tags unknown,
-			// not empty. An empty row would plan the file by its file date for
-			// good, so record a READ error and retry next run.
-			if errors.Is(err, exiftool.ErrProcess) || errors.Is(err, exiftool.ErrUnreadable) {
+			// exiftool died, hung, could not open the file or cannot be given
+			// its path: tags unknown, not empty. An empty row would plan the
+			// file by its file date for good, so record a READ error and retry
+			// next run.
+			if errors.Is(err, exiftool.ErrProcess) || errors.Is(err, exiftool.ErrUnreadable) || errors.Is(err, exiftool.ErrUnsafePath) {
 				e.log.Error("exiftool failed on file", "fileId", file.id, "path", file.absPath, "error", err)
 				e.db.Writer.Write(storeFailure(file.id, opExiftool, db.WithStack(err)))
 				return true
