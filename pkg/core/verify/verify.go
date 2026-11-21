@@ -108,7 +108,10 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		abs := filepath.Join(outputDir, rel)
 
 		rep.Checked++
-		problem, size := checkFile(abs, rel, r.Size, r.Hash, o.Full)
+		problem, size, err := checkFile(ctx, abs, rel, r.Size, r.Hash, o.Full)
+		if err != nil {
+			return rep, err
+		}
 		rep.Bytes += size
 		if problem != nil && problem.Kind == db.KindNotFound {
 			gone = append(gone, r.FileID)
@@ -163,30 +166,34 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 }
 
 // checkFile checks one placed file and returns its size. Size before hash, so a
-// truncation is named as such and a quick pass costs one stat.
-func checkFile(abs, rel string, want int64, hash string, full bool) (*Problem, int64) {
+// truncation is named as such and a quick pass costs one stat. Its only error
+// is ctx's: a hash stopped partway says nothing about the file.
+func checkFile(ctx context.Context, abs, rel string, want int64, hash string, full bool) (*Problem, int64, error) {
 	info, err := os.Stat(abs)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return &Problem{rel, db.KindNotFound, "the file is not in the library any more"}, 0
+		return &Problem{rel, db.KindNotFound, "the file is not in the library any more"}, 0, nil
 	case err != nil:
-		return &Problem{rel, db.KindIO, err.Error()}, 0
+		return &Problem{rel, db.KindIO, err.Error()}, 0, nil
 	case info.IsDir():
-		return &Problem{rel, db.KindOther, "a directory is where the file should be"}, 0
+		return &Problem{rel, db.KindOther, "a directory is where the file should be"}, 0, nil
 	}
 	if info.Size() != want {
 		return &Problem{
 			rel, db.KindOther,
 			fmt.Sprintf("size is %s, the library recorded %s",
 				volume.HumanBytes(uint64(info.Size())), volume.HumanBytes(uint64(want))),
-		}, info.Size()
+		}, info.Size(), nil
 	}
 	if !full || hash == "" {
-		return nil, info.Size()
+		return nil, info.Size(), nil
 	}
-	got, err := metadata.HashFile(abs)
+	got, err := metadata.HashFile(ctx, abs)
+	if ctx.Err() != nil {
+		return nil, 0, ctx.Err()
+	}
 	if err != nil {
-		return &Problem{rel, db.KindIO, fmt.Sprintf("could not read it: %v", err)}, info.Size()
+		return &Problem{rel, db.KindIO, fmt.Sprintf("could not read it: %v", err)}, info.Size(), nil
 	}
 	if got != hash {
 		// Same size, different bytes: nothing the user did by accident, and
@@ -194,9 +201,9 @@ func checkFile(abs, rel string, want int64, hash string, full bool) (*Problem, i
 		return &Problem{
 			rel, db.KindChecksumMismatch,
 			fmt.Sprintf("contents changed: now %s, scanned %s", got, hash),
-		}, info.Size()
+		}, info.Size(), nil
 	}
-	return nil, info.Size()
+	return nil, info.Size(), nil
 }
 
 // record replaces or clears the file's VERIFY row, batched (a synced

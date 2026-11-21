@@ -36,7 +36,7 @@ type commitFn func(landed string) error
 func productionTransfer(ctx context.Context, src, dst string, scan scanned, commit commitFn) (string, int64, error) {
 	info, err := os.Stat(src)
 	if err != nil {
-		landed, err := recoverLanded(dst, scan, err, commit)
+		landed, err := recoverLanded(ctx, dst, scan, err, commit)
 		return landed, 0, err
 	}
 	landed, err := placeFree(ctx, src, dst, scan.hash, commit)
@@ -45,10 +45,10 @@ func productionTransfer(ctx context.Context, src, dst string, scan scanned, comm
 
 // dryRunTransfer touches no file: it reports the source's size and the planned
 // name (a real run may land on name_N), and calls commit to count the row.
-func dryRunTransfer(_ context.Context, src, dst string, scan scanned, commit commitFn) (string, int64, error) {
+func dryRunTransfer(ctx context.Context, src, dst string, scan scanned, commit commitFn) (string, int64, error) {
 	info, err := os.Stat(src)
 	if err != nil {
-		landed, err := recoverLanded(dst, scan, err, commit)
+		landed, err := recoverLanded(ctx, dst, scan, err, commit)
 		return landed, 0, err
 	}
 	return dst, info.Size(), commit(dst)
@@ -57,9 +57,12 @@ func dryRunTransfer(_ context.Context, src, dst string, scan scanned, commit com
 // recoverLanded handles a missing source: if the library already holds the file
 // (a crash after landing, before the row committed), record it placed;
 // otherwise fail.
-func recoverLanded(dst string, scan scanned, statErr error, commit commitFn) (string, error) {
-	if landed, ok := alreadyLanded(dst, scan); ok {
+func recoverLanded(ctx context.Context, dst string, scan scanned, statErr error, commit commitFn) (string, error) {
+	if landed, ok := alreadyLanded(ctx, dst, scan); ok {
 		return landed, commit(landed)
+	}
+	if err := ctx.Err(); err != nil {
+		return dst, err // a search stopped partway proves nothing missing
 	}
 	return dst, &stepError{opStat, fmt.Errorf("source missing: %w", statErr)}
 }
@@ -69,9 +72,9 @@ const maxLandedProbe = 64
 
 // alreadyLanded looks for a copy of the scanned file at dst and every _N name
 // up to maxLandedProbe (gaps allowed).
-func alreadyLanded(dst string, scan scanned) (string, bool) {
-	for n := 0; n < maxLandedProbe; n++ {
-		if p := withSuffix(dst, n); isCopy(p, scan.size, scan.hash) {
+func alreadyLanded(ctx context.Context, dst string, scan scanned) (string, bool) {
+	for n := 0; n < maxLandedProbe && ctx.Err() == nil; n++ {
+		if p := withSuffix(dst, n); isCopy(ctx, p, scan.size, scan.hash) {
 			return p, true
 		}
 	}
@@ -80,8 +83,8 @@ func alreadyLanded(dst string, scan scanned) (string, bool) {
 
 // isCopy reports whether p is a regular file of size bytes hashing to want;
 // size first, so a mismatch is never read. A symlink is never a copy: it may
-// point at the source itself.
-func isCopy(p string, size int64, want string) bool {
+// point at the source itself. A read stopped by ctx is not a copy.
+func isCopy(ctx context.Context, p string, size int64, want string) bool {
 	if want == "" {
 		return false
 	}
@@ -89,7 +92,7 @@ func isCopy(p string, size int64, want string) bool {
 	if err != nil || !info.Mode().IsRegular() || info.Size() != size {
 		return false
 	}
-	got, err := metadata.HashFile(p)
+	got, err := metadata.HashFile(ctx, p)
 	return err == nil && got == want
 }
 
@@ -117,17 +120,20 @@ func placeFree(ctx context.Context, src, dst, want string, commit commitFn) (str
 		if !errors.Is(err, fs.ErrExist) {
 			return target, err
 		}
-		if holds(target, src, want) {
+		if holds(ctx, target, src, want) {
 			return target, commit(target)
+		}
+		if err := ctx.Err(); err != nil {
+			return target, err
 		}
 	}
 }
 
 // holds reports whether p is already a copy of src: a copy of the scanned
 // file the size src is now.
-func holds(p, src, want string) bool {
+func holds(ctx context.Context, p, src, want string) bool {
 	si, err := os.Stat(src)
-	return err == nil && isCopy(p, si.Size(), want)
+	return err == nil && isCopy(ctx, p, si.Size(), want)
 }
 
 // withSuffix names the n-th alternative for p: p itself, then name_1.ext,
@@ -153,7 +159,7 @@ func place(ctx context.Context, src, dst, want string, commit func() error) erro
 		}
 		// the hash above saw the bytes read from the source; read back what
 		// the library's drive holds, so a bad write never lands
-		if got, err := metadata.HashFileContext(ctx, tmp); err != nil {
+		if got, err := metadata.HashFile(ctx, tmp); err != nil {
 			return fmt.Errorf("read back the copy: %w", err)
 		} else if got != want {
 			return fmt.Errorf("the copy reads back as %s, not the source's %s: %w", got, want, db.ErrChecksumMismatch)

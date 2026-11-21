@@ -472,7 +472,7 @@ func (e *Extractor) readFile(ctx context.Context, file fileRecord) (string, erro
 		return "", err // cancelled
 	}
 	defer e.reads.Release(file.cost)
-	sum, n, err := hashFile(file.absPath)
+	sum, n, err := hashFile(ctx, file.absPath)
 	if err != nil {
 		return "", err
 	}
@@ -495,11 +495,6 @@ var hashBuffers = sync.Pool{
 	},
 }
 
-// readerOnly hides WriteTo: *os.File implements it, io.CopyBuffer prefers it,
-// and its fallback ignores our buffer, silently. Nothing is lost (File.WriteTo
-// is only fast to sockets).
-type readerOnly struct{ io.Reader }
-
 // NewHasher returns the hasher every stored file_hash is computed with.
 func NewHasher() hash.Hash { return blake3.New(hashOutputSize, nil) }
 
@@ -509,31 +504,23 @@ func HashString(h hash.Hash) string {
 }
 
 // HashFile computes a file's file_hash, streaming it through a pooled buffer
-// so memory stays flat whatever the file size
-func HashFile(filePath string) (string, error) {
-	sum, _, err := hashFile(filePath)
-	return sum, err
-}
-
-// HashFileContext is HashFile that stops between reads once ctx ends.
-func HashFileContext(ctx context.Context, filePath string) (string, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to open file: %w", err)
-	}
-	defer file.Close()
-	sum, _, err := hashReader(atomicfile.ContextReader{Ctx: ctx, R: file})
+// so memory stays flat whatever the file size; it stops between reads once
+// ctx ends.
+func HashFile(ctx context.Context, filePath string) (string, error) {
+	sum, _, err := hashFile(ctx, filePath)
 	return sum, err
 }
 
 // hashFile is HashFile and the bytes it hashed.
-func hashFile(filePath string) (string, int64, error) {
+func hashFile(ctx context.Context, filePath string) (string, int64, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
-	return hashReader(readerOnly{file})
+	// ContextReader also hides *os.File's WriteTo: io.CopyBuffer prefers it,
+	// and its fallback ignores our buffer, silently
+	return hashReader(atomicfile.ContextReader{Ctx: ctx, R: file})
 }
 
 // hashReader hashes r through a pooled buffer; r must not implement WriterTo.

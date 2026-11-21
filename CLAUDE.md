@@ -71,7 +71,7 @@ One file per command, plus `app.go` (the `app` struct embedding `*library.Sessio
 
 ## Rules that bite
 
-- Hash and EXIF stay one pass (page cache). `readerOnly` in `metadata` and the hidden `WriteTo` in `atomicfile` are load-bearing.
+- Hash and EXIF stay one pass (page cache). The hidden `WriteTo` in `atomicfile.ContextReader` (the hash and the copy both read through it) is load-bearing.
 - Source paths are stored byte-exact (`ToSourcePath`); library paths are NFC (`ToLibrary`).
 - Every time is wall clock with no zone: EXIF times as written, file and run times via `db.FormatTime` (`db.TimeLayout`).
 - Placed files are never re-proposed or moved; folders holding them are never reused by a new plan.

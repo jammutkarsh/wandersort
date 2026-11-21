@@ -2,6 +2,7 @@ package execute
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -129,5 +130,24 @@ func TestTransferNeverTrustsALinkToTheSource(t *testing.T) {
 				t.Errorf("source = %q, %v; want it untouched", got, err)
 			}
 		})
+	}
+}
+
+// A gone source whose search for a landed copy is stopped is not reported
+// missing: the copy may be there, and the file stays pending.
+func TestTransferStoppedWhileLookingForALandedCopy(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "lib", "A.jpg")
+	writeFile(t, dst, "hello")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var committed []string
+	_, _, err := productionTransfer(ctx, filepath.Join(dir, "gone.jpg"), dst,
+		scanned{hash: hashOf("hello"), size: 5}, recorder(&committed))
+	if !errors.Is(err, context.Canceled) || failedOp(err) == opStat {
+		t.Errorf("err = %v (op %s), want context.Canceled, not a stat failure", err, failedOp(err))
+	}
+	if len(committed) != 0 {
+		t.Errorf("committed %v from a search that was stopped", committed)
 	}
 }

@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
+	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/classifier"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
@@ -129,17 +130,17 @@ func TestHashFile(t *testing.T) {
 			copyPath := helperWritePatternFile(t, largeFileSizeBytes, 0x11)
 			mutatedPath := helperWritePatternFile(t, largeFileSizeBytes, 0x12)
 
-			originalHash, err := HashFile(path)
+			originalHash, err := HashFile(context.Background(), path)
 			if err != nil {
-				t.Fatalf("HashFile(%d bytes): %v", largeFileSizeBytes, err)
+				t.Fatalf("HashFile(context.Background(), %d bytes): %v", largeFileSizeBytes, err)
 			}
-			copyHash, err := HashFile(copyPath)
+			copyHash, err := HashFile(context.Background(), copyPath)
 			if err != nil {
-				t.Fatalf("HashFile(copy %d bytes): %v", largeFileSizeBytes, err)
+				t.Fatalf("HashFile(context.Background(), copy %d bytes): %v", largeFileSizeBytes, err)
 			}
-			mutatedHash, err := HashFile(mutatedPath)
+			mutatedHash, err := HashFile(context.Background(), mutatedPath)
 			if err != nil {
-				t.Fatalf("HashFile(mutated %d bytes): %v", largeFileSizeBytes, err)
+				t.Fatalf("HashFile(context.Background(), mutated %d bytes): %v", largeFileSizeBytes, err)
 			}
 
 			if originalHash != copyHash {
@@ -169,7 +170,7 @@ func TestHashFile(t *testing.T) {
 				if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				hash, err := HashFile(p)
+				hash, err := HashFile(context.Background(), p)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -339,7 +340,7 @@ func TestExtractor(t *testing.T) {
 			if err := d.SQL.Get(&hash, `SELECT file_hash FROM file_metadata WHERE file_id = 1`); err != nil {
 				t.Fatal(err)
 			}
-			want, err := HashFile(filepath.Join(root, "IMG_0001.AAE"))
+			want, err := HashFile(context.Background(), filepath.Join(root, "IMG_0001.AAE"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -798,7 +799,7 @@ func TestExtractor(t *testing.T) {
 			}
 			d.Writer.Flush()
 
-			want, err := HashFile(filepath.Join(root, "solo.jpg"))
+			want, err := HashFile(context.Background(), filepath.Join(root, "solo.jpg"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -816,7 +817,7 @@ func TestExtractor(t *testing.T) {
 	}
 }
 
-// TestHashReadsThroughThePooledBuffer pins the readerOnly wrapper. Without it
+// TestHashReadsThroughThePooledBuffer pins the WriteTo-hiding reader. Without it
 // io.CopyBuffer silently ignores the buffer, because *os.File implements
 // io.WriterTo and CopyBuffer prefers that path — the change would look applied
 // and do nothing.
@@ -829,15 +830,16 @@ func TestHashReadsThroughThePooledBuffer(t *testing.T) {
 	defer f.Close()
 
 	if _, ok := any(f).(io.WriterTo); !ok {
-		t.Skip("*os.File no longer implements io.WriterTo — the readerOnly wrapper may be dead weight")
+		t.Skip("*os.File no longer implements io.WriterTo — hiding it may be dead weight")
 	}
-	if _, ok := any(readerOnly{f}).(io.WriterTo); ok {
-		t.Fatal("readerOnly must hide WriteTo, or io.CopyBuffer ignores the pooled buffer")
+	r := atomicfile.ContextReader{Ctx: context.Background(), R: f}
+	if _, ok := any(r).(io.WriterTo); ok {
+		t.Fatal("the hash's reader must hide WriteTo, or io.CopyBuffer ignores the pooled buffer")
 	}
 
 	var w chunkRecorder
 	buf := make([]byte, hashBufferSize)
-	if _, err := io.CopyBuffer(&w, readerOnly{f}, buf); err != nil {
+	if _, err := io.CopyBuffer(&w, r, buf); err != nil {
 		t.Fatal(err)
 	}
 	if w.largest != hashBufferSize {
@@ -894,11 +896,11 @@ func TestHashFile_ResourceConstrainedSingleFileHelper(t *testing.T) {
 	underLimitPath := helperWritePatternFile(t, fileFitsWithinMemoryBytes, 0x21)
 	overLimitPath := helperWritePatternFile(t, fileExceedsMemoryBytes, 0x22)
 
-	underLimitHash, err := HashFile(underLimitPath)
+	underLimitHash, err := HashFile(context.Background(), underLimitPath)
 	if err != nil {
 		t.Fatalf("hashing %d-byte file below memory limit %s failed: %v", fileFitsWithinMemoryBytes, constrainedMemoryLimit, err)
 	}
-	overLimitHash, err := HashFile(overLimitPath)
+	overLimitHash, err := HashFile(context.Background(), overLimitPath)
 	if err != nil {
 		t.Fatalf("hashing %d-byte file above memory limit %s failed: %v", fileExceedsMemoryBytes, constrainedMemoryLimit, err)
 	}
@@ -933,7 +935,7 @@ func TestHashFile_ConcurrentLargeFilesUnderMemoryLimitHelper(t *testing.T) {
 		wg.Add(1)
 		go func(index int, filePath string) {
 			defer wg.Done()
-			hash, err := HashFile(filePath)
+			hash, err := HashFile(context.Background(), filePath)
 			results <- result{index: index, hash: hash, err: err}
 		}(i, path)
 	}
@@ -956,5 +958,15 @@ func TestHashFile_ConcurrentLargeFilesUnderMemoryLimitHelper(t *testing.T) {
 
 	if len(seen) != concurrentLargeFileCount {
 		t.Fatalf("expected %d successful concurrent hashes, got %d", concurrentLargeFileCount, len(seen))
+	}
+}
+
+// A hash stops between reads once its context ends.
+func TestHashFileStopsWhenCancelled(t *testing.T) {
+	path := helperWritePatternFile(t, 4<<20, 0x11)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := HashFile(ctx, path); !errors.Is(err, context.Canceled) {
+		t.Errorf("HashFile after cancel = %v, want context.Canceled", err)
 	}
 }
