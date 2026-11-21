@@ -5,7 +5,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/location"
-	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -53,7 +52,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.editing = false
 			m.suggestions = nil
-			m.applyRename(path.SanitizeSegment(m.input))
+			m.applyRename(m.input)
 		case tea.KeyEsc:
 			m.editing = false
 			m.suggestions = nil

@@ -99,7 +99,7 @@ func (a *app) workflowDeps() workflow.Deps {
 // Open, SaveSettings and Restore are the Session's, with a library held
 // elsewhere explained for the terminal; shadowing them leaves no unexplained
 // way in. Switch is not shadowed: only the Settings tab calls it, and the
-// tab words its failures with tui.Explain.
+// tab words its failures with explain.Error.
 func (a *app) Open(ctx context.Context) error {
 	return explainBusy(a.Session.Open(ctx))
 }

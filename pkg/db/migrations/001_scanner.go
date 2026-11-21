@@ -14,16 +14,20 @@ const fileRegistry = `
 CREATE TABLE IF NOT EXISTS file_registry (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-    -- Physical identity: absolute directory + name. One row per file on disk,
-    -- no matter which scan root the file was discovered through
+    -- Physical identity: volume + absolute directory + name. One row per file
+    -- on disk, no matter which scan root the file was discovered through. Two
+    -- cards mounted in turn at one path hold different files
     file_dir         TEXT    NOT NULL,
     file_name        TEXT    NOT NULL,
     file_size        INTEGER NOT NULL,
     file_modified_at TEXT    NOT NULL,
+    -- The same time as an instant (Unix nanoseconds), for change detection:
+    -- the wall-clock column moves with the computer's time zone on APFS/NTFS,
+    -- this one on FAT/exFAT (which store wall clock), never both at once
+    file_mtime_ns    INTEGER NOT NULL DEFAULT 0,
 
-    -- Volume the file lives on; lets a future re-anchor pass rewrite paths
-    -- when an external drive remounts elsewhere. NULL when unresolvable
-    volume_uuid TEXT,
+    -- Volume the file lives on; '' when it can't be read
+    volume_uuid TEXT NOT NULL DEFAULT '',
 
     -- Discovery metadata
     discovered_at TEXT NOT NULL,
@@ -50,7 +54,7 @@ CREATE TABLE IF NOT EXISTS file_registry (
     CHECK (media_type IN ('IMAGE', 'VIDEO', 'SIDECAR', 'RAW', 'UNKNOWN'))
 ) STRICT;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_file_registry_dir_name ON file_registry(file_dir, file_name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_file_registry_identity ON file_registry(file_dir, file_name, volume_uuid);
 `
 
 // errors holds a file's current failure per stage, only while it is true: the

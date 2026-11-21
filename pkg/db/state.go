@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	stdpath "path"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -21,7 +22,8 @@ func PendingTransfer(fileID string) string {
 
 // MarkPlaced records a file as in the library at target (library-relative, so
 // the database travels with the library), sets placed and clears its errors.
-// Run it inside WriteSync.
+// A library path names no source volume, so the volume is cleared: one row per
+// library path. Run it inside WriteSync.
 func MarkPlaced(ctx context.Context, tx *sqlx.Tx, entryID, fileID int64, target string) error {
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE virtual_fs_entries SET source_path = ?, target_path = ? WHERE id = ?`,
@@ -29,7 +31,7 @@ func MarkPlaced(ctx context.Context, tx *sqlx.Tx, entryID, fileID int64, target 
 		return fmt.Errorf("mark placed: repoint plan row: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE file_registry SET file_dir = ?, file_name = ?, placed = 1 WHERE id = ?`,
+		`UPDATE file_registry SET file_dir = ?, file_name = ?, volume_uuid = '', placed = 1 WHERE id = ?`,
 		stdpath.Dir(target), stdpath.Base(target), fileID); err != nil {
 		return fmt.Errorf("mark placed: repoint file: %w", err)
 	}
@@ -72,13 +74,15 @@ func (d *DB) Forget(ctx context.Context, fileIDs []int64) error {
 	return nil
 }
 
-// ForgetChanged forgets the registry row at dir/name when the file there is no
-// longer the one recorded (size or modification time differs), or always when
-// force is set; dependants cascade.
-func ForgetChanged(ctx context.Context, tx *sqlx.Tx, dir, name string, size int64, modifiedAt string, force bool) error {
+// ForgetChanged forgets the registry row at dir/name on volume when the file
+// there is no longer the one recorded, or always when force is set; dependants
+// cascade. Changed means another size, or a modification time that differs both
+// as an instant and as wall clock: a time zone change moves only one of the two.
+func ForgetChanged(ctx context.Context, tx *sqlx.Tx, volume, dir, name string, size int64, modified time.Time, force bool) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM file_registry
-		WHERE file_dir = ? AND file_name = ? AND (file_size != ? OR file_modified_at != ? OR ?)`,
-		dir, name, size, modifiedAt, force); err != nil {
+		WHERE volume_uuid = ? AND file_dir = ? AND file_name = ?
+		AND (file_size != ? OR (file_mtime_ns != ? AND file_modified_at != ?) OR ?)`,
+		volume, dir, name, size, modified.UnixNano(), FormatTime(modified), force); err != nil {
 		return fmt.Errorf("forget changed file: %w", err)
 	}
 	return nil

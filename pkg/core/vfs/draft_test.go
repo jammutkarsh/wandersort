@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/v2"
 	"errors"
@@ -47,6 +48,15 @@ func TestDraftFile(t *testing.T) {
 	}
 	f.WriteString(`{"seq":3,"op":"dr`)
 	f.Close()
+	// counting is for callers that may not hold the library: it counts the
+	// whole edits and leaves the torn line to the holder
+	torn, _ := os.ReadFile(filepath.Join(dir, DraftFileName))
+	if n, err := CountEdits(dir); err != nil || n != 2 {
+		t.Fatalf("CountEdits on a torn draft = %d, %v; want 2", n, err)
+	}
+	if now, _ := os.ReadFile(filepath.Join(dir, DraftFileName)); !bytes.Equal(now, torn) {
+		t.Fatal("CountEdits rewrote the draft")
+	}
 	if got, err := readDraft(dir); err != nil || !reflect.DeepEqual(got, want[:2]) {
 		t.Fatalf("torn last line: %+v, %v; want %+v", got, err, want[:2])
 	}
@@ -106,7 +116,7 @@ func TestApplyDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	leaf := leafNodes(tree)[0]
-	if err := appendDraft(dir, Edit{Seq: 1, Op: OpRename, Node: leaf.ID, From: leaf.Name, To: "Manali"}); err != nil {
+	if err := appendDraft(dir, Edit{Seq: 1, Op: OpRename, Node: leaf.ID, From: leaf.Name, To: "Manali", Plan: planFingerprint(tree)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -145,7 +155,7 @@ func TestApplyDraft(t *testing.T) {
 	}
 
 	// crash between the commit and the file removal: the same draft is back
-	if err := appendDraft(dir, Edit{Seq: 1, Op: OpRename, Node: leaf.ID, From: leaf.Name, To: "Manali"}); err != nil {
+	if err := appendDraft(dir, Edit{Seq: 1, Op: OpRename, Node: leaf.ID, From: leaf.Name, To: "Manali", Plan: planFingerprint(tree)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := ApplyDraft(ctx, h.d, dir); err != nil {
@@ -239,6 +249,87 @@ func draftTree() []Node {
 // lands in the tree and the journal together, a reopen replays it to the same
 // tree, a refusal changes neither, and Undo/Reset go back without touching
 // the plan the draft was opened on.
+// A review still open after a copy applied its draft is over an older plan:
+// undoing its last edit there writes the applied edits back, and they must not
+// replay onto the new plan.
+func TestDraftOfAnOlderPlanDoesNotReplay(t *testing.T) {
+	h := newHarness(t)
+	h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
+	h.addFile(t, "dump/B.HEIC", "IMAGE", metaWith("2024:06:04 14:00:00", 0, 0, 3024, 4032))
+	cfg := DefaultConfig()
+	cfg.Rules = []string{RuleLocation}
+	h.build(t, cfg, installtest.Resolver(t))
+	ctx := context.Background()
+	dir := t.TempDir()
+	tree, err := BuildTree(ctx, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := OpenDraft(dir, tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaves := leafNodes(tree)
+	if _, err := stale.Apply(Edit{Op: OpRename, Node: leaves[0].ID, To: "Manali"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyDraft(ctx, h.d, dir); err != nil { // the copy
+		t.Fatal(err)
+	}
+	if _, err := stale.Apply(Edit{Op: OpRename, Node: leaves[1].ID, To: "Shimla"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stale.Undo(); err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := BuildTree(ctx, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := OpenDraft(dir, applied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Edits(); len(got) != 0 {
+		t.Errorf("edits of the older plan replayed onto the new one: %+v", got)
+	}
+	if n, err := CountEdits(dir); err != nil || n != 0 {
+		t.Errorf("CountEdits = %d, %v; want the older plan's edits gone from the journal", n, err)
+	}
+}
+
+// A name the copy's tree check would refuse is cleaned when the edit is made,
+// whichever front end made it, so the draft never blocks a copy.
+func TestRenameCleansNameBeforeTheDraft(t *testing.T) {
+	for _, name := range []string{"..", ".", "a/b", "CON"} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.addFile(t, "dump/A.HEIC", "IMAGE", metaWith("2024:06:03 14:00:00", 0, 0, 3024, 4032))
+			cfg := DefaultConfig()
+			cfg.Rules = []string{RuleLocation}
+			h.build(t, cfg, installtest.Resolver(t))
+			ctx := context.Background()
+			dir := t.TempDir()
+			tree, err := BuildTree(ctx, h.d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d, err := OpenDraft(dir, tree)
+			if err != nil {
+				t.Fatal(err)
+			}
+			leaf := leafNodes(tree)[0]
+			if _, err := d.Apply(Edit{Op: OpRename, Node: leaf.ID, From: leaf.Name, To: name}); err != nil {
+				t.Fatal(err)
+			}
+			if err := ApplyDraft(ctx, h.d, dir); err != nil {
+				t.Errorf("ApplyDraft after renaming to %q: %v", name, err)
+			}
+		})
+	}
+}
+
 func TestDraftSession(t *testing.T) {
 	open := func(t *testing.T, dir string, base []Node) *Draft {
 		t.Helper()
@@ -253,7 +344,7 @@ func TestDraftSession(t *testing.T) {
 		dir := t.TempDir()
 		d := open(t, dir, draftTree())
 		out, err := d.Apply(Edit{Op: OpRename, Node: 3, From: "03", To: "Goa Trip"})
-		if err != nil || out.Focus != 3 || out.Name != "Goa Trip" {
+		if err != nil || out.Focus != 3 || out.Name != "Goa-Trip" {
 			t.Fatalf("rename = %+v, %v", out, err)
 		}
 		out, err = d.Apply(Edit{Op: OpMerge, Nodes: []int64{4, 3}})

@@ -73,7 +73,7 @@ func Errors(ctx context.Context, q Querier, o Options) ([]Row, []string, error) 
 	rows, err := q.QueryContext(ctx, `
 		SELECT e.stage, e.op, e.kind, e.attempts, e.first_seen_at, e.last_seen_at, e.detail,
 		       COALESCE(f.media_type, ''), f.file_extension, f.file_size,
-		       COALESCE(f.volume_uuid, ''), f.file_dir, f.file_name, COALESCE(v.target_path, '')
+		       f.volume_uuid, f.file_dir, f.file_name, COALESCE(v.target_path, '')
 		FROM errors e
 		JOIN file_registry f ON f.id = e.file_id
 		LEFT JOIN virtual_fs_entries v ON v.file_id = e.file_id

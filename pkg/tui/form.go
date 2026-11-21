@@ -10,6 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/jammutkarsh/wandersort/pkg/explain"
 )
 
 // suggestDebounce delays Suggest (a geonames query) until typing pauses.
@@ -854,7 +856,7 @@ func (m FormModel) moveNext() (tea.Model, tea.Cmd) {
 	if f := m.active(); f != nil && f.Kind == FieldInput {
 		if f.Validator != nil {
 			if err := f.Validator(m.ti.Value()); err != nil {
-				f.Error = Explain(err)
+				f.Error = explain.Error(err)
 				return m, nil
 			}
 		}
@@ -939,7 +941,7 @@ func (m FormModel) saveAndExit() (tea.Model, tea.Cmd) {
 	if f := m.active(); f != nil && f.Kind == FieldInput {
 		if f.Validator != nil {
 			if err := f.Validator(m.ti.Value()); err != nil { // a failing validator on the field being typed still blocks
-				f.Error = Explain(err)
+				f.Error = explain.Error(err)
 				return m, nil
 			}
 		}

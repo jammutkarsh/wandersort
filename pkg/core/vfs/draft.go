@@ -4,17 +4,21 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 // DraftFileName is the review's edit journal next to the database: one JSON
@@ -31,34 +35,73 @@ const (
 )
 
 // Edit is one review edit. Rename names one Node (From is informational).
-// Merge, drop and flatten list Nodes; merge lists its survivor first.
+// Merge, drop and flatten list Nodes; merge lists its survivor first. Plan is
+// the fingerprint of the plan the edit was made on (planFingerprint): an edit
+// only ever replays onto that plan.
 type Edit struct {
 	Op    string  `json:"op"`
 	From  string  `json:"from,omitempty"`
 	To    string  `json:"to,omitempty"`
+	Plan  string  `json:"plan,omitempty"`
 	Nodes []int64 `json:"nodes,omitempty"`
 	Seq   int     `json:"seq"`
 	Node  int64   `json:"node,omitzero"`
+}
+
+// planFingerprint identifies a plan by what edits act on: every folder's id,
+// parent, name, level and merges. Any change to the plan (a copy applying the
+// draft, a re-plan, a discard) changes it, so a journal written against an
+// older plan never replays onto a newer one.
+func planFingerprint(tree []Node) string {
+	var lines []string
+	var walk func(parent int64, nodes []Node)
+	walk = func(parent int64, nodes []Node) {
+		for _, n := range nodes {
+			lines = append(lines, fmt.Sprintf("%d\x00%d\x00%s\x00%s\x00%v", n.ID, parent, n.Name, n.Level, n.MergedIDs))
+			walk(n.ID, n.Children)
+		}
+	}
+	walk(0, tree)
+	slices.Sort(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 func draftPath(outputDir string) string { return filepath.Join(outputDir, DraftFileName) }
 
 // readDraft returns the journalled edits in order; no file is no edits. A torn
 // last line (crash mid-append) is dropped and the file rewritten without it, so
-// the next append can't glue onto it. A bad line elsewhere is an error.
+// the next append can't glue onto it. A bad line elsewhere is an error. Only
+// the library's holder may call it: the rewrite would race its appends.
 func readDraft(outputDir string) ([]Edit, error) {
+	edits, torn, err := parseDraft(outputDir)
+	if err != nil || !torn {
+		return edits, err
+	}
+	return edits, writeDraft(outputDir, edits)
+}
+
+// CountEdits is how many complete edits the journal holds. It writes nothing,
+// so anyone may call it, holding the library or not.
+func CountEdits(outputDir string) (int, error) {
+	edits, _, err := parseDraft(outputDir)
+	return len(edits), err
+}
+
+// parseDraft reads the journal; torn reports a last line that is cut short or
+// missing its newline, which the next append would glue onto.
+func parseDraft(outputDir string) (edits []Edit, torn bool, err error) {
 	data, err := os.ReadFile(draftPath(outputDir))
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read review draft: %w", err)
+		return nil, false, fmt.Errorf("read review draft: %w", err)
 	}
 	if len(data) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n"))
-	var edits []Edit
 	for i, line := range lines {
 		if len(line) == 0 {
 			continue
@@ -66,22 +109,13 @@ func readDraft(outputDir string) ([]Edit, error) {
 		var e Edit
 		if err := json.Unmarshal(line, &e); err != nil {
 			if i == len(lines)-1 {
-				if err := writeDraft(outputDir, edits); err != nil {
-					return nil, err
-				}
-				break
+				return edits, true, nil
 			}
-			return nil, fmt.Errorf("review draft line %d: %w", i+1, err)
+			return nil, false, fmt.Errorf("review draft line %d: %w", i+1, err)
 		}
 		edits = append(edits, e)
 	}
-	// a complete last edit missing its newline would also glue onto the next
-	if data[len(data)-1] != '\n' {
-		if err := writeDraft(outputDir, edits); err != nil {
-			return nil, err
-		}
-	}
-	return edits, nil
+	return edits, data[len(data)-1] != '\n', nil
 }
 
 // appendDraft records one edit and syncs it to disk before returning, so an
@@ -159,6 +193,7 @@ func RemoveDraft(outputDir string) error {
 type Draft struct {
 	dir   string
 	base  []Node // the plan as the database holds it, never edited
+	plan  string // planFingerprint(base), stamped on every edit
 	edits []Edit
 	tree  []Node // base with edits replayed
 }
@@ -166,13 +201,29 @@ type Draft struct {
 // ErrNothingToUndo is Undo on a draft with no edits left.
 var ErrNothingToUndo = errors.New("nothing left to undo")
 
-// OpenDraft reads the journal in outputDir and replays it onto a copy of base.
+// OpenDraft reads the journal in outputDir and replays onto a copy of base the
+// edits made on base. Edits made on another plan are dropped: a review still
+// open when a copy applied the draft must not bring its edits back. Only the
+// library's holder may call it (see readDraft).
 func OpenDraft(outputDir string, base []Node) (*Draft, error) {
-	edits, err := readDraft(outputDir)
+	journal, err := readDraft(outputDir)
 	if err != nil {
 		return nil, err
 	}
-	return &Draft{dir: outputDir, base: base, edits: edits, tree: replay(cloneTree(base), edits)}, nil
+	plan := planFingerprint(base)
+	var edits []Edit
+	for _, e := range journal {
+		if e.Plan == plan {
+			edits = append(edits, e)
+		}
+	}
+	// drop them from the file too, so CountEdits counts only edits that apply
+	if len(edits) < len(journal) {
+		if err := writeDraft(outputDir, edits); err != nil {
+			return nil, err
+		}
+	}
+	return &Draft{dir: outputDir, base: base, plan: plan, edits: edits, tree: replay(cloneTree(base), edits)}, nil
 }
 
 // Tree is the plan with every edit applied, sorted by name.
@@ -197,7 +248,7 @@ func (d *Draft) Apply(e Edit) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	e.Seq = len(d.edits) + 1
+	e.Seq, e.Plan = len(d.edits)+1, d.plan
 	if err := appendDraft(d.dir, e); err != nil {
 		d.tree = replay(cloneTree(d.base), d.edits)
 		return Outcome{}, err
@@ -244,11 +295,13 @@ func applyEdit(tree []Node, e Edit) ([]Node, Outcome, error) {
 			return tree, Outcome{}, fmt.Errorf("internal error locating folder %d", e.Node)
 		case n.Fixed():
 			return tree, Outcome{}, ErrFixedFolder
-		case e.To == "":
+		case strings.TrimSpace(e.To) == "":
 			return tree, Outcome{}, fmt.Errorf("a folder needs a name")
 		}
-		n.Name = e.To
-		return tree, Outcome{Focus: n.ID, Name: e.To}, nil
+		// cleaned here, not by the front end, so no name reaches the draft
+		// that the copy's tree check would refuse ("..", "/", a reserved name)
+		n.Name = wspath.ToLibrary(wspath.SanitizeSegment(e.To))
+		return tree, Outcome{Focus: n.ID, Name: n.Name}, nil
 	case OpMerge:
 		t, id, name, parent, err := mergeNodes(tree, e.Nodes)
 		return t, Outcome{Focus: id, Name: name, Parent: parent}, err

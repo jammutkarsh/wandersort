@@ -418,10 +418,10 @@ func seedPlannedFile(t *testing.T, dbPath string) {
 func TestWorkGroupRewrite(t *testing.T) {
 	var g WorkGroup
 	reading, _ := g.StartOnLibrary()
-	enterFirst, ok := g.StartRewrite()
-	enterSecond, ok2 := g.StartRewrite()
-	if !ok || !ok2 || !g.Rewriting() {
-		t.Fatalf("rewrites registered: %v %v, rewriting=%v", ok, ok2, g.Rewriting())
+	enterFirst, err := g.StartRewrite()
+	enterSecond, err2 := g.StartRewrite()
+	if err != nil || err2 != nil || !g.Rewriting() {
+		t.Fatalf("rewrites registered: %v %v, rewriting=%v", err, err2, g.Rewriting())
 	}
 
 	firstIn := make(chan func())
@@ -475,8 +475,74 @@ func TestWorkGroupShutdownSkipsARewriteNeverEntered(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("shutdown waited for a rewrite that never entered")
 	}
-	if _, ok := enter(); ok || g.Rewriting() {
+	if _, err := enter(); !errors.Is(err, ErrClosing) || g.Rewriting() {
 		t.Errorf("a rewrite entered after shutdown, or still counts: rewriting=%v", g.Rewriting())
+	}
+}
+
+// A library opened before that is no longer in its folder (its drive
+// unplugged) is refused, not started afresh there or replaced by the default
+// one: whether the folder went with the drive or an empty mount point stayed.
+func TestOpenRefusesAMissingRememberedLibrary(t *testing.T) {
+	tests := []struct {
+		name       string
+		mountPoint bool // an empty folder stays where the drive was mounted
+	}{
+		{"folder gone", false},
+		{"empty mount point", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := testSession(t)
+			gone := filepath.Join(t.TempDir(), "on-a-drive")
+			if err := s.Switch(ctx, gone); err != nil {
+				t.Fatal(err)
+			}
+			s.Close()
+			if err := os.RemoveAll(gone); err != nil {
+				t.Fatal(err)
+			}
+			if tt.mountPoint {
+				if err := os.Mkdir(gone, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			noLibraryStarted := func(step string) {
+				t.Helper()
+				if _, err := os.Stat(config.DBPath(gone)); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("%s started a new library in the missing one's folder: %v", step, err)
+				}
+				if _, err := os.Stat(gone); tt.mountPoint == errors.Is(err, os.ErrNotExist) {
+					t.Errorf("%s changed whether the folder exists: %v", step, err)
+				}
+			}
+
+			cfg, err := config.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.OutputDir() != gone {
+				t.Fatalf("library chosen = %q, want the most recent %q", cfg.OutputDir(), gone)
+			}
+			next := New(cfg, logger.NewNoopLogger(), nil)
+			t.Cleanup(next.Close)
+			if err := next.Open(ctx); !errors.Is(err, config.ErrLibraryMissing) {
+				t.Fatalf("Open = %v, want ErrLibraryMissing", err)
+			}
+			noLibraryStarted("Open")
+			if err := next.Restore(ctx); !errors.Is(err, config.ErrLibraryMissing) {
+				t.Errorf("Restore = %v, want ErrLibraryMissing", err)
+			}
+			noLibraryStarted("Restore")
+			if err := s.Switch(ctx, filepath.Join(t.TempDir(), "other")); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Switch(ctx, gone); !errors.Is(err, config.ErrLibraryMissing) {
+				t.Errorf("Switch = %v, want ErrLibraryMissing", err)
+			}
+			noLibraryStarted("Switch")
+		})
 	}
 }
 
@@ -555,6 +621,83 @@ func TestSaveSettingsBoundToItsLibrary(t *testing.T) {
 	}
 	if !got.Equal(stored) {
 		t.Errorf("library switched to holds rules %v, want its own %v", got.Rules, stored.Rules)
+	}
+}
+
+// Jobs run one at a time and never beside a re-plan: a scan replacing the
+// pending plan under a copy working through it would copy files the plan no
+// longer holds. Each one started moves Plan on.
+func TestWorkGroupJobs(t *testing.T) {
+	var g WorkGroup
+	plan := g.Plan()
+	done, err := g.StartJob(JobScan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Plan() == plan || g.Running() != JobScan {
+		t.Errorf("after a scan started: plan %d (was %d), running %q", g.Plan(), plan, g.Running())
+	}
+	if wrong, err := g.StartJob(JobCopy); !errors.Is(err, ErrBusy) {
+		if wrong != nil {
+			wrong() // or the re-plan below waits on it for ever
+		}
+		t.Fatalf("copy beside a scan = %v, want ErrBusy", err)
+	}
+	if _, err := g.StartRewrite(); !errors.Is(err, ErrBusy) {
+		t.Errorf("re-plan beside a scan = %v, want ErrBusy", err)
+	}
+	if _, ok := g.HoldLibrary(); ok {
+		t.Error("library held for a switch while a scan ran")
+	}
+	done()
+
+	enter, err := g.StartRewrite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrong, err := g.StartJob(JobCopy); !errors.Is(err, ErrReplanning) {
+		if wrong != nil {
+			wrong() // or entering the re-plan waits on it for ever
+		}
+		t.Fatalf("copy while a re-plan waits = %v, want ErrReplanning", err)
+	}
+	end, _ := enter()
+	end()
+	if done, err := g.StartJob(JobCopy); err != nil {
+		t.Errorf("copy once the re-plan ended: %v", err)
+	} else {
+		done()
+	}
+
+	g.CloseAndWait()
+	if _, err := g.StartJob(JobScan); !errors.Is(err, ErrClosing) {
+		t.Errorf("scan after shutdown = %v, want ErrClosing", err)
+	}
+}
+
+// A switch is refused while a job runs, and once shutdown began: nothing would
+// release the lock it took.
+func TestSwitchRefusedWhileBusyOrClosing(t *testing.T) {
+	ctx := context.Background()
+	s := testSession(t)
+	if err := s.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	done, err := s.Work.StartJob(JobCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Switch(ctx, filepath.Join(t.TempDir(), "other")); !errors.Is(err, ErrBusy) {
+		t.Errorf("Switch beside a copy = %v, want ErrBusy", err)
+	}
+	done()
+	s.Work.CloseAndWait()
+	other := filepath.Join(t.TempDir(), "after")
+	if err := s.Switch(ctx, other); !errors.Is(err, ErrClosing) {
+		t.Errorf("Switch after shutdown = %v, want ErrClosing", err)
+	}
+	if _, err := os.Stat(other); !errors.Is(err, os.ErrNotExist) {
+		t.Error("a switch after shutdown made a library")
 	}
 }
 

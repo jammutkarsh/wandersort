@@ -141,19 +141,31 @@ func withSuffix(p string, n int) string {
 }
 
 // place copies src to exactly dst, failing with fs.ErrExist if dst is taken.
-// The copy lands only if its bytes hash to want, and is removed again if it
-// can't be recorded.
+// The copy lands only if the bytes read from src and the bytes read back from
+// the library both hash to want, and is removed again if it
+// was surely not recorded. A commit of unknown outcome keeps it: the record may
+// be on disk, and if not, the next run finds the copy at this name and records it.
 func place(src, dst, want string, commit func() error) error {
 	h := metadata.NewHasher()
-	if _, err := atomicfile.Copy(src, dst, h, func() error {
+	if _, err := atomicfile.Copy(src, dst, h, func(tmp string) error {
 		if got := metadata.HashString(h); got != want {
 			return fmt.Errorf("source changed since it was scanned: copied %s, scanned %q: %w", got, want, db.ErrChecksumMismatch)
+		}
+		// the hash above saw the bytes read from the source; read back what
+		// the library's drive holds, so a bad write never lands
+		if got, err := metadata.HashFile(tmp); err != nil {
+			return fmt.Errorf("read back the copy: %w", err)
+		} else if got != want {
+			return fmt.Errorf("the copy reads back as %s, not the source's %s: %w", got, want, db.ErrChecksumMismatch)
 		}
 		return nil
 	}); err != nil {
 		return &stepError{opCopy, err}
 	}
 	if err := commit(); err != nil {
+		if errors.Is(err, db.ErrCommitUnknown) {
+			return fmt.Errorf("the copy stays at %s until the next copy records it: %w", dst, err)
+		}
 		// not recorded, so not kept: this name was free until the copy took it
 		if rerr := os.Remove(dst); rerr != nil {
 			return errors.Join(err, fmt.Errorf("the copy stays at %s, unrecorded: %w", dst, rerr))

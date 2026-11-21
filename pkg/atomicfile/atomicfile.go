@@ -26,9 +26,11 @@ const CopyPrefix = ".copy-"
 
 // Copy copies src to dest atomically (temp file in dest's directory, then a
 // no-replace Rename); a taken dest is fs.ErrExist and never touched. tee sees
-// every byte and check runs before linking: its error leaves dest untouched.
+// every byte and check runs before linking, given the synced temp file: its
+// error leaves dest untouched. Where the OS allows, the temp file's bytes are
+// out of the page cache by then, so check reading it reads the drive.
 // Keeps src's permission bits (minus execute) and mtime. Returns bytes written.
-func Copy(src, dest string, tee io.Writer, check func() error) (int64, error) {
+func Copy(src, dest string, tee io.Writer, check func(tmp string) error) (int64, error) {
 	if err := MkdirAll(filepath.Dir(dest)); err != nil {
 		return 0, fmt.Errorf("create dest dir %s: %w", filepath.Dir(dest), err)
 	}
@@ -44,6 +46,7 @@ func Copy(src, dest string, tee io.Writer, check func() error) (int64, error) {
 		return 0, fmt.Errorf("create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
+	keepOutOfCache(tmp)
 	defer func() {
 		tmp.Close()
 		os.Remove(tmpName) // no-op once Rename moved it
@@ -78,11 +81,12 @@ func Copy(src, dest string, tee io.Writer, check func() error) (int64, error) {
 	if err := tmp.Sync(); err != nil {
 		return 0, fmt.Errorf("sync temp file: %w", err)
 	}
+	dropCached(tmp)
 	if err := tmp.Close(); err != nil {
 		return 0, fmt.Errorf("close temp file: %w", err)
 	}
 	if check != nil {
-		if err := check(); err != nil {
+		if err := check(tmpName); err != nil {
 			return 0, err
 		}
 	}

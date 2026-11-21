@@ -1,7 +1,9 @@
 package review
 
 import (
+	"bytes"
 	"context"
+	"encoding/json/v2"
 	"fmt"
 	"math"
 	"os"
@@ -21,6 +23,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/preview"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -47,10 +50,10 @@ func usePreviewRoot(t *testing.T) string {
 	t.Setenv("TMPDIR", tmp)
 	t.Setenv("TMP", tmp) // Windows reads the temp folder from TMP, then TEMP
 	t.Setenv("TEMP", tmp)
-	if err := os.MkdirAll(PreviewRoot(), 0o755); err != nil {
+	if err := os.MkdirAll(preview.Root(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return PreviewRoot()
+	return preview.Root()
 }
 
 // testModel opens a review over tree with an empty draft in a temp dir.
@@ -64,13 +67,25 @@ func testModel(t *testing.T, tree []vfs.Node, ctx context.Context) Model {
 }
 
 // journal is the draft as a new session would read it back from dir.
+// journal is the draft file's edits as written, whichever plan they were made on.
 func journal(t *testing.T, dir string) []vfs.Edit {
 	t.Helper()
-	d, err := vfs.OpenDraft(dir, nil)
+	data, err := os.ReadFile(filepath.Join(dir, vfs.DraftFileName))
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	return d.Edits()
+	var edits []vfs.Edit
+	for line := range bytes.Lines(data) {
+		var e vfs.Edit
+		if err := json.Unmarshal(line, &e); err != nil {
+			t.Fatal(err)
+		}
+		edits = append(edits, e)
+	}
+	return edits
 }
 
 func sampleTree() []vfs.Node {
@@ -132,28 +147,9 @@ func TestReview(t *testing.T) {
 			if len(parentFiles) != 2 || len(leafFiles) != 2 {
 				t.Fatalf("parentFiles = %v, leafFiles = %v, want 2 files each", parentFiles, leafFiles)
 			}
-			if previewDirFor(parentFiles) != previewDirFor(leafFiles) {
+			if preview.DirFor(parentFiles) != preview.DirFor(leafFiles) {
 				t.Errorf("preview dirs differ: parent %q vs leaf %q, want equal so both peeks share one temp copy",
-					previewDirFor(parentFiles), previewDirFor(leafFiles))
-			}
-		}},
-		// TestCleanPreviewsRemovesEverything covers the sweep a saved plan and
-		// `wandersort admin clear` both run: copies survive an unsaved exit, but once the
-		// plan is written there is nothing left to peek at.
-		{"CleanPreviewsRemovesEverything", func(t *testing.T) {
-			root := usePreviewRoot(t)
-			for _, name := range []string{"a", "b"} {
-				if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			if err := CleanPreviews(); err != nil {
-				t.Fatal(err)
-			}
-
-			if _, err := os.Stat(root); !os.IsNotExist(err) {
-				t.Errorf("%s still exists after CleanPreviews", root)
+					preview.DirFor(parentFiles), preview.DirFor(leafFiles))
 			}
 		}},
 		// TestMergeWithoutVisualModeIsRejectedLoudly covers the reported "merge
@@ -575,7 +571,7 @@ func TestReview(t *testing.T) {
 			m := testModel(t, siblingTree(), nil)
 			// rows: 0=2024, 1=June, 2=03, 3=09. Rename the year, then merge the leaves.
 			m.cursor = 0
-			m.applyRename("Two Thousand Twenty Four")
+			m.applyRename("Two-Thousand-Twenty-Four")
 
 			m.visualMode, m.visualAnchor, m.cursor = true, 2, 3
 			m.mergeSelection()
@@ -583,7 +579,7 @@ func TestReview(t *testing.T) {
 			if m.statusIsErr {
 				t.Fatalf("merge failed: %q", m.statusMsg)
 			}
-			if got := m.rows[0].node.Name; got != "Two Thousand Twenty Four" {
+			if got := m.rows[0].node.Name; got != "Two-Thousand-Twenty-Four" {
 				t.Errorf("after merge, year name = %q, want the rename to survive", got)
 			}
 		}},
@@ -592,14 +588,14 @@ func TestReview(t *testing.T) {
 		{"UndoKeepsEarlierRenames", func(t *testing.T) {
 			m := testModel(t, siblingTree(), nil)
 			m.cursor = 0
-			m.applyRename("Renamed Year")
+			m.applyRename("Renamed-Year")
 			m.visualMode, m.visualAnchor, m.cursor = true, 2, 3
 			m.mergeSelection()
 
 			next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 			rm := next.(Model)
-			if got := rm.rows[0].node.Name; got != "Renamed Year" {
-				t.Errorf("after undo, year name = %q, want %q", got, "Renamed Year")
+			if got := rm.rows[0].node.Name; got != "Renamed-Year" {
+				t.Errorf("after undo, year name = %q, want %q", got, "Renamed-Year")
 			}
 			if nodeByID(rm.rows, pid("2024/June/09")) == nil {
 				t.Error("undo should have restored the folded-away leaf")
@@ -829,14 +825,14 @@ func TestReview(t *testing.T) {
 		{"MergeKeepsAnExplicitRename", func(t *testing.T) {
 			m := testModel(t, siblingTree(), nil)
 			m.cursor = 2
-			m.applyRename("Goa Trip") // the cursor follows the node through the re-sort
+			m.applyRename("Goa-Trip") // the cursor follows the node through the re-sort
 			m.visualAnchor, m.visualMode = m.cursor, true
 			m.cursor = 2 // the other day
 
 			m.mergeSelection()
 
 			row := nodeByID(m.rows, pid("2024/June/03"))
-			if row == nil || row.node.Name != "Goa Trip" {
+			if row == nil || row.node.Name != "Goa-Trip" {
 				t.Fatalf("want the typed rename carried onto the merged folder, got %+v", row)
 			}
 		}},
@@ -1158,7 +1154,7 @@ func TestReview(t *testing.T) {
 		}},
 		// TestPeekCmdCopiesFilesToTheDeterministicDir drives peekCmd end to end
 		// against a real DB: it should copy the node's files into the dir
-		// previewDirFor names, leaving no .copying- staging dir behind.
+		// preview.DirFor names, leaving no .copying- staging dir behind.
 		{"PeekCmdCopiesFilesToTheDeterministicDir", func(t *testing.T) {
 			ctx := context.Background()
 			usePreviewRoot(t)
@@ -1177,13 +1173,13 @@ func TestReview(t *testing.T) {
 			if pm.err != nil {
 				t.Fatalf("peekCmd: %v", pm.err)
 			}
-			if want := previewDirFor([]string{srcFile}); pm.dir != want {
+			if want := preview.DirFor([]string{srcFile}); pm.dir != want {
 				t.Errorf("dir = %q, want the deterministic %q", pm.dir, want)
 			}
 			if _, err := os.Stat(filepath.Join(pm.dir, "a.jpg")); err != nil {
 				t.Errorf("expected a.jpg copied into %s: %v", pm.dir, err)
 			}
-			entries, err := os.ReadDir(PreviewRoot())
+			entries, err := os.ReadDir(preview.Root())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1210,7 +1206,7 @@ func TestReview(t *testing.T) {
 				t.Fatalf("first peek: %v", pm.err)
 			}
 			// a fresh copy would wipe the directory first, taking this with it
-			dir := previewDirFor([]string{srcFile})
+			dir := preview.DirFor([]string{srcFile})
 			witness := filepath.Join(dir, "witness")
 			if err := os.WriteFile(witness, nil, 0o644); err != nil {
 				t.Fatal(err)
@@ -1255,10 +1251,10 @@ func TestReview(t *testing.T) {
 			if pm.err == nil {
 				t.Fatal("expected an error copying a missing source file")
 			}
-			if _, err := os.Stat(previewDirFor([]string{present, missing})); !os.IsNotExist(err) {
+			if _, err := os.Stat(preview.DirFor([]string{present, missing})); !os.IsNotExist(err) {
 				t.Error("a failed copy left a directory under the hash name, which a later peek would reuse")
 			}
-			entries, err := os.ReadDir(PreviewRoot())
+			entries, err := os.ReadDir(preview.Root())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1523,13 +1519,13 @@ func TestDraft(t *testing.T) {
 		dir := t.TempDir()
 		m, _ := newDBModel(t, dir)
 		m.focusNode(dayRow(m).node.ID)
-		m.applyRename("Goa Trip")
-		if edits := journal(t, dir); len(edits) != 1 || edits[0].Op != vfs.OpRename || edits[0].To != "Goa Trip" {
+		m.applyRename("Goa-Trip")
+		if edits := journal(t, dir); len(edits) != 1 || edits[0].Op != vfs.OpRename || edits[0].To != "Goa-Trip" {
 			t.Fatalf("draft = %+v, want one rename to Goa Trip", edits)
 		}
 		// a kill here is the same as a clean exit: the file is all there is
 		again, _ := newDBModel(t, dir)
-		if got := dayRow(again).node.Name; got != "Goa Trip" {
+		if got := dayRow(again).node.Name; got != "Goa-Trip" {
 			t.Errorf("reopened day = %q, want the rename replayed", got)
 		}
 	})

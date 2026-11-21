@@ -113,6 +113,9 @@ func (s *Session) Open(ctx context.Context) error {
 	// From here the run touches (or tried to touch) user data: keep its log.
 	s.logFile.Persist()
 	outputDir := s.cfg.OutputDir()
+	if err := s.cfg.CheckRemembered(outputDir); err != nil {
+		return err
+	}
 	if err := config.CheckLibrary(outputDir); err != nil {
 		return err
 	}
@@ -188,13 +191,22 @@ var ErrLibraryChanged = errors.New("the library changed before these settings we
 // ErrClosing refuses work once the session is shutting down.
 var ErrClosing = errors.New("shutting down")
 
+// ErrNotOpen refuses work that needs the library open when none is.
+var ErrNotOpen = errors.New("no library is open")
+
+// ErrBusy refuses work that would overlap other work on the library: two
+// scans, a scan and a copy, or a switch while either runs.
+var ErrBusy = errors.New("busy with this library; try again when it's done")
+
 // SaveSettings makes settings the library's, opening it first if none is
 // open. A change rebuilds the plan from them and writes both in one
 // transaction, so the library never holds settings its plan was not built
 // from: a save that fails or is cancelled leaves the library and Settings as
 // they were. It waits for work running on the library, may take minutes on a
 // large one, and meanwhile refuses other saves and switches (ErrReplanning).
-// places opens the location database the plan names places from.
+// A scan or copy running refuses it (ErrBusy). places opens the location
+// database the plan names places from; it is waited for before the library is
+// held, so a download never keeps other work off the library.
 func (s *Session) SaveSettings(ctx context.Context, settings config.Settings, places func(context.Context) (*location.Resolver, error)) error {
 	if s.Work.Rewriting() {
 		return ErrReplanning
@@ -203,13 +215,17 @@ func (s *Session) SaveSettings(ctx context.Context, settings config.Settings, pl
 		return nil // nothing changed: the plan and its review edits stay
 	}
 	dir := s.OutputDir() // the library these settings were chosen for
-	enter, ok := s.Work.StartRewrite()
-	if !ok {
-		return ErrClosing
+	resolver, err := places(ctx)
+	if err != nil {
+		return fmt.Errorf("location database: %w", err)
 	}
-	done, ok := enter()
-	if !ok {
-		return ErrClosing
+	enter, err := s.Work.StartRewrite()
+	if err != nil {
+		return err
+	}
+	done, err := enter()
+	if err != nil {
+		return err
 	}
 	defer done()
 	// a switch may have taken the library while this waited
@@ -221,11 +237,6 @@ func (s *Session) SaveSettings(ctx context.Context, settings config.Settings, pl
 	}
 	if settings.Equal(s.Settings()) {
 		return nil
-	}
-
-	resolver, err := places(ctx)
-	if err != nil {
-		return fmt.Errorf("location database: %w", err)
 	}
 	// the library can't be switched or closed while this holds it
 	cfg := s.Configuration()
@@ -255,12 +266,22 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 	if s.Work.Rewriting() {
 		return ErrReplanning
 	}
+	if err := s.Configuration().CheckRemembered(dir); err != nil {
+		return err
+	}
 	if err := config.CheckLibrary(dir); err != nil {
 		return err
 	}
+	// registered, so shutdown waits for it and a switch after shutdown never
+	// takes a lock nothing would release
+	stop, ok := s.Work.Start()
+	if !ok {
+		return ErrClosing
+	}
+	defer stop()
 	release, ok := s.Work.HoldLibrary()
 	if !ok {
-		return errors.New("busy with this library; change it when it's done")
+		return ErrBusy
 	}
 	defer release()
 	// a save registered after the check above waits for this hold; refuse
@@ -290,6 +311,7 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 	s.cfg.SetOutput(dir)
 	s.db, s.lock = appDB, l
 	s.cfg.Settings = settings
+	s.Work.plan.Add(1) // another library, another plan
 	if err := s.cfg.Remember(dir); err != nil {
 		s.log.Warn("could not record this library as recently used", "error", err)
 	}
@@ -325,18 +347,32 @@ func isNew(ctx context.Context, d *db.DB) (bool, error) {
 // holding the output lock meanwhile. With the library open it refuses,
 // db.ErrInUse: a restore needs every connection closed.
 func (s *Session) Restore(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.db != nil {
+	release, ok := s.Work.HoldLibrary()
+	if !ok {
+		return ErrBusy
+	}
+	defer release()
+	s.mu.RLock()
+	open, dbPath := s.db != nil, s.cfg.AppDBPath
+	s.mu.RUnlock()
+	if open {
 		return fmt.Errorf("restore: %w", db.ErrInUse)
 	}
+	// taking the output lock creates the folder: refuse first if it is a
+	// remembered library whose drive is unplugged
+	if err := s.Configuration().CheckRemembered(filepath.Dir(dbPath)); err != nil {
+		return err
+	}
 	s.logFile.Persist()
-	l, err := lock.AcquireOutput(s.cfg.OutputDir())
+	// the output lock, not the session's, keeps Open out meanwhile: an Open now
+	// finds the library busy, and getters never wait for the restore
+	l, err := lock.AcquireOutput(filepath.Dir(dbPath))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
 	defer l.Unlock()
-	return Restore(ctx, s.cfg.AppDBPath, s.log)
+	defer s.Work.plan.Add(1) // the plan is the backup's now
+	return Restore(ctx, dbPath, s.log)
 }
 
 // RememberSources records the folders a scan walked; the first given ends up newest.
@@ -353,7 +389,8 @@ func (s *Session) RememberSources(roots []string) {
 
 // State answers "what can the user do next?" in one place. Exists and Edits
 // are read without opening anything; Open, Planned and Placed stay zero until
-// the session opens the library (which takes the lock and may create it).
+// the session opens the library (which takes the lock and may create it), and
+// Planned and Placed stay zero while a re-plan waits or runs.
 type State struct {
 	// Edits is how many review edits wait in the draft for execute. An
 	// unreadable draft counts as one, so the user still hears about it.
@@ -392,11 +429,12 @@ func (s *Session) State(ctx context.Context) State {
 	_, err := os.Stat(s.cfg.AppDBPath)
 	st := State{Exists: err == nil}
 
-	// no plan to replay onto: this only counts the journal
-	if d, err := vfs.OpenDraft(s.cfg.OutputDir(), nil); err != nil {
+	// counts without repairing: a torn draft is the holder's to fix, and this
+	// session may not hold the library
+	if n, err := vfs.CountEdits(s.cfg.OutputDir()); err != nil {
 		st.Edits = 1 // unreadable: something is there, and execute will say what
 	} else {
-		st.Edits = len(d.Edits())
+		st.Edits = n
 	}
 
 	d := s.db
@@ -404,6 +442,10 @@ func (s *Session) State(ctx context.Context) State {
 		return st
 	}
 	st.Open = true
+	// one database connection: counting now would wait out the whole re-plan
+	if s.Work.Rewriting() {
+		return st
+	}
 	planned, _, err := execute.Pending(ctx, d)
 	st.Planned = planned
 	if err != nil {
@@ -429,8 +471,58 @@ type WorkGroup struct {
 	library sync.RWMutex
 	// rewrites counts plan rewrites registered and not yet ended
 	rewrites atomic.Int32
-	// plan counts plan rewrites ever registered (see Plan)
+	// plan counts changes to the plan ever registered (see Plan)
 	plan atomic.Uint64
+	// job is the scan or copy running, "" for none; guarded by mu
+	job Job
+}
+
+// Job is work that changes the plan or what is placed: one at a time.
+type Job string
+
+const (
+	JobScan Job = "scan"
+	JobCopy Job = "copy"
+)
+
+// StartJob registers j on the open library, ended by done. It refuses once
+// shutdown began (ErrClosing), while a re-plan waits or runs (ErrReplanning),
+// and while another job runs (ErrBusy): a scan replacing the pending plan
+// under a copy working through it would copy files the plan no longer holds.
+// Plan moves on: anything built over the plan before the job is stale.
+func (g *WorkGroup) StartJob(j Job) (done func(), err error) {
+	g.mu.Lock()
+	switch {
+	case g.closed:
+		err = ErrClosing
+	case g.rewrites.Load() > 0:
+		err = ErrReplanning
+	case g.job != "":
+		err = fmt.Errorf("%w (a %s is running)", ErrBusy, g.job)
+	}
+	if err != nil {
+		g.mu.Unlock()
+		return nil, err
+	}
+	g.job = j
+	g.wg.Add(1)
+	g.plan.Add(1)
+	g.mu.Unlock()
+	g.library.RLock()
+	return func() {
+		g.library.RUnlock()
+		g.mu.Lock()
+		g.job = ""
+		g.mu.Unlock()
+		g.wg.Done()
+	}, nil
+}
+
+// Running is the job running on the library, "" for none.
+func (g *WorkGroup) Running() Job {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.job
 }
 
 // Start registers one piece of work, ended by done, or reports false once shutdown began.
@@ -462,35 +554,40 @@ func (g *WorkGroup) StartOnLibrary() (done func(), ok bool) {
 // called where the work runs, registers it with shutdown, waits for the work
 // already on the library, then holds it alone: rewrites run one at a time and
 // nothing else runs beside one. Shutdown waits only for a rewrite that
-// entered, so one never entered can't hang it; enter refuses once shutdown began.
-func (g *WorkGroup) StartRewrite() (enter func() (done func(), ok bool), ok bool) {
+// entered, so one never entered can't hang it; both calls refuse once shutdown
+// began (ErrClosing), and StartRewrite refuses while a job runs (ErrBusy).
+func (g *WorkGroup) StartRewrite() (enter func() (done func(), err error), err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.closed {
-		return nil, false
+		return nil, ErrClosing
+	}
+	if g.job != "" {
+		return nil, fmt.Errorf("%w (a %s is running)", ErrBusy, g.job)
 	}
 	g.rewrites.Add(1)
 	g.plan.Add(1)
-	return func() (func(), bool) {
+	return func() (func(), error) {
 		stop, ok := g.Start()
 		if !ok {
 			g.rewrites.Add(-1)
-			return nil, false
+			return nil, ErrClosing
 		}
 		g.library.Lock()
 		return func() {
 			g.library.Unlock()
 			g.rewrites.Add(-1)
 			stop()
-		}, true
-	}, true
+		}, nil
+	}, nil
 }
 
 // Rewriting reports whether a plan rewrite is waiting or running.
 func (g *WorkGroup) Rewriting() bool { return g.rewrites.Load() > 0 }
 
-// Plan is how many plan rewrites were ever registered: anything built over
-// the plan when Plan read n is stale once it reads more.
+// Plan counts changes to the plan: a re-plan or job registered, a switch,
+// discard or restore. Anything built over the plan when Plan read n is stale
+// once it reads more.
 func (g *WorkGroup) Plan() uint64 { return g.plan.Load() }
 
 // HoldLibrary takes the library from all work, or reports false while any runs on it.

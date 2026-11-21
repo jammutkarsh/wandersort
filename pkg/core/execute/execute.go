@@ -10,6 +10,7 @@ package execute
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	stdpath "path"
@@ -292,7 +293,9 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 
 		landed, size, xerr := xfer(ctx, src, dst, r.scanned(), commit)
 		if xerr != nil && committed == "" {
-			if !o.DryRun {
+			// a record that may have landed is left as it reads: the next run
+			// settles it, and a TRANSFER error would sit on a placed file
+			if !o.DryRun && !errors.Is(xerr, db.ErrCommitUnknown) {
 				if err := markFailed(ctx, database, r.FileID, xerr); err != nil {
 					log.Error("could not record a failed transfer", "source", src, "error", err)
 				}

@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jammutkarsh/wandersort/internal/review"
 	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/preview"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -140,7 +140,7 @@ func (a *app) resetLibrary(ctx context.Context) error {
 		return err
 	}
 	// preview copies outlive a session, so a wipe has to take them too
-	if err := review.CleanPreviews(); err != nil {
+	if err := preview.Clean(); err != nil {
 		a.Log().Warn("could not remove the preview copies", "error", err)
 	}
 	return nil

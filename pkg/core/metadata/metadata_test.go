@@ -230,6 +230,26 @@ func TestExtractor(t *testing.T) {
 				t.Errorf("a file with no tags should leave one hashed row with NULL exif columns, got %d", rows)
 			}
 		}},
+		// a file still being written when it was scanned hashes to bytes the
+		// scanned size doesn't describe: it fails the read and waits for the
+		// next scan, so no hash ever pairs with the wrong size
+		{"RunRefusesAFileThatChangedSinceTheScan", func(t *testing.T) {
+			ctx := context.Background()
+			d := dbtest.New(t)
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "clip.mov"), []byte("bytes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dbtest.SeedFile(t, d, 1, root, "clip.mov", 3) // scanned mid-write
+
+			if _, err := mustNew(t, d, installtest.Exiftool(t), 1).Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			d.Writer.Flush()
+			if got := state(t, d, 1); got != stateFailed {
+				t.Errorf("state = %s, want %s", got, stateFailed)
+			}
+		}},
 		// without exiftool every file would be stored with empty metadata and
 		// never read again, so the phase must not start
 		{"NewFailsWithoutExiftool", func(t *testing.T) {
@@ -454,6 +474,18 @@ func TestExtractor(t *testing.T) {
 			}
 			if errorRows != 0 {
 				t.Errorf("%d error rows left after a successful read", errorRows)
+			}
+		}},
+		// A batch whose commit failed may still have landed; the writer then
+		// replays its ops, so storing a file's row twice must succeed.
+		{"StoreReplays", func(t *testing.T) {
+			d := dbtest.New(t)
+			dbtest.SeedFile(t, d, 1, t.TempDir(), "photo.jpg", 13)
+			e := mustNew(t, d, installtest.Exiftool(t), 1)
+			for range 2 {
+				if err := d.Writer.WriteSync(context.Background(), e.store(1, "hash", classifier.CommonMetadata{})); err != nil {
+					t.Fatalf("store: %v", err)
+				}
 			}
 		}},
 		// A panic on one file is recorded with its stack and the run finishes.

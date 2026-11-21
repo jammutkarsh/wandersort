@@ -623,7 +623,7 @@ func TestScanner(t *testing.T) {
 				Name   string `db:"file_name"`
 				Volume string `db:"volume_uuid"`
 			}
-			if err := d.SQL.Select(&rows, `SELECT file_name, COALESCE(volume_uuid, '') AS volume_uuid FROM file_registry`); err != nil {
+			if err := d.SQL.Select(&rows, `SELECT file_name, volume_uuid FROM file_registry`); err != nil {
 				t.Fatal(err)
 			}
 			volumes := map[string]string{}
@@ -660,7 +660,8 @@ func TestScanner(t *testing.T) {
 			}
 		}},
 		// Another card mounted at the same path does not sweep the first
-		// card's rows; unknown volumes (either side) sweep as before
+		// card's rows. A root whose volume can't be read might be that other
+		// card, so it sweeps only rows of no known volume.
 		{"SweepKeepsRowsOfAnotherVolume", func(t *testing.T) {
 			tests := []struct {
 				name       string
@@ -670,7 +671,7 @@ func TestScanner(t *testing.T) {
 			}{
 				{"different card at the same path", "card-A", "card-B", true},
 				{"same card", "card-A", "card-A", false},
-				{"root volume unknown", "card-A", "", false},
+				{"root volume unknown", "card-A", "", true},
 				{"row volume unknown", "", "card-B", false},
 			}
 			for _, tt := range tests {
@@ -690,6 +691,36 @@ func TestScanner(t *testing.T) {
 						t.Errorf("kept = %v, want %v", ok, tt.kept)
 					}
 				})
+			}
+		}},
+		// Two cards mounted in turn at one path, holding files of the same name:
+		// the second card's file is another file, never a change to the first
+		// card's, so both keep their rows.
+		{"CardSwapKeepsBothCards", func(t *testing.T) {
+			ctx := context.Background()
+			sc, d := newDBScanner(t)
+			root := t.TempDir()
+			card := "card-A"
+			sc.volumeOf = func(string) string { return card }
+			scanCard := func(content string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(root, "IMG_0001.JPG"), []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sc.Run(ctx, []string{root}, false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			scanCard("first card")
+			card = "card-B"
+			scanCard("second card, another size")
+
+			var volumes []string
+			if err := d.SQL.Select(&volumes, `SELECT volume_uuid FROM file_registry ORDER BY volume_uuid`); err != nil {
+				t.Fatal(err)
+			}
+			if len(volumes) != 2 || volumes[0] != "card-A" || volumes[1] != "card-B" {
+				t.Errorf("rows by volume = %v, want [card-A card-B]", volumes)
 			}
 		}},
 		// TestSweepDeletesDependentRows: a vanished file's metadata, vfs-plan and

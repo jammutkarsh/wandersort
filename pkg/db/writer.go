@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,11 @@ const (
 )
 
 type DBOperation func(ctx context.Context, tx *sqlx.Tx) error
+
+// ErrCommitUnknown marks a WriteSync whose COMMIT failed: the transaction may
+// still have reached the disk (a WAL frame written before a failed sync is
+// replayed on the next open), so its outcome is known only by reading it back.
+var ErrCommitUnknown = errors.New("commit outcome unknown")
 
 // flushReq is sent by Flush() to signal the background goroutine to drain
 // all pending operations and report back when done
@@ -88,7 +94,10 @@ func (bw *BulkWriter) WriteSync(ctx context.Context, op DBOperation) error {
 	if err := op(ctx, tx); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%w: %w", ErrCommitUnknown, err)
+	}
+	return nil
 }
 
 // DryRun runs op in its own transaction and always rolls it back.

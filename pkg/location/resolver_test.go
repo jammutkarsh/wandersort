@@ -92,7 +92,7 @@ func TestLookupCachesMisses(t *testing.T) {
 	dead, cancel := context.WithCancel(context.Background())
 	cancel()
 	// same square, jittered well inside the cache grid
-	if _, err := r.Lookup(dead, lat+0.001, lon-0.001); !errors.Is(err, location.ErrNoLocation) {
+	if _, err := r.Lookup(dead, lat+0.00001, lon-0.00001); !errors.Is(err, location.ErrNoLocation) {
 		t.Errorf("second Lookup err = %v, want the cached ErrNoLocation (it queried again)", err)
 	}
 }
@@ -111,7 +111,7 @@ func TestLookupCachesHits(t *testing.T) {
 	cancel()
 	// jitter small enough to stay in the same square wherever inside it the
 	// first reading sat — these coordinates are near a grid boundary
-	got, err := r.Lookup(dead, lat+0.0001, lon+0.0001)
+	got, err := r.Lookup(dead, lat+0.00001, lon+0.00001)
 	if err != nil {
 		t.Fatalf("second Lookup err = %v, want the cached hit (it queried again)", err)
 	}
@@ -120,11 +120,9 @@ func TestLookupCachesHits(t *testing.T) {
 	}
 }
 
-// TestLookupNamesTheRealPoint pins that the cache grid is a key, not a
-// relocation: Lookup must name the city nearest the coordinates it was given,
-// not the one nearest the rounded square's centre. Both coordinates below sit
-// far enough into a square that the two disagree — naming the centre calls the
-// first "Lambeth" and the second "Chinatown, New York".
+// TestLookupNamesTheRealPoint pins that the grid is fine enough to name the
+// city nearest the coordinates given: on a coarse grid, naming the square
+// calls the first "Lambeth" and the second "Chinatown, New York".
 func TestLookupNamesTheRealPoint(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -152,6 +150,29 @@ func TestLookupNamesTheRealPoint(t *testing.T) {
 				t.Errorf("Lookup = %q, want %q (the nearest city to the real point)", got, nearest[0].DisplayName)
 			}
 		})
+	}
+}
+
+// Photos near each other are named the same whichever is looked up first:
+// planning looks places up from parallel workers.
+func TestLookupIgnoresOrder(t *testing.T) {
+	ctx := context.Background()
+	points := [][2]float64{{51.5034, -0.1238}, {51.5000, -0.1200}} // about 450 m apart, nearest cities differ
+	name := func(order ...int) []string {
+		r := installtest.Resolver(t)
+		got := make([]string, len(points))
+		for _, i := range order {
+			city, err := r.Lookup(ctx, points[i][0], points[i][1])
+			if err != nil {
+				t.Fatalf("Lookup: %v", err)
+			}
+			got[i] = city
+		}
+		return got
+	}
+	forward, backward := name(0, 1), name(1, 0)
+	if forward[0] != backward[0] || forward[1] != backward[1] {
+		t.Errorf("names depend on lookup order: %v vs %v", forward, backward)
 	}
 }
 

@@ -388,9 +388,11 @@ func (s *Scanner) sweep(ctx context.Context, scan int64, r sweptRoot, gaps walkG
 		}
 	}
 
+	// a root whose volume can't be read may be another card at the same path:
+	// it sweeps only rows of no known volume
 	query := `SELECT id FROM file_registry WHERE last_seen_scan < ? AND ` + underDir +
-		` AND (volume_uuid IS NULL OR ? = '' OR volume_uuid = ?)`
-	args := []any{scan, trimmed, prefix, prefixEnd, r.volume, r.volume}
+		` AND volume_uuid IN ('', ?)`
+	args := []any{scan, trimmed, prefix, prefixEnd, r.volume}
 	if !gaps.empty() {
 		for _, d := range gaps.dirs {
 			d = strings.TrimSuffix(d, "/")
@@ -425,14 +427,13 @@ const underDir = `(file_dir = ? OR (file_dir >= ? AND file_dir < ?))`
 func (s *Scanner) storeScan(file FileDiscovery, scan int64, force bool) db.DBOperation {
 	const query = `
 		INSERT INTO file_registry (
-			file_dir, file_name, file_size, file_modified_at,
+			file_dir, file_name, file_size, file_modified_at, file_mtime_ns,
 			volume_uuid, media_type, file_extension,
 			discovered_at, last_seen_at, last_seen_scan
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (file_dir, file_name) DO UPDATE SET
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (file_dir, file_name, volume_uuid) DO UPDATE SET
 			last_seen_at = excluded.last_seen_at,
-			last_seen_scan = excluded.last_seen_scan,
-			volume_uuid = COALESCE(excluded.volume_uuid, file_registry.volume_uuid)`
+			last_seen_scan = excluded.last_seen_scan`
 
 	return func(ctx context.Context, tx *sqlx.Tx) error {
 		now := db.FormatTime(time.Now())
@@ -440,12 +441,12 @@ func (s *Scanner) storeScan(file FileDiscovery, scan int64, force bool) db.DBOpe
 		// a changed file (or any under force) is a new file: forget the old row
 		// and let the insert make a fresh one. An error rolls both back; the
 		// writer replays the batch without this op and reports it at Flush.
-		if err := db.ForgetChanged(ctx, tx, file.Dir, file.Name, file.Size, modifiedAt, force); err != nil {
+		if err := db.ForgetChanged(ctx, tx, file.VolumeUUID, file.Dir, file.Name, file.Size, file.ModTime, force); err != nil {
 			return fmt.Errorf("replace changed %s: %w", file.Name, err)
 		}
 		if _, err := tx.ExecContext(ctx, query,
-			file.Dir, file.Name, file.Size, modifiedAt,
-			db.StrOrNil(file.VolumeUUID), file.MediaType, file.Extension,
+			file.Dir, file.Name, file.Size, modifiedAt, file.ModTime.UnixNano(),
+			file.VolumeUUID, file.MediaType, file.Extension,
 			now, now, scan,
 		); err != nil {
 			return fmt.Errorf("upsert %s: %w", file.Name, err)

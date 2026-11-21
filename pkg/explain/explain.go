@@ -1,4 +1,6 @@
-package tui
+// Package explain words errors as sentences a person can act on, for every
+// front end.
+package explain
 
 import (
 	"context"
@@ -25,16 +27,16 @@ var explanations = []struct {
 	{syscall.ENODEV, "The drive stopped answering. Check its cable, then try again."},
 }
 
-// Explain is err as a sentence a person can act on. Errors it does not know
+// Error is err as a sentence a person can act on. Errors it does not know
 // are already worded for people, so they pass through; the log keeps every cause.
-func Explain(err error) string {
+func Error(err error) string {
 	// errors.Join is several failures, one per line, each explained on its
 	// own; a fmt.Errorf with several %w reads differently and stays whole
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		var raw, lines []string
 		for _, part := range joined.Unwrap() {
 			raw = append(raw, part.Error())
-			lines = append(lines, Explain(part))
+			lines = append(lines, Error(part))
 		}
 		if strings.Join(raw, "\n") == err.Error() {
 			return strings.Join(lines, "\n")
