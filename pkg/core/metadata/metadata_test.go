@@ -571,8 +571,8 @@ func TestExtractor(t *testing.T) {
 				t.Errorf("op = %q, want %q", op, opExiftool)
 			}
 		}},
-		// a path exiftool cannot be handed leaves its tags unknown, not empty
-		{"RunRecordsAPathExiftoolCannotTake", func(t *testing.T) {
+		// a name with a line break is read like any other, not failed for good
+		{"RunReadsAPathWithALineBreak", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
 			root := t.TempDir()
@@ -586,8 +586,8 @@ func TestExtractor(t *testing.T) {
 				t.Fatalf("Run: %v", err)
 			}
 			d.Writer.Flush()
-			if got := state(t, d, 1); got != stateFailed {
-				t.Errorf("state = %s, want %s", got, stateFailed)
+			if got := state(t, d, 1); got != stateRead {
+				t.Errorf("state = %s, want %s", got, stateRead)
 			}
 		}},
 		// More files than one page holds: every one is read exactly once, and

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -28,8 +29,9 @@ const extractTimeout = 2 * time.Minute
 // the file: the worker is dead and the file's metadata is unknown, not empty.
 var ErrProcess = errors.New("exiftool process failed")
 
-// ErrUnsafePath refuses a path with a line break: the -@ argument file is one
-// argument per line, so the rest would become exiftool options.
+// ErrUnsafePath means a path with a line break could not be given to exiftool
+// under a safe name: the -@ argument file is one argument per line, so the
+// rest would become exiftool options.
 var ErrUnsafePath = errors.New("path contains a line break and cannot be passed to exiftool")
 
 // ErrUnreadable means exiftool could not read the file (no output, or an I/O
@@ -104,8 +106,13 @@ func newExtractor(exiftoolPath string, timeout time.Duration) (*Extractor, error
 // the timeout kill the process (the only way to unblock a stdout read), leaving
 // the worker dead (ErrProcess).
 func (e *Extractor) Extract(ctx context.Context, path string) (classifier.CommonMetadata, error) {
-	if strings.ContainsAny(path, "\r\n") {
-		return classifier.CommonMetadata{}, ErrUnsafePath
+	if strings.ContainsAny(path, lineBreaks) {
+		link, remove, err := safeName(path)
+		if err != nil {
+			return classifier.CommonMetadata{}, fmt.Errorf("%w: %w", ErrUnsafePath, err)
+		}
+		defer remove()
+		path = link
 	}
 
 	e.mu.Lock()
@@ -175,6 +182,34 @@ func (e *Extractor) Extract(ctx context.Context, path string) (classifier.Common
 	}
 
 	return classifier.ParseMetadata(filepath.Ext(path), arr[0])
+}
+
+// lineBreaks end an argument in exiftool's -@ argument file.
+const lineBreaks = "\r\n"
+
+// safeName is a symlink to path in a fresh temp folder, named with path's
+// extension (exiftool and ParseMetadata read it) and no line break; remove
+// deletes it. Only Unix names hold line breaks, and symlinks need no rights there.
+func safeName(path string) (link string, remove func(), err error) {
+	target, err := filepath.Abs(path)
+	if err != nil {
+		return "", nil, err
+	}
+	dir, err := os.MkdirTemp("", "wandersort-exiftool-*")
+	if err != nil {
+		return "", nil, err
+	}
+	remove = func() { os.RemoveAll(dir) }
+	ext := filepath.Ext(path)
+	if strings.ContainsAny(ext, lineBreaks) {
+		ext = ""
+	}
+	link = filepath.Join(dir, "file"+ext)
+	if err := os.Symlink(target, link); err != nil {
+		remove()
+		return "", nil, err
+	}
+	return link, remove, nil
 }
 
 // Dead reports whether the process was killed or broke; the pool checks it
