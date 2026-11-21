@@ -96,6 +96,40 @@ func Copy(src, dest string, tee io.Writer, check func(tmp string) error) (int64,
 	return n, nil
 }
 
+// WriteFile replaces path with data (temp file, sync, rename), so a crash
+// leaves the old file or the new one whole, never an empty or partial one.
+func WriteFile(path string, data []byte, perm fs.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpName) // no-op once renamed
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		return fmt.Errorf("set mode on temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename to %s: %w", path, err)
+	}
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("sync dir %s: %w", dir, err)
+	}
+	return nil
+}
+
 // MkdirAll is os.MkdirAll that syncs each created folder into its parent: on
 // exFAT/FAT (no journal) a power cut can otherwise drop the folder and the
 // synced file in it.
