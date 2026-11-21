@@ -6,10 +6,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
 // seedPlaced writes content into the library at rel and rows it the way
@@ -183,6 +185,16 @@ func TestVerifyReportsLeftoverTempFiles(t *testing.T) {
 	// Reported, never removed: deleting files is execute's job.
 	if _, err := os.Stat(filepath.Join(out, "2024", ".copy-123456")); err != nil {
 		t.Errorf("verify deleted the stray: %v", err)
+	}
+}
+
+// A source named like a temp copy lands under a name check does not take for one.
+func TestVerifyPassesAFileNamedLikeATempCopy(t *testing.T) {
+	d, out := dbtest.New(t), t.TempDir()
+	seedPlaced(t, d, out, 1, filepath.Join("2024", path.SanitizeFileName(atomicfile.CopyPrefix+"a1b2.jpg")), "hello")
+
+	if rep := run(t, d, out, false); !rep.Sound() {
+		t.Errorf("a placed file reported as a stray: %+v", rep)
 	}
 }
 

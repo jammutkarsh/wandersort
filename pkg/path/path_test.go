@@ -100,6 +100,7 @@ func TestSanitizeFileName(t *testing.T) {
 		{"reserved with a longer stem is fine", "cone.jpg", "cone.jpg"},
 		{"long stem leaves room for _N", long, strings.Repeat("a", 255-4-8) + ".JPG"},
 		{"empty stem", ".jpg", "-.jpg"},
+		{"copy temp prefix escaped", ".copy-a1b2.jpg", "_.copy-a1b2.jpg"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

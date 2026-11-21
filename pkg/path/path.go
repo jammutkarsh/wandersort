@@ -185,6 +185,9 @@ func SanitizeFileName(name string) string {
 		ext = ""
 	}
 	stem := strings.TrimRight(strings.TrimSuffix(name, ext), " .")
+	if strings.HasPrefix(stem, copyTempPrefix) {
+		stem = copyTempEscape + stem
+	}
 	stem = strings.TrimRight(truncate(stem, maxNameBytes-len(ext)-suffixRoom), " .")
 	if stem == "" {
 		stem = "-"
@@ -202,6 +205,11 @@ const (
 	// maxExtBytes bounds what counts as an extension rather than a stem
 	// that happens to hold a dot.
 	maxExtBytes = 16
+	// copyTempPrefix mirrors atomicfile.CopyPrefix (neither package may import
+	// the other): check reports a file starting with it as a leftover copy.
+	copyTempPrefix = ".copy-"
+	// copyTempEscape goes before a name that would start with copyTempPrefix.
+	copyTempEscape = "_"
 )
 
 // unportable reports whether some library filesystem refuses r in a name.
