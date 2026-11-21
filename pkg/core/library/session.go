@@ -181,6 +181,10 @@ func (s *Session) Close() {
 	defer s.Work.library.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.db != nil {
+		// another process may hold the library next: an open review is stale
+		s.Work.plan.Add(1)
+	}
 	s.closeLibrary(s.db, s.lock)
 	s.db, s.lock = nil, nil
 }
@@ -520,6 +524,8 @@ func (s *Session) State(ctx context.Context) State {
 // WorkGroup tracks background work so shutdown can wait for it; work that
 // would start after shutdown began is refused instead.
 type WorkGroup struct {
+	// mu is taken last: nothing else is locked while it is held, except the
+	// non-blocking TryRLock in whileIdle and a Review's own snapshot lock.
 	mu     sync.Mutex
 	closed bool
 	wg     sync.WaitGroup

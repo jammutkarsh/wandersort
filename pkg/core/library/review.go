@@ -3,6 +3,7 @@ package library
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/location"
@@ -19,6 +20,12 @@ type Review struct {
 	work  *WorkGroup
 	draft *vfs.Draft
 	plan  uint64
+
+	// mu guards tree and edits: copies of the draft's, replaced whole after
+	// each edit, so a reader on another goroutine never sees one half made.
+	mu    sync.Mutex
+	tree  []vfs.Node
+	edits []vfs.Edit
 
 	// Labels are names confirmed in earlier copies, for rename completion.
 	Labels []string
@@ -50,11 +57,19 @@ func (s *Session) Review(ctx context.Context, places func(context.Context) (*loc
 		return nil, vfs.ErrNothingNew
 	}
 	r := &Review{work: &s.Work, plan: plan}
+	// read before whileIdle: Session.mu is never taken under WorkGroup.mu
+	dir := s.OutputDir()
 	// opening may rewrite the journal (dropping edits of an older plan), so
 	// no copy may be applying it meanwhile
 	if err := s.Work.whileIdle(func() (err error) {
-		r.draft, err = vfs.OpenDraft(s.OutputDir(), tree)
-		return err
+		if s.Work.Plan() != plan {
+			return ErrStaleReview
+		}
+		if r.draft, err = vfs.OpenDraft(dir, tree); err != nil {
+			return err
+		}
+		r.tree, r.edits = r.draft.Tree(), r.draft.Edits()
+		return nil
 	}); err != nil {
 		return nil, err
 	}
@@ -78,11 +93,19 @@ func (r *Review) Plan() uint64 { return r.plan }
 // Stale reports whether the library's plan has moved on since the review was built.
 func (r *Review) Stale() bool { return r.work.Plan() != r.plan }
 
-// Tree is the plan with every edit applied.
-func (r *Review) Tree() []vfs.Node { return r.draft.Tree() }
+// Tree is the plan with every edit applied. It is shared: read it, don't change it.
+func (r *Review) Tree() []vfs.Node {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.tree
+}
 
-// Edits are the edits made so far, in order.
-func (r *Review) Edits() []vfs.Edit { return r.draft.Edits() }
+// Edits are the edits made so far, in order. It is shared: read it, don't change it.
+func (r *Review) Edits() []vfs.Edit {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.edits
+}
 
 // Apply makes one edit and journals it (see vfs.Draft.Apply).
 func (r *Review) Apply(e vfs.Edit) (out vfs.Outcome, err error) {
@@ -112,13 +135,19 @@ func (r *Review) edit(change func() error) error {
 		if r.work.Plan() != r.plan {
 			return ErrStaleReview
 		}
-		return change()
+		err := change()
+		// a failed change may still have rebuilt the draft's tree
+		r.mu.Lock()
+		r.tree, r.edits = r.draft.Tree(), r.draft.Edits()
+		r.mu.Unlock()
+		return err
 	})
 }
 
-// whileIdle runs f with no job or re-plan running, and none able to start
-// until f returns; it refuses while one runs. f must be short: it holds the
-// group's lock.
+// whileIdle runs f with no job or re-plan running, nothing holding the
+// library (a discard, reset, switch or close), and none able to start until f
+// returns; it refuses while one runs. f must be short and must not take
+// Session.mu: it holds the group's lock.
 func (g *WorkGroup) whileIdle(f func() error) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -130,5 +159,11 @@ func (g *WorkGroup) whileIdle(f func() error) error {
 	case g.job != "":
 		return &BusyError{Job: g.job}
 	}
+	// never waits, so it can't deadlock under mu; a hold taken after this
+	// waits for f to return
+	if !g.library.TryRLock() {
+		return ErrBusy
+	}
+	defer g.library.RUnlock()
 	return f()
 }
