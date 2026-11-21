@@ -19,6 +19,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -114,6 +115,10 @@ func LeftBehind(ctx context.Context, database *db.DB) ([]string, error) {
 	}
 	return paths, nil
 }
+
+// ErrLibraryGone stops a copy whose library folder went away (a drive
+// unplugged): the rest stays pending for when it is back.
+var ErrLibraryGone = errors.New("the library folder is gone; copy stopped")
 
 // Run is the whole transfer: make earlier failures pending again, refuse a plan
 // the output can't hold (*NotEnoughSpaceError, no file or plan changed), apply
@@ -268,6 +273,11 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	for i, r := range rows {
 		if ctx.Err() != nil {
 			break // everything left stays pending — the next run picks it up
+		}
+		// a drive unplugged mid-copy can leave an empty mount point the next
+		// file's folders would be created under, on another disk
+		if _, err := os.Stat(config.DBPath(outputDir)); err != nil && !o.DryRun {
+			return rep, fmt.Errorf("%w: %w", ErrLibraryGone, err)
 		}
 
 		// source_path is stored via path.ToSourcePath (separator only);
