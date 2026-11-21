@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/verify"
+
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -893,5 +895,25 @@ func TestStateRules(t *testing.T) {
 	}
 	if (State{Open: true}).CanCopy() {
 		t.Error("CanCopy with nothing planned")
+	}
+}
+
+// Check forgets records and Reset wipes them, so neither runs beside a copy.
+func TestCheckAndResetWaitForNoWork(t *testing.T) {
+	ctx := context.Background()
+	s := testSession(t)
+	if err := s.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	done, err := s.Work.StartJob(JobCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	if _, err := s.Check(ctx, verify.Options{}); !errors.Is(err, ErrBusy) {
+		t.Errorf("check beside a copy = %v, want ErrBusy", err)
+	}
+	if err := s.Reset(ctx); !errors.Is(err, ErrBusy) {
+		t.Errorf("reset beside a copy = %v, want ErrBusy", err)
 	}
 }

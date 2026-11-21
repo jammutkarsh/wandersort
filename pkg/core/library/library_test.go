@@ -57,7 +57,7 @@ func TestRestoreDropsTheDraft(t *testing.T) {
 func TestResetOfAnEmptyLibraryKeepsTheBackup(t *testing.T) {
 	d := dbtest.New(t)
 	dir := t.TempDir()
-	err := Reset(context.Background(), d, dir, logger.NewNoopLogger())
+	err := reset(context.Background(), d, dir, logger.NewNoopLogger())
 	if !errors.Is(err, ErrNothingToReset) {
 		t.Fatalf("Reset = %v, want ErrNothingToReset", err)
 	}

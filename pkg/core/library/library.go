@@ -13,14 +13,14 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
-// ErrNothingToReset means the database was already empty. Reset then writes
+// ErrNothingToReset means the database was already empty. reset then writes
 // nothing: a backup would overwrite the one holding the earlier reset's data.
 var ErrNothingToReset = errors.New("the database is already empty")
 
-// Reset backs the library database up, empties it (settings are kept) and
+// reset backs the library database up, empties it (settings are kept) and
 // drops the review draft, whose edits describe a plan that no longer exists.
 // No backup, no wipe.
-func Reset(ctx context.Context, database *db.DB, outputDir string, log logger.Logger) error {
+func reset(ctx context.Context, database *db.DB, outputDir string, log logger.Logger) error {
 	empty, err := database.IsEmpty(ctx)
 	if err != nil {
 		return err

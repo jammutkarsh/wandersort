@@ -9,9 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	"github.com/jammutkarsh/wandersort/pkg/preview"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -136,12 +134,5 @@ func (a *app) resetDB(cmd *cobra.Command) error {
 
 // resetLibrary empties the open library's database (settings kept) and the preview copies.
 func (a *app) resetLibrary(ctx context.Context) error {
-	if err := library.Reset(ctx, a.DB(), a.OutputDir(), a.Log()); err != nil {
-		return err
-	}
-	// preview copies outlive a session, so a wipe has to take them too
-	if err := preview.Clean(); err != nil {
-		a.Log().Warn("could not remove the preview copies", "error", err)
-	}
-	return nil
+	return a.Reset(ctx)
 }

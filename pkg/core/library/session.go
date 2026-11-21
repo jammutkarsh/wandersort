@@ -538,8 +538,9 @@ type WorkGroup struct {
 type Job string
 
 const (
-	JobScan Job = "scan"
-	JobCopy Job = "copy"
+	JobScan  Job = "scan"
+	JobCopy  Job = "copy"
+	JobCheck Job = "check"
 )
 
 // StartJob registers j on the open library, ended by done. It refuses once
