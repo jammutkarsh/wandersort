@@ -42,6 +42,11 @@ func (p *probe) View() string { return p.name }
 // Busy is false: a probe stands in for a screen with nothing in flight.
 func (p *probe) Busy() bool { return false }
 
+// busyProbe stands in for a screen with work in flight (a running copy).
+type busyProbe struct{ probe }
+
+func (p *busyProbe) Busy() bool { return true }
+
 // got reports whether the screen was handed msg. DeepEqual, not ==: both a
 // log event (map of attrs) and a key (rune slice) are uncomparable.
 func (p *probe) got(msg tea.Msg) bool {
@@ -322,6 +327,23 @@ func TestShellModel(t *testing.T) {
 			m = next.(shellModel)
 			if v := ansi.Strip(m.View()); !strings.Contains(v, "already running") {
 				t.Errorf("want the lock failure on screen:\n%s", v)
+			}
+		}},
+		// A running copy applies the draft and then removes it: an edit made
+		// meanwhile would be lost, so Organise stays shut on every way in.
+		{"ReviewIsShutWhileACopyRuns", func(t *testing.T) {
+			m := testShell(t)
+			seedProposal(t, m.a)
+			m.refresh()
+			m.screens[tabReview] = &probe{name: "review"}
+			m.screens[tabCopy] = &busyProbe{probe{name: "copy"}}
+			m.tab = tabCopy
+			if m.canReview() || m.nextTab() == tabReview {
+				t.Errorf("mid copy: canReview=%v nextTab=%d, want Organise shut", m.canReview(), m.nextTab())
+			}
+			next, _ := m.Update(tui.OpenReviewMsg{})
+			if m = next.(shellModel); m.tab == tabReview {
+				t.Error("an open-review request reached Organise mid copy")
 			}
 		}},
 		// a plan on disk makes the review tab reachable without a prefetched

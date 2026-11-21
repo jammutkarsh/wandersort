@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -33,14 +35,36 @@ const (
 )
 
 // Edit is one review edit. Rename names one Node (From is informational).
-// Merge, drop and flatten list Nodes; merge lists its survivor first.
+// Merge, drop and flatten list Nodes; merge lists its survivor first. Plan is
+// the fingerprint of the plan the edit was made on (planFingerprint): an edit
+// only ever replays onto that plan.
 type Edit struct {
 	Op    string  `json:"op"`
 	From  string  `json:"from,omitempty"`
 	To    string  `json:"to,omitempty"`
+	Plan  string  `json:"plan,omitempty"`
 	Nodes []int64 `json:"nodes,omitempty"`
 	Seq   int     `json:"seq"`
 	Node  int64   `json:"node,omitzero"`
+}
+
+// planFingerprint identifies a plan by what edits act on: every folder's id,
+// parent, name, level and merges. Any change to the plan (a copy applying the
+// draft, a re-plan, a discard) changes it, so a journal written against an
+// older plan never replays onto a newer one.
+func planFingerprint(tree []Node) string {
+	var lines []string
+	var walk func(parent int64, nodes []Node)
+	walk = func(parent int64, nodes []Node) {
+		for _, n := range nodes {
+			lines = append(lines, fmt.Sprintf("%d\x00%d\x00%s\x00%s\x00%v", n.ID, parent, n.Name, n.Level, n.MergedIDs))
+			walk(n.ID, n.Children)
+		}
+	}
+	walk(0, tree)
+	slices.Sort(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 func draftPath(outputDir string) string { return filepath.Join(outputDir, DraftFileName) }
@@ -169,6 +193,7 @@ func RemoveDraft(outputDir string) error {
 type Draft struct {
 	dir   string
 	base  []Node // the plan as the database holds it, never edited
+	plan  string // planFingerprint(base), stamped on every edit
 	edits []Edit
 	tree  []Node // base with edits replayed
 }
@@ -176,13 +201,29 @@ type Draft struct {
 // ErrNothingToUndo is Undo on a draft with no edits left.
 var ErrNothingToUndo = errors.New("nothing left to undo")
 
-// OpenDraft reads the journal in outputDir and replays it onto a copy of base.
+// OpenDraft reads the journal in outputDir and replays onto a copy of base the
+// edits made on base. Edits made on another plan are dropped: a review still
+// open when a copy applied the draft must not bring its edits back. Only the
+// library's holder may call it (see readDraft).
 func OpenDraft(outputDir string, base []Node) (*Draft, error) {
-	edits, err := readDraft(outputDir)
+	journal, err := readDraft(outputDir)
 	if err != nil {
 		return nil, err
 	}
-	return &Draft{dir: outputDir, base: base, edits: edits, tree: replay(cloneTree(base), edits)}, nil
+	plan := planFingerprint(base)
+	var edits []Edit
+	for _, e := range journal {
+		if e.Plan == plan {
+			edits = append(edits, e)
+		}
+	}
+	// drop them from the file too, so CountEdits counts only edits that apply
+	if len(edits) < len(journal) {
+		if err := writeDraft(outputDir, edits); err != nil {
+			return nil, err
+		}
+	}
+	return &Draft{dir: outputDir, base: base, plan: plan, edits: edits, tree: replay(cloneTree(base), edits)}, nil
 }
 
 // Tree is the plan with every edit applied, sorted by name.
@@ -207,7 +248,7 @@ func (d *Draft) Apply(e Edit) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	e.Seq = len(d.edits) + 1
+	e.Seq, e.Plan = len(d.edits)+1, d.plan
 	if err := appendDraft(d.dir, e); err != nil {
 		d.tree = replay(cloneTree(d.base), d.edits)
 		return Outcome{}, err

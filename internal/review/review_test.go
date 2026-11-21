@@ -1,7 +1,9 @@
 package review
 
 import (
+	"bytes"
 	"context"
+	"encoding/json/v2"
 	"fmt"
 	"math"
 	"os"
@@ -65,13 +67,25 @@ func testModel(t *testing.T, tree []vfs.Node, ctx context.Context) Model {
 }
 
 // journal is the draft as a new session would read it back from dir.
+// journal is the draft file's edits as written, whichever plan they were made on.
 func journal(t *testing.T, dir string) []vfs.Edit {
 	t.Helper()
-	d, err := vfs.OpenDraft(dir, nil)
+	data, err := os.ReadFile(filepath.Join(dir, vfs.DraftFileName))
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	return d.Edits()
+	var edits []vfs.Edit
+	for line := range bytes.Lines(data) {
+		var e vfs.Edit
+		if err := json.Unmarshal(line, &e); err != nil {
+			t.Fatal(err)
+		}
+		edits = append(edits, e)
+	}
+	return edits
 }
 
 func sampleTree() []vfs.Node {

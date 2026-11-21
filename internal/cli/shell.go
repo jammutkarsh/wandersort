@@ -346,6 +346,9 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.homeAgain(msg.Text)
 
 	case tui.OpenReviewMsg:
+		if m.copyRunning() {
+			return m, m.setNotice("a copy is running — Organise opens when it's done")
+		}
 		if m.reviewReady() {
 			m.tab = tabReview
 			return m, nil
@@ -750,9 +753,10 @@ func (m shellModel) nextTab() int {
 func (m shellModel) reviewReady() bool { return m.screens[tabReview] != nil }
 
 // canReview reports whether the review tab can be entered: a stashed screen or
-// a plan on disk, and never while a scan or re-plan is about to replace that plan.
+// a plan on disk, and never while a scan or re-plan is about to replace that
+// plan or a copy is applying the draft (an edit then would be lost).
 func (m shellModel) canReview() bool {
-	if m.planChanging() {
+	if m.planChanging() || m.copyRunning() {
 		return false
 	}
 	return m.reviewReady() || m.lib.CanReview()
