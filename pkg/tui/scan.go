@@ -44,7 +44,7 @@ type ScanConfig struct {
 	Pipeline func() error
 	// Cancel cancels the pipeline context on ctrl+c.
 	Cancel context.CancelFunc
-	// ReviewNext builds the review screen once the plan is written; it is
+	// ReviewNext builds the review screen once the scan has returned; it is
 	// handed to the shell, and opened when the user picks it.
 	ReviewNext func() (Tab, error)
 	// Paths are the folders being added, for the heading.
@@ -59,7 +59,7 @@ type ScanModel struct {
 	cfg ScanConfig
 	err error // why the run failed
 
-	// review is prefetched once the vfs phase flushes; reviewErr is why it
+	// review is fetched once the scan returns; reviewErr is why it
 	// could not be built; wantReview is a pick of choice 1 waiting on it
 	review    Tab
 	reviewErr error
@@ -186,6 +186,11 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sl.FinishRemaining(false, "done")
 		m.state = scanFinished
+		// only now: until the scan has returned it still holds the library,
+		// and the session refuses a review beside it
+		if m.review == nil && m.reviewErr == nil && m.cfg.ReviewNext != nil {
+			return m, m.fetchReview()
+		}
 		return m, m.nothingNew()
 	}
 	return m, m.sl.Update(msg)
@@ -259,7 +264,7 @@ func (m ScanModel) choose() (tea.Model, tea.Cmd) {
 	switch m.choice {
 	case 0:
 		if m.review == nil && m.reviewErr == nil && m.cfg.ReviewNext != nil {
-			m.wantReview = true // opens as soon as the prefetch lands
+			m.wantReview = true // opens as soon as the review lands
 			return m, nil
 		}
 		return m, openReview
@@ -288,9 +293,6 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 		case "done":
 			elapsed, _ := e.Attrs[logger.ElapsedKey].(string)
 			m.sl.Done(p, strings.TrimSuffix(e.Message, " in "+elapsed), elapsed)
-			if p == "vfs" && m.cfg.ReviewNext != nil {
-				return m, m.fetchReview()
-			}
 		}
 		return m, nil
 	}
