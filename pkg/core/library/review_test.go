@@ -278,3 +278,50 @@ func TestPeekRefusedOnceThePlanMovedOn(t *testing.T) {
 		t.Errorf("peek after the plan moved on = %v, want ErrStaleReview", err)
 	}
 }
+
+// Work that reads or edits a plan opens an existing library itself, as Scan
+// does, but never creates one where none is.
+func TestReadsOpenAnExistingLibraryOnly(t *testing.T) {
+	ctx := context.Background()
+	s := testSession(t)
+	if _, err := s.CopyPlan(ctx); !errors.Is(err, ErrNotOpen) {
+		t.Errorf("copy plan with no library = %v, want ErrNotOpen", err)
+	}
+	if s.LibraryExists() {
+		t.Fatal("reading a copy plan created a library")
+	}
+
+	if err := s.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	dbtest.SeedFile(t, s.DB(), 1, "/src", "a.jpg", 1)
+	dbtest.SeedEntry(t, s.DB(), 1, "/src/a.jpg", "2024/06_June/03/a.jpg")
+	s.Close()
+	p, err := s.CopyPlan(ctx)
+	if err != nil || p.Files != 1 {
+		t.Errorf("copy plan of a closed library = %+v, %v; want it opened and 1 file", p, err)
+	}
+	s.Close()
+	if _, err := s.Review(ctx, nil); err != nil {
+		t.Errorf("review of a closed library: %v", err)
+	}
+}
+
+// A restore closes the library this session has open, puts the backup back,
+// and opens it again: a front end needn't know the order.
+func TestRestoreReopensTheLibrary(t *testing.T) {
+	ctx := context.Background()
+	s, _ := reviewSession(t)
+	if err := s.Reset(ctx); err != nil { // backs up the planned file first
+		t.Fatal(err)
+	}
+	if err := s.Restore(ctx); err != nil {
+		t.Fatalf("restore with the library open: %v", err)
+	}
+	if s.DB() == nil {
+		t.Fatal("the library was left closed after the restore")
+	}
+	if p, err := s.CopyPlan(ctx); err != nil || p.Files != 1 {
+		t.Errorf("after restore, copy plan = %+v, %v; want the backup's 1 file", p, err)
+	}
+}

@@ -227,8 +227,21 @@ var ErrLibraryChanged = errors.New("the library changed before these settings we
 // ErrClosing refuses work once the session is shutting down.
 var ErrClosing = errors.New("shutting down")
 
-// ErrNotOpen refuses work that needs the library open when none is.
+// ErrNotOpen refuses work on a library that isn't there yet: reading one
+// never creates it.
 var ErrNotOpen = errors.New("no library is open")
+
+// openExisting opens the library if one is in the output folder: work that
+// only reads or edits a plan opens it as Scan does, but never creates one.
+func (s *Session) openExisting(ctx context.Context) error {
+	if s.DB() != nil {
+		return nil
+	}
+	if !s.LibraryExists() {
+		return ErrNotOpen
+	}
+	return s.Open(ctx)
+}
 
 // ErrBusy refuses work that would overlap other work on the library: two
 // scans, a scan and a copy, or a switch while either runs.
@@ -389,19 +402,26 @@ func isNew(ctx context.Context, d *db.DB) (bool, error) {
 }
 
 // Restore puts the library's backup back over its database (see Restore),
-// holding the output lock meanwhile. With the library open it refuses,
-// db.ErrInUse: a restore needs every connection closed.
-func (s *Session) Restore(ctx context.Context) error {
+// holding the output lock meanwhile. A library this session has open is
+// closed first (a restore needs every connection closed) and opened again
+// after; one another process has open is db.ErrInUse.
+func (s *Session) Restore(ctx context.Context) (err error) {
 	release, ok := s.Work.HoldLibrary()
 	if !ok {
 		return ErrBusy
 	}
 	defer release()
-	s.mu.RLock()
-	open, dbPath := s.db != nil, s.cfg.AppDBPath
-	s.mu.RUnlock()
-	if open {
-		return fmt.Errorf("restore: %w", db.ErrInUse)
+	s.mu.Lock()
+	wasOpen, dbPath := s.db != nil, s.cfg.AppDBPath
+	s.closeLibrary(s.db, s.lock)
+	s.db, s.lock = nil, nil
+	s.mu.Unlock()
+	if wasOpen {
+		defer func() {
+			if openErr := s.Open(ctx); err == nil {
+				err = openErr
+			}
+		}()
 	}
 	// taking the output lock creates the folder: refuse first if it is a
 	// remembered library whose drive is unplugged

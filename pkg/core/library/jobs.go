@@ -18,7 +18,9 @@ import (
 // Scan adds paths to the library, opening it first: walk, read, then a plan
 // for everything not yet placed. It runs as JobScan (see StartJob), so no copy,
 // other scan or re-plan overlaps it, and reads the database, folder and
-// settings only once it holds the library.
+// settings only once it holds the library. Once it returns, Review is the
+// review of the plan it made (vfs.ErrNothingNew when nothing is left to
+// copy); a review asked for while it runs is refused as busy.
 func (s *Session) Scan(ctx context.Context, paths []string, force bool, deps workflow.Deps) (workflow.Result, error) {
 	ctx, cancel := s.bound(ctx)
 	defer cancel()
@@ -109,8 +111,9 @@ func (s *Session) saveFailurePage(failures report.FailureReport, outputDir strin
 	return page
 }
 
-// Discard takes every file not yet copied off the list (see Discard), holding
-// the library from all other work; it refuses while any runs (ErrBusy).
+// Discard takes every file not yet copied off the list (see Discard), opening
+// the library first, holding it from all other work; it refuses while a job
+// or re-plan runs (ErrBusy).
 func (s *Session) Discard(ctx context.Context) (int, error) {
 	stop, ok := s.Work.Start()
 	if !ok {
@@ -122,16 +125,17 @@ func (s *Session) Discard(ctx context.Context) (int, error) {
 		return 0, ErrBusy
 	}
 	defer release()
-	d, outputDir := s.DB(), s.OutputDir()
-	if d == nil {
-		return 0, ErrNotOpen
+	if err := s.openExisting(ctx); err != nil {
+		return 0, err
 	}
+	d, outputDir := s.DB(), s.OutputDir()
 	defer s.Work.plan.Add(1)
 	return discard(ctx, d, outputDir)
 }
 
-// Reset empties the open library (see reset) and clears the preview copies,
-// holding the library from all other work; it refuses while any runs (ErrBusy).
+// Reset empties the library (see reset), opening it first, and clears the
+// preview copies, holding the library from all other work; it refuses while a
+// job or re-plan runs (ErrBusy).
 func (s *Session) Reset(ctx context.Context) error {
 	stop, ok := s.Work.Start()
 	if !ok {
@@ -143,10 +147,10 @@ func (s *Session) Reset(ctx context.Context) error {
 		return ErrBusy
 	}
 	defer release()
-	d, outputDir := s.DB(), s.OutputDir()
-	if d == nil {
-		return ErrNotOpen
+	if err := s.openExisting(ctx); err != nil {
+		return err
 	}
+	d, outputDir := s.DB(), s.OutputDir()
 	defer s.Work.plan.Add(1)
 	if err := reset(ctx, d, outputDir, s.log); err != nil {
 		return err
@@ -184,8 +188,8 @@ type CopyPlan struct {
 	Space execute.Space
 }
 
-// CopyPlan reads what a copy of the open library would do, while the library
-// can't be switched under the read.
+// CopyPlan reads what a copy of the library would do, opening it first, while
+// the library can't be switched under the read.
 func (s *Session) CopyPlan(ctx context.Context) (CopyPlan, error) {
 	ctx, cancel := s.bound(ctx)
 	defer cancel()
@@ -194,10 +198,10 @@ func (s *Session) CopyPlan(ctx context.Context) (CopyPlan, error) {
 		return CopyPlan{}, ErrClosing
 	}
 	defer done()
-	d, outputDir := s.DB(), s.OutputDir()
-	if d == nil {
-		return CopyPlan{}, ErrNotOpen
+	if err := s.openExisting(ctx); err != nil {
+		return CopyPlan{}, err
 	}
+	d, outputDir := s.DB(), s.OutputDir()
 	var p CopyPlan
 	var err error
 	if p.Files, p.Bytes, err = execute.Pending(ctx, d); err != nil {

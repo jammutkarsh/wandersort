@@ -39,7 +39,7 @@ type Review struct {
 	Resolver *location.Resolver
 }
 
-// Review is the review of the open library's plan: one per plan, shared by
+// Review is the review of the library's plan, opening the library first: one per plan, shared by
 // every caller, since two would each rewrite the journal from their own edits.
 // A review whose plan moved on is replaced. places supplies the location
 // resolver when one is built (nil, or an error, disables place suggestions);
@@ -66,11 +66,11 @@ func (s *Session) Review(ctx context.Context, places func(context.Context) (*loc
 		return nil, ErrClosing
 	}
 	defer done()
+	if err := s.openExisting(ctx); err != nil {
+		return nil, err
+	}
 	plan := s.Work.Plan()
 	d := s.DB()
-	if d == nil {
-		return nil, ErrNotOpen
-	}
 	tree, err := vfs.BuildTree(ctx, d)
 	if err != nil {
 		return nil, err
