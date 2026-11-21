@@ -63,7 +63,7 @@ func testModel(t *testing.T, tree []vfs.Node, ctx context.Context) Model {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newModel(draft, ctx, nil, nil, nil)
+	return newModel(draft, ctx, nil, nil, nil, nil, nil)
 }
 
 // journal is the draft as a new session would read it back from dir.
@@ -1503,7 +1503,7 @@ func TestDraft(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return newModel(draft, ctx, d, nil, logger.NewNoopLogger()), tree
+		return newModel(draft, ctx, d, nil, nil, nil, logger.NewNoopLogger()), tree
 	}
 	dayRow := func(m Model) *reviewRow {
 		for _, r := range m.rows {

@@ -822,12 +822,10 @@ func (m *shellModel) openReview() tea.Cmd {
 		return msgCmd(reviewOpenMsg{err: err, plan: plan})
 	}
 	return func() tea.Msg {
-		done, ok := a.Work.StartOnLibrary()
-		if !ok {
+		model, err := a.newReviewScreen(ctx)
+		if errors.Is(err, library.ErrClosing) {
 			return nil
 		}
-		defer done()
-		model, err := a.newReviewScreen(ctx)
 		return reviewOpenMsg{model: model, err: err, plan: plan}
 	}
 }
@@ -986,12 +984,11 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 		},
 		Cancel: cancel,
 		ReviewNext: func() (tui.Tab, error) {
-			done, ok := a.Work.StartOnLibrary()
-			if !ok {
+			screen, err := a.newReviewScreen(ctx)
+			if errors.Is(err, library.ErrClosing) {
 				return nil, context.Canceled
 			}
-			defer done()
-			return a.newReviewScreen(ctx)
+			return screen, err
 		},
 	})
 }
