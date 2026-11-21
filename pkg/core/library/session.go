@@ -29,6 +29,10 @@ type Session struct {
 	log     logger.Logger
 	logFile *logger.File
 
+	// stopping ends with Shutdown; work the session runs stops with it
+	stopping context.Context
+	stop     context.CancelFunc
+
 	// mu guards the fields below. Taken after Work's library lock, never
 	// before it.
 	mu   sync.RWMutex
@@ -41,7 +45,23 @@ type Session struct {
 // keeps its own copy of cfg. logFile is this process's log, buffered in memory
 // until a library opens (or a warning) persists it; nil means no file log.
 func New(cfg *config.Configuration, log logger.Logger, logFile *logger.File) *Session {
-	return &Session{cfg: copyConfig(*cfg), log: log, logFile: logFile}
+	stopping, stop := context.WithCancel(context.Background())
+	return &Session{cfg: copyConfig(*cfg), log: log, logFile: logFile, stopping: stopping, stop: stop}
+}
+
+// Shutdown stops the work running on the library, waits for it, then closes
+// the library. Nothing new starts once it has begun (ErrClosing).
+func (s *Session) Shutdown() {
+	s.stop()
+	s.Work.CloseAndWait()
+	s.Close()
+}
+
+// bound is ctx, also cancelled once Shutdown begins.
+func (s *Session) bound(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	unhook := context.AfterFunc(s.stopping, cancel)
+	return ctx, func() { unhook(); cancel() }
 }
 
 // copyConfig is c sharing nothing a caller could change underneath it.
@@ -215,6 +235,8 @@ func (e *BusyError) Unwrap() error { return ErrBusy }
 // database the plan names places from; it is waited for before the library is
 // held, so a download never keeps other work off the library.
 func (s *Session) SaveSettings(ctx context.Context, settings config.Settings, places func(context.Context) (*location.Resolver, error)) error {
+	ctx, cancel := s.bound(ctx)
+	defer cancel()
 	if s.Work.Rewriting() {
 		return ErrReplanning
 	}

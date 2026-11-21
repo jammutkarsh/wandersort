@@ -144,10 +144,9 @@ func (a *app) runShell(start shellStart) error {
 	shell := *a
 	shell.Session = library.New(a.Configuration(), logger.NewTUI(a.LogFile(), func(e logger.Event) { events <- e }), a.LogFile())
 	a = &shell
-	// on the way out: stop running work, wait for it, then flush and close
+	// on the way out: stop the screens, then the library's work, then close
 	defer func() {
 		cancel()
-		a.Work.CloseAndWait()
 		a.closeDBs()
 	}()
 

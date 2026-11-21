@@ -840,3 +840,30 @@ func TestCloseWaitsForWorkOnTheLibrary(t *testing.T) {
 		t.Error("Close left the library open")
 	}
 }
+
+// Shutdown stops the work running on the library before it waits for it, so
+// a caller needs no cancel of its own to quit mid-copy.
+func TestShutdownStopsRunningWork(t *testing.T) {
+	s := testSession(t)
+	done, err := s.Work.StartJob(JobCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := s.bound(context.Background())
+	defer cancel()
+	go func() { // the copy: runs until its context ends
+		<-ctx.Done()
+		done()
+	}()
+	shut := make(chan struct{})
+	go func() { s.Shutdown(); close(shut) }()
+	select {
+	case <-shut:
+	case <-time.After(5 * time.Second):
+		cancel() // let the stuck Shutdown finish
+		t.Fatal("Shutdown waited for work it never stopped")
+	}
+	if _, err := s.Work.StartJob(JobScan); !errors.Is(err, ErrClosing) {
+		t.Errorf("job after Shutdown = %v, want ErrClosing", err)
+	}
+}

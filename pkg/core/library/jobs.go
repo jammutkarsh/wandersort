@@ -16,6 +16,8 @@ import (
 // other scan or re-plan overlaps it, and reads the database, folder and
 // settings only once it holds the library.
 func (s *Session) Scan(ctx context.Context, paths []string, force bool, deps workflow.Deps) (workflow.Result, error) {
+	ctx, cancel := s.bound(ctx)
+	defer cancel()
 	done, err := s.Work.StartJob(JobScan)
 	if err != nil {
 		return workflow.Result{}, err
@@ -46,6 +48,8 @@ type CopyResult struct {
 // once it holds the library. A real run that leaves files out writes the
 // failure page; a dry run writes nothing.
 func (s *Session) Copy(ctx context.Context, o execute.Options) (CopyResult, error) {
+	ctx, cancel := s.bound(ctx)
+	defer cancel()
 	done, err := s.Work.StartJob(JobCopy)
 	if err != nil {
 		return CopyResult{}, err
