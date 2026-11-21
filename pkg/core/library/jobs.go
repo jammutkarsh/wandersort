@@ -64,7 +64,7 @@ func (s *Session) Copy(ctx context.Context, o execute.Options) (CopyResult, erro
 	applied := o.OnApplied
 	o.OnApplied = func() {
 		// the peeks showed the plan before its edits; nothing is left to peek at
-		if err := preview.Clean(); err != nil {
+		if err := preview.Clean(outputDir); err != nil {
 			s.log.Warn("could not remove the preview copies", "error", err)
 		}
 		if applied != nil {
@@ -150,7 +150,7 @@ func (s *Session) Reset(ctx context.Context) error {
 		return err
 	}
 	// preview copies outlive a session, so a wipe has to take them too
-	if err := preview.Clean(); err != nil {
+	if err := preview.Clean(outputDir); err != nil {
 		s.log.Warn("could not remove the preview copies", "error", err)
 	}
 	return nil

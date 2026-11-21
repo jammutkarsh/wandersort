@@ -27,7 +27,7 @@ To delete the library's own data, that is 'wandersort admin db --reset'.`,
 }
 
 func (a *app) runAdminClear() error {
-	if err := preview.Clean(); err != nil {
+	if err := preview.Clean(a.OutputDir()); err != nil {
 		return fmt.Errorf("could not remove the preview copies: %w", err)
 	}
 	fmt.Fprintln(os.Stderr, tui.OK.Render("Preview cache cleared."))

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json/v2"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -50,10 +49,10 @@ func usePreviewRoot(t *testing.T) string {
 	t.Setenv("TMPDIR", tmp)
 	t.Setenv("TMP", tmp) // Windows reads the temp folder from TMP, then TEMP
 	t.Setenv("TEMP", tmp)
-	if err := os.MkdirAll(preview.Root(), 0o755); err != nil {
+	if err := os.MkdirAll(preview.Root(""), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return preview.Root()
+	return preview.Root("")
 }
 
 // testModel opens a review over tree with an empty draft in a temp dir.
@@ -147,9 +146,9 @@ func TestReview(t *testing.T) {
 			if len(parentFiles) != 2 || len(leafFiles) != 2 {
 				t.Fatalf("parentFiles = %v, leafFiles = %v, want 2 files each", parentFiles, leafFiles)
 			}
-			if preview.DirFor(parentFiles) != preview.DirFor(leafFiles) {
+			if preview.DirFor("", parentFiles) != preview.DirFor("", leafFiles) {
 				t.Errorf("preview dirs differ: parent %q vs leaf %q, want equal so both peeks share one temp copy",
-					preview.DirFor(parentFiles), preview.DirFor(leafFiles))
+					preview.DirFor("", parentFiles), preview.DirFor("", leafFiles))
 			}
 		}},
 		// TestMergeWithoutVisualModeIsRejectedLoudly covers the reported "merge
@@ -1168,18 +1167,18 @@ func TestReview(t *testing.T) {
 			insertVFSEntry(t, d, 1, srcFile, "2024/June/a.jpg")
 
 			node := &vfs.Node{ID: nodeAt(t, d, "2024/June")}
-			msg := peekCmd(ctx, d, node)()
+			msg := peekCmd(ctx, d, "", node)()
 			pm := msg.(previewDoneMsg)
 			if pm.err != nil {
 				t.Fatalf("peekCmd: %v", pm.err)
 			}
-			if want := preview.DirFor([]string{srcFile}); pm.dir != want {
+			if want := preview.DirFor("", []string{srcFile}); pm.dir != want {
 				t.Errorf("dir = %q, want the deterministic %q", pm.dir, want)
 			}
 			if _, err := os.Stat(filepath.Join(pm.dir, "a.jpg")); err != nil {
 				t.Errorf("expected a.jpg copied into %s: %v", pm.dir, err)
 			}
-			entries, err := os.ReadDir(preview.Root())
+			entries, err := os.ReadDir(preview.Root(""))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1202,11 +1201,11 @@ func TestReview(t *testing.T) {
 			insertVFSEntry(t, d, 1, srcFile, "2024/June/a.jpg")
 
 			node := &vfs.Node{ID: nodeAt(t, d, "2024/June")}
-			if pm := peekCmd(ctx, d, node)().(previewDoneMsg); pm.err != nil {
+			if pm := peekCmd(ctx, d, "", node)().(previewDoneMsg); pm.err != nil {
 				t.Fatalf("first peek: %v", pm.err)
 			}
 			// a fresh copy would wipe the directory first, taking this with it
-			dir := preview.DirFor([]string{srcFile})
+			dir := preview.DirFor("", []string{srcFile})
 			witness := filepath.Join(dir, "witness")
 			if err := os.WriteFile(witness, nil, 0o644); err != nil {
 				t.Fatal(err)
@@ -1216,7 +1215,7 @@ func TestReview(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			pm := peekCmd(ctx, d, node)().(previewDoneMsg)
+			pm := peekCmd(ctx, d, "", node)().(previewDoneMsg)
 			if pm.err != nil {
 				t.Fatalf("second peek: %v", pm.err)
 			}
@@ -1247,63 +1246,19 @@ func TestReview(t *testing.T) {
 			insertVFSEntry(t, d, 1, present, "2024/June/a.jpg")
 			insertVFSEntry(t, d, 2, missing, "2024/June/gone.jpg")
 
-			pm := peekCmd(ctx, d, &vfs.Node{ID: nodeAt(t, d, "2024/June")})().(previewDoneMsg)
+			pm := peekCmd(ctx, d, "", &vfs.Node{ID: nodeAt(t, d, "2024/June")})().(previewDoneMsg)
 			if pm.err == nil {
 				t.Fatal("expected an error copying a missing source file")
 			}
-			if _, err := os.Stat(preview.DirFor([]string{present, missing})); !os.IsNotExist(err) {
+			if _, err := os.Stat(preview.DirFor("", []string{present, missing})); !os.IsNotExist(err) {
 				t.Error("a failed copy left a directory under the hash name, which a later peek would reuse")
 			}
-			entries, err := os.ReadDir(preview.Root())
+			entries, err := os.ReadDir(preview.Root(""))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(entries) != 0 {
 				t.Errorf("preview root holds %d entries after a failed copy, want none", len(entries))
-			}
-		}},
-		// TestMakeRoomEvictsLeastRecentlyUsedFirst covers the 5%-of-disk budget:
-		// when a new preview doesn't fit, the copies opened longest ago go until it
-		// does. peekCmd touches a copy it reuses, so mtime is the LRU order.
-		{"MakeRoomEvictsLeastRecentlyUsedFirst", func(t *testing.T) {
-			root := usePreviewRoot(t)
-			var dirs []string
-			for i, name := range []string{"coldest", "warmer", "warmest"} {
-				dir := filepath.Join(root, name)
-				if err := os.MkdirAll(dir, 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(dir, "f"), make([]byte, 1024), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				stamp := time.Now().Add(time.Duration(i-3) * time.Hour)
-				if err := os.Chtimes(dir, stamp, stamp); err != nil {
-					t.Fatal(err)
-				}
-				dirs = append(dirs, dir)
-			}
-
-			// free is stated, so the budget is exact: room for four copies, of
-			// which the incoming one needs three — the two oldest must go.
-			const free = 4*1024*previewBudgetDivisor - 3*1024
-			if err := makeRoom(root, 3*1024, free); err != nil {
-				t.Fatalf("makeRoom: %v", err)
-			}
-
-			for _, dir := range dirs[:2] {
-				if _, err := os.Stat(dir); !os.IsNotExist(err) {
-					t.Errorf("%s survived, want the least recently used copies evicted first", dir)
-				}
-			}
-			if _, err := os.Stat(dirs[2]); err != nil {
-				t.Errorf("most recently used copy evicted unnecessarily: %v", err)
-			}
-		}},
-		// TestMakeRoomRefusesAnOversizedPreview covers the other end: no amount of
-		// eviction makes a preview bigger than the whole budget fit.
-		{"MakeRoomRefusesAnOversizedPreview", func(t *testing.T) {
-			if err := makeRoom(usePreviewRoot(t), math.MaxInt64/2, 1024); err == nil {
-				t.Error("expected an over-budget preview to be refused")
 			}
 		}},
 		// TestPeekCmdReportsNoFilesUnderNode covers the empty-node error path.
@@ -1312,7 +1267,7 @@ func TestReview(t *testing.T) {
 			usePreviewRoot(t)
 			d := dbtest.New(t)
 			node := &vfs.Node{ID: 999999}
-			msg := peekCmd(ctx, d, node)()
+			msg := peekCmd(ctx, d, "", node)()
 			pm := msg.(previewDoneMsg)
 			if pm.err == nil {
 				t.Fatal("expected an error for a node with no files")

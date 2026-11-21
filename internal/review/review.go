@@ -23,11 +23,15 @@ type Options struct {
 	DB     *db.DB
 	Review *library.Review
 	Log    logger.Logger
+	// Library is the library's folder, which keys its preview copies.
+	Library string
 }
 
 // Screen returns the review as a shell tab; it writes only the draft, which `wandersort copy` applies.
 func Screen(ctx context.Context, o Options) tui.Tab {
-	return newModel(o.Review, ctx, o.DB, o.Review.Resolver, o.Review.Labels, o.Review.Folders, o.Log)
+	m := newModel(o.Review, ctx, o.DB, o.Review.Resolver, o.Review.Labels, o.Review.Folders, o.Log)
+	m.outputDir = o.Library
+	return m
 }
 
 // editor is what the screen edits: a library.Review, or a bare vfs.Draft in tests.
@@ -98,6 +102,7 @@ type Model struct {
 
 	previewErr error
 	db         *db.DB
+	outputDir  string // the library's folder, keying its preview copies
 	resolver   *location.Resolver
 	ask        *tui.Ask // [ctrl+r]'s full-screen question
 	// draft owns the base plan, the journal and the tree they make
