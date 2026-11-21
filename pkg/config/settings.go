@@ -38,6 +38,9 @@ func DefaultSettings() Settings {
 	}
 }
 
+// SetHome makes town the home; work is off for now, so it is the same place.
+func (s *Settings) SetHome(town string) { s.HomeTown, s.WorkTown = town, town }
+
 // SavedPlaces is the distinct, non-empty everyday places to anchor.
 func (s Settings) SavedPlaces() []string {
 	var places []string

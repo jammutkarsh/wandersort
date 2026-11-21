@@ -230,3 +230,30 @@ func TestCanonicalReportsALookupFailure(t *testing.T) {
 		t.Fatalf("Canonical = %q, %v; want the lookup error", got, err)
 	}
 }
+
+// A saved town is the database's spelling, a typo the form would have refused
+// is dropped, and anything else is kept as typed: losing a town is data loss.
+func TestTownName(t *testing.T) {
+	r := installtest.Resolver(t)
+	ctx := context.Background()
+	tests := []struct {
+		name     string
+		resolver *location.Resolver
+		typed    string
+		want     string
+	}{
+		{"known", r, "Indore", "Indore, Madhya Pradesh, India"},
+		{"near miss", r, "Hyderab", ""},
+		{"unknown", r, "Nonexistentville12345", "Nonexistentville12345"},
+		{"no resolver", nil, " Indore ", "Indore"},
+		{"blank", r, "  ", ""},
+	}
+	for _, tt := range tests {
+		if got := tt.resolver.TownName(ctx, tt.typed); got != tt.want {
+			t.Errorf("%s: TownName(%q) = %q, want %q", tt.name, tt.typed, got, tt.want)
+		}
+	}
+	if err := (*location.Resolver)(nil).CheckTown(ctx, "Hyderab"); err != nil {
+		t.Errorf("CheckTown without a resolver = %v, want any name accepted", err)
+	}
+}
