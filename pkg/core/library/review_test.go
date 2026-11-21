@@ -10,6 +10,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
+	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
 
@@ -173,5 +174,88 @@ func TestSessionCallsNeverDeadlock(t *testing.T) {
 		s.Close()
 	case <-time.After(10 * time.Second):
 		t.Fatal("session calls deadlocked")
+	}
+}
+
+// Every caller shares one review of a plan: two would each rewrite the
+// journal from their own edits, and one's edits would vanish.
+func TestReviewSharedPerPlan(t *testing.T) {
+	ctx := context.Background()
+	s, _ := reviewSession(t)
+	a, err := s.Review(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.Review(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Error("two reviews of one plan")
+	}
+	done, err := s.Work.StartJob(JobCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done()
+	c, err := s.Review(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c == a {
+		t.Error("a review of a replaced plan was handed out again")
+	}
+}
+
+// A review waits for the location database before it holds the library, and
+// shutdown stops the wait: a download never keeps a switch or a quit waiting.
+func TestReviewWaitsForPlacesOffTheLibrary(t *testing.T) {
+	s, _ := reviewSession(t)
+	waiting := make(chan struct{})
+	giveUp := make(chan struct{}) // closed on failure, so nothing is left waiting
+	places := func(ctx context.Context) (*location.Resolver, error) {
+		close(waiting)
+		select {
+		case <-ctx.Done():
+		case <-giveUp:
+		}
+		return nil, ctx.Err()
+	}
+	built := make(chan error, 1)
+	go func() {
+		_, err := s.Review(context.Background(), places)
+		built <- err
+	}()
+	<-waiting
+	held := make(chan bool, 1)
+	go func() {
+		release, ok := s.Work.HoldLibrary()
+		if ok {
+			release()
+		}
+		held <- ok
+	}()
+	select {
+	case ok := <-held:
+		if !ok {
+			t.Error("the library could not be held while a review waited for places")
+		}
+	case <-time.After(5 * time.Second):
+		close(giveUp)
+		t.Fatal("a review waiting for places kept the library held")
+	}
+	shut := make(chan struct{})
+	go func() { s.Shutdown(); close(shut) }()
+	select {
+	case <-shut:
+	case <-time.After(5 * time.Second):
+		close(giveUp)
+		t.Fatal("shutdown waited for the location database")
+	}
+	select {
+	case <-built:
+	case <-time.After(5 * time.Second):
+		close(giveUp)
+		t.Fatal("the review kept waiting for places after shutdown")
 	}
 }
