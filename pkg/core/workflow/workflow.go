@@ -21,11 +21,28 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
-// Deps supplies the two downloadable dependencies, blocking until each is
-// ready.
+// Deps supplies what a scan needs from its caller: the two downloadable
+// dependencies, blocking until each is ready, and where progress goes.
 type Deps struct {
 	Exiftool func(context.Context) (string, error)             // path to the exiftool binary
 	Location func(context.Context) (*location.Resolver, error) // open geonames resolver
+	// OnProgress, when set, hears each file walked and read; called from the
+	// scan's own goroutines, so it must not block.
+	OnProgress func(Progress)
+}
+
+// Phase names a step of a scan.
+type Phase string
+
+const (
+	PhaseWalk Phase = "walk" // finding files; Total is unknown (0)
+	PhaseRead Phase = "read" // hashing and reading each file's metadata
+)
+
+// Progress is how far a scan's step has got.
+type Progress struct {
+	Phase       Phase
+	Done, Total int
 }
 
 // ErrOverlapsLibrary means a folder to scan is, holds, or sits inside the
@@ -86,12 +103,21 @@ func NewWorkflow(db *db.DB, log logger.Logger, cfg *config.Configuration, deps D
 		db:        db,
 		deps:      deps,
 		appCfg:    cfg,
-		scanner:   scanner.New(db, log, cfg.Workers),
+		scanner:   newScanner(db, log, cfg.Workers, deps.OnProgress),
 		workers:   cfg.Workers,
 		log:       log,
 		path:      path.New(),
 		outputDir: filepath.Dir(cfg.AppDBPath),
 	}
+}
+
+// newScanner is a scanner that reports each file walked to onProgress, if set.
+func newScanner(db *db.DB, log logger.Logger, workers int, onProgress func(Progress)) *scanner.Scanner {
+	s := scanner.New(db, log, workers)
+	if onProgress != nil {
+		s.Progress = func(found int) { onProgress(Progress{Phase: PhaseWalk, Done: found}) }
+	}
+	return s
 }
 
 // Result is what one scan did: the roots walked and each phase's count.
@@ -102,7 +128,8 @@ type Result struct {
 	Planned int // files the plan proposes a place for
 }
 
-// RunScan runs the pipeline over paths (nested roots pruned); a stop wraps context.Canceled.
+// RunScan runs the pipeline over paths (nested roots pruned); a stop wraps
+// context.Canceled. Front ends call library.Session.Scan, which runs it as the library's one job.
 func (wf *Workflow) RunScan(ctx context.Context, paths []string, force bool) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -200,6 +227,9 @@ func (wf *Workflow) workflowPhases(res *Result, force bool) []workflowPhase {
 				extractor, err := metadata.New(wf.db, wf.log, exiftoolPath, wf.workers)
 				if err != nil {
 					return 0, err
+				}
+				if on := wf.deps.OnProgress; on != nil {
+					extractor.Progress = func(read, total int) { on(Progress{Phase: PhaseRead, Done: read, Total: total}) }
 				}
 				return extractor.Run(ctx)
 			},

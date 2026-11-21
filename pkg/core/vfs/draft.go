@@ -226,8 +226,9 @@ func OpenDraft(outputDir string, base []Node) (*Draft, error) {
 	return &Draft{dir: outputDir, base: base, plan: plan, edits: edits, tree: replay(cloneTree(base), edits)}, nil
 }
 
-// Tree is the plan with every edit applied, sorted by name.
-func (d *Draft) Tree() []Node { return d.tree }
+// Tree is a copy of the plan with every edit applied, sorted by name; a later
+// edit (a rename changes nodes in place) never reaches it.
+func (d *Draft) Tree() []Node { return cloneTree(d.tree) }
 
 // Edits are the journalled edits, in order.
 func (d *Draft) Edits() []Edit { return slices.Clone(d.edits) }

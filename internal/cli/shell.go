@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -142,10 +144,9 @@ func (a *app) runShell(start shellStart) error {
 	shell := *a
 	shell.Session = library.New(a.Configuration(), logger.NewTUI(a.LogFile(), func(e logger.Event) { events <- e }), a.LogFile())
 	a = &shell
-	// on the way out: stop running work, wait for it, then flush and close
+	// on the way out: stop the screens, then the library's work, then close
 	defer func() {
 		cancel()
-		a.Work.CloseAndWait()
 		a.closeDBs()
 	}()
 
@@ -447,7 +448,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.plan != m.a.Work.Plan() || m.replanning() {
 			return m, nil // built over the plan a re-plan replaced
 		}
-		if errors.Is(msg.err, tui.ErrNothingNew) {
+		if errors.Is(msg.err, vfs.ErrNothingNew) {
 			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: explain.Error(msg.err)})
 		}
 		if msg.err != nil {
@@ -735,13 +736,15 @@ func (m *shellModel) homeAgain(note string) tea.Cmd {
 
 // nextTab cycles the tabs, skipping any that can't be used now.
 func (m shellModel) nextTab() int {
+	st := m.now()
 	for i := 1; i <= numTabs; i++ {
 		t := (m.tab + i) % numTabs
 		switch {
 		case t == tabReview && !m.canReview():
-		case t == tabCopy && (m.planChanging() || (m.screens[tabCopy] == nil && m.lib.Planned == 0)):
-		case t == tabSettings && (m.planChanging() || m.copyRunning()):
-		case t == tabScan && m.copyRunning():
+		// a running or finished copy's tab stays reachable to watch it
+		case t == tabCopy && (st.Running == library.JobScan || st.Replanning || (m.screens[tabCopy] == nil && !st.CanCopy())):
+		case t == tabSettings && !st.CanChangeSettings():
+		case t == tabScan && st.Running == library.JobCopy:
 		default:
 			return t
 		}
@@ -756,10 +759,23 @@ func (m shellModel) reviewReady() bool { return m.screens[tabReview] != nil }
 // a plan on disk, and never while a scan or re-plan is about to replace that
 // plan or a copy is applying the draft (an edit then would be lost).
 func (m shellModel) canReview() bool {
-	if m.planChanging() || m.copyRunning() {
-		return false
+	st := m.now()
+	return st.CanOrganise() || (st.Idle() && m.reviewReady())
+}
+
+// now is the library state with the work running right now. A screen knows
+// its job from the keypress that starts it, before the session registers it,
+// and a settings save from its hand-over, before it starts.
+func (m shellModel) now() library.State {
+	st := m.a.Live(m.lib)
+	switch {
+	case m.scanRunning():
+		st.Running = library.JobScan
+	case m.copyRunning():
+		st.Running = library.JobCopy
 	}
-	return m.reviewReady() || m.lib.CanReview()
+	st.Replanning = st.Replanning || m.a.settingsToSave != nil
+	return st
 }
 
 // refresh re-reads the library state after something that can change it (a
@@ -806,12 +822,10 @@ func (m *shellModel) openReview() tea.Cmd {
 		return msgCmd(reviewOpenMsg{err: err, plan: plan})
 	}
 	return func() tea.Msg {
-		done, ok := a.Work.StartOnLibrary()
-		if !ok {
+		model, err := a.newReviewScreen(ctx)
+		if errors.Is(err, library.ErrClosing) {
 			return nil
 		}
-		defer done()
-		model, err := a.newReviewScreen(ctx)
 		return reviewOpenMsg{model: model, err: err, plan: plan}
 	}
 }
@@ -970,12 +984,11 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 		},
 		Cancel: cancel,
 		ReviewNext: func() (tui.Tab, error) {
-			done, ok := a.Work.StartOnLibrary()
-			if !ok {
+			screen, err := a.newReviewScreen(ctx)
+			if errors.Is(err, library.ErrClosing) {
 				return nil, context.Canceled
 			}
-			defer done()
-			return a.newReviewScreen(ctx)
+			return screen, err
 		},
 	})
 }

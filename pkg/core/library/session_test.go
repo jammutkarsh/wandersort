@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/verify"
+
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -642,6 +644,8 @@ func TestWorkGroupJobs(t *testing.T) {
 			wrong() // or the re-plan below waits on it for ever
 		}
 		t.Fatalf("copy beside a scan = %v, want ErrBusy", err)
+	} else if busy, ok := errors.AsType[*BusyError](err); !ok || busy.Job != JobScan {
+		t.Errorf("copy beside a scan = %#v, want a BusyError naming the scan", err)
 	}
 	if _, err := g.StartRewrite(); !errors.Is(err, ErrBusy) {
 		t.Errorf("re-plan beside a scan = %v, want ErrBusy", err)
@@ -836,5 +840,80 @@ func TestCloseWaitsForWorkOnTheLibrary(t *testing.T) {
 	<-closed
 	if s.DB() != nil {
 		t.Error("Close left the library open")
+	}
+}
+
+// Shutdown stops the work running on the library before it waits for it, so
+// a caller needs no cancel of its own to quit mid-copy.
+func TestShutdownStopsRunningWork(t *testing.T) {
+	s := testSession(t)
+	done, err := s.Work.StartJob(JobCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := s.bound(context.Background())
+	defer cancel()
+	go func() { // the copy: runs until its context ends
+		<-ctx.Done()
+		done()
+	}()
+	shut := make(chan struct{})
+	go func() { s.Shutdown(); close(shut) }()
+	select {
+	case <-shut:
+	case <-time.After(5 * time.Second):
+		cancel() // let the stuck Shutdown finish
+		t.Fatal("Shutdown waited for work it never stopped")
+	}
+	if _, err := s.Work.StartJob(JobScan); !errors.Is(err, ErrClosing) {
+		t.Errorf("job after Shutdown = %v, want ErrClosing", err)
+	}
+}
+
+// What a front end may start depends on the work running: nothing beside a
+// job or a re-plan, and no review edit while a copy applies the draft.
+func TestStateRules(t *testing.T) {
+	planned := State{Open: true, Planned: 3}
+	tests := []struct {
+		name                              string
+		running                           Job
+		replanning                        bool
+		organise, copy, scan, setSettings bool
+	}{
+		{"idle", "", false, true, true, true, true},
+		{"copy running", JobCopy, false, false, false, false, false},
+		{"scan running", JobScan, false, false, false, false, false},
+		{"re-plan", "", true, false, false, false, false},
+	}
+	for _, tt := range tests {
+		st := planned
+		st.Running, st.Replanning = tt.running, tt.replanning
+		got := [4]bool{st.CanOrganise(), st.CanCopy(), st.CanScan(), st.CanChangeSettings()}
+		if want := [4]bool{tt.organise, tt.copy, tt.scan, tt.setSettings}; got != want {
+			t.Errorf("%s: organise, copy, scan, settings = %v, want %v", tt.name, got, want)
+		}
+	}
+	if (State{Open: true}).CanCopy() {
+		t.Error("CanCopy with nothing planned")
+	}
+}
+
+// Check forgets records and Reset wipes them, so neither runs beside a copy.
+func TestCheckAndResetWaitForNoWork(t *testing.T) {
+	ctx := context.Background()
+	s := testSession(t)
+	if err := s.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	done, err := s.Work.StartJob(JobCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	if _, err := s.Check(ctx, verify.Options{}); !errors.Is(err, ErrBusy) {
+		t.Errorf("check beside a copy = %v, want ErrBusy", err)
+	}
+	if err := s.Reset(ctx); !errors.Is(err, ErrBusy) {
+		t.Errorf("reset beside a copy = %v, want ErrBusy", err)
 	}
 }

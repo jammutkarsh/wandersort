@@ -118,17 +118,13 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 		return nil, nil, err
 	}
 	outputDir := a.OutputDir()
-	files, bytes, err := execute.Pending(session, a.DB())
-	if err != nil {
-		return nil, nil, err
-	}
-	space, err := execute.SpaceFor(session, a.DB(), outputDir)
+	p, err := a.CopyPlan(session)
 	if err != nil {
 		return nil, nil, err
 	}
 	plan := tui.CopyPlan{
-		Files: files, Bytes: bytes, Edits: a.State(session).Edits,
-		Free: int64(space.Free), FreeKnown: space.Known, Fits: space.Fits(),
+		Files: p.Files, Bytes: p.Bytes, Edits: p.Edits,
+		Free: int64(p.Space.Free), FreeKnown: p.Space.Known, Fits: p.Space.Fits(),
 	}
 
 	// the copy's own context: its ctrl+c must not end the session
@@ -151,22 +147,15 @@ func (a *app) newCopyScreen(session context.Context) (screen tui.Tab, stop conte
 	return screen, cancel, nil
 }
 
-// copyProblems groups the files a copy left out by reason, for the screen.
+// copyProblems is the files a copy left out, by reason, for the screen.
 func copyProblems(failures report.FailureReport) []tui.CopyProblem {
 	var out []tui.CopyProblem
-	index := map[string]int{}
-	for _, d := range failures.Drives {
-		for _, g := range d.Groups {
-			i, ok := index[g.Reason]
-			if !ok {
-				i = len(out)
-				index[g.Reason] = i
-				out = append(out, tui.CopyProblem{Reason: g.Reason, Next: g.Next})
-			}
-			for _, f := range g.Files {
-				out[i].Paths = append(out[i].Paths, wspath.New().RelativeToHome(f.Source))
-			}
+	for _, g := range failures.ByReason() {
+		p := tui.CopyProblem{Reason: g.Reason, Next: g.Next}
+		for _, f := range g.Files {
+			p.Paths = append(p.Paths, wspath.New().RelativeToHome(f.Source))
 		}
+		out = append(out, p)
 	}
 	return out
 }

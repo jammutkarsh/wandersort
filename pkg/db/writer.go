@@ -75,6 +75,9 @@ func (bw *BulkWriter) Write(op DBOperation) bool {
 	return true
 }
 
+// ErrWriterClosed refuses a write after the writer closed.
+var ErrWriterClosed = errors.New("writer closed")
+
 // WriteSync runs op in its own transaction, after everything already queued,
 // and returns its outcome (nil = committed). Use it when the outcome must be
 // reported. It never joins a batch: a batch replays failed ops, so an op in
@@ -84,7 +87,7 @@ func (bw *BulkWriter) WriteSync(ctx context.Context, op DBOperation) error {
 	bw.mu.RLock()
 	defer bw.mu.RUnlock()
 	if bw.closed.Load() {
-		return fmt.Errorf("writer closed")
+		return ErrWriterClosed
 	}
 	tx, err := bw.sqlDB.BeginTxx(ctx, nil)
 	if err != nil {
@@ -106,7 +109,7 @@ func (bw *BulkWriter) DryRun(ctx context.Context, op DBOperation) error {
 	bw.mu.RLock()
 	defer bw.mu.RUnlock()
 	if bw.closed.Load() {
-		return fmt.Errorf("writer closed")
+		return ErrWriterClosed
 	}
 	tx, err := bw.sqlDB.BeginTxx(ctx, nil)
 	if err != nil {

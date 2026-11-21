@@ -3,32 +3,13 @@ package review
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
-	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/preview"
-	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
-
-const (
-	// maxPreviewBytes caps one peek.
-	maxPreviewBytes = 250 * 1024 * 1024
-	// previewBudgetDivisor makes the budget for all preview copies together 5%
-	// of the temp volume (free space plus whatever the copies already hold).
-	previewBudgetDivisor = 20
-	// copyingPrefix names a copy in progress; it is renamed to its hash name
-	// only when complete, so the hash name existing means finished
-	copyingPrefix = ".copying-"
-)
-
-/* --- preview: copy up to maxPreviewBytes of a folder's files to a temp dir and open it --- */
 
 type previewDoneMsg struct {
 	err error
@@ -37,144 +18,16 @@ type previewDoneMsg struct {
 
 // peekCmd copies a folder's files to its preview dir (reusing an existing copy)
 // for the OS viewer, off the UI goroutine.
-func peekCmd(ctx context.Context, database *db.DB, node *vfs.Node) tea.Cmd {
+func peekCmd(ctx context.Context, database *db.DB, library string, node *vfs.Node) tea.Cmd {
 	return func() tea.Msg {
-		var files []string
-		// a merged node's files still live under the folded-away paths until
-		// Confirm rewrites them, so look under each
-		for _, id := range append([]int64{node.ID}, node.MergedIDs...) {
-			under, err := vfs.FilesUnder(ctx, id, database)
-			if err != nil {
-				return previewDoneMsg{err: err}
-			}
-			// source_path is stored via path.ToSourcePath (separator only);
-			// back to native form before any of it touches the filesystem.
-			for _, f := range under {
-				files = append(files, wspath.FromSourcePath(f))
-			}
+		files, err := vfs.NodeFiles(ctx, database, *node)
+		if err != nil {
+			return previewDoneMsg{err: err}
 		}
 		if len(files) == 0 {
 			return previewDoneMsg{err: fmt.Errorf("no files under %s", node.Name)}
 		}
-
-		dir := preview.DirFor(files)
-		if _, err := os.Stat(dir); err == nil {
-			touch(dir) // makeRoom evicts by mtime, so a reuse is a use
-			return previewDoneMsg{dir: dir}
-		}
-
-		if err := os.MkdirAll(preview.Root(), 0o755); err != nil {
-			return previewDoneMsg{err: err}
-		}
-		// Best-effort: a volume that won't report its free space evicts nothing
-		// rather than refusing the peek.
-		if free, err := volume.FreeBytes(preview.Root()); err == nil {
-			if err := makeRoom(preview.Root(), plannedBytes(files), int64(free)); err != nil {
-				return previewDoneMsg{err: err}
-			}
-		}
-
-		// copy aside, then rename into place (same filesystem, atomic); a
-		// killed copy leaves only a .copying- dir, never a cache hit
-		tmp, err := os.MkdirTemp(preview.Root(), copyingPrefix+"*")
-		if err != nil {
-			return previewDoneMsg{err: err}
-		}
-		defer os.RemoveAll(tmp) // no-op once the rename succeeded
-		if _, err := copyFiles(ctx, files, tmp, maxPreviewBytes); err != nil {
-			return previewDoneMsg{err: err}
-		}
-		if err := os.Rename(tmp, dir); err != nil {
-			// another process copying the same folder got there first; its copy
-			// is this copy, so take it
-			if _, statErr := os.Stat(dir); statErr != nil {
-				return previewDoneMsg{err: err}
-			}
-		}
-		return previewDoneMsg{dir: dir}
+		dir, err := preview.Copy(ctx, library, files)
+		return previewDoneMsg{dir: dir, err: err}
 	}
-}
-
-// plannedBytes is what copyFiles will write for these files; unstattable files
-// count as zero.
-func plannedBytes(files []string) int64 {
-	var total int64
-	for _, f := range files {
-		if total >= maxPreviewBytes {
-			break
-		}
-		if fi, err := os.Stat(f); err == nil {
-			total += fi.Size()
-		}
-	}
-	return total
-}
-
-// touch marks a preview copy as just used, so eviction is least-recently-used.
-// Best-effort.
-func touch(dir string) {
-	now := time.Now()
-	_ = os.Chtimes(dir, now, now)
-}
-
-// makeRoom evicts least-recently-used preview copies until need fits in 5% of
-// the volume's free space plus what the copies hold.
-func makeRoom(root string, need, free int64) error {
-	type copyDir struct {
-		path string
-		mod  int64
-		size int64
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil
-	}
-	dirs := make([]copyDir, 0, len(entries))
-	var used int64
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		fi, err := e.Info()
-		if err != nil {
-			continue
-		}
-		p := filepath.Join(root, e.Name())
-		size := dirSize(p)
-		used += size
-		dirs = append(dirs, copyDir{p, fi.ModTime().UnixNano(), size})
-	}
-
-	budget := (free + used) / previewBudgetDivisor
-	if need > budget {
-		return fmt.Errorf("preview needs %d MB; only %d MB allowed",
-			need/(1024*1024), budget/(1024*1024))
-	}
-
-	sort.Slice(dirs, func(i, j int) bool { return dirs[i].mod < dirs[j].mod })
-	for _, d := range dirs {
-		if used+need <= budget {
-			break
-		}
-		if os.RemoveAll(d.path) == nil {
-			used -= d.size
-		}
-	}
-	return nil
-}
-
-// dirSize sums a preview copy's files. Preview dirs are flat (copyFiles writes
-// base names into one directory), so there is nothing to recurse into.
-func dirSize(dir string) int64 {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0
-	}
-	var total int64
-	for _, e := range entries {
-		if fi, err := e.Info(); err == nil {
-			total += fi.Size()
-		}
-	}
-	return total
 }

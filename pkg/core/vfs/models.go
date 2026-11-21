@@ -75,6 +75,31 @@ func DefaultConfig() Config {
 	}
 }
 
+// RuleOrder is every folder level a layout can use, in the order they nest.
+func RuleOrder() []string {
+	return []string{RuleDate, RuleLocation, RuleDevice, RuleOrientation, RuleMedia}
+}
+
+// Layouts are the ready-made folder layouts; the first is the default.
+func Layouts() [][]string {
+	return [][]string{{RuleDate, RuleLocation}, {RuleLocation}, {RuleDate}}
+}
+
+// CustomLayout is the layout made of the picked levels, nested in RuleOrder;
+// none picked is RuleNone.
+func CustomLayout(picked func(rule string) bool) []string {
+	var rules []string
+	for _, r := range RuleOrder() {
+		if picked(r) {
+			rules = append(rules, r)
+		}
+	}
+	if len(rules) == 0 {
+		return []string{RuleNone}
+	}
+	return rules
+}
+
 // RuleNone is the settings' `rules` sentinel for "no levels below
 // Year/Month"; only ConfigFor interprets it.
 const RuleNone = "none"

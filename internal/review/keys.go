@@ -151,7 +151,7 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.previewing {
 			m.previewing = true
 			m.previewErr = nil
-			cmd = tea.Batch(peekCmd(m.ctx, m.db, m.rows[m.cursor].node), m.spin.Tick)
+			cmd = tea.Batch(peekCmd(m.ctx, m.db, m.outputDir, m.rows[m.cursor].node), m.spin.Tick)
 		}
 	case " ", "V":
 		if m.visualMode {

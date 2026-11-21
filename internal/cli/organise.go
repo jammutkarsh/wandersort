@@ -7,7 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jammutkarsh/wandersort/internal/review"
-	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
 
@@ -33,33 +32,12 @@ wandersort organise`,
 	}
 }
 
-// newReviewScreen builds the review over the current proposal using the open
-// DB. An empty tree means everything is already placed.
+// newReviewScreen builds the review over the current proposal; an empty plan
+// is vfs.ErrNothingNew.
 func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
-	// vfs already waited for the location download; without a resolver,
-	// rename completion is just disabled
-	resolver, err := a.Deps.Location(ctx)
-	if err != nil {
-		a.Log().Warn("Location resolver unavailable, rename completions disabled", "error", err)
-	}
-	resolver = resolver.WithAnchors(resolver.BuildAnchors(ctx, a.Settings().SavedPlaces()))
-	outputDir := a.OutputDir()
-	tree, err := vfs.BuildTree(ctx, a.DB())
+	r, err := a.Review(ctx, a.Deps.Location)
 	if err != nil {
 		return nil, err
 	}
-	if len(tree) == 0 {
-		return nil, tui.ErrNothingNew
-	}
-	// a re-plan above already dropped the draft along with the old folder IDs
-	draft, err := vfs.OpenDraft(outputDir, tree)
-	if err != nil {
-		return nil, err
-	}
-	return review.Screen(ctx, review.Options{
-		DB:       a.DB(),
-		Draft:    draft,
-		Resolver: resolver,
-		Log:      a.Log(),
-	}), nil
+	return review.Screen(ctx, review.Options{DB: a.DB(), Review: r, Log: a.Log(), Library: a.OutputDir()}), nil
 }

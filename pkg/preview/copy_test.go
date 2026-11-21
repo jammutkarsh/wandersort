@@ -1,4 +1,4 @@
-package review
+package preview
 
 import (
 	"context"

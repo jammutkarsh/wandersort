@@ -542,7 +542,7 @@ func TestShellModel(t *testing.T) {
 		{"NothingNewReturnsToTheFolderList", func(t *testing.T) {
 			m := testShell(t)
 			m.screens[tabScan] = tui.NewScanModel(tui.ScanConfig{})
-			next, _ := m.Update(tui.NothingNewMsg{Text: tui.ErrNothingNew.Error()})
+			next, _ := m.Update(tui.NothingNewMsg{Text: vfs.ErrNothingNew.Error()})
 			m = next.(shellModel)
 			if _, ok := m.screens[tabScan].(tui.HomeModel); !ok {
 				t.Fatalf("scan tab = %T, want the folder list", m.screens[tabScan])

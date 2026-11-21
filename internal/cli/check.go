@@ -79,7 +79,7 @@ func (a *app) check(full bool, res *checkResult) error {
 	}
 	defer a.closeDBs()
 
-	rep, err := verify.Run(ctx, a.DB(), a.Log(), a.OutputDir(), verify.Options{Full: full})
+	rep, err := a.Check(ctx, verify.Options{Full: full})
 	if err != nil {
 		return err
 	}

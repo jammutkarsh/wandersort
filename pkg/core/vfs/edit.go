@@ -519,6 +519,19 @@ type mergePick struct {
 	id     int64
 }
 
+// MergeEdit is the edit combining the selected folders. The folder the
+// selection started on (anchor) names the result, whichever way the selection
+// grew, so it goes first; the rest keep their order.
+func MergeEdit(anchor int64, selected []int64) Edit {
+	ids := []int64{anchor}
+	for _, id := range selected {
+		if id != anchor {
+			ids = append(ids, id)
+		}
+	}
+	return Edit{Op: OpMerge, Nodes: ids}
+}
+
 // mergeNodes folds every node in ids into one, under their lowest common
 // ancestor (day folders in different months: under the earliest's month).
 // Returns the surviving node's ID, its name, and the ancestor's name for the

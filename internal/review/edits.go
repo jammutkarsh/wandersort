@@ -62,17 +62,11 @@ func (m *Model) mergeSelection() {
 		m.statusMsg, m.statusIsErr = "Select two or more folders to combine", true
 		return
 	}
-	// the row the selection started on names the result, whichever way the range
-	// was extended, so move it to the front
-	ids := make([]int64, 0, len(sel))
-	ids = append(ids, anchorID)
-	for _, r := range sel {
-		if r.node.ID != anchorID {
-			ids = append(ids, r.node.ID)
-		}
+	ids := make([]int64, len(sel))
+	for i, r := range sel {
+		ids[i] = r.node.ID
 	}
-
-	if out, ok := m.applyEdit(vfs.Edit{Op: vfs.OpMerge, Nodes: ids}, func(o vfs.Outcome) string {
+	if out, ok := m.applyEdit(vfs.MergeEdit(anchorID, ids), func(o vfs.Outcome) string {
 		return fmt.Sprintf("Combined %d folders into %s", len(ids), o.Name)
 	}); ok {
 		m.focusNode(out.Focus)

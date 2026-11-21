@@ -636,6 +636,35 @@ const canonicalSearchLimit = 8
 // ErrNotExact means a typed place name only nearly matches a geonames entry.
 var ErrNotExact = errors.New("no exact match")
 
+// CheckTown rejects a typo (ErrNotExact) but accepts a blank or unknown name,
+// or any name without a resolver.
+func (r *Resolver) CheckTown(ctx context.Context, typed string) error {
+	if r == nil || strings.TrimSpace(typed) == "" {
+		return nil
+	}
+	_, err := r.Canonical(ctx, typed)
+	return err
+}
+
+// TownName is the spelling a typed town is saved as: the database's when it
+// gives one, else what was typed, since dropping a town the user already had
+// is data loss. A near-miss CheckTown would have rejected saves as blank.
+func (r *Resolver) TownName(ctx context.Context, typed string) string {
+	typed = strings.TrimSpace(typed)
+	if r == nil || typed == "" {
+		return typed
+	}
+	name, err := r.Canonical(ctx, typed)
+	switch {
+	case err == nil:
+		return name
+	case errors.Is(err, ErrNotExact):
+		return ""
+	default:
+		return typed
+	}
+}
+
 // Canonical returns the spelling a typed place name must be stored as: geonames'
 // own form, qualified enough to resolve back to one row. An unknown name comes
 // back unchanged; a near-miss is ErrNotExact naming the closest alternative; a

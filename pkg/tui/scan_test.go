@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/logger"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -60,10 +63,10 @@ func TestScanModel(t *testing.T) {
 		// the review answer comes last.
 		{"NothingNewSkipsThePlanReadyScreen", func(t *testing.T) {
 			noNews := func(msgs []tea.Msg) bool {
-				return len(msgs) == 1 && msgs[0] == (NothingNewMsg{Text: ErrNothingNew.Error()})
+				return len(msgs) == 1 && msgs[0] == (NothingNewMsg{Text: vfs.ErrNothingNew.Error()})
 			}
 			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
-			next, cmd := m.Update(reviewReadyMsg{err: ErrNothingNew})
+			next, cmd := m.Update(reviewReadyMsg{err: vfs.ErrNothingNew})
 			if cmd != nil {
 				t.Errorf("the scan is still running, got %v", flattenCmd(cmd))
 			}
@@ -73,7 +76,7 @@ func TestScanModel(t *testing.T) {
 			}
 
 			next, _ = m.Update(scanDoneMsg{})
-			_, cmd = next.(ScanModel).Update(reviewReadyMsg{err: ErrNothingNew})
+			_, cmd = next.(ScanModel).Update(reviewReadyMsg{err: vfs.ErrNothingNew})
 			if msgs := flattenCmd(cmd); !noNews(msgs) {
 				t.Errorf("review answering after the finish = %#v, want NothingNewMsg", msgs)
 			}
@@ -115,7 +118,28 @@ func TestScanModel(t *testing.T) {
 				t.Errorf("third = %v, want a plain Leave (back to the folder input)", msgs)
 			}
 		}},
-		// Picking the folders before the prefetch lands opens them when it does.
+		// The review is built once the scan has returned, not when its plan
+		// phase logs done: until then the scan holds the library and the
+		// session refuses a review as busy.
+		{"ReviewFetchedOnceTheScanReturns", func(t *testing.T) {
+			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
+			planned := LogEventMsg{Event: logger.Event{Attrs: map[string]any{
+				logger.PhaseKey: "vfs", logger.EventKey: "done", logger.ElapsedKey: "1s",
+			}}}
+			next, cmd := m.Update(planned)
+			if msgs := flattenCmd(cmd); len(msgs) != 0 {
+				t.Errorf("plan phase done = %#v, want nothing yet", msgs)
+			}
+			_, cmd = next.(ScanModel).Update(scanDoneMsg{})
+			msgs := flattenCmd(cmd)
+			if len(msgs) != 1 {
+				t.Fatalf("scan returned = %#v, want the review fetched", msgs)
+			}
+			if _, ok := msgs[0].(reviewReadyMsg); !ok {
+				t.Errorf("scan returned = %#v, want reviewReadyMsg", msgs[0])
+			}
+		}},
+		// Picking the folders before the review lands opens them when it does.
 		{"PickBeforePrefetchOpensOnArrival", func(t *testing.T) {
 			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
 			next, _ := m.Update(scanDoneMsg{})
