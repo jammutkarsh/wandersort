@@ -72,6 +72,7 @@ type Extractor struct {
 	// Progress, when set, hears each file read, with the count so far and the total.
 	Progress func(read, total int)
 
+	ran  atomic.Bool // Run closes the pool, so it runs once
 	log  logger.Logger
 	db   *db.DB
 	pool *exiftool.Pool
@@ -135,9 +136,15 @@ func readCost(class volume.Class, budget int64) int64 {
 	return min(max(cost, 1), budget)
 }
 
-// Run pages through every unread file and reads it in a bounded worker pool.
-// Returns how many files were persisted
+// ErrRanOnce refuses a second Run: the first one closes the exiftool pool.
+var ErrRanOnce = errors.New("metadata: an extractor runs once; build another with New")
+
+// Run pages through every unread file and reads it in a bounded worker pool,
+// once per Extractor (ErrRanOnce after). Returns how many files were persisted.
 func (e *Extractor) Run(ctx context.Context) (int, error) {
+	if !e.ran.CompareAndSwap(false, true) {
+		return 0, ErrRanOnce
+	}
 	defer e.pool.Close()
 
 	toRead := make(chan fileRecord, 2*e.workers)
