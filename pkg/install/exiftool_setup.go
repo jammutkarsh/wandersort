@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
@@ -133,8 +135,9 @@ func installExiftool(ctx context.Context, log logger.Logger, binDir string, onPr
 }
 
 func downloadAndExtractExiftool(ctx context.Context, binDir string, log logger.Logger, onProgress func(done, total int64)) error {
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		return fmt.Errorf("create dir %q: %w", binDir, err)
+	staging := binDir + stagingSuffix
+	if err := atomicfile.MkdirAll(staging); err != nil {
+		return fmt.Errorf("create dir %q: %w", staging, err)
 	}
 
 	meta, err := fetchReleaseMeta(ctx)
@@ -146,7 +149,7 @@ func downloadAndExtractExiftool(ctx context.Context, binDir string, log logger.L
 		return fmt.Errorf("automatic install not supported on %s", runtime.GOOS)
 	}
 
-	archiveName := filepath.Join(binDir, fileMeta.Name)
+	archiveName := filepath.Join(staging, fileMeta.Name)
 	url := filesBaseURL + "/" + fileMeta.Name
 
 	log.Info("Downloading exiftool (first run only)…", logger.UserKey, true, "dir", path.New().RelativeToHome(binDir), "url", url, "os", runtime.GOOS)
@@ -172,19 +175,57 @@ func downloadAndExtractExiftool(ctx context.Context, binDir string, log logger.L
 		log.Info("exiftool checksum verified", "path", archiveName, "hash", fileMeta.SHA256)
 	}
 
-	if err := extractTarZst(archiveName, binDir); err != nil {
-		return fmt.Errorf("extract: %w", err)
+	if err := installArchive(archiveName, binDir); err != nil {
+		return err
 	}
 	log.Info("extracted exiftool", "dir", binDir)
 
-	if err := os.Remove(archiveName); err != nil {
-		log.Warn("failed to remove downloaded archive", "path", archiveName, "error", err)
+	if err := os.RemoveAll(staging); err != nil {
+		log.Warn("failed to remove downloaded archive", "path", staging, "error", err)
 	}
 	return nil
 }
 
+const (
+	// stagingSuffix names the folder beside binDir an install downloads and
+	// extracts into, so binDir only ever holds a whole install.
+	stagingSuffix = ".staging"
+	// extractedDirName is the fully extracted install inside the staging folder.
+	extractedDirName = "extracted"
+	// retiredSuffix names the previous install while the new one takes its place.
+	retiredSuffix = ".old"
+)
+
+// installArchive extracts archive beside binDir and only then swaps it in: a
+// crash mid-extract leaves the previous install (or none) whole, never a
+// launcher beside half its library.
+func installArchive(archive, binDir string) error {
+	extracted := filepath.Join(filepath.Dir(archive), extractedDirName)
+	if err := os.RemoveAll(extracted); err != nil {
+		return fmt.Errorf("clear %s: %w", extracted, err)
+	}
+	if err := extractTarZst(archive, extracted); err != nil {
+		return fmt.Errorf("extract: %w", err)
+	}
+	// a crash between the two renames leaves no binDir: the next run installs again
+	retired := binDir + retiredSuffix
+	if err := os.RemoveAll(retired); err != nil {
+		return fmt.Errorf("clear %s: %w", retired, err)
+	}
+	if err := os.Rename(binDir, retired); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("set aside %s: %w", binDir, err)
+	}
+	if err := os.Rename(extracted, binDir); err != nil {
+		return fmt.Errorf("move %s into place: %w", extracted, err)
+	}
+	if err := atomicfile.SyncDir(filepath.Dir(binDir)); err != nil {
+		return fmt.Errorf("sync %s: %w", filepath.Dir(binDir), err)
+	}
+	return os.RemoveAll(retired)
+}
+
 // extractTarZst extracts a CI-normalized tar.zst (flat layout, launcher
-// renamed) into destDir.
+// renamed) into destDir, every file and folder synced to disk.
 func extractTarZst(tzstPath, destDir string) error {
 	zr, closeZr, err := openZstd(tzstPath)
 	if err != nil {
@@ -192,10 +233,19 @@ func extractTarZst(tzstPath, destDir string) error {
 	}
 	defer closeZr()
 
+	if err := atomicfile.MkdirAll(destDir); err != nil {
+		return fmt.Errorf("mkdir %s: %w", destDir, err)
+	}
+	dirs := map[string]bool{destDir: true}
 	tr := tar.NewReader(zr)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
+			for dir := range dirs {
+				if err := atomicfile.SyncDir(dir); err != nil {
+					return fmt.Errorf("sync %s: %w", dir, err)
+				}
+			}
 			return nil
 		}
 		if err != nil {
@@ -205,21 +255,24 @@ func extractTarZst(tzstPath, destDir string) error {
 		dst := filepath.Join(destDir, filepath.FromSlash(hdr.Name))
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(dst, 0o755); err != nil {
+			if err := atomicfile.MkdirAll(dst); err != nil {
 				return fmt.Errorf("mkdir %s: %w", dst, err)
 			}
+			dirs[dst] = true
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			if err := atomicfile.MkdirAll(filepath.Dir(dst)); err != nil {
 				return fmt.Errorf("mkdir parent %s: %w", dst, err)
 			}
+			dirs[filepath.Dir(dst)] = true
 			out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
 			if err != nil {
 				return fmt.Errorf("create %s: %w", dst, err)
 			}
 			_, copyErr := io.Copy(out, tr)
-			out.Close()
-			if copyErr != nil {
-				return fmt.Errorf("write %s: %w", dst, copyErr)
+			syncErr := out.Sync()
+			closeErr := out.Close()
+			if err := errors.Join(copyErr, syncErr, closeErr); err != nil {
+				return fmt.Errorf("write %s: %w", dst, err)
 			}
 		}
 	}
