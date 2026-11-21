@@ -56,7 +56,7 @@ One file per command, plus `app.go` (the `app` struct embedding `*library.Sessio
 | `explain` | Errors as sentences a person can act on, for every front end |
 | `preview` | Cache of a review's peek copies, one root per library (`Copy`, `Root`, `DirFor`, `Clean`) |
 | `db` | Library `DB` (pragmas in the DSN, `BulkWriter`, `Forget`), `ReadOnly` (location DB, report), `state.go` (file transitions), `errors.go`, backup/restore, `migrations/` |
-| `config` | Runtime paths, library `Settings` (one JSON value; `HomeTown`/`WorkTown`), library history, `CheckLibrary` |
+| `config` | Runtime paths (`New` uses `~/.wandersort`, `NewAt` any app folder), library `Settings` (one JSON value; `HomeTown`/`WorkTown`), library history, `CheckLibrary` |
 | `install` | Versions, downloads, verification and readiness of exiftool and the location DB (`Coordinator`, up to `MaxTries` tries) |
 | `location` | Offline reverse/forward geocoding over the geonames DB; name qualifiers and suggestions |
 | `exiftool` | Runs the installed exiftool (`-stay_open` pool) |

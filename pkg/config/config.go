@@ -27,7 +27,7 @@ const LocationDBFileName = "location.db"
 type Configuration struct {
 	Settings
 
-	// appDir is ~/.wandersort: location database, logs, library history
+	// appDir holds the app's own files: location database, logs, library history
 	appDir string
 
 	AppDBPath      string
@@ -49,8 +49,16 @@ func New() (*Configuration, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve user home directory: %w", err)
 	}
+	return NewAt(filepath.Join(home, ".wandersort"))
+}
 
-	appDir := filepath.Join(home, ".wandersort")
+// NewAt is New keeping the app's own files (location database, tools, logs,
+// library history) in appDir instead of ~/.wandersort.
+func NewAt(appDir string) (*Configuration, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve user home directory: %w", err)
+	}
 	cfg := &Configuration{
 		Settings:       DefaultSettings(),
 		appDir:         appDir,
