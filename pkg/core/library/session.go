@@ -435,6 +435,34 @@ type State struct {
 
 	// Open is whether the session has the library open.
 	Open bool
+
+	// Running is the job running on the library, "" for none.
+	Running Job
+	// Replanning is a plan rewrite (a settings save) waiting or running.
+	Replanning bool
+}
+
+// Idle reports no job and no re-plan on the library: nothing is about to
+// change the plan or apply the draft.
+func (st State) Idle() bool { return st.Running == "" && !st.Replanning }
+
+// CanOrganise reports whether review edits can be made now. Never while a
+// copy runs: it applies the draft and removes it, so an edit then is lost.
+func (st State) CanOrganise() bool { return st.Idle() && st.CanReview() }
+
+// CanCopy reports whether a copy can start now: files planned, nothing running.
+func (st State) CanCopy() bool { return st.Idle() && st.Planned > 0 }
+
+// CanScan reports whether a scan can start now.
+func (st State) CanScan() bool { return st.Idle() }
+
+// CanChangeSettings reports whether settings can be saved or the library switched now.
+func (st State) CanChangeSettings() bool { return st.Idle() }
+
+// Live is st with the work running now, read without touching the database.
+func (s *Session) Live(st State) State {
+	st.Running, st.Replanning = s.Work.Running(), s.Work.Rewriting()
+	return st
 }
 
 // CanReview reports whether there is a plan worth reviewing: "probably" while
@@ -456,7 +484,7 @@ func (s *Session) State(ctx context.Context) State {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	_, err := os.Stat(s.cfg.AppDBPath)
-	st := State{Exists: err == nil}
+	st := s.Live(State{Exists: err == nil})
 
 	// counts without repairing: a torn draft is the holder's to fix, and this
 	// session may not hold the library

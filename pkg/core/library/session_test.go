@@ -867,3 +867,31 @@ func TestShutdownStopsRunningWork(t *testing.T) {
 		t.Errorf("job after Shutdown = %v, want ErrClosing", err)
 	}
 }
+
+// What a front end may start depends on the work running: nothing beside a
+// job or a re-plan, and no review edit while a copy applies the draft.
+func TestStateRules(t *testing.T) {
+	planned := State{Open: true, Planned: 3}
+	tests := []struct {
+		name                              string
+		running                           Job
+		replanning                        bool
+		organise, copy, scan, setSettings bool
+	}{
+		{"idle", "", false, true, true, true, true},
+		{"copy running", JobCopy, false, false, false, false, false},
+		{"scan running", JobScan, false, false, false, false, false},
+		{"re-plan", "", true, false, false, false, false},
+	}
+	for _, tt := range tests {
+		st := planned
+		st.Running, st.Replanning = tt.running, tt.replanning
+		got := [4]bool{st.CanOrganise(), st.CanCopy(), st.CanScan(), st.CanChangeSettings()}
+		if want := [4]bool{tt.organise, tt.copy, tt.scan, tt.setSettings}; got != want {
+			t.Errorf("%s: organise, copy, scan, settings = %v, want %v", tt.name, got, want)
+		}
+	}
+	if (State{Open: true}).CanCopy() {
+		t.Error("CanCopy with nothing planned")
+	}
+}

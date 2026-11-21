@@ -736,13 +736,15 @@ func (m *shellModel) homeAgain(note string) tea.Cmd {
 
 // nextTab cycles the tabs, skipping any that can't be used now.
 func (m shellModel) nextTab() int {
+	st := m.now()
 	for i := 1; i <= numTabs; i++ {
 		t := (m.tab + i) % numTabs
 		switch {
 		case t == tabReview && !m.canReview():
-		case t == tabCopy && (m.planChanging() || (m.screens[tabCopy] == nil && m.lib.Planned == 0)):
-		case t == tabSettings && (m.planChanging() || m.copyRunning()):
-		case t == tabScan && m.copyRunning():
+		// a running or finished copy's tab stays reachable to watch it
+		case t == tabCopy && (st.Running == library.JobScan || st.Replanning || (m.screens[tabCopy] == nil && !st.CanCopy())):
+		case t == tabSettings && !st.CanChangeSettings():
+		case t == tabScan && st.Running == library.JobCopy:
 		default:
 			return t
 		}
@@ -757,10 +759,23 @@ func (m shellModel) reviewReady() bool { return m.screens[tabReview] != nil }
 // a plan on disk, and never while a scan or re-plan is about to replace that
 // plan or a copy is applying the draft (an edit then would be lost).
 func (m shellModel) canReview() bool {
-	if m.planChanging() || m.copyRunning() {
-		return false
+	st := m.now()
+	return st.CanOrganise() || (st.Idle() && m.reviewReady())
+}
+
+// now is the library state with the work running right now. A screen knows
+// its job from the keypress that starts it, before the session registers it,
+// and a settings save from its hand-over, before it starts.
+func (m shellModel) now() library.State {
+	st := m.a.Live(m.lib)
+	switch {
+	case m.scanRunning():
+		st.Running = library.JobScan
+	case m.copyRunning():
+		st.Running = library.JobCopy
 	}
-	return m.reviewReady() || m.lib.CanReview()
+	st.Replanning = st.Replanning || m.a.settingsToSave != nil
+	return st
 }
 
 // refresh re-reads the library state after something that can change it (a
