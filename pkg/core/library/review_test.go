@@ -259,3 +259,22 @@ func TestReviewWaitsForPlacesOffTheLibrary(t *testing.T) {
 		t.Fatal("the review kept waiting for places after shutdown")
 	}
 }
+
+// A peek reads its folder's files from the review's own library: once the
+// plan moved on (a copy, another library) the folder ids name nothing there.
+func TestPeekRefusedOnceThePlanMovedOn(t *testing.T) {
+	ctx := context.Background()
+	s, day := reviewSession(t)
+	r, err := s.Review(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, err := s.Work.StartJob(JobCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done()
+	if _, err := r.Peek(ctx, vfs.Node{ID: day, Name: "03"}); !errors.Is(err, ErrStaleReview) {
+		t.Errorf("peek after the plan moved on = %v, want ErrStaleReview", err)
+	}
+}

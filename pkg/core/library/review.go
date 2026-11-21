@@ -3,10 +3,12 @@ package library
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/location"
+	"github.com/jammutkarsh/wandersort/pkg/preview"
 )
 
 // ErrStaleReview refuses an edit to a review built over a plan the library
@@ -17,9 +19,11 @@ var ErrStaleReview = errors.New("the plan changed since Organise opened; open it
 // Edits go through the session: refused beside a job or a re-plan, and once
 // the plan the review was built over is replaced.
 type Review struct {
-	work  *WorkGroup
-	draft *vfs.Draft
-	plan  uint64
+	s       *Session
+	work    *WorkGroup
+	draft   *vfs.Draft
+	plan    uint64
+	library string // the library folder it was built over, keying its peeks
 
 	// mu guards tree and edits: copies of the draft's, replaced whole after
 	// each edit, so a reader on another goroutine never sees one half made.
@@ -74,9 +78,9 @@ func (s *Session) Review(ctx context.Context, places func(context.Context) (*loc
 	if len(tree) == 0 {
 		return nil, vfs.ErrNothingNew
 	}
-	r := &Review{work: &s.Work, plan: plan}
 	// read before whileIdle: Session.mu is never taken under WorkGroup.mu
 	dir := s.OutputDir()
+	r := &Review{s: s, work: &s.Work, plan: plan, library: dir}
 	// opening may rewrite the journal (dropping edits of an older plan), so
 	// no copy may be applying it meanwhile
 	if err := s.Work.whileIdle(func() (err error) {
@@ -98,6 +102,37 @@ func (s *Session) Review(ctx context.Context, places func(context.Context) (*loc
 	r.Resolver = resolver.WithAnchors(resolver.BuildAnchors(ctx, s.Settings().SavedPlaces()))
 	s.review = r
 	return r, nil
+}
+
+// Peek copies a folder's files into its preview copy (see preview.Copy) and
+// returns that copy's folder for a viewer. The files are read from this
+// review's library while it can't be switched; once the plan moved on
+// (another library, a copy) the folder may not exist, so it is ErrStaleReview.
+func (r *Review) Peek(ctx context.Context, node vfs.Node) (string, error) {
+	ctx, cancel := r.s.bound(ctx)
+	defer cancel()
+	files, err := r.nodeFiles(ctx, node)
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 0 {
+		return "", fmt.Errorf("no files under %s", node.Name)
+	}
+	return preview.Copy(ctx, r.library, files)
+}
+
+// nodeFiles is node's files, read under the library.
+func (r *Review) nodeFiles(ctx context.Context, node vfs.Node) ([]string, error) {
+	done, ok := r.work.StartOnLibrary()
+	if !ok {
+		return nil, ErrClosing
+	}
+	defer done()
+	d := r.s.DB()
+	if r.Stale() || d == nil {
+		return nil, ErrStaleReview
+	}
+	return vfs.NodeFiles(ctx, d, node)
 }
 
 // Plan is WorkGroup.Plan when the review was built.

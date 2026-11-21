@@ -39,5 +39,5 @@ func (a *app) newReviewScreen(ctx context.Context) (tui.Tab, error) {
 	if err != nil {
 		return nil, err
 	}
-	return review.Screen(ctx, review.Options{DB: a.DB(), Review: r, Log: a.Log(), Library: a.OutputDir()}), nil
+	return review.Screen(ctx, review.Options{Review: r, Log: a.Log()}), nil
 }

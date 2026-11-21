@@ -55,6 +55,21 @@ func usePreviewRoot(t *testing.T) string {
 	return preview.Root("")
 }
 
+// dbPeek is library.Review.Peek over a bare database: node's files copied
+// into the "" library's preview copies.
+func dbPeek(d *db.DB) peeker {
+	return func(ctx context.Context, node vfs.Node) (string, error) {
+		files, err := vfs.NodeFiles(ctx, d, node)
+		if err != nil {
+			return "", err
+		}
+		if len(files) == 0 {
+			return "", fmt.Errorf("no files under %s", node.Name)
+		}
+		return preview.Copy(ctx, "", files)
+	}
+}
+
 // testModel opens a review over tree with an empty draft in a temp dir.
 func testModel(t *testing.T, tree []vfs.Node, ctx context.Context) Model {
 	t.Helper()
@@ -1167,7 +1182,7 @@ func TestReview(t *testing.T) {
 			insertVFSEntry(t, d, 1, srcFile, "2024/June/a.jpg")
 
 			node := &vfs.Node{ID: nodeAt(t, d, "2024/June")}
-			msg := peekCmd(ctx, d, "", node)()
+			msg := peekCmd(ctx, dbPeek(d), node)()
 			pm := msg.(previewDoneMsg)
 			if pm.err != nil {
 				t.Fatalf("peekCmd: %v", pm.err)
@@ -1201,7 +1216,7 @@ func TestReview(t *testing.T) {
 			insertVFSEntry(t, d, 1, srcFile, "2024/June/a.jpg")
 
 			node := &vfs.Node{ID: nodeAt(t, d, "2024/June")}
-			if pm := peekCmd(ctx, d, "", node)().(previewDoneMsg); pm.err != nil {
+			if pm := peekCmd(ctx, dbPeek(d), node)().(previewDoneMsg); pm.err != nil {
 				t.Fatalf("first peek: %v", pm.err)
 			}
 			// a fresh copy would wipe the directory first, taking this with it
@@ -1215,7 +1230,7 @@ func TestReview(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			pm := peekCmd(ctx, d, "", node)().(previewDoneMsg)
+			pm := peekCmd(ctx, dbPeek(d), node)().(previewDoneMsg)
 			if pm.err != nil {
 				t.Fatalf("second peek: %v", pm.err)
 			}
@@ -1246,7 +1261,7 @@ func TestReview(t *testing.T) {
 			insertVFSEntry(t, d, 1, present, "2024/June/a.jpg")
 			insertVFSEntry(t, d, 2, missing, "2024/June/gone.jpg")
 
-			pm := peekCmd(ctx, d, "", &vfs.Node{ID: nodeAt(t, d, "2024/June")})().(previewDoneMsg)
+			pm := peekCmd(ctx, dbPeek(d), &vfs.Node{ID: nodeAt(t, d, "2024/June")})().(previewDoneMsg)
 			if pm.err == nil {
 				t.Fatal("expected an error copying a missing source file")
 			}
@@ -1267,7 +1282,7 @@ func TestReview(t *testing.T) {
 			usePreviewRoot(t)
 			d := dbtest.New(t)
 			node := &vfs.Node{ID: 999999}
-			msg := peekCmd(ctx, d, "", node)()
+			msg := peekCmd(ctx, dbPeek(d), node)()
 			pm := msg.(previewDoneMsg)
 			if pm.err == nil {
 				t.Fatal("expected an error for a node with no files")
@@ -1458,7 +1473,7 @@ func TestDraft(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return newModel(draft, ctx, d, nil, nil, nil, logger.NewNoopLogger()), tree
+		return newModel(draft, ctx, dbPeek(d), nil, nil, nil, logger.NewNoopLogger()), tree
 	}
 	dayRow := func(m Model) *reviewRow {
 		for _, r := range m.rows {
