@@ -53,7 +53,6 @@ func CopyContext(ctx context.Context, src, dest string, tee io.Writer, check fun
 		return 0, fmt.Errorf("create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
-	keepOutOfCache(tmp)
 	defer func() {
 		tmp.Close()
 		os.Remove(tmpName) // no-op once Rename moved it

@@ -6,10 +6,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// keepOutOfCache stops f's writes staying in the page cache, so a read after
-// the sync comes from the drive. Best effort: a refused hint only means the
-// read may be served from memory.
-func keepOutOfCache(f *os.File) { _, _ = unix.FcntlInt(f.Fd(), unix.F_NOCACHE, 1) }
-
-// dropCached is a no-op here: keepOutOfCache already kept the pages out.
-func dropCached(*os.File) {}
+// dropCached evicts f's synced (clean) pages, so a read after it comes from
+// the drive. darwin has no fadvise: invalidating a mapping of the file drops
+// its cached pages instead, and the writes before it keep the cache's
+// write-behind. Best effort: a refused hint only means the read may be served
+// from memory.
+func dropCached(f *os.File) {
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return
+	}
+	mapped, err := unix.Mmap(int(f.Fd()), 0, int(info.Size()), unix.PROT_READ, unix.MAP_SHARED)
+	if err != nil {
+		return
+	}
+	_ = unix.Msync(mapped, unix.MS_INVALIDATE)
+	_ = unix.Munmap(mapped)
+}
