@@ -15,7 +15,7 @@ func (a *app) newAdminClearCmd() *cobra.Command {
 		Use:   "clear",
 		Short: "Delete the cached preview copies",
 		Long: `Deletes the preview copies made when you peek into a folder
-while organising. They are only a cache — peeking again re-creates them — so
+while organising, for every library. They are only a cache — peeking again re-creates them — so
 nothing here asks, and nothing in your library is touched.
 
 To delete the library's own data, that is 'wandersort admin db --reset'.`,
@@ -27,7 +27,7 @@ To delete the library's own data, that is 'wandersort admin db --reset'.`,
 }
 
 func (a *app) runAdminClear() error {
-	if err := preview.Clean(a.OutputDir()); err != nil {
+	if err := preview.CleanAll(); err != nil {
 		return fmt.Errorf("could not remove the preview copies: %w", err)
 	}
 	fmt.Fprintln(os.Stderr, tui.OK.Render("Preview cache cleared."))
