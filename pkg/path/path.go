@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 type Resolver struct {
@@ -43,7 +46,51 @@ func (r *Resolver) RealPath(p string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("abs %q: %w", resolved, err)
 	}
-	return absPath, nil
+	return onDiskSpelling(absPath), nil
+}
+
+// onDiskSpelling respells each component of the absolute path p as its folder
+// lists it: on a case- or normalization-insensitive volume (APFS, NTFS) a
+// folder typed as "photos" or in decomposed Unicode is still one folder, so it
+// must be one path. A folder that can't be listed keeps the typed name.
+func onDiskSpelling(p string) string {
+	vol := filepath.VolumeName(p)
+	sep := string(filepath.Separator)
+	out := vol + sep
+	for name := range strings.SplitSeq(strings.TrimPrefix(p[len(vol):], sep), sep) {
+		if name != "" {
+			out = filepath.Join(out, listedName(out, name))
+		}
+	}
+	return out
+}
+
+// listedName is name as dir lists it: itself when listed exactly, else the
+// listed entry that folds to it and is the same file.
+func listedName(dir, name string) string {
+	f, err := os.Open(dir)
+	if err != nil {
+		return name
+	}
+	names, err := f.Readdirnames(-1)
+	f.Close()
+	if err != nil || slices.Contains(names, name) {
+		return name
+	}
+	typed, err := os.Lstat(filepath.Join(dir, name))
+	if err != nil {
+		return name
+	}
+	key := norm.NFC.String(name)
+	for _, n := range names {
+		if !strings.EqualFold(norm.NFC.String(n), key) {
+			continue
+		}
+		if st, err := os.Lstat(filepath.Join(dir, n)); err == nil && os.SameFile(st, typed) {
+			return n
+		}
+	}
+	return name
 }
 
 // ExpandPath expands a leading "~" or "~/" to the user's home directory.
