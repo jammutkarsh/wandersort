@@ -3,6 +3,7 @@
 package atomicfile
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +32,12 @@ const CopyPrefix = ".copy-"
 // out of the page cache by then, so check reading it reads the drive.
 // Keeps src's permission bits (minus execute) and mtime. Returns bytes written.
 func Copy(src, dest string, tee io.Writer, check func(tmp string) error) (int64, error) {
+	return CopyContext(context.Background(), src, dest, tee, check)
+}
+
+// CopyContext is Copy that stops between chunks once ctx ends, landing nothing
+// and removing the temp file.
+func CopyContext(ctx context.Context, src, dest string, tee io.Writer, check func(tmp string) error) (int64, error) {
 	if err := MkdirAll(filepath.Dir(dest)); err != nil {
 		return 0, fmt.Errorf("create dest dir %s: %w", filepath.Dir(dest), err)
 	}
@@ -56,9 +63,9 @@ func Copy(src, dest string, tee io.Writer, check func(tmp string) error) (int64,
 	if tee != nil {
 		w = io.MultiWriter(tmp, tee)
 	}
-	// hide WriteTo: io.CopyBuffer would otherwise ignore the 1 MiB buffer and
-	// fall back to 32 KiB reads
-	n, err := io.CopyBuffer(w, struct{ io.Reader }{in}, make([]byte, copyBufferSize))
+	// ContextReader hides WriteTo: io.CopyBuffer would otherwise ignore the
+	// 1 MiB buffer and fall back to 32 KiB reads
+	n, err := io.CopyBuffer(w, ContextReader{ctx, in}, make([]byte, copyBufferSize))
 	if err != nil {
 		return 0, fmt.Errorf("copy %s: %w", src, err)
 	}
@@ -85,6 +92,9 @@ func Copy(src, dest string, tee io.Writer, check func(tmp string) error) (int64,
 	if err := tmp.Close(); err != nil {
 		return 0, fmt.Errorf("close temp file: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if check != nil {
 		if err := check(tmpName); err != nil {
 			return 0, err
@@ -94,6 +104,20 @@ func Copy(src, dest string, tee io.Writer, check func(tmp string) error) (int64,
 		return 0, err
 	}
 	return n, nil
+}
+
+// ContextReader reads r until ctx ends, then fails every read with ctx's
+// error. Its one method also hides r's WriteTo from io.CopyBuffer.
+type ContextReader struct {
+	Ctx context.Context
+	R   io.Reader
+}
+
+func (c ContextReader) Read(p []byte) (int, error) {
+	if err := c.Ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.R.Read(p)
 }
 
 // WriteFile replaces path with data (temp file, sync, rename), so a crash

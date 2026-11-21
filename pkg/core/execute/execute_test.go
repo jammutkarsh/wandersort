@@ -614,7 +614,7 @@ func TestPlaceCommitsOnlyOnceTheFileIsInPlace(t *testing.T) {
 	}
 
 	var sawFile bool
-	err := place(src, dst, hashOf("hello"), func() error {
+	err := place(context.Background(), src, dst, hashOf("hello"), func() error {
 		_, statErr := os.Stat(dst)
 		sawFile = statErr == nil
 		return fmt.Errorf("writer closed")
@@ -701,6 +701,30 @@ func TestRunStopsBetweenFilesWhenCancelled(t *testing.T) {
 		if status, _ := rowStatus(t, d, id); status != statePending {
 			t.Errorf("row %d = %q, want %q", id, status, statePending)
 		}
+	}
+}
+
+// Stopping in the middle of a file is not a failed file: it stays pending,
+// with no error recorded against it.
+func TestRunLeavesAFileStoppedMidCopyPending(t *testing.T) {
+	d := dbtest.New(t)
+	seedApproved(t, d, 1, "2024/A.jpg", "hello")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopMidFile := func(ctx context.Context, _, dst string, _ scanned, _ commitFn) (string, int64, error) {
+		cancel()
+		return dst, 0, fmt.Errorf("copy: %w", ctx.Err())
+	}
+	rep, err := run(ctx, d, logger.NewNoopLogger(), t.TempDir(), Options{}, stopMidFile)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if rep.Done != 0 || rep.Failed != 0 {
+		t.Errorf("report = %+v, want nothing done or failed", rep)
+	}
+	if status, _ := rowStatus(t, d, 1); status != statePending {
+		t.Errorf("status = %q, want %q", status, statePending)
 	}
 }
 
