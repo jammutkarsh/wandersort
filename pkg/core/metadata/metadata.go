@@ -69,6 +69,9 @@ type fileRecord struct {
 
 // Extractor hashes discovered files and reads their EXIF in one pass
 type Extractor struct {
+	// Progress, when set, hears each file read, with the count so far and the total.
+	Progress func(read, total int)
+
 	log  logger.Logger
 	db   *db.DB
 	pool *exiftool.Pool
@@ -367,6 +370,9 @@ func (e *Extractor) worker(ctx context.Context, toRead <-chan fileRecord, extrac
 		}
 		if !e.readOne(ctx, file, extracted, total) {
 			return
+		}
+		if e.Progress != nil {
+			e.Progress(int(extracted.Load()), total)
 		}
 	}
 }

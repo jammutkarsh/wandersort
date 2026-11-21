@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -32,6 +33,10 @@ type Scanner struct {
 	volumeOf func(path string) string
 	device   func(fs.FileInfo) (uint64, bool)
 	workers  int
+
+	// Progress, when set, hears each file the walk finds, with the count so far.
+	Progress func(found int)
+	found    atomic.Int64
 }
 
 func New(db *db.DB, log logger.Logger, workers int) *Scanner {
@@ -306,6 +311,9 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 
 		// StreamKey: feeds the TUI progress line, stripped from the plain console.
 		s.log.Info("Scanning", logger.StreamKey, true, "file", s.path.RelativeToHome(p))
+		if s.Progress != nil {
+			s.Progress(int(s.found.Add(1)))
+		}
 
 		// Send to processing channel
 		select {
