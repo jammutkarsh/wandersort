@@ -11,23 +11,28 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// shipped is the SQL of every migration a release has carried. A library that
-// ran one never runs it again, so a change to it reaches new libraries only.
-var shipped = map[uint]string{
+// pinned is the hash of every migration's queries. A library that ran one
+// never runs it again, so a change to it reaches new libraries only.
+var pinned = map[uint]string{
 	1: "3db298b62f4eaa32491cfa99838bd1d96af99821bfa138a97dd726f84aaa1d48",
 	2: "b9c6747de26e587363e07b249cea74ae61b9fb51b935367504cc3e18636a724b",
 	3: "b389a5f8d88dce261e3fdfe4afdc36974d73378290340ab95c98e504e24933d4",
+	4: "8ffa636eb1d1f765b1b559b0944a89fc25e173004c0bcceee2089677f5a90ed4",
 }
 
-func TestShippedMigrationsNeverChange(t *testing.T) {
+func TestMigrationsNeverChange(t *testing.T) {
 	for _, m := range schemas {
-		want, ok := shipped[m.Version]
-		if !ok {
-			continue
+		queries := strings.Join(m.SQL, "\x00")
+		if m.Unless != "" {
+			queries = m.Unless + "\x00" + queries
 		}
-		sum := sha256.Sum256([]byte(strings.Join(m.SQL, "\x00")))
-		if got := hex.EncodeToString(sum[:]); got != want {
-			t.Errorf("migration %d changed after it shipped (%s, want %s): add a new migration instead", m.Version, got, want)
+		sum := sha256.Sum256([]byte(queries))
+		got := hex.EncodeToString(sum[:])
+		switch want, ok := pinned[m.Version]; {
+		case !ok:
+			t.Errorf("migration %d is not pinned: add its hash, %s", m.Version, got)
+		case got != want:
+			t.Errorf("migration %d changed (%s, want %s): libraries that ran it won't run it again; add a new migration instead", m.Version, got, want)
 		}
 	}
 }

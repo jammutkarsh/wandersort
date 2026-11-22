@@ -82,7 +82,7 @@ One file per command, plus `app.go` (the `app` struct embedding `*library.Sessio
 - Connection pragmas live in the DSN (`appDSN`); `synchronous=FULL`, `mmap_size=0`, foreign keys asserted.
 - Every write goes through `db.Writer` (`Write` batched, `WriteSync` when the outcome matters); `DB.SQL` is for reads. `Flush` returns writes lost since the last flush.
 - `BulkWriter` ops must touch nothing outside their transaction (failed batches replay).
-- Releases are out: a shipped migration never changes (`TestShippedMigrationsNeverChange`); add a new one, and test it on a library the last release made.
+- Releases are out: a migration never changes once merged (`TestMigrationsNeverChange` pins each one); add a new one, and test it on a library the last release made.
 - Imports point down. `pkg/path`, `pkg/logger`, `pkg/lock`, `pkg/atomicfile`, `pkg/human` import nothing else in the project.
 - Run the CLI with `HOME` set to a scratch folder: `--output-path` becomes the default library.
 

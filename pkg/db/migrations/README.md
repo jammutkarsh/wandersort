@@ -14,7 +14,7 @@ Migrations are Go files, not `.sql` files: the SQL is compiled into the single b
 
 Create `00N_<name>.go` with the next version and append it to `schemas`. Never reorder or edit an entry that has shipped.
 
-A database that already recorded a version never sees a change to it, so `TestShippedMigrationsNeverChange` pins every migration a release has carried. When a release ships a new one, add its hash there (the failing test prints it).
+A database that already recorded a version never sees a change to it, so `TestMigrationsNeverChange` pins every migration, `Unless` included. A new one needs its hash there (the failing test prints it); once merged, it never changes.
 
 Never drop a table that others reference: with foreign keys on, the drop deletes its rows first and cascades. Alter columns in place (`004_file_identity.go`).
 
