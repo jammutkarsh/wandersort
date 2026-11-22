@@ -55,6 +55,12 @@ func New() (*Configuration, error) {
 // NewAt is New keeping the app's own files (location database, tools, logs,
 // library history) in appDir instead of ~/.wandersort.
 func NewAt(appDir string) (*Configuration, error) {
+	// absolute now: a program started from a launcher often runs in "/",
+	// and the logs, history and tools must stay where the caller meant
+	appDir, err := filepath.Abs(appDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve app folder %s: %w", appDir, err)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve user home directory: %w", err)
