@@ -123,12 +123,13 @@ func (a *app) shownSettings() config.Settings {
 
 // busyError words a library held by another process for the terminal, keeping the cause in the chain.
 type busyError struct {
-	cause error
-	pid   int
+	cause   error
+	pid     int
+	program string
 }
 
 func (e *busyError) Error() string {
-	return tui.Bad.Render(fmt.Sprintf("Another wandersort is already running here (PID %d).", e.pid)) + "\n" +
+	return tui.Bad.Render(fmt.Sprintf("%s already has this library open (PID %d).", e.program, e.pid)) + "\n" +
 		tui.FaintTxt.Render("Stop it, then try again.")
 }
 
@@ -141,7 +142,11 @@ func explainBusy(err error) error {
 	if !ok {
 		return err
 	}
-	return withCode(exitBusy, &busyError{cause: err, pid: running.PID})
+	program := running.Program
+	if program == "" {
+		program = "Another program"
+	}
+	return withCode(exitBusy, &busyError{cause: err, pid: running.PID, program: program})
 }
 
 // closeDBs stops the library's work and closes it, then the location

@@ -52,8 +52,8 @@ func AcquireOutput(dir string) (*Lock, error) {
 	lockPath := filepath.Join(dir, OutputFileName)
 	l, err := acquire(context.Background(), dir, OutputFileName, false, pollInterval, pollMaxInterval)
 	if errors.Is(err, ErrHeld) {
-		pid, _ := readLockPID(lockPath)
-		return nil, &AlreadyRunningError{PID: pid}
+		pid, program := readLockHolder(lockPath)
+		return nil, &AlreadyRunningError{PID: pid, Program: program}
 	}
 	return l, err
 }
@@ -70,11 +70,19 @@ func AcquireHistory(dir string) (*Lock, error) {
 	return acquire(context.Background(), dir, HistoryFileName, true, historyPollInterval, historyPollMaxInterval)
 }
 
-// AlreadyRunningError reports the PID of the process holding the output lock.
-type AlreadyRunningError struct{ PID int }
+// AlreadyRunningError reports the process holding the output lock: its PID
+// and its program's name, each zero when unreadable.
+type AlreadyRunningError struct {
+	PID     int
+	Program string
+}
 
 func (e *AlreadyRunningError) Error() string {
-	return fmt.Sprintf("another wandersort process is already running (PID %d)", e.PID)
+	program := e.Program
+	if program == "" {
+		program = "another program"
+	}
+	return fmt.Sprintf("%s already has this library open (PID %d)", program, e.PID)
 }
 
 func (e *AlreadyRunningError) Unwrap() error { return ErrHeld }
@@ -108,18 +116,32 @@ func acquire(ctx context.Context, dir, name string, block bool, wait, maxWait ti
 	}
 }
 
-// readLockPID returns the PID recorded in the lock file at path, for
-// alreadyRunningError's message only — display, not the locking mechanism.
-func readLockPID(path string) (int, error) {
+// readLockHolder returns the PID and program recorded in the lock file at
+// path, for AlreadyRunningError's message only — display, not the locking
+// mechanism. Each is zero when unreadable (Windows can't read a locked file).
+func readLockHolder(path string) (pid int, program string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, err
+		return 0, ""
 	}
-	return strconv.Atoi(strings.TrimSpace(string(data)))
+	pidLine, program, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
+	pid, _ = strconv.Atoi(strings.TrimSpace(pidLine))
+	return pid, strings.TrimSpace(program)
+}
+
+// programName is this process's program as a person would name it: the
+// executable's base name without its extension.
+func programName() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(filepath.Base(exe), filepath.Ext(exe))
 }
 
 // tryLock attempts one non-blocking OS advisory lock on lockPath and, on
-// success, stamps it with this process's PID for alreadyRunningError only.
+// success, stamps it with this process's PID and program for
+// AlreadyRunningError only.
 func tryLock(lockPath string) (*Lock, error) {
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
@@ -136,7 +158,7 @@ func tryLock(lockPath string) (*Lock, error) {
 
 	if err := f.Truncate(0); err == nil {
 		if _, err := f.Seek(0, 0); err == nil {
-			fmt.Fprintf(f, "%d\n", os.Getpid())
+			fmt.Fprintf(f, "%d\n%s\n", os.Getpid(), programName())
 		}
 	}
 
