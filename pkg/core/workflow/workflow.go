@@ -26,8 +26,8 @@ import (
 type Deps struct {
 	Exiftool func(context.Context) (string, error)             // path to the exiftool binary
 	Location func(context.Context) (*location.Resolver, error) // open geonames resolver
-	// OnProgress, when set, hears each file walked and read; called from the
-	// scan's own goroutines, so it must not block.
+	// OnProgress, when set, hears each file walked and read, and the plan
+	// step starting; called from the scan's own goroutines, so it must not block.
 	OnProgress func(Progress)
 }
 
@@ -37,6 +37,9 @@ type Phase string
 const (
 	PhaseWalk Phase = "walk" // finding files; Total is unknown (0)
 	PhaseRead Phase = "read" // hashing and reading each file's metadata
+	// PhasePlan is sorting into folders, heard once as it starts (Done and
+	// Total 0); the scan returns when it ends.
+	PhasePlan Phase = "plan"
 )
 
 // Progress is how far a scan's step has got.
@@ -251,6 +254,9 @@ func (wf *Workflow) workflowPhases(res *Result, force bool) []workflowPhase {
 				}
 				cfg := *wf.appCfg
 				cfg.Settings = settings
+				if on := wf.deps.OnProgress; on != nil {
+					on(Progress{Phase: PhasePlan})
+				}
 				return vfs.Propose(ctx, wf.db, resolver, &cfg, wf.log)
 			},
 			summary: func(count int) string {

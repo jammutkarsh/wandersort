@@ -164,6 +164,20 @@ func removeIfExists(p string) error {
 	return nil
 }
 
+// openBundledLocation opens the location database shipped with the program as
+// it is: verified against its meta file, never downloaded or removed.
+func openBundledLocation(log logger.Logger, dbPath string) (*location.Resolver, *db.ReadOnly, error) {
+	locationDB, err := db.OpenReadOnly(dbPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bundled location db: %w", err)
+	}
+	if err := verifyLocationDB(dbPath, locationDB, log, false); err != nil {
+		locationDB.Close()
+		return nil, nil, fmt.Errorf("bundled location db: %w", err)
+	}
+	return location.NewResolver(locationDB, log), locationDB, nil
+}
+
 // OpenLocationResolver downloads (if missing), verifies and opens the location
 // database. The caller owns closing the returned *db.ReadOnly.
 func OpenLocationResolver(ctx context.Context, log logger.Logger, dbPath string, onProgress func(done, total int64)) (*location.Resolver, *db.ReadOnly, error) {

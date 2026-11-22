@@ -337,9 +337,9 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 		return ErrClosing
 	}
 	defer stop()
-	release, ok := s.Work.HoldLibrary()
-	if !ok {
-		return ErrBusy
+	release, err := s.Work.HoldLibrary()
+	if err != nil {
+		return err
 	}
 	defer release()
 	// a save registered after the check above waits for this hold; refuse
@@ -406,9 +406,9 @@ func isNew(ctx context.Context, d *db.DB) (bool, error) {
 // closed first (a restore needs every connection closed) and opened again
 // after; one another process has open is db.ErrInUse.
 func (s *Session) Restore(ctx context.Context) (err error) {
-	release, ok := s.Work.HoldLibrary()
-	if !ok {
-		return ErrBusy
+	release, err := s.Work.HoldLibrary()
+	if err != nil {
+		return err
 	}
 	defer release()
 	s.mu.Lock()
@@ -637,17 +637,30 @@ func (g *WorkGroup) Start() (done func(), ok bool) {
 	return g.wg.Done, true
 }
 
-// StartOnLibrary is Start for work on the open library; the library can't be switched while it runs.
-func (g *WorkGroup) StartOnLibrary() (done func(), ok bool) {
-	stop, ok := g.Start()
-	if !ok {
-		return nil, false
+// StartOnLibrary is Start for a short read of the open library; the library
+// can't be switched while it runs. It refuses once shutdown began
+// (ErrClosing) and while a re-plan runs or waits (ErrReplanning), rather than
+// wait the re-plan out.
+func (g *WorkGroup) StartOnLibrary() (done func(), err error) {
+	g.mu.Lock()
+	switch {
+	case g.closed:
+		err = ErrClosing
+	case g.rewrites.Load() > 0:
+		err = ErrReplanning
 	}
+	if err != nil {
+		g.mu.Unlock()
+		return nil, err
+	}
+	g.wg.Add(1)
+	stop := g.wg.Done
+	g.mu.Unlock()
 	g.library.RLock()
 	return func() {
 		g.library.RUnlock()
 		stop()
-	}, true
+	}, nil
 }
 
 // StartRewrite registers work that replaces the library's whole plan: from
@@ -694,14 +707,21 @@ func (g *WorkGroup) Rewriting() bool { return g.rewrites.Load() > 0 }
 // once it reads more.
 func (g *WorkGroup) Plan() uint64 { return g.plan.Load() }
 
-// HoldLibrary takes the library from all work. It reports false while a job
-// or re-plan runs or waits, and waits out short reads (a review being built,
-// a copy plan); no job or re-plan starts while it waits or holds.
-func (g *WorkGroup) HoldLibrary() (release func(), ok bool) {
+// HoldLibrary takes the library from all work. It is refused while a job
+// (*BusyError naming it) or a re-plan (ErrReplanning) runs or waits, and waits
+// out short reads (a review being built, a copy plan); no job or re-plan
+// starts while it waits or holds.
+func (g *WorkGroup) HoldLibrary() (release func(), err error) {
 	g.mu.Lock()
-	if g.job != "" || g.rewrites.Load() > 0 {
+	switch {
+	case g.job != "":
+		err = &BusyError{Job: g.job}
+	case g.rewrites.Load() > 0:
+		err = ErrReplanning
+	}
+	if err != nil {
 		g.mu.Unlock()
-		return nil, false
+		return nil, err
 	}
 	g.holding++
 	g.mu.Unlock()
@@ -711,7 +731,7 @@ func (g *WorkGroup) HoldLibrary() (release func(), ok bool) {
 		g.mu.Lock()
 		g.holding--
 		g.mu.Unlock()
-	}, true
+	}, nil
 }
 
 // CloseAndWait refuses new work and waits for what is running.

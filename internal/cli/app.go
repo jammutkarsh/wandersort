@@ -43,7 +43,7 @@ type app struct {
 
 func Execute(version string) error {
 	a := &app{Version: version}
-	err := a.newRootCmd().Execute()
+	err := withRestoreHint(a.newRootCmd().Execute())
 	defer func() { // after the result below, which may still log
 		if a.Session != nil {
 			a.LogFile().Close()
@@ -58,6 +58,15 @@ func Execute(version string) error {
 		})
 	}
 	return a.emitJSON(&jsonOutcome{}, time.Time{}, err)
+}
+
+// withRestoreHint adds the command that restores a library found with only its
+// backup; core errors name no command, since other front ends restore their way.
+func withRestoreHint(err error) error {
+	if !errors.Is(err, config.ErrBackupOnly) {
+		return err
+	}
+	return fmt.Errorf("%w\nRun 'wandersort admin db --restore' to put the backup back", err)
 }
 
 // interruptible is the context for plain commands that touch the library. The
@@ -123,12 +132,13 @@ func (a *app) shownSettings() config.Settings {
 
 // busyError words a library held by another process for the terminal, keeping the cause in the chain.
 type busyError struct {
-	cause error
-	pid   int
+	cause   error
+	pid     int
+	program string
 }
 
 func (e *busyError) Error() string {
-	return tui.Bad.Render(fmt.Sprintf("Another wandersort is already running here (PID %d).", e.pid)) + "\n" +
+	return tui.Bad.Render(fmt.Sprintf("%s already has this library open (PID %d).", e.program, e.pid)) + "\n" +
 		tui.FaintTxt.Render("Stop it, then try again.")
 }
 
@@ -141,7 +151,11 @@ func explainBusy(err error) error {
 	if !ok {
 		return err
 	}
-	return withCode(exitBusy, &busyError{cause: err, pid: running.PID})
+	program := running.Program
+	if program == "" {
+		program = "Another program"
+	}
+	return withCode(exitBusy, &busyError{cause: err, pid: running.PID, program: program})
 }
 
 // closeDBs stops the library's work and closes it, then the location

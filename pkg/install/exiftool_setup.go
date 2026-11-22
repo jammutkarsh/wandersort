@@ -121,6 +121,23 @@ func findExiftool(log logger.Logger, binDir string) (string, error) {
 	return "", fmt.Errorf("exiftool not found at %s", binaryPath)
 }
 
+// bundledExiftool is the exiftool shipped in binDir, checked but never
+// replaced: an outdated one is an error, not a download.
+func bundledExiftool(log logger.Logger, binDir string) (string, error) {
+	binaryPath := filepath.Join(binDir, exiftoolBin())
+	if _, err := os.Stat(binaryPath); err != nil {
+		return "", fmt.Errorf("bundled exiftool: %w", err)
+	}
+	ok, err := checkVersion(binaryPath, log)
+	if err != nil {
+		return "", fmt.Errorf("bundled exiftool: %w", err)
+	}
+	if !ok {
+		return "", fmt.Errorf("bundled exiftool at %s is outdated", binaryPath)
+	}
+	return binaryPath, nil
+}
+
 func installExiftool(ctx context.Context, log logger.Logger, binDir string, onProgress func(done, total int64)) (string, error) {
 	if err := downloadAndExtractExiftool(ctx, binDir, log, onProgress); err != nil {
 		return "", fmt.Errorf("install exiftool: %w", err)

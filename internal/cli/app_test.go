@@ -66,8 +66,8 @@ func TestOpenExplainsABusyLibrary(t *testing.T) {
 	if err == nil {
 		t.Fatal("Open must fail while another process holds the library")
 	}
-	if !strings.Contains(err.Error(), "already running") || ExitCode(err) != exitBusy {
-		t.Errorf("Open error = %q (exit %d), want the already-running message and exit %d", err.Error(), ExitCode(err), exitBusy)
+	if !strings.Contains(err.Error(), "already has this library open") || ExitCode(err) != exitBusy {
+		t.Errorf("Open error = %q (exit %d), want the already-open message and exit %d", err.Error(), ExitCode(err), exitBusy)
 	}
 }
 

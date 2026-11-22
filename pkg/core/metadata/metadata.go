@@ -70,8 +70,9 @@ type fileRecord struct {
 
 // Extractor hashes discovered files and reads their EXIF in one pass
 type Extractor struct {
-	// Progress, when set, hears each file read, with the count so far and the total.
-	Progress func(read, total int)
+	// Progress, when set, hears each file handled (read, or failed and
+	// recorded), with the count so far and the total.
+	Progress func(handled, total int)
 
 	ran  atomic.Bool // Run closes the pool, so it runs once
 	log  logger.Logger
@@ -151,7 +152,7 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 	toRead := make(chan fileRecord, 2*e.workers)
 	producerErr := make(chan error, 1)
 
-	var extracted atomic.Int64
+	var extracted, handled atomic.Int64
 
 	ctxWithCancel, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -173,7 +174,7 @@ func (e *Extractor) Run(ctx context.Context) (int, error) {
 	var wg sync.WaitGroup
 	for range e.workers {
 		wg.Go(func() {
-			e.worker(ctxWithCancel, toRead, &extracted, total)
+			e.worker(ctxWithCancel, toRead, &extracted, &handled, total)
 		})
 	}
 	wg.Wait()
@@ -371,7 +372,7 @@ func (e *Extractor) nextBatch(ctx context.Context, v pendingVolume, cursor int64
 
 // worker reads files until the channel closes. A panic on one file is
 // recorded and survived, so one bad file cannot end a six-hour scan.
-func (e *Extractor) worker(ctx context.Context, toRead <-chan fileRecord, extracted *atomic.Int64, total int) {
+func (e *Extractor) worker(ctx context.Context, toRead <-chan fileRecord, extracted, handled *atomic.Int64, total int) {
 	for file := range toRead {
 		if ctx.Err() != nil {
 			return
@@ -379,8 +380,10 @@ func (e *Extractor) worker(ctx context.Context, toRead <-chan fileRecord, extrac
 		if !e.readOne(ctx, file, extracted, total) {
 			return
 		}
+		// a failed file counts too, or a run with one ends short of its total
+		n := int(handled.Add(1))
 		if e.Progress != nil {
-			e.Progress(int(extracted.Load()), total)
+			e.Progress(n, total)
 		}
 	}
 }

@@ -17,14 +17,15 @@ import (
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
+	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
 )
 
 const (
 	// maxPreviewBytes caps one peek.
 	maxPreviewBytes = 250 * 1024 * 1024
-	// previewBudgetDivisor makes the budget for one library's preview copies
-	// 5% of the temp volume (free space plus whatever the copies already hold).
+	// previewBudgetDivisor makes the budget for every library's preview copies
+	// together 5% of the temp volume (free space plus whatever they already hold).
 	previewBudgetDivisor = 20
 	// copyingPrefix names a copy in progress; it is renamed to its hash name
 	// only when complete, so the hash name existing means finished
@@ -36,8 +37,15 @@ const (
 
 // Root is where the library's peek copies live, under the system temp folder
 // ($TMPDIR); fixed per library so copies are reused across sessions, and kept
-// apart from other libraries' so cleaning one never touches another's.
-func Root(library string) string { return filepath.Join(allRoot(), hash(library)) }
+// apart from other libraries' so cleaning one never touches another's. The
+// library is keyed by its real path, so one reached through a symlink or typed
+// in another letter case has one Root.
+func Root(library string) string {
+	if real, err := wspath.New().RealPath(library); err == nil {
+		library = real
+	}
+	return filepath.Join(allRoot(), hash(library))
+}
 
 // allRoot holds every library's Root.
 func allRoot() string { return filepath.Join(os.TempDir(), "wandersort-previews") }
@@ -63,7 +71,7 @@ func hash(s string) string {
 
 // Copy copies up to maxPreviewBytes of files (native paths) into their
 // preview dir, reusing a finished copy, and returns the dir for a viewer.
-// Older copies are evicted to keep the library's copies in budget.
+// Older copies, of any library, are evicted to keep all of them in budget.
 func Copy(ctx context.Context, library string, files []string) (string, error) {
 	root := Root(library)
 	dir := DirFor(library, files)
@@ -77,7 +85,7 @@ func Copy(ctx context.Context, library string, files []string) (string, error) {
 	// Best-effort: a volume that won't report its free space evicts nothing
 	// rather than refusing the peek.
 	if free, err := volume.FreeBytes(root); err == nil {
-		if err := makeRoom(root, plannedBytes(files), int64(free)); err != nil {
+		if err := makeRoom(allRoot(), plannedBytes(files), int64(free)); err != nil {
 			return "", err
 		}
 	}
@@ -124,37 +132,48 @@ func touch(dir string) {
 	_ = os.Chtimes(dir, now, now)
 }
 
-// makeRoom evicts least-recently-used preview copies until need fits in 5% of
-// the volume's free space plus what the copies hold.
-func makeRoom(root string, need, free int64) error {
+// makeRoom evicts least-recently-used preview copies of every library under
+// all until need fits in 5% of the volume's free space plus what they hold: one
+// budget, however many libraries peeked.
+func makeRoom(all string, need, free int64) error {
 	type copyDir struct {
 		path string
 		mod  int64
 		size int64
 	}
-	entries, err := os.ReadDir(root)
+	libraries, err := os.ReadDir(all)
 	if err != nil {
 		return nil
 	}
-	dirs := make([]copyDir, 0, len(entries))
+	var dirs []copyDir
 	var used int64
-	for _, e := range entries {
-		if !e.IsDir() {
+	for _, lib := range libraries {
+		if !lib.IsDir() {
 			continue
 		}
-		fi, err := e.Info()
+		root := filepath.Join(all, lib.Name())
+		entries, err := os.ReadDir(root)
 		if err != nil {
 			continue
 		}
-		p := filepath.Join(root, e.Name())
-		size := dirSize(p)
-		used += size
-		// a copy in progress is another peek's: counted, never evicted, unless
-		// a killed process left it long ago
-		if strings.HasPrefix(e.Name(), copyingPrefix) && time.Since(fi.ModTime()) < abandonedCopyAge {
-			continue
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			fi, err := e.Info()
+			if err != nil {
+				continue
+			}
+			p := filepath.Join(root, e.Name())
+			size := dirSize(p)
+			used += size
+			// a copy in progress is another peek's: counted, never evicted,
+			// unless a killed process left it long ago
+			if strings.HasPrefix(e.Name(), copyingPrefix) && time.Since(fi.ModTime()) < abandonedCopyAge {
+				continue
+			}
+			dirs = append(dirs, copyDir{p, fi.ModTime().UnixNano(), size})
 		}
-		dirs = append(dirs, copyDir{p, fi.ModTime().UnixNano(), size})
 	}
 
 	budget := (free + used) / previewBudgetDivisor

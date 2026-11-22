@@ -252,6 +252,29 @@ func TestExtractor(t *testing.T) {
 				t.Errorf("state = %s, want %s", got, stateFailed)
 			}
 		}},
+		// a file that fails still counts toward progress, so a front end's
+		// bar reaches its total
+		{"RunProgressReachesTotalPastAFailedFile", func(t *testing.T) {
+			d := dbtest.New(t)
+			root := t.TempDir()
+			for _, name := range []string{"a.jpg", "b.mov"} {
+				if err := os.WriteFile(filepath.Join(root, name), []byte("bytes"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dbtest.SeedFile(t, d, 1, root, "a.jpg", 5)
+			dbtest.SeedFile(t, d, 2, root, "b.mov", 3) // changed since the scan: fails
+
+			e := mustNew(t, d, installtest.Exiftool(t), 1)
+			var last, total int
+			e.Progress = func(handled, of int) { last, total = handled, of }
+			if _, err := e.Run(context.Background()); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if total != 2 || last != total {
+				t.Errorf("progress ended at %d of %d, want 2 of 2", last, total)
+			}
+		}},
 		// without exiftool every file would be stored with empty metadata and
 		// never read again, so the phase must not start
 		{"NewFailsWithoutExiftool", func(t *testing.T) {

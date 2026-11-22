@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"testing"
 )
@@ -21,7 +22,7 @@ func TestWalkRootSkipsPipes(t *testing.T) {
 	}
 	sc := newTestScanner(t)
 	filesChan := make(chan FileDiscovery, 10)
-	if _, err := sc.walkRoot(context.Background(), root, "", filesChan); err != nil {
+	if _, err := sc.walkRoot(context.Background(), root, "", filesChan, new(atomic.Int64)); err != nil {
 		t.Fatalf("walkRoot: %v", err)
 	}
 	close(filesChan)

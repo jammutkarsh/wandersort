@@ -34,9 +34,8 @@ type Scanner struct {
 	device   func(fs.FileInfo) (uint64, bool)
 	workers  int
 
-	// Progress, when set, hears each file the walk finds, with the count so far.
+	// Progress, when set, hears each file the walk finds, with the run's count so far.
 	Progress func(found int)
-	found    atomic.Int64
 }
 
 func New(db *db.DB, log logger.Logger, workers int) *Scanner {
@@ -74,6 +73,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 
 	// Buffer exactly one result per path; no path produces more than one result
 	results := make(chan scanResult, len(paths))
+	var found atomic.Int64 // per run: a second Run counts from zero
 
 	// Enqueue all work up front so workers can start immediately without blocking
 	jobs := make(chan string, len(paths))
@@ -99,7 +99,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 				}
 
 				volumeUUID := s.volumeOf(absRoot)
-				count, walk, err := s.scan(ctx, absRoot, volumeUUID, scan, force)
+				count, walk, err := s.scan(ctx, absRoot, volumeUUID, scan, force, &found)
 				if err != nil {
 					s.log.Error("Failed to scan path", "path", absRoot, "error", err)
 					results <- scanResult{root: absRoot, count: count, err: fmt.Errorf("scan failed for %s: %w", path, err)}
@@ -155,7 +155,7 @@ func (s *Scanner) Run(ctx context.Context, paths []string, force bool) (int, err
 // scan walks absRoot and queues one upsert per file it finds, returning how
 // many it queued, the parts of the tree the walk could not see and the drives
 // mounted inside it.
-func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, scan int64, force bool) (int, walkResult, error) {
+func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, scan int64, force bool, found *atomic.Int64) (int, walkResult, error) {
 	s.log.Info("Scanning path", "path", absRoot)
 	// A separate walker goroutine decouples traversal from queueing, so a
 	// full writer queue never stalls the directory walk mid-read.
@@ -164,7 +164,7 @@ func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, scan int
 	var walkErr error
 	go func() {
 		defer close(discoveries)
-		walk, walkErr = s.walkRoot(ctx, absRoot, volumeUUID, discoveries)
+		walk, walkErr = s.walkRoot(ctx, absRoot, volumeUUID, discoveries, found)
 		if walkErr != nil {
 			s.log.Error("Walk root failed", "path", absRoot, "error", walkErr)
 		}
@@ -201,8 +201,9 @@ func (g walkGaps) empty() bool { return len(g.dirs) == 0 && len(g.files) == 0 }
 // walkRoot walks absRoot (already canonical) and emits FileDiscovery records
 // carrying the file's absolute directory and name, each labelled with the
 // drive it is on: a folder on another device is a drive mounted inside the
-// root, and gets its own volume.
-func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, output chan<- FileDiscovery) (walkResult, error) {
+// root, and gets its own volume. found counts the run's files across its
+// roots, for Progress.
+func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, output chan<- FileDiscovery, found *atomic.Int64) (walkResult, error) {
 	var gaps walkGaps
 	unsupported := 0 // summed into one warning: a folder of documents is not a flood of problems
 
@@ -318,7 +319,7 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 		// StreamKey: feeds the TUI progress line, stripped from the plain console.
 		s.log.Info("Scanning", logger.StreamKey, true, "file", s.path.RelativeToHome(p))
 		if s.Progress != nil {
-			s.Progress(int(s.found.Add(1)))
+			s.Progress(int(found.Add(1)))
 		}
 
 		// Send to processing channel

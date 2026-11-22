@@ -1,8 +1,10 @@
 package lock
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 )
@@ -23,6 +25,27 @@ func TestLock(t *testing.T) {
 
 			if _, err := AcquireOutput(dir); err == nil {
 				t.Fatal("second acquire on the same dir should fail while the first is held")
+			}
+		}},
+		// the refusal names the holder's program, so a person can tell
+		// which one to close
+		{"AcquireOutput_HeldNamesTheHolder", func(t *testing.T) {
+			dir := t.TempDir()
+			l1, err := AcquireOutput(dir)
+			if err != nil {
+				t.Fatalf("first acquire: %v", err)
+			}
+			defer l1.Unlock()
+			_, err = AcquireOutput(dir)
+			running, ok := errors.AsType[*AlreadyRunningError](err)
+			if !ok {
+				t.Fatalf("second acquire = %v, want *AlreadyRunningError", err)
+			}
+			if runtime.GOOS == "windows" {
+				return // a locked file can't be read there
+			}
+			if running.PID != os.Getpid() || running.Program != programName() || running.Program == "" {
+				t.Errorf("holder = PID %d %q, want PID %d %q", running.PID, running.Program, os.Getpid(), programName())
 			}
 		}},
 		{"AcquireOutput_UnlockReleasesForNextCaller", func(t *testing.T) {

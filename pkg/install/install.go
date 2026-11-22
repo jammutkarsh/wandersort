@@ -56,6 +56,11 @@ type Options struct {
 	// an upgrade replaces it whole, and refuses while it holds anything else.
 	ExecutablePath string
 	LocationDBPath string // path to the location database file
+	// Bundled says ExecutablePath and LocationDBPath hold tools shipped with
+	// the program (often a signed, read-only folder): they are used as they are, never
+	// downloaded, upgraded or removed, and one missing or failing its check is
+	// an error at once, with no retries.
+	Bundled bool
 }
 
 // DependencyError is a failed install of one dependency.
@@ -146,6 +151,10 @@ func (c *Coordinator) start(ctx context.Context) {
 		defer close(c.locReady)
 		defer close(c.exifReady)
 
+		if c.opts.Bundled {
+			c.openBundled()
+			return
+		}
 		l, err := c.acquireLock(ctx)
 		if err != nil {
 			c.exifErr, c.locErr = err, err
@@ -185,6 +194,20 @@ func (c *Coordinator) installMissing(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// openBundled checks the tools shipped with the program, installing nothing.
+func (c *Coordinator) openBundled() {
+	if c.exifPath, c.exifErr = bundledExiftool(c.opts.Log, c.opts.ExecutablePath); c.exifErr != nil {
+		c.exifErr = &DependencyError{Phase: PhaseExiftool, Err: c.exifErr}
+	} else {
+		c.report(Progress{Phase: PhaseExiftool, Ready: true})
+	}
+	if c.resolver, c.locationDB, c.locErr = openBundledLocation(c.opts.Log, c.opts.LocationDBPath); c.locErr != nil {
+		c.locErr = &DependencyError{Phase: PhaseLocation, Err: c.locErr}
+	} else {
+		c.report(Progress{Phase: PhaseLocation, Ready: true})
+	}
 }
 
 // tryUpTo runs try until it succeeds, ctx ends, beforeRetry refuses, or tries run out.

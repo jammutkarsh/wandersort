@@ -120,7 +120,7 @@ Settings and the plan are written together: a library never holds settings its p
 
 ## 9. Concurrency & logs
 
-70. `[A]` a second process against the same library (`add`, `copy`, `check`, `admin db`) → "Another wandersort is already running here (PID …). Stop it, then try again.", exit 4.
+70. `[A]` a second process against the same library (`add`, `copy`, `check`, `admin db`) → "wandersort already has this library open (PID …). Stop it, then try again.", exit 4.
 71. `[A]` a session that only looks around → no log file, nothing written into the library.
 72. `[A]` `--plain` → plain line log on the console; the JSON log in `~/.wandersort/logs/` has full detail either way.
 73. `[H]` quit the app idle, mid scan and mid copy → it exits cleanly and the run's log ends with "Closing databases"; a settings change logs "Settings changed — re-proposing the folder structure".

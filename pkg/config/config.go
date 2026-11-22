@@ -55,6 +55,12 @@ func New() (*Configuration, error) {
 // NewAt is New keeping the app's own files (location database, tools, logs,
 // library history) in appDir instead of ~/.wandersort.
 func NewAt(appDir string) (*Configuration, error) {
+	// absolute now: a program started from a launcher often runs in "/",
+	// and the logs, history and tools must stay where the caller meant
+	appDir, err := filepath.Abs(appDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve app folder %s: %w", appDir, err)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve user home directory: %w", err)
@@ -95,7 +101,7 @@ func (cfg *Configuration) OutputDir() string { return filepath.Dir(cfg.AppDBPath
 // CheckLibrary's refusals of a folder that can't be a library.
 var (
 	ErrInsideLibrary = errors.New("inside the library")
-	ErrBackupOnly    = errors.New("has a backup but no database; run 'wandersort admin db --restore'")
+	ErrBackupOnly    = errors.New("has a backup but no database; restore the database from its backup")
 	ErrNotEmpty      = errors.New("isn't empty or a library; pick another folder")
 )
 
