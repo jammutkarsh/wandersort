@@ -12,7 +12,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/jammutkarsh/wandersort/pkg/explain"
 	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 )
@@ -350,7 +349,7 @@ func (m ScanModel) View() string {
 	case scanCancelling:
 		b.WriteString(row(Attn.Render("⚠ Stopping… Next time picks up from here."), "", m.w) + "\n")
 	case scanFailed:
-		b.WriteString(row(Bad.Render("Couldn't add the folders: ")+Text.Render(explain.Error(m.err)), "", m.w) + "\n")
+		b.WriteString(errorLines(Bad.Render("Couldn't add the folders: ")+Text.Render(ErrorText(m.err)), m.w) + "\n")
 	case scanFinished:
 		b.WriteString(m.finishedView())
 	}
@@ -388,7 +387,7 @@ func (m ScanModel) finishedView() string {
 		b.WriteString(row(Attn.Render("⚠ "+w), "", m.w) + "\n")
 	}
 	if m.reviewErr != nil {
-		b.WriteString(row(Bad.Render("Couldn't open the folders: ")+Text.Render(explain.Error(m.reviewErr)), "", m.w) + "\n")
+		b.WriteString(errorLines(Bad.Render("Couldn't open the folders: ")+Text.Render(ErrorText(m.reviewErr)), m.w) + "\n")
 	}
 	if b.Len() > 0 {
 		b.WriteString("\n")

@@ -9,7 +9,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
-	"github.com/jammutkarsh/wandersort/pkg/explain"
 	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
@@ -369,7 +368,7 @@ func (m CopyModel) belowStages() string {
 	case copyFailed:
 		b.WriteString("\n")
 		if m.err != nil {
-			line(Bad.Render("✗ ") + Text.Render(explain.Error(m.err)))
+			b.WriteString(errorLines(Bad.Render("✗ ")+Text.Render(ErrorText(m.err)), m.w) + "\n")
 		}
 		if m.res.Copied > 0 {
 			line(DimText.Render(human.Plural(m.res.Copied, "file", "files") + " made it in before it stopped; the next copy carries on."))

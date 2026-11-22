@@ -66,7 +66,7 @@ func withRestoreHint(err error) error {
 	if !errors.Is(err, config.ErrBackupOnly) {
 		return err
 	}
-	return fmt.Errorf("%w\nRun 'wandersort admin db --restore' to put the backup back", err)
+	return fmt.Errorf("%w\n%s", err, tui.RestoreHint)
 }
 
 // interruptible is the context for plain commands that touch the library. The
