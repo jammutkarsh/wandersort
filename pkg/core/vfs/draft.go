@@ -212,13 +212,20 @@ func OpenDraft(outputDir string, base []Node) (*Draft, error) {
 	}
 	plan := planFingerprint(base)
 	var edits []Edit
+	adopted := false
 	for _, e := range journal {
+		// a release without fingerprints removed its draft with every re-plan
+		// and copy: its edits were made on the plan the library holds
+		if e.Plan == "" {
+			e.Plan, adopted = plan, true
+		}
 		if e.Plan == plan {
 			edits = append(edits, e)
 		}
 	}
-	// drop them from the file too, so CountEdits counts only edits that apply
-	if len(edits) < len(journal) {
+	// the file holds what applies, and says on which plan: CountEdits counts
+	// it, and an adopted edit never reaches a later plan
+	if adopted || len(edits) < len(journal) {
 		if err := writeDraft(outputDir, edits); err != nil {
 			return nil, err
 		}

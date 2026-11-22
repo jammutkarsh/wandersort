@@ -299,6 +299,35 @@ func TestDraftOfAnOlderPlanDoesNotReplay(t *testing.T) {
 	}
 }
 
+// Edits journalled by a release without plan fingerprints are kept: it removed
+// its draft with every re-plan and copy, so they were made on the plan the
+// library holds. Once opened they belong to that plan like any other edit.
+func TestDraftWithoutFingerprintsIsAdopted(t *testing.T) {
+	dir := t.TempDir()
+	base := draftTree()
+	const node = 3
+	if err := os.WriteFile(draftPath(dir), []byte(`{"op":"rename","to":"Kept","seq":1,"node":3}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, err := OpenDraft(dir, cloneTree(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := FindNode(d.Tree(), node); n == nil || n.Name != "Kept" {
+		t.Fatalf("folder after opening the draft = %+v, want it renamed", n)
+	}
+
+	replanned := cloneTree(base)
+	replanned[0].Children[0].Children[1].Name = "05"
+	d, err = OpenDraft(dir, replanned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Edits()) != 0 {
+		t.Errorf("edits on a later plan = %+v, want none", d.Edits())
+	}
+}
+
 // A name the copy's tree check would refuse is cleaned when the edit is made,
 // whichever front end made it, so the draft never blocks a copy.
 func TestRenameCleansNameBeforeTheDraft(t *testing.T) {
