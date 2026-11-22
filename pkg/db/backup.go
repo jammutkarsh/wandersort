@@ -193,6 +193,9 @@ func Restore(ctx context.Context, backup, live string) error {
 		return fmt.Errorf("open backup: %w", err)
 	}
 	err = checkBackup(ctx, src)
+	if err == nil {
+		err = refuseOldHashes(ctx, src)
+	}
 	src.Close()
 	if err != nil {
 		return fmt.Errorf("backup %s: %w", backup, err)

@@ -43,7 +43,7 @@ type app struct {
 
 func Execute(version string) error {
 	a := &app{Version: version}
-	err := withRestoreHint(a.newRootCmd().Execute())
+	err := withHint(a.newRootCmd().Execute())
 	defer func() { // after the result below, which may still log
 		if a.Session != nil {
 			a.LogFile().Close()
@@ -60,13 +60,14 @@ func Execute(version string) error {
 	return a.emitJSON(&jsonOutcome{}, time.Time{}, err)
 }
 
-// withRestoreHint adds the command that restores a library only its backup
-// helps; core errors name no command, since other front ends restore their way.
-func withRestoreHint(err error) error {
-	if !tui.NeedsRestore(err) {
+// withHint adds the command that helps with err, where there is one; core
+// errors name no command, since other front ends have their own way.
+func withHint(err error) error {
+	hint := tui.Hint(err)
+	if hint == "" {
 		return err
 	}
-	return fmt.Errorf("%w\n%s", err, tui.RestoreHint)
+	return fmt.Errorf("%w\n%s", err, hint)
 }
 
 // noLibrary is why a command that needs a library can't run: add makes one,

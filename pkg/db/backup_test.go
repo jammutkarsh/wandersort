@@ -519,3 +519,114 @@ func TestDamagedDatabaseIsNamed(t *testing.T) {
 		t.Errorf("opening a file that is no database = %v, want it Damaged", err)
 	}
 }
+
+// newHashedLibrary is a closed library holding one file known by hash, as a
+// release before the newest migration left it.
+func newHashedLibrary(t *testing.T, hash string, placed int) (live string) {
+	t.Helper()
+	ctx := context.Background()
+	live = filepath.Join(t.TempDir(), ".wandersort.db")
+	d, err := New(ctx, live, logger.NewNoopLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := d.SQL.ExecContext(ctx, `INSERT INTO file_registry (id, file_dir, file_name, file_size, file_modified_at,
+		file_extension, discovered_at, last_seen_at, placed) VALUES (1, '2024', 'a.jpg', 1, 't', '.jpg', 'd', 's', ?)`, placed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.SQL.ExecContext(ctx, `INSERT INTO file_metadata (file_hash, file_id) VALUES (?, 1)`, hash); err != nil {
+		t.Fatal(err)
+	}
+	return live
+}
+
+// A BLAKE3 hash equals no MD5, so every photo of such a library would look new
+// and be copied again: it is refused, and left as it was for the version that
+// made it.
+func TestOpenRefusesOldHashesBeforeMigrating(t *testing.T) {
+	for _, tt := range []struct {
+		name, hash string
+		placed     int
+		upgrade    bool // a migration is still to run
+		refused    bool
+	}{
+		{"in the library", "blake3:aa", 1, true, true},
+		{"scanned, never copied", "blake3:aa", 0, true, true},
+		{"nothing to migrate", "blake3:aa", 1, false, true},
+		{"MD5", "md5:aa", 1, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			live := newHashedLibrary(t, tt.hash, tt.placed)
+			if tt.upgrade {
+				forgetMigrationsAfter(t, live, 3)
+			}
+			before := newestMigration(t, live)
+			d, err := New(ctx, live, logger.NewNoopLogger())
+			if err == nil {
+				d.Close()
+			}
+			if errors.Is(err, ErrOldHashes) != tt.refused || err != nil && !tt.refused {
+				t.Fatalf("open = %v, want refused: %v", err, tt.refused)
+			}
+			if !tt.refused {
+				return
+			}
+			if _, err := os.Stat(filepath.Join(filepath.Dir(live), PreMigrationBackupFileName)); !os.IsNotExist(err) {
+				t.Errorf("a refused library was backed up for an upgrade: %v", err)
+			}
+			if after := newestMigration(t, live); after != before {
+				t.Errorf("newest migration = %d, want %d", after, before)
+			}
+		})
+	}
+}
+
+// newestMigration is the last migration the closed library at live has run.
+func newestMigration(t *testing.T, live string) (version int) {
+	t.Helper()
+	r, err := OpenReadOnly(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if err := r.SQL.Get(&version, `SELECT MAX(version) FROM schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	return version
+}
+
+// forgetMigrationsAfter makes the closed library at live look older than it is.
+func forgetMigrationsAfter(t *testing.T, live string, version int) {
+	t.Helper()
+	d, err := sql.Open("sqlite", live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := d.Exec(`DELETE FROM schema_migrations WHERE version > ?`, version); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRestoreRefusesABackupWithOldHashes(t *testing.T) {
+	ctx := context.Background()
+	live, _ := newBackedUp(t)
+	backup := filepath.Join(filepath.Dir(live), "old.zst")
+	if err := compressFile(ctx, newHashedLibrary(t, "blake3:aa", 1), backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore(ctx, backup, live); !errors.Is(err, ErrOldHashes) {
+		t.Fatalf("Restore = %v, want ErrOldHashes", err)
+	}
+	d, err := New(ctx, live, logger.NewNoopLogger())
+	if err != nil {
+		t.Fatalf("the library no longer opens: %v", err)
+	}
+	defer d.Close()
+	var n int
+	if err := d.SQL.Get(&n, `SELECT count(*) FROM user_labels`); err != nil || n != 1 {
+		t.Errorf("user_labels = %d, %v; want 1: a refused restore changes nothing", n, err)
+	}
+}
