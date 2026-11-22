@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 )
 
@@ -25,6 +26,7 @@ var explanations = []struct {
 	{fs.ErrNotExist, "That folder or file isn't there. If it is on a drive, check the drive is plugged in."},
 	{syscall.EIO, "The drive stopped answering. Check its cable, then try again."},
 	{syscall.ENODEV, "The drive stopped answering. Check its cable, then try again."},
+	{config.ErrBackupOnly, "This library's database is missing, but its backup is there. Restore the database from the backup to open it."},
 }
 
 // Error is err as a sentence a person can act on. Errors it does not know

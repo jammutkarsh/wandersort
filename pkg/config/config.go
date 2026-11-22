@@ -95,7 +95,7 @@ func (cfg *Configuration) OutputDir() string { return filepath.Dir(cfg.AppDBPath
 // CheckLibrary's refusals of a folder that can't be a library.
 var (
 	ErrInsideLibrary = errors.New("inside the library")
-	ErrBackupOnly    = errors.New("has a backup but no database; run 'wandersort admin db --restore'")
+	ErrBackupOnly    = errors.New("has a backup but no database; restore the database from its backup")
 	ErrNotEmpty      = errors.New("isn't empty or a library; pick another folder")
 )
 

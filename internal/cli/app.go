@@ -43,7 +43,7 @@ type app struct {
 
 func Execute(version string) error {
 	a := &app{Version: version}
-	err := a.newRootCmd().Execute()
+	err := withRestoreHint(a.newRootCmd().Execute())
 	defer func() { // after the result below, which may still log
 		if a.Session != nil {
 			a.LogFile().Close()
@@ -58,6 +58,15 @@ func Execute(version string) error {
 		})
 	}
 	return a.emitJSON(&jsonOutcome{}, time.Time{}, err)
+}
+
+// withRestoreHint adds the command that restores a library found with only its
+// backup; core errors name no command, since other front ends restore their way.
+func withRestoreHint(err error) error {
+	if !errors.Is(err, config.ErrBackupOnly) {
+		return err
+	}
+	return fmt.Errorf("%w\nRun 'wandersort admin db --restore' to put the backup back", err)
 }
 
 // interruptible is the context for plain commands that touch the library. The
