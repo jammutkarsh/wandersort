@@ -281,7 +281,7 @@ func TestShellModel(t *testing.T) {
 			if _, ok := m.screens[tabScan].(tui.HomeModel); !ok {
 				t.Fatalf("esc should bring the folder input back, got %T", m.screens[tabScan])
 			}
-			if v := ansi.Strip(m.View()); !strings.Contains(v, "/pics") {
+			if v := ansi.Strip(m.View()); !strings.Contains(v, filepath.FromSlash("/pics")) {
 				t.Errorf("the failed run's folders should be listed again:\n%s", v)
 			}
 		}},
