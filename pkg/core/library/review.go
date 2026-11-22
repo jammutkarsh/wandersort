@@ -35,10 +35,28 @@ type Review struct {
 	Resolver *location.Resolver
 }
 
-// Review opens a review of the open library's plan. places supplies the
-// location resolver (nil, or an error, disables place suggestions). An empty
-// plan is vfs.ErrNothingNew.
+// Review is the review of the open library's plan: one per plan, shared by
+// every caller, since two would each rewrite the journal from their own edits.
+// A review whose plan moved on is replaced. places supplies the location
+// resolver when one is built (nil, or an error, disables place suggestions);
+// it is waited for before the library is held. An empty plan is
+// vfs.ErrNothingNew.
 func (s *Session) Review(ctx context.Context, places func(context.Context) (*location.Resolver, error)) (*Review, error) {
+	ctx, cancel := s.bound(ctx)
+	defer cancel()
+	s.reviewMu.Lock()
+	defer s.reviewMu.Unlock()
+	if r := s.review; r != nil && !r.Stale() {
+		return r, nil
+	}
+	var resolver *location.Resolver
+	if places != nil {
+		var err error
+		if resolver, err = places(ctx); err != nil {
+			s.log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
+		}
+	}
+
 	done, ok := s.Work.StartOnLibrary()
 	if !ok {
 		return nil, ErrClosing
@@ -77,13 +95,8 @@ func (s *Session) Review(ctx context.Context, places func(context.Context) (*loc
 		s.log.Warn("could not read the library's folders; new ones aren't marked", "error", err)
 	}
 	r.Labels = vfs.Labels(ctx, d, s.log)
-	if places != nil {
-		resolver, err := places(ctx)
-		if err != nil {
-			s.log.Warn("Location resolver unavailable, rename completions disabled", "error", err)
-		}
-		r.Resolver = resolver.WithAnchors(resolver.BuildAnchors(ctx, s.Settings().SavedPlaces()))
-	}
+	r.Resolver = resolver.WithAnchors(resolver.BuildAnchors(ctx, s.Settings().SavedPlaces()))
+	s.review = r
 	return r, nil
 }
 

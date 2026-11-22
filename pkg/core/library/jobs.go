@@ -187,6 +187,8 @@ type CopyPlan struct {
 // CopyPlan reads what a copy of the open library would do, while the library
 // can't be switched under the read.
 func (s *Session) CopyPlan(ctx context.Context) (CopyPlan, error) {
+	ctx, cancel := s.bound(ctx)
+	defer cancel()
 	done, ok := s.Work.StartOnLibrary()
 	if !ok {
 		return CopyPlan{}, ErrClosing

@@ -124,13 +124,17 @@ func TestRecoverUndoesReset(t *testing.T) {
 			dbPath := filepath.Join(t.TempDir(), ".wandersort.db")
 			seedDB(t, dbPath)
 
-			a := &app{Session: library.New(&config.Configuration{AppDBPath: dbPath}, logger.NewNoopLogger(), nil)}
+			// one app per command, as each command is its own process: a
+			// command's session is shut down when it ends
+			newApp := func() *app {
+				return &app{Session: library.New(&config.Configuration{AppDBPath: dbPath}, logger.NewNoopLogger(), nil)}
+			}
 			for range resets {
-				if err := a.runAdminDB(newAdminTestCmd(t, flagReset, flagYes)); err != nil {
+				if err := newApp().runAdminDB(newAdminTestCmd(t, flagReset, flagYes)); err != nil {
 					t.Fatalf("admin db: %v", err)
 				}
 			}
-			if err := a.runAdminDB(newAdminTestCmd(t, flagRestore, flagYes)); err != nil {
+			if err := newApp().runAdminDB(newAdminTestCmd(t, flagRestore, flagYes)); err != nil {
 				t.Fatalf("admin db --restore: %v", err)
 			}
 

@@ -572,57 +572,42 @@ func TestRewriteRefusesSettingsAndSwitch(t *testing.T) {
 	}
 }
 
-// A save waiting for the library while a switch takes it is refused, not
-// written into the library the switch opened.
-func TestSaveSettingsBoundToItsLibrary(t *testing.T) {
+// A save while a switch holds the library is refused, not queued behind it:
+// it would land in the library switched to, with settings chosen for another.
+func TestSaveSettingsRefusedWhileTheLibraryIsHeld(t *testing.T) {
 	ctx := context.Background()
 	s := testSession(t)
 	if err := s.Open(ctx); err != nil {
 		t.Fatal(err)
 	}
-	first := s.OutputDir()
-	second := filepath.Join(t.TempDir(), "second")
-	if err := s.Switch(ctx, second); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Switch(ctx, first); err != nil {
-		t.Fatal(err)
-	}
 	stored := s.Settings()
 
-	// hold the library as a switch does after its checks, then let a save queue behind it
 	release, ok := s.Work.HoldLibrary()
 	if !ok {
 		t.Fatal("library not held")
 	}
 	settings := s.Settings()
 	settings.Rules = []string{"date"}
-	result := make(chan error, 1)
-	go func() { result <- s.SaveSettings(ctx, settings, noPlaces) }()
-	for !s.Work.Rewriting() {
-		time.Sleep(time.Millisecond)
+	saved := make(chan error, 1)
+	go func() { saved <- s.SaveSettings(ctx, settings, noPlaces) }()
+	var err error
+	select {
+	case err = <-saved:
+		release()
+	case <-time.After(5 * time.Second):
+		release()
+		<-saved
+		t.Fatal("a save queued behind the hold instead of being refused")
 	}
-	// the switch's swap, as Switch makes it under the hold
-	appDB, l, own, err := s.openLibrary(ctx, second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.mu.Lock()
-	s.closeLibrary(s.db, s.lock)
-	s.cfg.SetOutput(second)
-	s.db, s.lock, s.cfg.Settings = appDB, l, own
-	s.mu.Unlock()
-	release()
-
-	if err := <-result; !errors.Is(err, ErrLibraryChanged) {
-		t.Fatalf("save queued behind a switch = %v, want ErrLibraryChanged", err)
+	if !errors.Is(err, ErrBusy) {
+		t.Fatalf("save while a switch holds the library = %v, want ErrBusy", err)
 	}
 	got, err := config.LoadSettings(ctx, s.DB())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.Equal(stored) {
-		t.Errorf("library switched to holds rules %v, want its own %v", got.Rules, stored.Rules)
+	if !got.Equal(stored) || !s.Settings().Equal(stored) {
+		t.Errorf("library holds rules %v (session %v), want its own %v", got.Rules, s.Settings().Rules, stored.Rules)
 	}
 }
 
@@ -732,18 +717,45 @@ func TestWorkGroupShutdown(t *testing.T) {
 // The library can't be switched while work runs on it, and work waits out a switch.
 func TestWorkGroupHoldLibrary(t *testing.T) {
 	var g WorkGroup
-	done, ok := g.StartOnLibrary()
+	// a short read is waited out, not refused: a front end polling a copy
+	// plan must not make every switch look busy
+	reading, ok := g.StartOnLibrary()
 	if !ok {
 		t.Fatal("StartOnLibrary refused")
 	}
-	if _, ok := g.HoldLibrary(); ok {
-		t.Fatal("library held while work ran on it")
+	held := make(chan func())
+	go func() {
+		release, ok := g.HoldLibrary()
+		if !ok {
+			t.Error("hold refused beside a short read")
+		}
+		held <- release
+	}()
+	select {
+	case <-held:
+		t.Fatal("library held while a read ran on it")
+	case <-time.After(50 * time.Millisecond):
 	}
-	done()
-	release, ok := g.HoldLibrary()
-	if !ok {
-		t.Fatal("library not held once the work finished")
+	// no job starts while a hold waits: it would keep the hold waiting for good
+	refused := make(chan error, 1)
+	go func() {
+		done, err := g.StartJob(JobScan)
+		if done != nil {
+			done()
+		}
+		refused <- err
+	}()
+	select {
+	case err := <-refused:
+		if !errors.Is(err, ErrBusy) {
+			t.Fatalf("job beside a waiting hold = %v, want ErrBusy", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a job beside a waiting hold started and waited behind it")
 	}
+	reading()
+	release := <-held
+
 	started := make(chan struct{})
 	go func() {
 		done, _ := g.StartOnLibrary()
@@ -757,6 +769,17 @@ func TestWorkGroupHoldLibrary(t *testing.T) {
 	}
 	release()
 	<-started
+
+	// a job is refused, not waited for: it may run for hours
+	done, err := g.StartJob(JobCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release, ok := g.HoldLibrary(); ok {
+		release()
+		t.Error("library held while a copy ran on it")
+	}
+	done()
 }
 
 // Any goroutine may use the session while another switches libraries and
@@ -867,6 +890,13 @@ func TestShutdownStopsRunningWork(t *testing.T) {
 	}
 	if _, err := s.Work.StartJob(JobScan); !errors.Is(err, ErrClosing) {
 		t.Errorf("job after Shutdown = %v, want ErrClosing", err)
+	}
+	// nothing would close a library opened now
+	if err := s.Open(context.Background()); !errors.Is(err, ErrClosing) {
+		t.Errorf("Open after Shutdown = %v, want ErrClosing", err)
+	}
+	if s.DB() != nil {
+		t.Error("a library was opened after Shutdown")
 	}
 }
 

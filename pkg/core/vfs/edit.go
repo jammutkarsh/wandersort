@@ -300,10 +300,12 @@ func removeChildByID(parent *Node, id int64) {
 	}
 }
 
-// childByName finds parent's child named name, if any.
+// childByName finds parent's child named name, if any, ignoring letter case
+// and Unicode form as Confirm does: such siblings become one folder.
 func childByName(parent *Node, name string) *Node {
+	key := nameKey(name)
 	for i := range parent.Children {
-		if parent.Children[i].Name == name {
+		if nameKey(parent.Children[i].Name) == key {
 			return &parent.Children[i]
 		}
 	}
