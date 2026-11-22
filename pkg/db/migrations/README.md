@@ -14,6 +14,10 @@ Migrations are Go files, not `.sql` files: the SQL is compiled into the single b
 
 Create `00N_<name>.go` with the next version and append it to `schemas`. Never reorder or edit an entry that has shipped.
 
-**Before the first release tag** (no users yet), change the existing `CREATE TABLE` in place instead of adding an `ALTER`. A database that already recorded that version will never see the change, so delete `.wandersort.db` (or the whole library folder) after such an edit; `wandersort admin db --reset` is not enough.
+A database that already recorded a version never sees a change to it, so `TestShippedMigrationsNeverChange` pins every migration a release has carried. When a release ships a new one, add its hash there (the failing test prints it).
 
-The schema itself is the `CREATE TABLE` statements in `001_scanner.go`, `002_file_metadata.go` and `003_vfs.go`.
+Never drop a table that others reference: with foreign keys on, the drop deletes its rows first and cascades. Alter columns in place (`004_file_identity.go`).
+
+`Unless` is for a schema that may already have what the migration makes; the version is then recorded without running it.
+
+The schema is the `CREATE TABLE` statements in `001_scanner.go`, `002_file_metadata.go` and `003_vfs.go`, altered by the versions after them.
