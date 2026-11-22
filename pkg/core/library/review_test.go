@@ -71,6 +71,31 @@ func TestReviewEditsRefusedBesideWork(t *testing.T) {
 	}
 }
 
+// A review is refused while a job runs, before it reads the plan: read then,
+// a job ending before the review's draft opens would leave the review fresh
+// over the plan the job replaced, and the next copy would drop its edits.
+func TestReviewRefusedBesideAJob(t *testing.T) {
+	ctx := context.Background()
+	s, _ := reviewSession(t)
+	done, err := s.Work.StartJob(JobScan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	// the scan holds the one connection, as its plan step does while it writes
+	conn, err := s.DB().SQL.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var busy *BusyError
+	if _, err := s.Review(readCtx, nil); !errors.As(err, &busy) || busy.Job != JobScan {
+		t.Errorf("review during a scan = %v, want a *BusyError naming the scan", err)
+	}
+}
+
 // reviewSession is an open session with one planned file and its day folder.
 func reviewSession(t *testing.T) (*Session, int64) {
 	t.Helper()

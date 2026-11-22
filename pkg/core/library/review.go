@@ -69,7 +69,12 @@ func (s *Session) Review(ctx context.Context, places func(context.Context) (*loc
 	if err := s.openExisting(ctx); err != nil {
 		return nil, err
 	}
-	plan := s.Work.Plan()
+	// read with the idle check: a job that ends while the tree is read
+	// would otherwise leave this review fresh over the plan it replaced
+	plan, err := s.Work.idlePlan()
+	if err != nil {
+		return nil, err
+	}
 	d := s.DB()
 	tree, err := vfs.BuildTree(ctx, d)
 	if err != nil {
@@ -192,13 +197,20 @@ func (r *Review) edit(change func() error) error {
 	})
 }
 
-// whileIdle runs f with no job or re-plan running, nothing holding the
-// library (a discard, reset, switch or close), and none able to start until f
-// returns; it refuses while one runs. f must be short and must not take
-// Session.mu: it holds the group's lock.
-func (g *WorkGroup) whileIdle(f func() error) error {
+// idlePlan is Plan, refused as whileIdle refuses. A job that started before
+// it is refused; one that starts after it moves Plan on.
+func (g *WorkGroup) idlePlan() (uint64, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if err := g.idleRefusal(); err != nil {
+		return 0, err
+	}
+	return g.plan.Load(), nil
+}
+
+// idleRefusal is why a review may not read or edit the plan now (shutdown,
+// a re-plan, a job), nil when it may; called under mu.
+func (g *WorkGroup) idleRefusal() error {
 	switch {
 	case g.closed:
 		return ErrClosing
@@ -206,6 +218,19 @@ func (g *WorkGroup) whileIdle(f func() error) error {
 		return ErrReplanning
 	case g.job != "":
 		return &BusyError{Job: g.job}
+	}
+	return nil
+}
+
+// whileIdle runs f with no job or re-plan running, nothing holding the
+// library (a discard, reset, switch or close), and none able to start until f
+// returns; it refuses while one runs. f must be short and must not take
+// Session.mu: it holds the group's lock.
+func (g *WorkGroup) whileIdle(f func() error) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err := g.idleRefusal(); err != nil {
+		return err
 	}
 	// never waits, so it can't deadlock under mu; a hold taken after this
 	// waits for f to return
