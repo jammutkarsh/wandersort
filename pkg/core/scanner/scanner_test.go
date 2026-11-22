@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -93,7 +94,7 @@ func TestScanner(t *testing.T) {
 			root := createTestTree(t)
 			sc := newTestScanner(t)
 			filesChan := make(chan FileDiscovery, 200)
-			_, err := sc.walkRoot(context.Background(), root, "", filesChan)
+			_, err := sc.walkRoot(context.Background(), root, "", filesChan, new(atomic.Int64))
 			close(filesChan)
 			if err != nil {
 				t.Fatalf("walkRoot: %v", err)
@@ -129,7 +130,7 @@ func TestScanner(t *testing.T) {
 			}
 			sc := newTestScanner(t)
 			filesChan := make(chan FileDiscovery, 10)
-			if _, err := sc.walkRoot(context.Background(), root, "", filesChan); err != nil {
+			if _, err := sc.walkRoot(context.Background(), root, "", filesChan, new(atomic.Int64)); err != nil {
 				t.Fatalf("walkRoot: %v", err)
 			}
 			close(filesChan)
@@ -149,7 +150,7 @@ func TestScanner(t *testing.T) {
 			cancel() // cancel immediately
 
 			filesChan := make(chan FileDiscovery, 200)
-			_, err := sc.walkRoot(ctx, root, "", filesChan)
+			_, err := sc.walkRoot(ctx, root, "", filesChan, new(atomic.Int64))
 			close(filesChan)
 
 			if err == nil {
@@ -169,7 +170,7 @@ func TestScanner(t *testing.T) {
 			var wg sync.WaitGroup
 			for range walkers {
 				wg.Go(func() {
-					_, _ = sc.walkRoot(context.Background(), root, "", filesChan)
+					_, _ = sc.walkRoot(context.Background(), root, "", filesChan, new(atomic.Int64))
 				})
 			}
 
@@ -810,4 +811,26 @@ func registryByName(t *testing.T, d *db.DB) map[string]registryRow {
 		byName[r.FileName] = r
 	}
 	return byName
+}
+
+// A scanner run again counts its walk from zero, so a front end reusing one
+// shows each run's own count.
+func TestRunProgressCountsEachRunFromZero(t *testing.T) {
+	sc, _ := newDBScanner(t)
+	root := t.TempDir()
+	for _, name := range []string{"a.jpg", "b.jpg"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var last atomic.Int64
+	sc.Progress = func(found int) { last.Store(int64(found)) }
+	for run := 1; run <= 2; run++ {
+		if _, err := sc.Run(context.Background(), []string{root}, false); err != nil {
+			t.Fatal(err)
+		}
+		if got := last.Load(); got != 2 {
+			t.Errorf("run %d ended its walk at %d files, want 2", run, got)
+		}
+	}
 }
