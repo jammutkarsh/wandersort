@@ -67,7 +67,7 @@ func (a *app) runCopy(cmd *cobra.Command) error {
 
 func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	if !a.LibraryExists() {
-		return fmt.Errorf("no database found — run 'wandersort add' first")
+		return a.noLibrary()
 	}
 
 	outputDir := a.OutputDir()
