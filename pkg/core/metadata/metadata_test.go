@@ -40,6 +40,11 @@ func mustNew(t *testing.T, d *db.DB, exiftoolPath string, workers int) *Extracto
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if e.ran.CompareAndSwap(false, true) { // Run closes the pool itself
+			e.pool.Close()
+		}
+	})
 	return e
 }
 

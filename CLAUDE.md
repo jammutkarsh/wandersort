@@ -59,7 +59,7 @@ One file per command, plus `app.go` (the `app` struct embedding `*library.Sessio
 | `config` | Runtime paths (`New` uses `~/.wandersort`, `NewAt` any app folder), library `Settings` (one JSON value; `HomeTown`/`WorkTown`), library history, `CheckLibrary` |
 | `install` | Versions, downloads, verification and readiness of exiftool and the location DB (`Coordinator`, up to `MaxTries` tries) |
 | `location` | Offline reverse/forward geocoding over the geonames DB; name qualifiers and suggestions |
-| `exiftool` | Runs the installed exiftool (`-stay_open` pool) |
+| `exiftool` | Runs the installed exiftool (`-stay_open` pool); each process is leashed, so it ends even when this process is killed |
 | `classifier` | Extension → media type, ignored dirs, exiftool JSON → `CommonMetadata` |
 | `path` | Segment/file-name sanitizing, `ToLibrary` (NFC) vs `ToSourcePath` (bytes kept), root reduction |
 | `atomicfile` | Durable copy, no-replace rename, synced `MkdirAll` |

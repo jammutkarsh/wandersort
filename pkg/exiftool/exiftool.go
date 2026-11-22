@@ -66,6 +66,7 @@ type Extractor struct {
 	stdin io.WriteCloser
 
 	cmd    *exec.Cmd
+	leash  *leash        // ends cmd if this process dies without Close
 	reader *bufio.Reader // reads stdout up to the {ready} sentinel
 
 	timeout time.Duration // per-file bound; see extractTimeout
@@ -93,9 +94,16 @@ func newExtractor(exiftoolPath string, timeout time.Duration) (*Extractor, error
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting exiftool -stay_open: %w", err)
 	}
+	leash, err := leashTo(cmd)
+	if err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		return nil, err
+	}
 
 	return &Extractor{
 		cmd:     cmd,
+		leash:   leash,
 		stdin:   stdin,
 		reader:  bufio.NewReaderSize(stdout, 64*1024),
 		timeout: timeout,
@@ -231,7 +239,7 @@ func (e *Extractor) Close() error {
 	fmt.Fprintln(e.stdin, "-execute")
 	e.stdin.Close()
 
-	err := e.cmd.Wait()
+	err := e.leash.wait(e.cmd)
 	if e.dead {
 		return nil // killed on purpose; "signal: killed" is not a shutdown failure
 	}
