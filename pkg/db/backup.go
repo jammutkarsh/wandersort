@@ -55,7 +55,7 @@ func (d *DB) Backup(ctx context.Context, dest string) error {
 	if err := verifyPlain(ctx, plain); err != nil {
 		return err
 	}
-	if err := compressFile(plain, tmp); err != nil {
+	if err := compressFile(ctx, plain, tmp); err != nil {
 		return err
 	}
 	// with the file synced, this makes the rename durable; otherwise a power
@@ -83,7 +83,8 @@ func verifyPlain(ctx context.Context, path string) error {
 	return checkBackup(ctx, b)
 }
 
-func compressFile(src, dst string) (err error) {
+// compressFile writes src zstd-compressed and synced at dst, stopping once ctx ends.
+func compressFile(ctx context.Context, src, dst string) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("compress backup: %w", err)
@@ -102,7 +103,7 @@ func compressFile(src, dst string) (err error) {
 	if err != nil {
 		return fmt.Errorf("compress backup: %w", err)
 	}
-	if _, err := io.Copy(zw, in); err != nil {
+	if _, err := io.Copy(zw, atomicfile.ContextReader{Ctx: ctx, R: in}); err != nil {
 		zw.Close()
 		return fmt.Errorf("compress backup: %w", err)
 	}
@@ -115,8 +116,9 @@ func compressFile(src, dst string) (err error) {
 	return nil
 }
 
-// decompressFile writes the zstd file src out as plain bytes at dst.
-func decompressFile(src, dst string) (err error) {
+// decompressFile writes the zstd file src out as plain bytes at dst, stopping
+// once ctx ends.
+func decompressFile(ctx context.Context, src, dst string) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("decompress backup: %w", err)
@@ -136,7 +138,7 @@ func decompressFile(src, dst string) (err error) {
 			err = fmt.Errorf("decompress backup: %w", cerr)
 		}
 	}()
-	if _, err := io.Copy(out, zr); err != nil {
+	if _, err := io.Copy(out, atomicfile.ContextReader{Ctx: ctx, R: zr}); err != nil {
 		return fmt.Errorf("decompress backup: %w", err)
 	}
 	return nil
@@ -174,7 +176,7 @@ func Restore(ctx context.Context, backup, live string) error {
 	plain := live + ".restore.tmp"
 	os.Remove(plain)
 	defer os.Remove(plain)
-	if err := decompressFile(backup, plain); err != nil {
+	if err := decompressFile(ctx, backup, plain); err != nil {
 		return fmt.Errorf("backup %s is unreadable: %w", backup, err)
 	}
 	src, err := sql.Open("sqlite", plain)
@@ -243,27 +245,33 @@ func Restore(ctx context.Context, backup, live string) error {
 // keepBeforeRestore copies the live database aside before a restore: a byte
 // copy (works on a database too damaged for SQLite), falling back to VACUUM
 // INTO where Windows forbids reading SQLite's locked byte range (past 1 GiB).
+// The copy kept by an earlier restore stays until this one is whole.
 func keepBeforeRestore(ctx context.Context, c *sql.Conn, live string) error {
 	dest := filepath.Join(filepath.Dir(live), BeforeRestoreFileName)
-	if err := os.Remove(dest); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	tmp := dest + ".tmp"
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	_, copyErr := atomicfile.Copy(live, dest, nil, nil)
-	if copyErr == nil {
-		return nil
+	defer os.Remove(tmp) // no-op once renamed
+	if _, copyErr := atomicfile.Copy(ctx, live, tmp, nil, nil); copyErr != nil {
+		if _, err := c.ExecContext(ctx, `VACUUM INTO ?`, tmp); err != nil {
+			return errors.Join(copyErr, err)
+		}
+		if err := syncFile(tmp); err != nil {
+			return err
+		}
 	}
-	os.Remove(dest)
-	if _, err := c.ExecContext(ctx, `VACUUM INTO ?`, dest); err != nil {
-		os.Remove(dest)
-		return errors.Join(copyErr, err)
-	}
-	f, err := os.Open(dest)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := f.Sync(); err != nil {
+	if err := os.Rename(tmp, dest); err != nil {
 		return err
 	}
 	return atomicfile.SyncDir(filepath.Dir(dest))
+}
+
+// syncFile flushes a closed file to the drive.
+func syncFile(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0) // Windows flushes only a writable handle
+	if err != nil {
+		return err
+	}
+	return errors.Join(f.Sync(), f.Close())
 }

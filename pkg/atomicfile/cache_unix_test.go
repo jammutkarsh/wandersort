@@ -21,7 +21,7 @@ func TestCopyLeavesNoPagesCachedForTheReadBack(t *testing.T) {
 	write(t, src, strings.Repeat("x", size))
 
 	var resident int
-	if _, err := Copy(src, dest, nil, func(tmp string) error {
+	if _, err := Copy(t.Context(), src, dest, nil, func(tmp string) error {
 		resident = residentPages(t, tmp, size)
 		return nil
 	}); err != nil {

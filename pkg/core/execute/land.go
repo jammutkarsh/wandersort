@@ -153,7 +153,7 @@ func withSuffix(p string, n int) string {
 // be on disk, and if not, the next run finds the copy at this name and records it.
 func place(ctx context.Context, src, dst, want string, commit func() error) error {
 	h := metadata.NewHasher()
-	if _, err := atomicfile.CopyContext(ctx, src, dst, h, func(tmp string) error {
+	if _, err := atomicfile.Copy(ctx, src, dst, h, func(tmp string) error {
 		if got := metadata.HashString(h); got != want {
 			return fmt.Errorf("source changed since it was scanned: copied %s, scanned %q: %w", got, want, db.ErrChecksumMismatch)
 		}

@@ -52,7 +52,7 @@ func TestBackupIsCompressedAndVerified(t *testing.T) {
 	}
 
 	plain := filepath.Join(dir, "plain.db")
-	if err := decompressFile(dest, plain); err != nil {
+	if err := decompressFile(t.Context(), dest, plain); err != nil {
 		t.Fatal(err)
 	}
 	b, err := sql.Open("sqlite", plain)
@@ -213,7 +213,7 @@ func TestRestoreRefusesForeignBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	foreign.Close()
-	if err := compressFile(plain, dest+".foreign"); err != nil {
+	if err := compressFile(t.Context(), plain, dest+".foreign"); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(live)
@@ -362,5 +362,63 @@ func TestLibraryIsNotMemoryMapped(t *testing.T) {
 	}
 	if size != 0 {
 		t.Errorf("mmap_size = %d, want 0", size)
+	}
+}
+
+// A stopped backup or restore doesn't wait for a large database to be packed
+// or unpacked.
+func TestPackingStopsWhenCancelled(t *testing.T) {
+	dir := t.TempDir()
+	plain, packed := filepath.Join(dir, "plain"), filepath.Join(dir, "packed")
+	if err := os.WriteFile(plain, make([]byte, 1<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := compressFile(t.Context(), plain, packed); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := compressFile(ctx, plain, packed+".2"); !errors.Is(err, context.Canceled) {
+		t.Errorf("compressFile after cancel = %v, want context.Canceled", err)
+	}
+	if err := decompressFile(ctx, packed, plain+".2"); !errors.Is(err, context.Canceled) {
+		t.Errorf("decompressFile after cancel = %v, want context.Canceled", err)
+	}
+}
+
+// A restore stopped while it keeps the database it replaces leaves the one an
+// earlier restore kept: it is the only undo.
+func TestKeepBeforeRestoreStoppedKeepsTheEarlierCopy(t *testing.T) {
+	dir := t.TempDir()
+	live, kept := filepath.Join(dir, "live.db"), filepath.Join(dir, BeforeRestoreFileName)
+	for path, data := range map[string]string{live: "new", kept: "earlier"} {
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mem, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	c, err := mem.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := keepBeforeRestore(ctx, c, live); !errors.Is(err, context.Canceled) {
+		t.Errorf("keepBeforeRestore after cancel = %v, want context.Canceled", err)
+	}
+	if got, err := os.ReadFile(kept); err != nil || string(got) != "earlier" {
+		t.Errorf("kept copy = %q (%v), want the earlier one", got, err)
+	}
+	if err := keepBeforeRestore(t.Context(), c, live); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(kept); err != nil || string(got) != "new" {
+		t.Errorf("kept copy = %q (%v), want the database being replaced", got, err)
 	}
 }
