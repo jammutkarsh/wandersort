@@ -259,6 +259,7 @@ func TestCheckLibrary(t *testing.T) {
 		{"leftover files of an older library", []string{".wandersort.log"}, true},
 		{"foreign content", []string{".DS_Store", "Goa Trip"}, true},
 		{"backup without its database", []string{".wandersort.db.zst", "2024"}, true},
+		{"backup beside an empty database file", []string{defaultDBFileName, ".wandersort.db.zst"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -411,5 +412,24 @@ func TestCheckRememberedIgnoresLetterCase(t *testing.T) {
 	}
 	if err := cfg.CheckRemembered(filepath.Join(filepath.Dir(gone), "photos")); !errors.Is(err, ErrLibraryMissing) {
 		t.Errorf("CheckRemembered(other case) = %v, want ErrLibraryMissing", err)
+	}
+}
+
+// A missing library is refused through a symlinked parent too.
+func TestCheckRememberedThroughASymlink(t *testing.T) {
+	cfg, err := NewAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	if err := cfg.Remember(filepath.Join(real, "photos")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.CheckRemembered(filepath.Join(link, "photos")); !errors.Is(err, ErrLibraryMissing) {
+		t.Errorf("CheckRemembered(through a link) = %v, want ErrLibraryMissing", err)
 	}
 }

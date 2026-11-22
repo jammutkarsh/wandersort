@@ -14,6 +14,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
@@ -44,6 +45,9 @@ func New(db *db.DB, resolver *location.Resolver, log logger.Logger, cfg Config) 
 func Propose(ctx context.Context, database *db.DB, resolver *location.Resolver, appCfg *config.Configuration, log logger.Logger) (int, error) {
 	// a new proposal has new folder IDs, so old review edits are void
 	if appCfg.AppDBPath != "" {
+		if n, err := CountEdits(filepath.Dir(appCfg.AppDBPath)); err == nil && n > 0 {
+			log.Warn(human.Plural(n, "edit from Organise was", "edits from Organise were")+" for the old plan; organise the new one", logger.UserKey, true)
+		}
 		if err := RemoveDraft(filepath.Dir(appCfg.AppDBPath)); err != nil {
 			return 0, err
 		}

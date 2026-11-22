@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
+	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -122,6 +124,8 @@ type addResult struct {
 	Read       int `json:"read"`
 	Planned    int `json:"planned"`
 	Unreadable int `json:"unreadable"`
+	// Unopened is how many folders and files the walk could not look into.
+	Unopened int `json:"unopened"`
 }
 
 // runAddPlain runs the pipeline without the TUI (--plain, --json, no terminal), one line per stage.
@@ -136,6 +140,10 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 	defer cancel()
 
 	isNew := !a.LibraryExists()
+	// refused before a library is made in a folder that is to be scanned
+	if _, err := workflow.CheckRoots(path.New(), a.OutputDir(), paths); err != nil {
+		return err
+	}
 	if err := a.Open(ctx); err != nil {
 		return err
 	}
@@ -155,6 +163,10 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 
 	scan, err := a.Scan(ctx, paths, force, a.workflowDeps())
 	res.Found, res.Read, res.Planned = scan.Found, scan.Read, scan.Planned
+	res.Unopened = len(scan.Unseen)
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("stopped; run add again to pick up where it left off")
+	}
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}
@@ -167,6 +179,9 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 	a.Log().Info("next: wandersort organise to correct the plan, or wandersort copy to copy it in", logger.UserKey, true)
 	if len(left) > 0 {
 		return withCode(exitPartial, fmt.Errorf("%s not be read; the next add tries again", human.Plural(len(left), "file could", "files could")))
+	}
+	if len(scan.Unseen) > 0 {
+		return withCode(exitPartial, fmt.Errorf("%s not be opened; nothing in there was added", human.Plural(len(scan.Unseen), "folder or file could", "folders and files could")))
 	}
 	return nil
 }

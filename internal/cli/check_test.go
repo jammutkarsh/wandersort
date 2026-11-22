@@ -18,7 +18,7 @@ func TestGroupProblems(t *testing.T) {
 	if len(groups) != 2 {
 		t.Fatalf("groups = %+v, want 2", groups)
 	}
-	if g := groups[0]; g.heading != "files changed since they were copied in" || g.detail ||
+	if g := groups[0]; g.heading != "changed since copied in" || g.detail ||
 		len(g.problems) != 2 || g.problems[0].Path != "a.jpg" || g.problems[1].Path != "c.jpg" {
 		t.Errorf("first group = %+v, want the two changed files, no per-file detail", g)
 	}

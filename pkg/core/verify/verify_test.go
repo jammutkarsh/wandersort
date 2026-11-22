@@ -271,3 +271,34 @@ func TestVerifyFullStoppedMidHashBlamesNoFile(t *testing.T) {
 		t.Errorf("checkFile stopped = %+v, %v; want no problem and context.Canceled", problem, err)
 	}
 }
+
+// A quick check reads no contents, so it can't clear a damage a full one found.
+func TestQuickCheckKeepsWhatAFullCheckFound(t *testing.T) {
+	ctx := context.Background()
+	d, out := dbtest.New(t), t.TempDir()
+	abs := seedPlaced(t, d, out, 1, "2024/a.jpg", "hello")
+	if err := os.WriteFile(abs, []byte("hellO"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	damage := func() (n int) {
+		t.Helper()
+		if err := d.SQL.Get(&n, `SELECT count(*) FROM errors WHERE stage = ?`, db.StageVerify); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, full := range []bool{true, false} {
+		if _, err := Run(ctx, d, logger.NewNoopLogger(), out, Options{Full: full}); err != nil {
+			t.Fatal(err)
+		}
+		if damage() != 1 {
+			t.Fatalf("after a check (full=%v) the damage has %d rows, want 1", full, damage())
+		}
+	}
+	if err := os.WriteFile(abs, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, d, logger.NewNoopLogger(), out, Options{Full: true}); err != nil || damage() != 0 {
+		t.Errorf("a full check of the mended file leaves %d rows (%v)", damage(), err)
+	}
+}

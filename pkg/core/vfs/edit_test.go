@@ -35,6 +35,20 @@ func siblingTree() []Node {
 	}}}
 }
 
+// counted fills in the counts a plan's tree always has: a folder without one
+// of its own holds what its subfolders hold.
+func counted(nodes []Node) []Node {
+	for i := range nodes {
+		counted(nodes[i].Children)
+		if nodes[i].FileCount == 0 {
+			for _, c := range nodes[i].Children {
+				nodes[i].FileCount += c.FileCount
+			}
+		}
+	}
+	return nodes
+}
+
 // crossBranchTree mirrors the real reported case: the same device's photos
 // spread across three different months, each its own single-file leaf.
 func crossBranchTree() []Node {
@@ -144,7 +158,7 @@ func TestMergeNodesSkipsDayRangeOutsideDateFolders(t *testing.T) {
 }
 
 func TestMergeNodesAcrossBranchesCollapsesToOneNode(t *testing.T) {
-	tree := crossBranchTree()
+	tree := counted(crossBranchTree())
 
 	newTree, _, _, _, err := mergeNodes(tree,
 		pids("2017/April/20/Canon EOS 700D", "2017/August/15/Canon EOS 700D"))
@@ -592,7 +606,7 @@ func TestMergeNodesAcrossYearEnd(t *testing.T) {
 	}
 
 	// the January day is the anchor; the December month still takes the merge
-	newTree, mergedID, name, ancestor, err := mergeNodes(tree, pids("2026/01/02", "2025/12/run"))
+	newTree, mergedID, name, ancestor, err := mergeNodes(counted(tree), pids("2026/01/02", "2025/12/run"))
 	if err != nil {
 		t.Fatalf("mergeNodes: %v", err)
 	}

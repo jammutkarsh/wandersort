@@ -94,8 +94,9 @@ func openAppDB(ctx context.Context, dbPath string, log logger.Logger) (*DB, erro
 		return nil, err
 	}
 
-	// database-scoped settings, stored in the file header
+	// settings stored in the file header, and the cache size, which reads it
 	pragmas := []string{
+		"PRAGMA cache_size=-256000",      // ~256MB page cache (negative = size in KiB)
 		"PRAGMA page_size=32768",         //  32KB for better I/O efficiency
 		"PRAGMA journal_mode=WAL",        // Better concurrency and durability
 		"PRAGMA auto_vacuum=INCREMENTAL", // Enables incremental space reclamation
@@ -194,13 +195,14 @@ func (db *DB) QueryRowContext(ctx context.Context, query string, args ...any) *s
 // appDSN puts the connection-scoped pragmas in the DSN so every connection
 // gets them. Without foreign_keys a replacement connection would silently
 // turn every ON DELETE CASCADE into orphan rows. The driver applies _pragma
-// entries in lexicographic order, so none may depend on another.
+// entries in lexicographic order, so none before locking_mode may touch the
+// database: in normal locking mode that maps a -shm file, and a mapped page of
+// a drive that drops is a SIGBUS.
 func appDSN(dbPath string) string {
 	pragmas := []string{
-		"busy_timeout(5000)",  // wait 5s on a locked database before failing
-		"cache_size(-256000)", // ~256MB page cache (negative = size in KiB)
-		"foreign_keys(1)",     // every ON DELETE CASCADE in this codebase
-		"fullfsync(1)",        // darwin: flush the drive's own cache, not just the OS
+		"busy_timeout(5000)", // wait 5s on a locked database before failing
+		"foreign_keys(1)",    // every ON DELETE CASCADE in this codebase
+		"fullfsync(1)",       // darwin: flush the drive's own cache, not just the OS
 		"journal_size_limit(67108864)",
 		// hold the file lock all session: other clients get "database is
 		// locked". Safe because the pool is one connection.

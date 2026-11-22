@@ -177,7 +177,8 @@ func (m CopyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case copyFileMsg:
 		m.copied, m.files = msg.copied, msg.done
 		m.sl.AddTail(msg.target)
-		return m, tea.Batch(m.sl.SetProgress(execute.StepCopy, int(m.copied), int(m.cfg.Plan.Bytes)), m.next)
+		m.sl.SetProgress(execute.StepCopy, int(m.copied), int(m.cfg.Plan.Bytes))
+		return m, m.next
 	case copyDoneMsg:
 		m.res, m.err = msg.res, msg.err
 		switch {
@@ -253,7 +254,16 @@ func (m CopyModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			return m, Left(Leave{})
 		}
-	case copyDone, copyFailed:
+	case copyFailed:
+		switch key {
+		case "r":
+			if m.res.Report != "" {
+				OpenInViewer(m.res.Report)
+			}
+		case "esc", "enter":
+			return m, Left(Leave{})
+		}
+	case copyDone:
 		switch key {
 		case "r":
 			if m.res.Report != "" {
@@ -414,6 +424,12 @@ func (m CopyModel) footer() string {
 		return hints(KeyHint("esc", "stop"), MoreKeys())
 	case copyStopping:
 		return hints(KeyHint("ctrl+c", "quit now"), MoreKeys())
+	}
+	if m.state == copyFailed {
+		if m.res.Report != "" {
+			return hints(KeyHint("r", "open report"), KeyHint("esc", "back"), MoreKeys())
+		}
+		return hints(KeyHint("esc", "back"), MoreKeys())
 	}
 	if m.res.Report != "" {
 		return hints(KeyHint("r", "open report"), KeyHint("↑↓", "choose"), KeyHint("enter", copyChoices[m.choice]), MoreKeys())

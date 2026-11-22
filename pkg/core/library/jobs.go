@@ -11,6 +11,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/execute"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/preview"
 	"github.com/jammutkarsh/wandersort/pkg/report"
 )
@@ -29,6 +30,10 @@ func (s *Session) Scan(ctx context.Context, paths []string, force bool, deps wor
 		return workflow.Result{}, err
 	}
 	defer done()
+	// refused before a library is made in a folder that is to be scanned
+	if _, err := workflow.CheckRoots(path.New(), s.OutputDir(), paths); err != nil {
+		return workflow.Result{}, err
+	}
 	if err := s.Open(ctx); err != nil {
 		return workflow.Result{}, err
 	}

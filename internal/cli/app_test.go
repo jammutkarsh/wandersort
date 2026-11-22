@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/library"
+	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -86,6 +88,73 @@ func TestNoLibraryNamesTheBackup(t *testing.T) {
 	}
 	if err := withRestoreHint(a.noLibrary()); !errors.Is(err, config.ErrBackupOnly) || !strings.Contains(err.Error(), tui.RestoreHint) {
 		t.Errorf("backup only = %v, want the restore command", err)
+	}
+}
+
+// A library opened here before whose folder is gone (an unplugged drive) is
+// never to be added to: add would be told to make a new one.
+func TestNoLibraryNamesAMissingLibrary(t *testing.T) {
+	cfg, err := config.NewAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "drive", "library")
+	cfg.SetOutput(dir)
+	if err := cfg.Remember(dir); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{Session: library.New(cfg, logger.NewNoopLogger(), nil)}
+	if err := a.noLibrary(); !errors.Is(err, config.ErrLibraryMissing) {
+		t.Errorf("missing library = %v, want ErrLibraryMissing", err)
+	}
+}
+
+// A scan refused for overlapping the library makes no library in the folder.
+func TestRefusedScanMakesNoLibrary(t *testing.T) {
+	photos := t.TempDir()
+	cfg, err := config.NewAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(photos, "new", "library")
+	cfg.SetOutput(dir)
+	s := library.New(cfg, logger.NewNoopLogger(), logger.NewFile(t.TempDir()))
+	t.Cleanup(s.Close)
+	if _, err := s.Scan(t.Context(), []string{photos}, false, workflow.Deps{}); !errors.Is(err, workflow.ErrOverlapsLibrary) {
+		t.Errorf("Scan = %v, want ErrOverlapsLibrary", err)
+	}
+	if err := (&app{Session: s}).addPlain([]string{photos}, false, &addResult{}); !errors.Is(err, workflow.ErrOverlapsLibrary) {
+		t.Errorf("addPlain = %v, want ErrOverlapsLibrary", err)
+	}
+	if entries, _ := os.ReadDir(photos); len(entries) != 0 {
+		t.Errorf("a refused scan left %v in the photo folder", entries)
+	}
+}
+
+// Bad usage is exit 2, an unknown subcommand of a group and a wrong mix of
+// flags included.
+func TestBadUsageExitsTwo(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	for _, args := range [][]string{
+		{"admin", "bogus"},
+		{"completion", "bogus"},
+		{"bogus"},
+		{"admin", "db"},
+		{"admin", "db", "--reset", "--restore"},
+		{"admin", "report", "--redact-paths", "--include-db"},
+	} {
+		cmd := (&app{}).newRootCmd()
+		cmd.SetArgs(args)
+		cmd.SetOut(io.Discard)
+		if err := cmd.Execute(); ExitCode(err) != exitUsage {
+			t.Errorf("%v: %v (exit %d), want exit %d", args, err, ExitCode(err), exitUsage)
+		}
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil || len(entries) != 0 {
+		t.Errorf("sessions that opened nothing wrote %v (%v)", entries, err)
 	}
 }
 

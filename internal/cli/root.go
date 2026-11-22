@@ -104,10 +104,16 @@ Where to ideally store the generated scripts:
 	return rootCmd
 }
 
-// refuseArgs makes cmd and every command under it that takes no arguments refuse them.
+// refuseArgs makes cmd and every command under it that takes no arguments
+// refuse them. A group runs its help: cobra checks no arguments of a command
+// that can't run, so an unknown subcommand would pass for a success.
 func refuseArgs(cmd *cobra.Command) {
 	if cmd.Args == nil {
 		cmd.Args = noArgs
+	}
+	if !cmd.Runnable() && cmd.HasSubCommands() {
+		cmd.Args = noArgs
+		cmd.RunE = func(cmd *cobra.Command, _ []string) error { return cmd.Help() }
 	}
 	for _, sub := range cmd.Commands() {
 		refuseArgs(sub)

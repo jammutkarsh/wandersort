@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -198,7 +199,25 @@ func TestScanModel(t *testing.T) {
 			if _, left := leaveOf(cmd); left || cancelled != 1 {
 				t.Errorf("a second esc must not quit or cancel again: left=%v calls=%d", left, cancelled)
 			}
-			_ = next
+			// unwound, it goes back to the folders
+			next, cmd = next.Update(scanDoneMsg{err: context.Canceled})
+			if !next.(ScanModel).Stopped() {
+				t.Error("a scan stopped by esc doesn't count as stopped: its folders aren't listed again")
+			}
+			if cmd == nil {
+				t.Fatal("a stopped scan stays on its screen")
+			}
+			if msg, ok := cmd().(NothingNewMsg); !ok {
+				t.Errorf("a scan stopped by esc = %#v, want it back on Add", msg)
+			}
+		}},
+		{"CtrlCEndsTheAppOnceTheScanUnwound", func(t *testing.T) {
+			m := NewScanModel(ScanConfig{Cancel: func() {}})
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+			_, cmd := next.Update(scanDoneMsg{err: context.Canceled})
+			if l, left := leaveOf(cmd); !left || !l.Quit {
+				t.Errorf("ctrl+c on a running scan: left=%v %+v, want a quit", left, l)
+			}
 		}},
 	}
 	for _, tt := range tests {

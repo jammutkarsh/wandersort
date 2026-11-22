@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ↓ moves the pick; a step whose Skip says so is never visited.
@@ -128,5 +130,15 @@ func TestSettingsRowsKeepTheValueColumn(t *testing.T) {
 	}
 	if strings.Contains(viewText(atFirst), "›") {
 		t.Errorf("no arrow belongs at the end of a row:\n%s", viewText(atFirst))
+	}
+}
+
+// A save that did not land says so where it was made, and nothing says saved.
+func TestSettingsShowsAFailedSave(t *testing.T) {
+	var m tea.Model = NewSettingsModel(func() []SettingRow { return []SettingRow{{Label: "Layout", Value: "Year"}} }, "")
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ = m.Update(SettingsFailedMsg{Err: errors.New("settings not saved")})
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "settings not saved") || strings.Contains(v, "Saved.") {
+		t.Errorf("settings after a failed save:\n%s", v)
 	}
 }

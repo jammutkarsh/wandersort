@@ -130,8 +130,8 @@ type Candidate struct {
 	hasMarks    bool // the geonames entry carried diacritics stripDiacritics removed
 }
 
-// candidateFetchLimit over-fetches so Candidates can prefer a plain-spelled
-// entry over a diacritic one at roughly the same distance.
+// candidateFetchLimit is the fewest rows Candidates reads, so it can prefer a
+// plain-spelled entry over a diacritic one of the same place.
 const candidateFetchLimit = 32
 
 // searchOverfetchFactor over-fetches in SearchByName, whose qualifier and
@@ -269,10 +269,18 @@ func (r *Resolver) fillNames(ctx context.Context, rows []geoRow) error {
 // to the user; the search itself stays in degree-space (see MaxDistSquared)
 const kmPerDegree = 111.0
 
+// How much farther than a diacritic entry a plain one of the same place may
+// lie: two spellings of one name, or two names of one spot (a city and the
+// district at its centre). More than this names a city after its neighbour.
+const (
+	sameNameKM = 2.0
+	sameSpotKM = 0.2
+)
+
 // Candidates returns up to limit matches within deltaDegrees, nearest first,
-// plain spellings ahead of diacritic ones.
+// a plain spelling ahead of a diacritic one of the same place.
 func (r *Resolver) Candidates(ctx context.Context, lat, lon, deltaDegrees float64, limit int) ([]Candidate, error) {
-	rows, err := r.db.SQL.QueryContext(ctx, candidateQuery, lat, lon, deltaDegrees, candidateFetchLimit)
+	rows, err := r.db.SQL.QueryContext(ctx, candidateQuery, lat, lon, deltaDegrees, max(limit, candidateFetchLimit))
 	if err != nil {
 		return nil, fmt.Errorf("locationResolver: query: %w", err)
 	}
@@ -299,12 +307,37 @@ func (r *Resolver) Candidates(ctx context.Context, lat, lon, deltaDegrees float6
 		return nil, err
 	}
 
-	sort.SliceStable(raw, func(i, j int) bool {
-		if raw[i].hasMarks != raw[j].hasMarks {
-			return !raw[i].hasMarks // plain-spelled entries sort first
+	// a plain spelling ranks where a diacritic entry of the same place does,
+	// just ahead of it; a neighbouring town is another place, however spelled
+	rank := make(map[int]float64, len(raw))
+	for i, row := range raw {
+		rank[i] = row.distKM
+		for _, twin := range raw {
+			reach := sameSpotKM
+			if twin.plain == row.plain {
+				reach = sameNameKM
+			}
+			if !row.hasMarks && twin.hasMarks && row.distKM-twin.distKM <= reach {
+				rank[i] = min(rank[i], twin.distKM)
+			}
 		}
-		return raw[i].distKM < raw[j].distKM
+	}
+	order := make([]int, len(raw))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := order[i], order[j]
+		if rank[a] != rank[b] {
+			return rank[a] < rank[b]
+		}
+		return !raw[a].hasMarks && raw[b].hasMarks
 	})
+	ranked := make([]geoRow, len(raw))
+	for i, o := range order {
+		ranked[i] = raw[o]
+	}
+	raw = ranked
 	if len(raw) > limit {
 		raw = raw[:limit]
 	}

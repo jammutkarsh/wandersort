@@ -318,3 +318,23 @@ func TestCandidatesDisambiguatesRealDB(t *testing.T) {
 		})
 	}
 }
+
+// A city's own coordinates name the city, however it is spelled: a plain name
+// nearby is another town. At a city's centre, its district doesn't win.
+func TestCityWithMarksIsNotItsNeighbour(t *testing.T) {
+	r := installtest.Resolver(t)
+	for want, at := range map[string][2]float64{
+		"Łodz": {51.77058, 19.47395}, "Zurich": {47.36667, 8.55}, "Krakow": {50.06143, 19.93658},
+		"Bogota": {4.60971, -74.08175}, "Medellin": {6.25184, -75.56359}, "Reykjavik": {64.13548, -21.89541},
+		"Paris": {48.8566, 2.3522}, "Delhi": {28.65195, 77.23149},
+	} {
+		cands, err := r.Candidates(context.Background(), at[0], at[1], 0.45, 1)
+		if err != nil || len(cands) == 0 {
+			t.Errorf("%s: no match (%v)", want, err)
+			continue
+		}
+		if got := cands[0]; got.Name != want {
+			t.Errorf("%s's own coordinates name %q, %.1f km away", want, got.Name, got.DistKM)
+		}
+	}
+}

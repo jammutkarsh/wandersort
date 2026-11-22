@@ -73,7 +73,8 @@ func restore(ctx context.Context, live string, log logger.Logger) error {
 	if err := db.Restore(ctx, filepath.Join(outputDir, db.BackupFileName), live); err != nil {
 		return err
 	}
-	d, err := db.New(ctx, live, log)
+	// the backup is in place: a stop now must not report it as failed
+	d, err := db.New(context.WithoutCancel(ctx), live, log)
 	if err != nil {
 		return fmt.Errorf("restored database does not open: %w", err)
 	}

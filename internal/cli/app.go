@@ -60,18 +60,22 @@ func Execute(version string) error {
 	return a.emitJSON(&jsonOutcome{}, time.Time{}, err)
 }
 
-// withRestoreHint adds the command that restores a library found with only its
-// backup; core errors name no command, since other front ends restore their way.
+// withRestoreHint adds the command that restores a library only its backup
+// helps; core errors name no command, since other front ends restore their way.
 func withRestoreHint(err error) error {
-	if !errors.Is(err, config.ErrBackupOnly) {
+	if !tui.NeedsRestore(err) {
 		return err
 	}
 	return fmt.Errorf("%w\n%s", err, tui.RestoreHint)
 }
 
 // noLibrary is why a command that needs a library can't run: add makes one,
-// unless the folder holds a library's backup, which is restored instead.
+// unless it is a known library whose drive is unplugged, or the folder holds a
+// library's backup, which is restored instead.
 func (a *app) noLibrary() error {
+	if err := a.Configuration().CheckRemembered(a.OutputDir()); err != nil {
+		return err
+	}
 	if err := config.CheckLibrary(a.OutputDir()); errors.Is(err, config.ErrBackupOnly) {
 		return err
 	}

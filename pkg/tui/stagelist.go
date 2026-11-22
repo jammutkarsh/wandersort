@@ -102,14 +102,11 @@ func (sl *StageList) Done(key, summary, elapsed string) {
 	}
 }
 
-// SetProgress drives a stage's bar. Returns the bar animation command.
-func (sl *StageList) SetProgress(key string, cur, total int) tea.Cmd {
-	s := sl.get(key)
-	if s == nil || total <= 0 {
-		return nil
+// SetProgress drives a stage's bar.
+func (sl *StageList) SetProgress(key string, cur, total int) {
+	if s := sl.get(key); s != nil && total > 0 {
+		s.cur, s.total = cur, total
 	}
-	s.cur, s.total = cur, total
-	return sl.sb.bar.SetPercent(float64(cur) / float64(total))
 }
 
 // AddTail names the item (a file) the running stage is on.
@@ -161,6 +158,7 @@ func (sl *StageList) FinishRemaining(failed bool, defaultLabel string) {
 			s.state = stateFail
 			s.dur = liveElapsed(s.start)
 			s.tail = ""
+			s.label = defaultLabel
 		case !failed && s.state != stateDone:
 			s.state = stateDone
 			s.tail = ""
@@ -202,7 +200,7 @@ func (sl StageList) View(width int) string {
 		case stateRunning:
 			left := sl.sb.spin.View() + Text.Bold(true).Render(name) + "  "
 			if s.HasBar && s.total > 0 {
-				left += sl.sb.bar.View() + "  " + FaintTxt.Render(sl.fmtCounts(s.cur, s.total))
+				left += sl.sb.bar.ViewAs(float64(s.cur)/float64(s.total)) + "  " + FaintTxt.Render(sl.fmtCounts(s.cur, s.total))
 			} else {
 				left += DimText.Render(s.label)
 			}

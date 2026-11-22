@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -420,5 +421,101 @@ func TestKeepBeforeRestoreStoppedKeepsTheEarlierCopy(t *testing.T) {
 	}
 	if got, err := os.ReadFile(kept); err != nil || string(got) != "new" {
 		t.Errorf("kept copy = %q (%v), want the database being replaced", got, err)
+	}
+}
+
+// The WAL index stays in this process's memory: mapped from a -shm file, it is
+// a SIGBUS when the library's drive drops.
+func TestOpenMapsNoSharedMemory(t *testing.T) {
+	live, _ := newBackedUp(t)
+	for range 2 { // a new WAL, and one to carry on with
+		d, err := New(context.Background(), live, logger.NewNoopLogger())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.SQL.Exec(`INSERT INTO user_labels (label, kind) VALUES (hex(randomblob(4)), 'EVENT')`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(live + "-shm"); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("a -shm file is in use: %v", err)
+		}
+		d.Close()
+	}
+}
+
+// With no database there, a restore puts the whole backup in place or nothing:
+// an empty library beside its backup would have the next copy overwrite it.
+func TestRestoreWithoutADatabase(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		live func(t *testing.T, live string)
+	}{
+		{"deleted", func(t *testing.T, live string) { os.Remove(live) }},
+		{"empty file", func(t *testing.T, live string) {
+			if err := os.WriteFile(live, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"not a database", func(t *testing.T, live string) {
+			if err := os.WriteFile(live, bytes.Repeat([]byte("x"), 4096), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			live, dest := newBackedUp(t)
+			tt.live(t, live)
+			before, beforeErr := os.ReadFile(live)
+			// a WAL of the database that is gone
+			if err := os.WriteFile(live+"-wal", []byte("stale"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			kept := filepath.Join(filepath.Dir(live), BeforeRestoreFileName)
+			if err := os.WriteFile(kept, []byte("earlier"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			if err := Restore(ctx, dest, live); err == nil {
+				t.Fatal("a cancelled restore succeeded")
+			}
+			if after, err := os.ReadFile(live); !bytes.Equal(after, before) || errors.Is(err, fs.ErrNotExist) != errors.Is(beforeErr, fs.ErrNotExist) {
+				t.Errorf("a cancelled restore changed the database: %d bytes (%v)", len(after), err)
+			}
+
+			if err := Restore(t.Context(), dest, live); err != nil {
+				t.Fatal(err)
+			}
+			if wal, err := os.ReadFile(live + "-wal"); err == nil && string(wal) == "stale" {
+				t.Error("the stale WAL is still beside the restored database")
+			}
+			d, err := New(t.Context(), live, logger.NewNoopLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			var n int
+			if err := d.SQL.Get(&n, `SELECT count(*) FROM user_labels`); err != nil || n != 1 {
+				t.Errorf("labels after the restore = %d (%v), want the backup's 1", n, err)
+			}
+			want := "earlier" // nothing was replaced, so nothing is kept over it
+			if len(before) > 0 {
+				want = string(before)
+			}
+			if got, err := os.ReadFile(kept); err != nil || string(got) != want {
+				t.Errorf("kept copy is %d bytes (%v), want %d", len(got), err, len(want))
+			}
+		})
+	}
+}
+
+func TestDamagedDatabaseIsNamed(t *testing.T) {
+	live, _ := newBackedUp(t)
+	if err := os.WriteFile(live, bytes.Repeat([]byte("x"), 4096), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(t.Context(), live, logger.NewNoopLogger()); !Damaged(err) {
+		t.Errorf("opening a file that is no database = %v, want it Damaged", err)
 	}
 }

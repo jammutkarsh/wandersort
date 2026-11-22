@@ -19,6 +19,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
@@ -127,7 +128,7 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 			log.Info("placed file does not match the library's record",
 				"path", rel, "kind", problem.Kind, "detail", problem.Detail)
 		}
-		if err := record(database, r.FileID, problem); err != nil {
+		if err := record(database, r.FileID, problem, o.Full); err != nil {
 			log.Warn("could not record the verify result", "path", rel, "error", err)
 		}
 		if o.OnProgress != nil {
@@ -209,12 +210,14 @@ func checkFile(ctx context.Context, abs, rel string, want int64, hash string, fu
 // record replaces or clears the file's VERIFY row, batched (a synced
 // transaction per file was most of a large check on a hard disk; a lost result
 // only costs a re-check). Run flushes before reporting.
-func record(database *db.DB, fileID int64, p *Problem) error {
+func record(database *db.DB, fileID int64, p *Problem, full bool) error {
 	var op db.DBOperation
 	if p == nil {
 		op = func(ctx context.Context, tx *sqlx.Tx) error {
+			// a quick pass read no contents, so it can't clear what a full one found
 			_, err := tx.ExecContext(ctx,
-				`DELETE FROM errors WHERE file_id = ? AND stage = ?`, fileID, db.StageVerify)
+				`DELETE FROM errors WHERE file_id = ? AND stage = ? AND (? OR kind != ?)`,
+				fileID, db.StageVerify, full, db.KindChecksumMismatch)
 			return err
 		}
 	} else {
@@ -281,8 +284,8 @@ func summary(rep Report, o Options, elapsed time.Duration) string {
 	if o.Full {
 		depth = "contents"
 	}
-	msg := fmt.Sprintf("Checked the %s of %d files (%s) in %s",
-		depth, rep.Checked, volume.HumanBytes(uint64(rep.Bytes)), elapsed)
+	msg := fmt.Sprintf("Checked the %s of %s (%s) in %s",
+		depth, human.Plural(rep.Checked, "file", "files"), volume.HumanBytes(uint64(rep.Bytes)), elapsed)
 	if len(rep.Forgotten) > 0 {
 		msg += fmt.Sprintf(" — %d gone, forgotten", len(rep.Forgotten))
 	}

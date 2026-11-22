@@ -43,13 +43,15 @@ free-form log lines can't be promised path-free.`,
 wandersort admin report --redact-paths
 wandersort admin report --include-db`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// the database is nothing but paths: shipping it "redacted" would be a lie
+			if includeDB && redactPaths {
+				return withCode(exitUsage, fmt.Errorf("--redact-paths and --include-db can't go together"))
+			}
 			return a.runIssue(includeDB, redactPaths)
 		},
 	}
 	cmd.Flags().BoolVar(&redactPaths, "redact-paths", false, "Replace every path in the error report and leave the logs out")
 	cmd.Flags().BoolVar(&includeDB, "include-db", false, "Also include the database (contains file paths and metadata)")
-	// the database is nothing but paths: shipping it "redacted" would be a lie
-	cmd.MarkFlagsMutuallyExclusive("redact-paths", "include-db")
 	return cmd
 }
 

@@ -95,7 +95,7 @@ func (a *app) check(full bool, res *checkResult) error {
 // reportVerify prints what the check found, every failing file by name,
 // grouped by kind of problem.
 func reportVerify(rep verify.Report, full bool) error {
-	if rep.Checked == 0 {
+	if rep.Checked == 0 && rep.Sound() {
 		fmt.Fprintln(os.Stderr, "Library is empty; 'wandersort copy' fills it.")
 		return nil
 	}
@@ -114,12 +114,12 @@ func reportVerify(rep verify.Report, full bool) error {
 		if full {
 			depth = "byte-for-byte what they were"
 		}
-		fmt.Fprintln(os.Stderr, tui.OK.Render(fmt.Sprintf("All %d files are %s.", rep.Checked, depth)))
+		fmt.Fprintln(os.Stderr, tui.OK.Render(fmt.Sprintf("All %s are %s.", human.Plural(rep.Checked, "file", "files"), depth)))
 		return nil
 	}
 
 	for _, g := range groupProblems(rep.Problems) {
-		fmt.Fprintf(os.Stderr, "%s %d %s:\n", tui.Attn.Render("✗"), len(g.problems), g.heading)
+		fmt.Fprintf(os.Stderr, "%s %s: %s\n", tui.Attn.Render("✗"), human.Plural(len(g.problems), "file", "files"), g.heading)
 		for _, p := range g.problems {
 			if g.detail {
 				fmt.Fprintf(os.Stderr, "    %s — %s\n", p.Path, p.Detail)
@@ -134,7 +134,7 @@ func reportVerify(rep verify.Report, full bool) error {
 		fmt.Fprintln(os.Stderr, "    'wandersort admin db --restore' restores it from the backup taken before the last transfer.")
 	}
 	if len(rep.Strays) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%d leftover temp file(s) from an interrupted transfer, safe to delete:\n", len(rep.Strays))
+		fmt.Fprintf(os.Stderr, "\n%s from an interrupted transfer, safe to delete:\n", human.Plural(len(rep.Strays), "leftover temp file", "leftover temp files"))
 		for _, s := range rep.Strays {
 			fmt.Fprintf(os.Stderr, "    %s\n", s)
 		}
@@ -148,7 +148,7 @@ func reportVerify(rep verify.Report, full bool) error {
 	if !full {
 		fmt.Fprintln(os.Stderr, "\nRun 'wandersort check --full' to check the contents of the rest.")
 	}
-	return withCode(exitPartial, fmt.Errorf("%d of %d files do not match the library's records", len(rep.Problems), rep.Checked))
+	return withCode(exitPartial, fmt.Errorf("%d of %s not what the library recorded", len(rep.Problems), human.Plural(rep.Checked, "file", "files")))
 }
 
 // problemGroup is every problem of one kind. detail says whether each file's
@@ -180,9 +180,9 @@ func groupProblems(problems []verify.Problem) []problemGroup {
 func problemHeading(kind string) (heading string, detail bool) {
 	switch kind {
 	case db.KindChecksumMismatch:
-		return "files changed since they were copied in", false
+		return "changed since copied in", false
 	case db.KindIO, db.KindPermissionDenied:
-		return "files could not be read", true
+		return "can't be read", true
 	}
-	return "files are not what the library recorded", true
+	return "not what the library recorded", true
 }

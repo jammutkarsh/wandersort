@@ -17,6 +17,9 @@ type SettingRow struct {
 // SettingsSavedMsg tells the shell a setting was saved.
 type SettingsSavedMsg struct{}
 
+// SettingsFailedMsg tells the settings list its last save did not land.
+type SettingsFailedMsg struct{ Err error }
+
 type settingsEditDoneMsg struct{ leave Leave }
 
 // SettingsModel lists a library's settings; enter changes one, and the list comes back updated.
@@ -68,6 +71,9 @@ func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+	case SettingsFailedMsg:
+		m.err, m.saved = msg.Err, false
+		return m, nil
 	case settingsEditDoneMsg:
 		m.edit = nil
 		switch {

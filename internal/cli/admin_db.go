@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
@@ -41,16 +42,17 @@ wandersort admin db --reset --yes`,
 	cmd.Flags().Bool(flagRestore, false, "Put the database back from its backup")
 	cmd.Flags().Bool(flagReset, false, "Delete everything in the database except your settings")
 	cmd.Flags().Bool(flagYes, false, "Skip the confirmation prompt")
-	// exactly one of --restore/--reset
-	cmd.MarkFlagsMutuallyExclusive(flagRestore, flagReset)
-	cmd.MarkFlagsOneRequired(flagRestore, flagReset)
 	return cmd
 }
 
-// runAdminDB dispatches to the flag that was given; MarkFlagsOneRequired and
-// MarkFlagsMutuallyExclusive guarantee exactly one of them was.
+// runAdminDB dispatches to the one flag that was given.
 func (a *app) runAdminDB(cmd *cobra.Command) error {
-	if reset, _ := cmd.Flags().GetBool(flagReset); reset {
+	reset, _ := cmd.Flags().GetBool(flagReset)
+	restore, _ := cmd.Flags().GetBool(flagRestore)
+	if reset == restore {
+		return withCode(exitUsage, fmt.Errorf("say --%s or --%s, one of them", flagRestore, flagReset))
+	}
+	if reset {
 		return a.resetDB(cmd)
 	}
 	return a.restoreDB(cmd)
@@ -75,6 +77,8 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 
 	ctx, cancel := interruptible()
 	defer cancel()
+	live, statErr := os.Stat(config.DBPath(a.OutputDir()))
+	replaced := statErr == nil && live.Size() > 0
 	err = a.Restore(ctx)
 	if _, busy := errors.AsType[*busyError](err); busy {
 		return err // already worded for the terminal
@@ -86,7 +90,9 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 	}
 
 	fmt.Fprintln(os.Stderr, tui.OK.Render("Database restored from the backup of "+taken+"."))
-	fmt.Fprintln(os.Stderr, tui.FaintTxt.Render("The database it replaced is kept as "+db.BeforeRestoreFileName+" in the library folder."))
+	if replaced {
+		fmt.Fprintln(os.Stderr, tui.FaintTxt.Render("The database it replaced is kept as "+db.BeforeRestoreFileName+" in the library folder."))
+	}
 	return nil
 }
 

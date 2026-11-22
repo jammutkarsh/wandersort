@@ -36,6 +36,9 @@ type Scanner struct {
 
 	// Progress, when set, hears each file the walk finds, with the run's count so far.
 	Progress func(found int)
+	// Unseen, when set, hears each folder the walk could not list and each
+	// file it could not stat: they may hold photos no one was told about.
+	Unseen func(path string)
 }
 
 func New(db *db.DB, log logger.Logger, workers int) *Scanner {
@@ -182,6 +185,12 @@ func (s *Scanner) scan(ctx context.Context, absRoot, volumeUUID string, scan int
 	return count, walk, walkErr
 }
 
+func (s *Scanner) unseen(path string) {
+	if s.Unseen != nil {
+		s.Unseen(path)
+	}
+}
+
 // walkResult is what a walk reports besides files: what it could not see, and
 // each drive it found mounted inside the root.
 type walkResult struct {
@@ -249,6 +258,7 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 			// WalkDir reports a failure below the root for a directory it
 			// could not list: everything under it is unseen, not gone
 			gaps.dirs = append(gaps.dirs, path.ToSourcePath(p))
+			s.unseen(p)
 			return nil // Continue walking
 		}
 
@@ -272,7 +282,7 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 		// skip symlinked files: the recorded size would be the link's. (WalkDir
 		// never follows directory links either.)
 		if d.Type()&fs.ModeSymlink != 0 {
-			s.log.Warn("Skipping a link; add the folder it points to instead", "walkingPath", s.path.RelativeToHome(p))
+			s.log.Warn("Skipping a link; add what it points to instead", "walkingPath", s.path.RelativeToHome(p))
 			return nil
 		}
 		// a pipe, socket or device never ends when read, so hashing one would hang
@@ -299,6 +309,7 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 		if err != nil {
 			s.log.Warn("Failed to get file info", "inputPath", absRoot, "walkingPath", s.path.RelativeToHome(p), "error", err)
 			gaps.files = append(gaps.files, [2]string{path.ToSourcePath(filepath.Dir(p)), d.Name()})
+			s.unseen(p)
 			return nil
 		}
 

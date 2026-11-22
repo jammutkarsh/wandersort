@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -41,8 +42,16 @@ func (cfg *Configuration) CheckRemembered(dir string) error {
 			return nil
 		}
 	}
+	// through a symlinked parent it is the same folder, missing or not
+	r := path.New()
+	planned := func(dir string) string {
+		if real, err := r.RealOrPlanned(dir); err == nil {
+			return real
+		}
+		return dir
+	}
 	for _, d := range cfg.readHistory(historyFileName) {
-		if sameSpelling(d, dir) {
+		if sameSpelling(d, dir) || sameSpelling(planned(d), planned(dir)) {
 			return fmt.Errorf("%s: %w", path.New().Friendly(dir), ErrLibraryMissing)
 		}
 	}
@@ -91,6 +100,9 @@ func sameSpelling(a, b string) bool {
 // folder it can't write), it reads anyway: a history unread would let a
 // missing library start afresh.
 func (cfg *Configuration) readHistory(name string) []string {
+	if _, err := os.Stat(filepath.Join(cfg.appDir, name)); errors.Is(err, fs.ErrNotExist) {
+		return nil // a session that only looks around writes nothing, the lock included
+	}
 	if l, err := lock.AcquireHistory(cfg.appDir); err == nil {
 		defer l.Unlock()
 	}

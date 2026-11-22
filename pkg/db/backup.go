@@ -163,10 +163,19 @@ func checkBackup(ctx context.Context, b *sql.DB) error {
 	return nil
 }
 
+// Damaged reports whether err is SQLite finding a database that is not one, or
+// whose pages are corrupt: its backup is what helps.
+func Damaged(err error) bool {
+	se, ok := errors.AsType[*sqlite.Error](err)
+	return ok && (se.Code()&0xff == sqlite3.SQLITE_NOTADB || se.Code()&0xff == sqlite3.SQLITE_CORRUPT)
+}
+
 // Restore replaces the database at live with backup (kept in place). Nothing
 // is touched unless the backup checks out and no other connection has live
 // open (ErrInUse). Pages go through SQLite's online backup and rollback
-// journal, never a file swap, so a crash rolls back to the old database.
+// journal, so a crash rolls back to the old database. With no database there,
+// or a file that is none, the unpacked backup is renamed into place instead:
+// it is there whole or not at all, never an empty library beside its backup.
 func Restore(ctx context.Context, backup, live string) error {
 	if _, err := os.Stat(backup); err != nil {
 		return fmt.Errorf("no backup: %w", err)
@@ -177,7 +186,7 @@ func Restore(ctx context.Context, backup, live string) error {
 	os.Remove(plain)
 	defer os.Remove(plain)
 	if err := decompressFile(ctx, backup, plain); err != nil {
-		return fmt.Errorf("backup %s is unreadable: %w", backup, err)
+		return fmt.Errorf("unpack backup %s: %w", backup, err)
 	}
 	src, err := sql.Open("sqlite", plain)
 	if err != nil {
@@ -189,13 +198,34 @@ func Restore(ctx context.Context, backup, live string) error {
 		return fmt.Errorf("backup %s: %w", backup, err)
 	}
 
+	info, err := os.Stat(live)
+	if errors.Is(err, fs.ErrNotExist) || err == nil && info.Size() == 0 {
+		// a WAL without its database is no part of the backup: SQLite would
+		// replay it onto the restored one
+		return placeRestored(plain, live, live+".orphaned")
+	}
+	if err != nil {
+		return fmt.Errorf("look at the database: %w", err)
+	}
+
 	dbh, err := sql.Open("sqlite", appDSN(live)) // the app's durability settings, fullfsync included
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer dbh.Close()
 	c, err := dbh.Conn(ctx)
+	if se, ok := errors.AsType[*sqlite.Error](err); ok && se.Code()&0xff == sqlite3.SQLITE_NOTADB {
+		// SQLite can't write to what it can't read: keep the file as it is
+		kept := filepath.Join(filepath.Dir(live), BeforeRestoreFileName)
+		if err := os.Rename(live, kept); err != nil {
+			return fmt.Errorf("keep the database being replaced (nothing was changed): %w", err)
+		}
+		return placeRestored(plain, live, kept)
+	}
 	if err != nil {
+		if se, ok := errors.AsType[*sqlite.Error](err); ok && se.Code()&0xff == sqlite3.SQLITE_BUSY {
+			return ErrInUse
+		}
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer c.Close()
@@ -242,6 +272,24 @@ func Restore(ctx context.Context, backup, live string) error {
 	return nil
 }
 
+// placeRestored renames plain, an unpacked backup, to live, where no database
+// is. Sidecars left there move to aside's names first.
+func placeRestored(plain, live, aside string) error {
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		os.Remove(aside + suffix) // an earlier one's, of another database
+		if err := os.Rename(live+suffix, aside+suffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("move %s aside: %w", live+suffix, err)
+		}
+	}
+	if err := syncFile(plain); err != nil {
+		return fmt.Errorf("restore: %w", err)
+	}
+	if err := os.Rename(plain, live); err != nil {
+		return fmt.Errorf("restore: %w", err)
+	}
+	return atomicfile.SyncDir(filepath.Dir(live))
+}
+
 // keepBeforeRestore copies the live database aside before a restore: a byte
 // copy (works on a database too damaged for SQLite), falling back to VACUUM
 // INTO where Windows forbids reading SQLite's locked byte range (past 1 GiB).
@@ -263,6 +311,9 @@ func keepBeforeRestore(ctx context.Context, c *sql.Conn, live string) error {
 	}
 	if err := os.Rename(tmp, dest); err != nil {
 		return err
+	}
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		os.Remove(dest + suffix) // of the copy just replaced
 	}
 	return atomicfile.SyncDir(filepath.Dir(dest))
 }

@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -341,7 +342,7 @@ func (m *HomeModel) walkHistory(step int) {
 // Add lists folders as if typed, for a run to fix and plan again.
 func (m *HomeModel) Add(dirs ...string) {
 	for _, d := range dirs {
-		if !slices.Contains(m.added, d) {
+		if d = filepath.Clean(d); !slices.Contains(m.added, d) {
 			m.added = append(m.added, d)
 		}
 	}

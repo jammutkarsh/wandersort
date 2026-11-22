@@ -96,14 +96,14 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	}
 	if errors.Is(err, context.Canceled) {
 		// every file not yet reached is still pending; nothing is half-placed
-		return fmt.Errorf("stopped after %d files; run copy again to resume", rep.Done)
+		return fmt.Errorf("stopped after %s; run copy again to resume", human.Plural(rep.Done, "file", "files"))
 	}
 	if err != nil {
 		return err
 	}
 	switch {
 	case rep.Failed > 0:
-		return withCode(exitPartial, fmt.Errorf("%d of %d files not copied; see the report", rep.Failed, rep.Done+rep.Failed))
+		return withCode(exitPartial, fmt.Errorf("%d of %s not copied; see the report", rep.Failed, human.Plural(rep.Done+rep.Failed, "file", "files")))
 	case len(left) > 0:
 		return withCode(exitPartial, fmt.Errorf("%s not be read, so not in the library", human.Plural(len(left), "source file could", "source files could")))
 	case rep.Done == 0:
@@ -172,8 +172,8 @@ func (a *app) reportLeftBehind(left []string) {
 		a.Log().Info("never read, so not transferred", "source", p)
 	}
 	paths := wspath.New()
-	fmt.Fprintf(os.Stderr, "%s %d source files could not be read, so they are not in the library:\n",
-		tui.Attn.Render("⚠"), len(left))
+	fmt.Fprintf(os.Stderr, "%s %s not be read, so not in the library:\n",
+		tui.Attn.Render("⚠"), human.Plural(len(left), "source file could", "source files could"))
 	for _, p := range left[:min(len(left), maxLeftBehindShown)] {
 		fmt.Fprintf(os.Stderr, "    %s\n", paths.RelativeToHome(p))
 	}

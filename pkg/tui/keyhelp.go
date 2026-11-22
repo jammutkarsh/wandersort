@@ -55,8 +55,10 @@ func KeyHelp(base string, groups []KeyGroup, w, h int) string {
 // overlay draws box over base, centred, keeping base's lines either side.
 func overlay(base, box string, w, h int) string {
 	lines := strings.Split(base, "\n")
-	for len(lines) < h {
-		lines = append(lines, "")
+	if h > 0 {
+		// as tall as what it covers: a frame that shrinks when the box closes
+		// leaves the renderer erasing the line it skipped, the footer
+		h = len(lines)
 	}
 	boxLines := strings.Split(box, "\n")
 	boxW := lipgloss.Width(box)

@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestSpinnerBarUpdateHandlesTickAndFrameOnly(t *testing.T) {
@@ -121,5 +123,15 @@ func TestChoiceRowPickedIsAPill(t *testing.T) {
 	}
 	if on, button := Pill("yes"), choiceButtonText("yes", true); !strings.Contains(button, "yes") || on == "" {
 		t.Error("pill and button must both render their label")
+	}
+}
+
+// The key list is as tall as the screen it covers: a frame that shrinks when
+// it closes loses its last line, the footer.
+func TestKeyHelpKeepsTheScreensHeight(t *testing.T) {
+	base := Screen("body", "footer", 24)
+	help := KeyHelp(base, []KeyGroup{{"Keys", []KeyLine{{"a", "b"}}}}, 80, 24)
+	if got, want := lipgloss.Height(help), lipgloss.Height(base); got != want {
+		t.Errorf("key list is %d lines over a screen of %d", got, want)
 	}
 }

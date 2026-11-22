@@ -22,6 +22,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
@@ -401,7 +402,7 @@ func summary(o Options, rep Report, elapsed time.Duration) string {
 	if o.DryRun {
 		verb = "Would copy"
 	}
-	msg := fmt.Sprintf("%s %d files (%s) in %s", verb, rep.Done, volume.HumanBytes(uint64(rep.Bytes)), elapsed)
+	msg := fmt.Sprintf("%s %s (%s) in %s", verb, human.Plural(rep.Done, "file", "files"), volume.HumanBytes(uint64(rep.Bytes)), elapsed)
 	if rep.Failed > 0 {
 		msg += fmt.Sprintf(" — %d failed", rep.Failed)
 	}

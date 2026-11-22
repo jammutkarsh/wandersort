@@ -114,7 +114,7 @@ func (e *settingsExamples) CollapseDescribe() string {
 
 // DateOnlyDescribe says what the question does; only the town's name follows the form.
 func (e *settingsExamples) DateOnlyDescribe() string {
-	return "Puts photos taken at home straight into their date folder. Without it they go in a " +
+	return "Puts photos taken at home straight into their date folder. Without it they go in the " +
 		e.homeTown() + " folder, like any trip."
 }
 

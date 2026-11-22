@@ -225,6 +225,10 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if m.done {
+			// the answer is on its way to the host; quitting never waits for it
+			if msg.String() == "ctrl+c" {
+				return m, Left(Leave{Quit: true})
+			}
 			return m, nil
 		}
 		// The question owns the keyboard until answered — everything below,

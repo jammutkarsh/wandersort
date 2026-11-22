@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 )
 
@@ -43,6 +44,9 @@ func Error(err error) string {
 		if strings.Join(raw, "\n") == err.Error() {
 			return strings.Join(lines, "\n")
 		}
+	}
+	if db.Damaged(err) {
+		return "This library's database is damaged. Restore it from its backup; the photos in the library are not affected."
 	}
 	for _, e := range explanations {
 		if errors.Is(err, e.cause) {

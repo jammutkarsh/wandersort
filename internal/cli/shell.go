@@ -319,10 +319,6 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.replanning() {
 			return m, msgCmd(scanReadyMsg{err: library.ErrReplanning})
 		}
-		// opened here, before the scan screen: opening is quick (the lock never waits)
-		if err := m.a.Open(m.ctx); err != nil {
-			return m, msgCmd(scanReadyMsg{err: err})
-		}
 		// a folder overlapping the library is refused before the scan screen
 		// replaces the folder list, so the list stays to fix; switching to
 		// another library in Settings runs the scan there
@@ -332,6 +328,11 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingScan = &msg
 				err = fmt.Errorf("%w, or another library in Settings", err)
 			}
+			return m, msgCmd(scanReadyMsg{err: err})
+		}
+		// opened here, before the scan screen: opening is quick (the lock never
+		// waits), and after the check, so a refused scan makes no library
+		if err := m.a.Open(m.ctx); err != nil {
 			return m, msgCmd(scanReadyMsg{err: err})
 		}
 		return m, msgCmd(scanReadyMsg{paths: msg.Paths, force: msg.Force})
@@ -434,11 +435,12 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			return m, nil
 		}
-		cmd := m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})
+		unsaved := errors.New("settings not saved, the old ones still apply: " + explain.Error(msg.err))
+		cmd := m.forward(tabScan, tui.HomeErrMsg{Err: unsaved})
 		if m.screens[tabSettings] != nil {
 			// its list still shows what failed to save
 			if screen, err := m.a.newSettingsScreen(m.ctx); err == nil {
-				cmd = tea.Batch(cmd, m.place(tabSettings, screen))
+				cmd = tea.Batch(cmd, m.place(tabSettings, screen), m.forward(tabSettings, tui.SettingsFailedMsg{Err: unsaved}))
 			}
 		}
 		return m, cmd
@@ -624,7 +626,7 @@ func (m shellModel) handleLeave(l tui.Leave) (tea.Model, tea.Cmd) {
 		// next, but only if there are any
 		m.refresh()
 		if m.lib.HasEdits() {
-			note = "Your edits are saved. Copy uses them."
+			note = "Your edits are saved. Copy uses them; adding more folders starts them over."
 			m.a.Log().Info(note, logger.UserKey, true)
 		}
 		m.screens[tabReview] = nil
@@ -658,6 +660,9 @@ func (m *shellModel) settingsSaved() tea.Cmd {
 		return cmd // a visit that changed nothing throws no plan away
 	}
 	m.screens[tabReview] = nil
+	if m.refresh(); m.lib.HasEdits() {
+		cmd = m.forward(tabScan, tui.HomeNoteMsg{Text: "Settings saved. Your Organise edits were for the old folders, so they start over."})
+	}
 	return tea.Batch(cmd, m.saveSettings(*s))
 }
 
@@ -717,11 +722,12 @@ func (m *shellModel) scanTabHome() tea.Cmd {
 // homeAgain puts the scan tab back to a folder input, with the finished scan's
 // stage summaries above it.
 func (m *shellModel) homeAgain(note string) tea.Cmd {
+	m.notice, m.escArmed = "", false // of the screen being left: nothing is busy now
 	var history, added []string
 	if s, ok := m.screens[tabScan].(tui.ScanModel); ok {
 		history = s.Summary()
-		if s.Failed() {
-			added = s.Paths() // to fix and plan again
+		if s.Failed() || s.Stopped() {
+			added = s.Paths() // to fix, or carry on, and plan again
 		}
 	}
 	if note != "" {
@@ -816,6 +822,14 @@ func (m *shellModel) openReview() tea.Cmd {
 	}
 	m.opening = true
 	a, ctx, plan := m.a, m.ctx, m.a.Work.Plan()
+	// looking never makes a library
+	if a.DB() == nil && !a.LibraryExists() {
+		err := a.noLibrary()
+		if !tui.NeedsRestore(err) && !errors.Is(err, config.ErrLibraryMissing) {
+			err = vfs.ErrNothingNew
+		}
+		return msgCmd(reviewOpenMsg{err: err, plan: plan})
+	}
 	// open on the UI goroutine (see StartScanMsg); building the tree is the
 	// slow part and runs off it
 	if err := a.Open(ctx); err != nil {

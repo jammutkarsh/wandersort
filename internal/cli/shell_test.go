@@ -291,6 +291,9 @@ func TestShellModel(t *testing.T) {
 			m := testShell(t)
 			t.Cleanup(m.a.Close)
 			lib := m.a.OutputDir()
+			if err := m.a.Open(context.Background()); err != nil {
+				t.Fatal(err)
+			}
 
 			next, cmd := m.Update(tui.StartScanMsg{Paths: []string{lib}})
 			m = next.(shellModel)
@@ -847,5 +850,17 @@ func seedDraft(t *testing.T, dir string, edits ...vfs.Edit) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, vfs.DraftFileName), buf, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Organise on a folder that is no library shows there is nothing, and makes none.
+func TestOrganiseMakesNoLibraryByLooking(t *testing.T) {
+	m := testShell(t)
+	cmd := m.openReview()
+	if msg, ok := cmd().(reviewOpenMsg); !ok || !errors.Is(msg.err, vfs.ErrNothingNew) {
+		t.Errorf("openReview = %#v, want ErrNothingNew", msg)
+	}
+	if m.a.LibraryExists() || m.a.DB() != nil {
+		t.Error("looking made a library")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
@@ -144,15 +145,20 @@ func CheckLibrary(dir string) error {
 	if err != nil {
 		return fmt.Errorf("output folder %s: %w", shown(dir), err)
 	}
+	backup := slices.ContainsFunc(entries, func(e os.DirEntry) bool { return e.Name() == db.BackupFileName })
 	for _, e := range entries {
-		if e.Name() == defaultDBFileName {
-			return nil
+		if e.Name() != defaultDBFileName {
+			continue
 		}
+		// an empty file beside a backup is no library: a copy into it would
+		// overwrite the only backup there is
+		if info, err := e.Info(); err == nil && info.Size() == 0 && backup {
+			break
+		}
+		return nil
 	}
-	for _, e := range entries {
-		if e.Name() == db.BackupFileName {
-			return fmt.Errorf("%s: %w", shown(dir), ErrBackupOnly)
-		}
+	if backup {
+		return fmt.Errorf("%s: %w", shown(dir), ErrBackupOnly)
 	}
 	for _, e := range entries {
 		if n := e.Name(); !osClutter[n] && n != lock.OutputFileName {

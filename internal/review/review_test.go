@@ -308,7 +308,7 @@ func TestReview(t *testing.T) {
 		// is what the reviewer sees as "merge didn't work" even though Confirm would
 		// have collapsed the paths later.
 		{"MergeAcrossBranchesCollapsesToOneNode", func(t *testing.T) {
-			m := testModel(t, crossBranchTree(), nil)
+			m := testModel(t, counted(crossBranchTree()), nil)
 			// flattened order: 2017, April, 20, Canon(April), August, 15, Canon(August), October, 19, Canon(October)
 			// select from April's Canon leaf through October's Canon leaf — spans
 			// several structural (non-leaf) rows in between, which must be ignored
@@ -941,13 +941,9 @@ func TestReview(t *testing.T) {
 			}
 
 			day := vfs.FindNode(rm.draft.Tree(), pid("2024/06_June/03"))
-			if len(day.Children) != 3 {
-				t.Fatalf("day children = %d, want the three lifted iPhone folders", len(day.Children))
-			}
-			for _, c := range day.Children {
-				if c.Name != "iPhone" {
-					t.Errorf("day child = %q, want the lifted iPhone folder", c.Name)
-				}
+			// the three lifted iPhone folders are one: the copy makes them one
+			if len(day.Children) != 1 || day.Children[0].Name != "iPhone" || len(day.Children[0].MergedIDs) < 2 {
+				t.Fatalf("day children = %+v, want one iPhone folder holding all three", day.Children)
 			}
 			if len(day.MergedIDs) != 3 {
 				t.Errorf("day MergedIDs = %v, want the three dropped locations", day.MergedIDs)
@@ -1375,6 +1371,20 @@ func nodeByID(rows []*reviewRow, id int64) *reviewRow {
 		}
 	}
 	return nil
+}
+
+// counted fills in the counts a plan's tree always has: a folder without one
+// of its own holds what its subfolders hold.
+func counted(nodes []vfs.Node) []vfs.Node {
+	for i := range nodes {
+		counted(nodes[i].Children)
+		if nodes[i].FileCount == 0 {
+			for _, c := range nodes[i].Children {
+				nodes[i].FileCount += c.FileCount
+			}
+		}
+	}
+	return nodes
 }
 
 // crossBranchTree mirrors the real reported case: the same device's photos

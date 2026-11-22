@@ -321,11 +321,7 @@ func mergeInto(dst *Node, src Node) {
 	dst.MergedIDs = append(dst.MergedIDs, src.ID)
 	dst.MergedIDs = append(dst.MergedIDs, src.MergedIDs...)
 	for _, c := range src.Children {
-		if twin := childByName(dst, c.Name); twin != nil {
-			mergeInto(twin, c)
-			continue
-		}
-		dst.Children = append(dst.Children, c)
+		adopt(dst, c)
 	}
 }
 
@@ -367,29 +363,38 @@ func collectLeafIDs(nodes []Node, out map[int64]bool) {
 	}
 }
 
-// pruneEmptied drops ancestors a merge left with no children and refreshes
-// FileCount bottom-up. leafIDs is the pre-merge leaf set: anything childless
-// outside it is an emptied ancestor, not a real leaf.
+// pruneEmptied drops ancestors a merge left with no children and no files of
+// their own. leafIDs is the pre-merge leaf set: anything childless outside it
+// is an emptied ancestor, not a real leaf.
 func pruneEmptied(nodes []Node, leafIDs map[int64]bool) []Node {
 	out := nodes[:0]
 	for i := range nodes {
 		n := nodes[i]
-		if len(n.Children) > 0 {
-			kept := pruneEmptied(n.Children, leafIDs)
-			if len(kept) == 0 {
-				continue
-			}
-			total := 0
-			for _, k := range kept {
-				total += k.FileCount
-			}
-			n.Children, n.FileCount = kept, total
-		} else if !leafIDs[n.ID] {
+		n.Children = pruneEmptied(n.Children, leafIDs)
+		if len(n.Children) == 0 && n.FileCount == 0 && !leafIDs[n.ID] {
 			continue
 		}
 		out = append(out, n)
 	}
 	return out
+}
+
+// addCount adds files to id's count and all its ancestors'.
+func addCount(tree []Node, id int64, files int) {
+	for _, a := range chainTo(tree, id) {
+		FindNode(tree, a).FileCount += files
+	}
+}
+
+// adopt makes c a child of parent: folded into a same-named one, which a copy
+// would make one folder with it. Counts above parent are the caller's.
+func adopt(parent *Node, c Node) (id int64) {
+	if twin := childByName(parent, c.Name); twin != nil {
+		mergeInto(twin, c)
+		return twin.ID
+	}
+	parent.Children = append(parent.Children, c)
+	return c.ID
 }
 
 // combinedDayRange spans every pick's days when every pick is a plain Date
@@ -541,7 +546,7 @@ func MergeEdit(anchor int64, selected []int64) Edit {
 func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name, ancestorName string, err error) {
 	// no id is an ancestor of another: the TUI selects one depth only
 	if len(ids) < 2 {
-		return tree, 0, "", "", fmt.Errorf("select at least two folders at the same level to merge")
+		return tree, 0, "", "", fmt.Errorf("select at least two folders at the same level to combine")
 	}
 
 	picks := make([]mergePick, 0, len(ids))
@@ -591,7 +596,7 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 			shared = commonChain(shared, chainTo(tree, p.id))
 		}
 		if len(shared) == 0 {
-			return tree, 0, "", "", fmt.Errorf("these folders can't be merged")
+			return tree, 0, "", "", fmt.Errorf("these folders can't be combined")
 		}
 		dest = FindNode(tree, shared[len(shared)-1])
 		if dest == nil {
@@ -604,7 +609,7 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 			chain := chainTo(tree, picks[i].id)
 			if len(chain) == len(shared) {
 				// this pick is the LCA itself: another pick sits inside it
-				return tree, 0, "", "", fmt.Errorf("can't merge a folder with a folder inside it")
+				return tree, 0, "", "", fmt.Errorf("can't combine a folder with a folder inside it")
 			}
 			for _, between := range chain[len(shared) : len(chain)-1] {
 				picks[i].value.Bounds = picks[i].value.Bounds.Intersect(FindNode(tree, between).Bounds)
@@ -629,14 +634,19 @@ func mergeNodes(tree []Node, ids []int64) (newTree []Node, mergedID int64, name,
 	// splice: the picks leave the tree entirely and reappear as one child of
 	// the LCA. Their IDs ride along on MergedIDs so Confirm remaps their files.
 	for _, p := range picks {
+		addCount(tree, p.id, -p.value.FileCount)
+	}
+	for _, p := range picks {
 		if p.parent != nil {
 			removeChildByID(p.parent, p.id)
 		}
 	}
-	dest.Children = append(dest.Children, merged)
+	addCount(tree, dest.ID, merged.FileCount)
+	destName := dest.Name
+	mergedID = adopt(dest, merged)
 	tree = pruneEmptied(tree, leafIDs)
 
-	return tree, merged.ID, target, dest.Name, nil
+	return tree, mergedID, target, destName, nil
 }
 
 // dropNodes removes each node in ids, lifting its children onto its parent.
@@ -655,9 +665,9 @@ func dropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err er
 	for _, id := range ids {
 		parent := parentOf(tree, id)
 		if parent == nil {
-			// a top-level node has no parent to lift its children onto — its
-			// files would land in the library root ([D] flattens it instead)
-			return tree, nil, fmt.Errorf("can't drop a top-level folder; D flattens it")
+			// a top-level node has no parent to lift its children onto: its
+			// files would land in the library root
+			return tree, nil, ErrFixedFolder
 		}
 		n := FindNode(tree, id)
 		if n == nil {
@@ -672,16 +682,16 @@ func dropNodes(tree []Node, ids []int64) (newTree []Node, names []string, err er
 		return tree, nil, nil
 	}
 
+	// all leave before any child is lifted, so none is lifted into one leaving
+	for _, d := range drops {
+		removeChildByID(FindNode(tree, d.parentID), d.node.ID)
+	}
 	for _, d := range drops {
 		parent := FindNode(tree, d.parentID)
-		if parent == nil {
-			continue
-		}
-		removeChildByID(parent, d.node.ID)
 		// each lifted child keeps what the dropped folder constrained
 		for _, c := range d.node.Children {
 			c.Bounds = c.Bounds.Intersect(d.node.Bounds)
-			parent.Children = append(parent.Children, c)
+			adopt(parent, c)
 		}
 		// files sitting directly in the dropped node remap onto the parent
 		parent.MergedIDs = append(parent.MergedIDs, append([]int64{d.node.ID}, d.node.MergedIDs...)...)
@@ -708,7 +718,7 @@ func flattenNodes(tree []Node, ids []int64) (newTree []Node, absorbed int, names
 		}
 	}
 	if len(targets) == 0 {
-		return tree, 0, nil, fmt.Errorf("nothing below the selected folder(s) to flatten")
+		return tree, 0, nil, fmt.Errorf("nothing inside the selected folders to gather")
 	}
 
 	for _, id := range targets {

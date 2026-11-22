@@ -25,10 +25,10 @@ Run the binary with `HOME` pointed at a scratch folder: `--output-path` becomes 
 
 Settings and the plan are written together: a library never holds settings its plan was not built from. Use a library of a few thousand files so a re-plan lasts long enough to act during it; close the app before any `sqlite3` step (the app holds the database exclusively).
 
-9d. `[H]` change Folder layout → Add says "Settings saved."; until the re-plan lands, Organise, Copy, Settings and a new scan answer "still re-planning with the new settings; try again in a moment"; then Organise shows the new layout.
+9d. `[H]` change Folder layout → Add says "Settings saved."; until the re-plan lands, `shift+tab` skips Organise, Copy and Settings, and a new scan answers "still re-planning with the new settings; try again in a moment"; then Organise shows the new layout.
 9e. `[H]` change Folder layout, then `esc esc` mid re-plan → the first esc warns "esc again to quit — stops the re-plan, the settings stay as they were", the second quits at once; relaunch → Settings shows the old layout, Organise the old folders. `ctrl+c` instead of `esc esc` → same.
 9f. `[H]` change Folder layout, then `kill -9 <pid>` mid re-plan → relaunch opens normally; settings and plan are both the old ones (`sqlite3 <library>/.wandersort.db "select target_path from virtual_fs_entries limit 5"` shows old-layout paths).
-9g. `[A]` failed save: `sqlite3 <library>/.wandersort.db "CREATE TRIGGER qa1 BEFORE INSERT ON library_settings BEGIN SELECT RAISE(ABORT,'qa'); END; CREATE TRIGGER qa2 BEFORE UPDATE ON library_settings BEGIN SELECT RAISE(ABORT,'qa'); END"`, open the app, change a setting → the error shows on Add, the log says "Settings not saved; the library keeps its old settings and plan.", Settings shows the old value, relaunch → still old. Clean up: `sqlite3 <library>/.wandersort.db "DROP TRIGGER qa1; DROP TRIGGER qa2"`.
+9g. `[A]` failed save: `sqlite3 <library>/.wandersort.db "CREATE TRIGGER qa1 BEFORE INSERT ON library_settings BEGIN SELECT RAISE(ABORT,'qa'); END; CREATE TRIGGER qa2 BEFORE UPDATE ON library_settings BEGIN SELECT RAISE(ABORT,'qa'); END"`, open the app, change a setting → the error shows on Add, the log says "Settings not saved; the library keeps its old settings and plan.", Settings shows the old value and why, relaunch → still old. Clean up: `sqlite3 <library>/.wandersort.db "DROP TRIGGER qa1; DROP TRIGGER qa2"`.
 9h. `[H]` review edits in Organise, then change a setting → the edits go with the old plan; Organise shows the new layout and no edits.
 9i. `[H]` scan a folder, open Organise while the plan builds, change a setting before the review appears → that review is never shown.
 9j. `[H]` Settings → Library folder → the open library by another spelling (a symlink to it, or other letter case on macOS) → nothing happens, no "busy".
@@ -82,7 +82,7 @@ Settings and the plan are written together: a library never holds settings its p
 43. `[H]` `r` → rename with ranked place suggestions; `↑/↓` pick, `tab` fills, `ctrl+e` (more places) widens the radius; names typed in earlier reviews are offered.
 44. `[H]` `r`, `m`, `x` on a Year or Month folder → refused with a ⚠ status line.
 45. `[H]` `space` (or `shift+↑↓`) + extend + `m` → one folder (hint `m combine`) under the common ancestor, named after the row the selection started on (or the spanned day range for Date folders); emptied chains pruned; same-named children merged recursively; cursor on the result, in name order.
-46. `[H]` `m` with one row, no selection, or across Years → flagged rejection, no change.
+46. `[H]` `m` with one row, no selection, or on Year or Month rows → flagged rejection, no change; day folders of different months or years combine.
 47. `[H]` `x` → folder removed, what was inside lifts to its parent; `f` → subtree gathered into the folder, count unchanged; over a selection each folder stays separate.
 48. `[H]` `u` repeatedly → each edit undone in reverse order, whatever its kind, then "nothing left to undo".
 49. `[H]` `ctrl+u` → draft deleted, tree back to the proposed plan.
@@ -95,6 +95,7 @@ Settings and the plan are written together: a library never holds settings its p
 53. `[A]` `copy` after review edits → files land under the edited folders, draft gone, `.wandersort.db.zst` written.
 54. `[A]` `copy --dry-run` → reports the edited target paths, writes nothing.
 55. `[A]` too little free space → refuses before changing anything; draft still there.
+55a. `[A]` `add` of a folder holding one it can't open (`chmod 000`) → "Couldn't open <folder>, so nothing in there was added…", `"unopened":1`, exit 3.
 56. `[A]` after `copy`, every source file is byte-identical and still in place.
 56a. `[H]` `copy` in a terminal → Copy tab: size, free space, edits; sizes in KB/MB/GB; enter runs Check space / Apply edits (only with edits) / Back up records / Copy & check with a byte bar; ends with "All done" or the files left out by reason.
 57. `[A]` a source edited after the scan (same size) → `checksum-mismatch` error, nothing lands, source kept; exit 3; `~/.wandersort/logs/<run>.html` lists it under its drive with what to do.
@@ -115,13 +116,14 @@ Settings and the plan are written together: a library never holds settings its p
 66. `[H]` `admin db --reset` → confirmation (mentions placed files); "no" keeps data; `--yes` backs up then wipes, keeping settings.
 67. `[A]` `admin db --reset` on an empty database → "nothing to reset", backup untouched.
 68. `[A]` `admin db --restore --yes` → data back, `.wandersort.db.before-restore` kept; with the database open elsewhere → refused.
+68b. `[A]` a library with only its backup, `admin db --restore --yes` killed at any moment → `add`, `copy` and `check` still refuse and name the restore, or the library is whole; never empty.
 68a. `[A]` `admin db --restore --yes` while another `wandersort` holds the library → the busy message of 70 alone, no "restore failed:" in front; exit 4.
 69. `[A]` `admin report` → zip in the current directory: `about.txt`, up to 5 recent logs (`$HOME` in place of the home directory), `errors.json`; `--include-db` adds the database; `--redact-paths` replaces paths and leaves logs out.
 
 ## 9. Concurrency & logs
 
 70. `[A]` a second process against the same library (`add`, `copy`, `check`, `admin db`) → "wandersort already has this library open (PID …). Stop it, then try again.", exit 4.
-71. `[A]` a session that only looks around → no log file, nothing written into the library.
+71. `[A]` a session that opens no library → no log file, nothing written; one that only looks around a library changes nothing in it (its run log is kept).
 72. `[A]` `--plain` → plain line log on the console; the JSON log in `~/.wandersort/logs/` has full detail either way.
 73. `[H]` quit the app idle, mid scan and mid copy → it exits cleanly and the run's log ends with "Closing databases"; a settings change logs "Settings changed — re-proposing the folder structure".
 74. `[A]` `wandersort --bogus --json` → one JSON object with `"exit":2`, no crash; `check --json -o <empty folder>` → `"library"` names that folder, exit 1.

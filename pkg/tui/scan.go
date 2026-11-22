@@ -67,6 +67,8 @@ type ScanModel struct {
 	// drive that phase's own bar — the stream carries no PhaseKey of its own
 	cur string
 
+	// quitting is a run stopped by ctrl+c: the app ends with it
+	quitting bool
 	// warnings are the user-facing ones, shown once the run ends; logWarnings
 	// counts the rest, which only the log has in full
 	warnings []string
@@ -87,7 +89,7 @@ type scanState int
 
 const (
 	scanRunning    scanState = iota
-	scanCancelling           // ctrl+c pressed, waiting for the pipeline to unwind
+	scanCancelling           // esc or ctrl+c pressed, waiting for the pipeline to unwind
 	scanCancelled            // the pipeline unwound after a ctrl+c
 	scanFailed               // the pipeline returned an error
 	scanFinished             // succeeded: asking what next
@@ -124,6 +126,9 @@ func (m ScanModel) Nested() bool { return m.showKeys || m.state == scanFailed }
 // Failed reports that the pipeline returned an error; this screen is the only
 // place it is shown, so don't discard it unread.
 func (m ScanModel) Failed() bool { return m.state == scanFailed }
+
+// Stopped reports a run the user ended before it was done.
+func (m ScanModel) Stopped() bool { return m.state == scanCancelled }
 
 // Paths is the folders this run was asked to plan.
 func (m ScanModel) Paths() []string { return m.cfg.Paths }
@@ -163,7 +168,7 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.review, m.reviewErr = msg.model, msg.err
 		switch {
 		case m.state == scanCancelling && m.reviewErr != nil:
-			return m, Left(Leave{Quit: true})
+			return m, m.unwound()
 		case errors.Is(m.reviewErr, vfs.ErrNothingNew):
 			return m, m.nothingNew()
 		case m.review == nil:
@@ -178,7 +183,7 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sl.FinishRemaining(true, "")
 			if m.state == scanCancelling {
 				m.state = scanCancelled
-				return m, Left(Leave{Quit: true})
+				return m, m.unwound()
 			}
 			m.state, m.err = scanFailed, msg.err
 			return m, nil
@@ -226,7 +231,7 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.state != scanRunning {
 			return m, Left(Leave{Quit: true})
 		}
-		m.state = scanCancelling
+		m.state, m.quitting = scanCancelling, true
 		return m, nil
 	case "?":
 		m.showKeys = true
@@ -247,6 +252,14 @@ func (m ScanModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.choose()
 	}
 	return m, nil
+}
+
+// unwound is where a stopped run goes: ctrl+c quits, esc goes back to the folders.
+func (m ScanModel) unwound() tea.Cmd {
+	if m.quitting {
+		return Left(Leave{Quit: true})
+	}
+	return func() tea.Msg { return NothingNewMsg{Text: "Stopped. Adding the folders again picks up from here."} }
 }
 
 // stop asks the pipeline to wind down; the next run picks up from here.
@@ -301,13 +314,15 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 		if f, ok := e.Attrs["file"].(string); ok {
 			m.sl.AddTail(f)
 		}
-		return m, m.progressCmd(e)
+		m.progress(e)
+		return m, nil
 	}
 
 	// Throttled progress milestones (plain-console lines) still move the bar —
 	// they're what's left if stream lines are ever filtered out.
 	if _, ok := toInt(e.Attrs["total"]); ok {
-		return m, m.progressCmd(e)
+		m.progress(e)
+		return m, nil
 	}
 
 	if e.Level >= slog.LevelWarn {
@@ -320,17 +335,12 @@ func (m ScanModel) handleEvent(e logger.Event) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// progressCmd drives the running phase's bar from events carrying counts.
-func (m *ScanModel) progressCmd(e logger.Event) tea.Cmd {
-	total, ok := toInt(e.Attrs["total"])
-	if !ok || total <= 0 {
-		return nil
+// progress drives the running phase's bar from events carrying counts.
+func (m *ScanModel) progress(e logger.Event) {
+	total, _ := toInt(e.Attrs["total"])
+	if cur, ok := toInt(e.Attrs["extracted"]); ok {
+		m.sl.SetProgress(m.cur, cur, total)
 	}
-	cur, has := toInt(e.Attrs["extracted"])
-	if !has {
-		return nil
-	}
-	return m.sl.SetProgress(m.cur, cur, total)
 }
 
 func (m ScanModel) View() string {

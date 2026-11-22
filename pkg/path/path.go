@@ -3,6 +3,7 @@ package path
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -40,14 +41,31 @@ func (r *Resolver) IsDirectory(path string) (bool, error) {
 func (r *Resolver) RealPath(p string) (string, error) {
 	p = r.ExpandPath(p)
 	resolved, err := filepath.EvalSymlinks(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("%s: %w", p, fs.ErrNotExist)
+	}
 	if err != nil {
-		return "", fmt.Errorf("eval symlinks %q: %w", p, err)
+		return "", fmt.Errorf("resolve %s: %w", p, err)
 	}
 	absPath, err := filepath.Abs(resolved)
 	if err != nil {
 		return "", fmt.Errorf("abs %q: %w", resolved, err)
 	}
 	return onDiskSpelling(absPath), nil
+}
+
+// RealOrPlanned is RealPath of a path whose last parts may not exist yet.
+func (r *Resolver) RealOrPlanned(p string) (string, error) {
+	p = r.ExpandPath(p)
+	real, err := r.RealPath(p)
+	parent := filepath.Dir(p)
+	if !errors.Is(err, fs.ErrNotExist) || parent == p {
+		return real, err
+	}
+	if real, err = r.RealOrPlanned(parent); err != nil {
+		return "", err
+	}
+	return filepath.Join(real, filepath.Base(p)), nil
 }
 
 // onDiskSpelling respells each component of the absolute path p as its folder

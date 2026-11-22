@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
@@ -129,6 +131,9 @@ type Result struct {
 	Found   int // files the walk saw
 	Read    int // files hashed and read this run
 	Planned int // files the plan proposes a place for
+	// Unseen is every folder the walk could not open and file it could not
+	// look at: nothing in them was added.
+	Unseen []string
 }
 
 // RunScan runs the pipeline over paths (nested roots pruned); a stop wraps
@@ -161,13 +166,13 @@ func (wf *Workflow) RunScan(ctx context.Context, paths []string, force bool) (Re
 
 // CheckRoots is the folders a scan of paths walks (nested ones pruned), or why
 // it can't: a folder that is the library, holds it, or sits in it. The library
-// folder exists by now (the database was opened in it).
+// folder need not exist yet, so a scan is refused before one is made.
 func CheckRoots(r *path.Resolver, outputDir string, paths []string) ([]string, error) {
 	roots, err := path.ReduceRoots(r, paths)
 	if err != nil {
 		return nil, err
 	}
-	library, err := r.RealPath(outputDir)
+	library, err := r.RealOrPlanned(outputDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve library folder: %w", err)
 	}
@@ -213,7 +218,23 @@ func (wf *Workflow) workflowPhases(res *Result, force bool) []workflowPhase {
 			kind:     workflowPhaseScan,
 			starting: "Finding your files…",
 			run: func(ctx context.Context) (int, error) {
-				return wf.scanner.Run(ctx, paths, force)
+				var mu sync.Mutex // roots are walked at once
+				wf.scanner.Unseen = func(p string) {
+					mu.Lock()
+					defer mu.Unlock()
+					res.Unseen = append(res.Unseen, p)
+				}
+				n, err := wf.scanner.Run(ctx, paths, force)
+				if len(res.Unseen) > 0 {
+					slices.Sort(res.Unseen)
+					more := ""
+					if rest := len(res.Unseen) - 1; rest > 0 {
+						more = fmt.Sprintf(" and %s more", human.Count(rest))
+					}
+					wf.log.Warn(fmt.Sprintf("Couldn't open %s%s, so nothing in there was added. Keep it, fix its permissions, and add again.",
+						wf.path.RelativeToHome(res.Unseen[0]), more), logger.UserKey, true, "unopened", len(res.Unseen))
+				}
+				return n, err
 			},
 			summary: func(count int) string { return "Found " + human.Plural(count, "file", "files") },
 		},

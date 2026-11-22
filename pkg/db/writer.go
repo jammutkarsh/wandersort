@@ -267,27 +267,25 @@ func (bw *BulkWriter) executeIndividually(ctx context.Context, batch []DBOperati
 		failed++
 		if firstErr == nil {
 			firstErr = err
+			bw.log.Error("Bulk writer fallback failed", "error", err) // a full drive fails every row alike
 		}
 	}
 
-	for i, op := range batch {
+	for _, op := range batch {
 		tx, err := bw.sqlDB.BeginTxx(ctx, nil)
 		if err != nil {
 			fail(err)
-			bw.log.Error("Bulk writer fallback begin tx failed", "index", i, "error", err)
 			continue
 		}
 
 		if err := op(ctx, tx); err != nil {
 			_ = tx.Rollback()
 			fail(err)
-			bw.log.Error("Bulk writer fallback operation failed", "index", i, "error", err)
 			continue
 		}
 
 		if err := tx.Commit(); err != nil {
 			fail(err)
-			bw.log.Error("Bulk writer fallback commit failed", "index", i, "error", err)
 			continue
 		}
 	}
