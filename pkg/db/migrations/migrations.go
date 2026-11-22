@@ -16,13 +16,16 @@ const sqlNowDefault = `(strftime('%Y-%m-%dT%H:%M:%f000000','now','localtime'))`
 // Migration describes a single schema migration step
 type Migration struct {
 	Description string
-	SQL         []string
-	Version     uint
+	// Unless, when set, is a query answering whether the schema already has
+	// what SQL makes; the version is then recorded without running SQL.
+	Unless  string
+	SQL     []string
+	Version uint
 }
 
 // schemas is the ordered list of migrations. Append new migrations at the end;
 // never reorder or mutate existing entries
-var schemas = []Migration{schema001, schema002, schema003}
+var schemas = []Migration{schema001, schema002, schema003, schema004}
 
 // ErrNewerSchema means a newer WanderSort wrote this database.
 var ErrNewerSchema = errors.New("this library is from a newer version; update to open it")
@@ -99,7 +102,18 @@ func Run(ctx context.Context, db *sqlx.DB) (int, error) {
 			return 0, fmt.Errorf("migration v%d: error beginning transaction: %w", schema.Version, err)
 		}
 
-		for _, stmt := range schema.SQL {
+		statements := schema.SQL
+		if schema.Unless != "" {
+			var present bool
+			if err := tx.QueryRowContext(ctx, schema.Unless).Scan(&present); err != nil {
+				tx.Rollback()
+				return 0, fmt.Errorf("migration v%d (%s): error checking the schema: %w", schema.Version, schema.Description, err)
+			}
+			if present {
+				statements = nil
+			}
+		}
+		for _, stmt := range statements {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
 				tx.Rollback()
 				return 0, fmt.Errorf("migration v%d (%s): error executing SQL: %w", schema.Version, schema.Description, err)
