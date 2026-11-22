@@ -91,14 +91,9 @@ func newExtractor(exiftoolPath string, timeout time.Duration) (*Extractor, error
 	if err != nil {
 		return nil, fmt.Errorf("exiftool stdout pipe: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting exiftool -stay_open: %w", err)
-	}
-	leash, err := leashTo(cmd)
+	leash, err := startLeashed(cmd)
 	if err != nil {
-		cmd.Process.Kill()
-		cmd.Wait()
-		return nil, err
+		return nil, fmt.Errorf("starting exiftool -stay_open: %w", err)
 	}
 
 	return &Extractor{

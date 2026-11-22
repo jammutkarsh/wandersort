@@ -12,19 +12,32 @@ import (
 // -stay_open mode exiftool polls its input forever, end of input included.
 type leash struct{ watcher *exec.Cmd }
 
-// leashTo leashes cmd, already started: a shell waits for a pipe only this
-// process holds open, then kills it. The shell ignores the terminal's signals,
-// which may end this process first.
-func leashTo(cmd *exec.Cmd) (*leash, error) {
+// startLeashed starts cmd and a shell that waits for a pipe only this process
+// holds open, then kills it. The shell ignores the terminal's signals, which
+// may end this process first.
+func startLeashed(cmd *exec.Cmd) (*leash, error) {
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	watcher, err := watch(cmd.Process.Pid)
+	if err != nil {
+		cmd.Process.Kill()
+		cmd.Wait()
+		return nil, err
+	}
+	return &leash{watcher: watcher}, nil
+}
+
+func watch(pid int) (*exec.Cmd, error) {
 	watcher := exec.Command("/bin/sh", "-c", `trap '' HUP INT TERM; read -r _; kill -KILL "$1"`,
-		"sh", strconv.Itoa(cmd.Process.Pid))
+		"sh", strconv.Itoa(pid))
 	if _, err := watcher.StdinPipe(); err != nil {
 		return nil, fmt.Errorf("exiftool watcher pipe: %w", err)
 	}
 	if err := watcher.Start(); err != nil {
 		return nil, fmt.Errorf("starting exiftool watcher: %w", err)
 	}
-	return &leash{watcher: watcher}, nil
+	return watcher, nil
 }
 
 // wait waits for cmd to exit. The watcher goes first: once cmd is reaped, its
