@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
-	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/explain"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
@@ -20,18 +19,13 @@ import (
 // Options is everything the review needs. Resolver may be nil (no rename
 // completion). Draft holds the plan plus the edits so far.
 type Options struct {
-	DB     *db.DB
 	Review *library.Review
 	Log    logger.Logger
-	// Library is the library's folder, which keys its preview copies.
-	Library string
 }
 
 // Screen returns the review as a shell tab; it writes only the draft, which `wandersort copy` applies.
 func Screen(ctx context.Context, o Options) tui.Tab {
-	m := newModel(o.Review, ctx, o.DB, o.Review.Resolver, o.Review.Labels, o.Review.Folders, o.Log)
-	m.outputDir = o.Library
-	return m
+	return newModel(o.Review, ctx, o.Review.Peek, o.Review.Resolver, o.Review.Labels, o.Review.Folders, o.Log)
 }
 
 // editor is what the screen edits: a library.Review, or a bare vfs.Draft in tests.
@@ -101,8 +95,7 @@ type Model struct {
 	log logger.Logger
 
 	previewErr error
-	db         *db.DB
-	outputDir  string // the library's folder, keying its preview copies
+	peek       peeker
 	resolver   *location.Resolver
 	ask        *tui.Ask // [ctrl+r]'s full-screen question
 	// draft owns the base plan, the journal and the tree they make
@@ -142,7 +135,7 @@ type Model struct {
 	previewing bool
 }
 
-func newModel(draft editor, ctx context.Context, database *db.DB, resolver *location.Resolver, labels []string, library map[string]bool, log logger.Logger) Model {
+func newModel(draft editor, ctx context.Context, peek peeker, resolver *location.Resolver, labels []string, library map[string]bool, log logger.Logger) Model {
 	// same spinner the scan and install screens run
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -152,7 +145,7 @@ func newModel(draft editor, ctx context.Context, database *db.DB, resolver *loca
 		suggCursor: -1,
 		draft:      draft,
 		ctx:        ctx,
-		db:         database,
+		peek:       peek,
 		resolver:   resolver,
 		labels:     labels,
 		library:    library,

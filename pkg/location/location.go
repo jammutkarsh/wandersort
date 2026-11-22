@@ -648,20 +648,21 @@ func (r *Resolver) CheckTown(ctx context.Context, typed string) error {
 
 // TownName is the spelling a typed town is saved as: the database's when it
 // gives one, else what was typed, since dropping a town the user already had
-// is data loss. A near-miss CheckTown would have rejected saves as blank.
-func (r *Resolver) TownName(ctx context.Context, typed string) string {
+// is data loss. A near-miss CheckTown would have rejected is ErrNotExact, so
+// no caller saves it blank by mistake.
+func (r *Resolver) TownName(ctx context.Context, typed string) (string, error) {
 	typed = strings.TrimSpace(typed)
 	if r == nil || typed == "" {
-		return typed
+		return typed, nil
 	}
 	name, err := r.Canonical(ctx, typed)
 	switch {
 	case err == nil:
-		return name
+		return name, nil
 	case errors.Is(err, ErrNotExact):
-		return ""
+		return "", err
 	default:
-		return typed
+		return typed, nil
 	}
 }
 

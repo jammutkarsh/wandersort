@@ -232,7 +232,7 @@ func TestCanonicalReportsALookupFailure(t *testing.T) {
 }
 
 // A saved town is the database's spelling, a typo the form would have refused
-// is dropped, and anything else is kept as typed: losing a town is data loss.
+// is ErrNotExact, and anything else is kept as typed: losing a town is data loss.
 func TestTownName(t *testing.T) {
 	r := installtest.Resolver(t)
 	ctx := context.Background()
@@ -241,16 +241,18 @@ func TestTownName(t *testing.T) {
 		resolver *location.Resolver
 		typed    string
 		want     string
+		wantErr  error
 	}{
-		{"known", r, "Indore", "Indore, Madhya Pradesh, India"},
-		{"near miss", r, "Hyderab", ""},
-		{"unknown", r, "Nonexistentville12345", "Nonexistentville12345"},
-		{"no resolver", nil, " Indore ", "Indore"},
-		{"blank", r, "  ", ""},
+		{"known", r, "Indore", "Indore, Madhya Pradesh, India", nil},
+		{"near miss", r, "Hyderab", "", location.ErrNotExact},
+		{"unknown", r, "Nonexistentville12345", "Nonexistentville12345", nil},
+		{"no resolver", nil, " Indore ", "Indore", nil},
+		{"blank", r, "  ", "", nil},
 	}
 	for _, tt := range tests {
-		if got := tt.resolver.TownName(ctx, tt.typed); got != tt.want {
-			t.Errorf("%s: TownName(%q) = %q, want %q", tt.name, tt.typed, got, tt.want)
+		got, err := tt.resolver.TownName(ctx, tt.typed)
+		if got != tt.want || !errors.Is(err, tt.wantErr) {
+			t.Errorf("%s: TownName(%q) = %q, %v; want %q, %v", tt.name, tt.typed, got, err, tt.want, tt.wantErr)
 		}
 	}
 	if err := (*location.Resolver)(nil).CheckTown(ctx, "Hyderab"); err != nil {

@@ -63,6 +63,43 @@ func TestMakeRoom(t *testing.T) {
 				t.Errorf("most recently used copy evicted unnecessarily: %v", err)
 			}
 		}},
+		// Another peek's copy in progress is never evicted, however old its
+		// files: its peek would fail or open an emptied folder. One left by a
+		// killed process long ago goes like any other.
+		{"MakeRoomSkipsACopyInProgress", func(t *testing.T) {
+			root := useRoot(t)
+			make1K := func(name string, age time.Duration) string {
+				dir := filepath.Join(root, name)
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "f"), make([]byte, 1024), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				stamp := time.Now().Add(-age)
+				if err := os.Chtimes(dir, stamp, stamp); err != nil {
+					t.Fatal(err)
+				}
+				return dir
+			}
+			abandoned := make1K(copyingPrefix+"abandoned", 2*abandonedCopyAge)
+			running := make1K(copyingPrefix+"running", time.Minute)
+			finished := make1K("finished", 0)
+			// room for two copies: the incoming one and one other; oldest
+			// first, the copy in progress would go before the finished one
+			const free = 2*1024*previewBudgetDivisor - 3*1024
+			if err := makeRoom(root, 1024, free); err != nil {
+				t.Fatalf("makeRoom: %v", err)
+			}
+			if _, err := os.Stat(running); err != nil {
+				t.Errorf("a copy in progress was evicted: %v", err)
+			}
+			for _, dir := range []string{abandoned, finished} {
+				if _, err := os.Stat(dir); !os.IsNotExist(err) {
+					t.Errorf("%s survived, want it evicted to make room: %v", filepath.Base(dir), err)
+				}
+			}
+		}},
 		// TestMakeRoomRefusesAnOversizedPreview covers the other end: no amount of
 		// eviction makes a preview bigger than the whole budget fit.
 		{"MakeRoomRefusesAnOversizedPreview", func(t *testing.T) {
@@ -90,5 +127,21 @@ func TestCleanKeepsOtherLibraries(t *testing.T) {
 	}
 	if _, err := os.Stat(Root("other")); err != nil {
 		t.Errorf("another library's copies went too: %v", err)
+	}
+}
+
+// CleanAll removes every library's copies.
+func TestCleanAllTakesEveryLibrary(t *testing.T) {
+	useRoot(t)
+	if err := os.MkdirAll(Root("other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := CleanAll(); err != nil {
+		t.Fatal(err)
+	}
+	for _, lib := range []string{"lib", "other"} {
+		if _, err := os.Stat(Root(lib)); !os.IsNotExist(err) {
+			t.Errorf("%s's copies still there: %v", lib, err)
+		}
 	}
 }

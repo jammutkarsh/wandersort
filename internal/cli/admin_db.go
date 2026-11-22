@@ -73,8 +73,6 @@ func (a *app) restoreDB(cmd *cobra.Command) error {
 		return fmt.Errorf("restore cancelled")
 	}
 
-	// not Open: Restore refuses while any connection, ours included,
-	// has the database open
 	ctx, cancel := interruptible()
 	defer cancel()
 	err = a.Restore(ctx)

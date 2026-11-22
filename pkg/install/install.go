@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -258,6 +259,17 @@ func (c *Coordinator) progressFor(phase string) func(done, total int64) {
 // ErrPending reports that a dependency is still installing. Only LocationNow
 // returns it — the blocking getters wait instead.
 var ErrPending = errors.New("dependency is still downloading")
+
+// CheckTown is location.Resolver.CheckTown on the location database as now
+// reports it: a town is refused while the database is still downloading
+// (ErrPending: ask again later), and any name passes once it failed to open.
+func CheckTown(ctx context.Context, typed string, now func() (*location.Resolver, error)) error {
+	resolver, err := now()
+	if errors.Is(err, ErrPending) && strings.TrimSpace(typed) != "" {
+		return err
+	}
+	return resolver.CheckTown(ctx, typed)
+}
 
 // Exiftool blocks until the install is done (or ctx ends) and returns the binary's path.
 func (c *Coordinator) Exiftool(ctx context.Context) (string, error) {

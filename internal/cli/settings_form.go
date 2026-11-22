@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -206,14 +205,10 @@ func (f *settingsForm) fineTuning() *tui.Field {
 	}
 }
 
-// validateTown rejects a typo (see location.Resolver.CheckTown); a locationDB
-// still downloading is asked to wait, one that failed to open accepts any name.
+// validateTown rejects a typo, or any town while the location database
+// downloads (see install.CheckTown).
 func (f *settingsForm) validateTown(s string) error {
-	resolver, err := f.geonames()
-	if errors.Is(err, install.ErrPending) && strings.TrimSpace(s) != "" {
-		return err
-	}
-	return resolver.CheckTown(f.ctx, s)
+	return install.CheckTown(f.ctx, s, f.geonames)
 }
 
 // save hands the answers to the shell, which saves them into the library.
@@ -225,7 +220,11 @@ func (f *settingsForm) save() error {
 		SavedPlacesDateOnly:   f.dateOnly,
 		MergeSameLocationDays: f.mergeDays,
 	}
-	s.SetHome(resolver.TownName(f.ctx, f.home))
+	home, err := resolver.TownName(f.ctx, f.home)
+	if err != nil {
+		return err
+	}
+	s.SetHome(home)
 	f.a.settingsToSave = &s
 	return nil
 }

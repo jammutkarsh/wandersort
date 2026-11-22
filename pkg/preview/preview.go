@@ -29,17 +29,24 @@ const (
 	// copyingPrefix names a copy in progress; it is renamed to its hash name
 	// only when complete, so the hash name existing means finished
 	copyingPrefix = ".copying-"
+	// abandonedCopyAge is when a copy in progress counts as left by a killed
+	// process: one peek copies at most maxPreviewBytes, in far less time
+	abandonedCopyAge = time.Hour
 )
 
 // Root is where the library's peek copies live, under the system temp folder
 // ($TMPDIR); fixed per library so copies are reused across sessions, and kept
 // apart from other libraries' so cleaning one never touches another's.
-func Root(library string) string {
-	return filepath.Join(os.TempDir(), "wandersort-previews", hash(library))
-}
+func Root(library string) string { return filepath.Join(allRoot(), hash(library)) }
+
+// allRoot holds every library's Root.
+func allRoot() string { return filepath.Join(os.TempDir(), "wandersort-previews") }
 
 // Clean removes the library's preview copies.
 func Clean(library string) error { return os.RemoveAll(Root(library)) }
+
+// CleanAll removes every library's preview copies.
+func CleanAll() error { return os.RemoveAll(allRoot()) }
 
 // DirFor keys a preview by a hash of its file list, so a parent and its
 // only-child leaf share one copy, in every session.
@@ -142,6 +149,11 @@ func makeRoom(root string, need, free int64) error {
 		p := filepath.Join(root, e.Name())
 		size := dirSize(p)
 		used += size
+		// a copy in progress is another peek's: counted, never evicted, unless
+		// a killed process left it long ago
+		if strings.HasPrefix(e.Name(), copyingPrefix) && time.Since(fi.ModTime()) < abandonedCopyAge {
+			continue
+		}
 		dirs = append(dirs, copyDir{p, fi.ModTime().UnixNano(), size})
 	}
 

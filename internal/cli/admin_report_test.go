@@ -19,6 +19,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/report"
 )
 
 // issueApp returns an app whose logs live in dir/logs and whose working
@@ -62,7 +63,7 @@ func TestRunIssueNoLogData(t *testing.T) {
 
 func TestRunIssuePackagesRecentLogs(t *testing.T) {
 	logs := map[string]string{}
-	for i := 1; i <= issueLogs+2; i++ {
+	for i := 1; i <= report.IssueLogs+2; i++ {
 		logs[fmt.Sprintf("2026-01-0%dT10-00-00_1.log", i)] = "some log data\n"
 	}
 	a, dir := issueApp(t, logs)
@@ -80,7 +81,7 @@ func TestRunIssuePackagesRecentLogs(t *testing.T) {
 		t.Fatalf("expected exactly one issue zip in the working directory, found %d", len(entries))
 	}
 	want := map[string]bool{"about.txt": true}
-	for i := 3; i <= issueLogs+2; i++ { // the newest issueLogs, not this run's
+	for i := 3; i <= report.IssueLogs+2; i++ { // the newest report.IssueLogs, not this run's
 		want[fmt.Sprintf("logs/2026-01-0%dT10-00-00_1.log", i)] = true
 	}
 	if !reflect.DeepEqual(names, want) {
@@ -197,21 +198,6 @@ func TestRunIssueShipsScrubbedErrors(t *testing.T) {
 	}
 	if !strings.Contains(got, jsonPath(filepath.Join("$HOME", "Pictures", "IMG_1.HEIC"))) {
 		t.Errorf("errors.json lost the folder structure:\n%s", got)
-	}
-}
-
-func TestAddFileToZipMissingSource(t *testing.T) {
-	dir := t.TempDir()
-	zf, err := os.Create(filepath.Join(dir, "t.zip"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer zf.Close()
-	zw := zip.NewWriter(zf)
-	defer zw.Close()
-
-	if err := addFileToZip(zw, filepath.Join(dir, "does-not-exist"), "entry", ""); err == nil {
-		t.Error("addFileToZip must fail when the source file doesn't exist")
 	}
 }
 
