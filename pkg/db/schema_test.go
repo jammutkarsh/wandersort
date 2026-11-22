@@ -12,9 +12,9 @@ import (
 func TestSchemaOneMetadataRowPerFile(t *testing.T) {
 	d := dbtest.New(t)
 	dbtest.SeedFile(t, d, 1, "/src", "a.jpg", 1)
-	dbtest.SeedHash(t, d, 1, "blake3:aa")
+	dbtest.SeedHash(t, d, 1, "md5:aa")
 	if _, err := d.SQL.ExecContext(context.Background(),
-		`INSERT INTO file_metadata (file_hash, file_id) VALUES ('blake3:bb', 1)`); err == nil {
+		`INSERT INTO file_metadata (file_hash, file_id) VALUES ('md5:bb', 1)`); err == nil {
 		t.Error("a second metadata row for one file was accepted")
 	}
 }

@@ -30,7 +30,7 @@ func TestFailures(t *testing.T) {
 	// SD card: two changed files, one gone
 	for id, name := range map[int64]string{1: "IMG_1.JPG", 2: "IMG_2.JPG", 3: "IMG_3.JPG"} {
 		dbtest.SeedFile(t, d, id, "/Volumes/SD/DCIM", name, 100)
-		dbtest.SeedHash(t, d, id, "blake3:"+name)
+		dbtest.SeedHash(t, d, id, "md5:"+name)
 		dbtest.SeedEntry(t, d, id, "/Volumes/SD/DCIM/"+name, "2024/01_January/02/"+name)
 	}
 	seedError(t, d, 1, db.StageTransfer, "copy", db.KindChecksumMismatch)
@@ -42,10 +42,10 @@ func TestFailures(t *testing.T) {
 	dbtest.SeedFile(t, d, 5, "/home/<user>/Pictures", "later.HEIC", 50)
 	// not failures: a copied file and a duplicate that was never planned
 	dbtest.SeedFile(t, d, 6, "/Volumes/SD/DCIM", "ok.JPG", 100)
-	dbtest.SeedHash(t, d, 6, "blake3:ok")
+	dbtest.SeedHash(t, d, 6, "md5:ok")
 	dbtest.SeedPlaced(t, d, 6)
 	dbtest.SeedFile(t, d, 7, "/Volumes/SD/DCIM", "dup.JPG", 100)
-	dbtest.SeedHash(t, d, 7, "blake3:IMG_1.JPG")
+	dbtest.SeedHash(t, d, 7, "md5:IMG_1.JPG")
 
 	r, err := Failures(ctx, d.SQL)
 	if err != nil {

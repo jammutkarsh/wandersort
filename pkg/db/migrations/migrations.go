@@ -25,7 +25,7 @@ type Migration struct {
 
 // schemas is the ordered list of migrations. Append new migrations at the end;
 // never reorder or mutate existing entries
-var schemas = []Migration{schema001, schema002, schema003, schema004}
+var schemas = []Migration{schema001, schema002, schema003, schema004, schema005}
 
 // ErrNewerSchema means a newer WanderSort wrote this database.
 var ErrNewerSchema = errors.New("this library is from a newer version; update to open it")

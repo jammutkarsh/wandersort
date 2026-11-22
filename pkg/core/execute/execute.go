@@ -138,20 +138,20 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 type pendingRow struct {
 	SourcePath string `db:"source_path"`
 	TargetPath string `db:"target_path"`
-	FileHash   string `db:"file_hash"`
+	FileSHA256 string `db:"file_sha256"`
 	ID         int64  `db:"id"`
 	FileID     int64  `db:"file_id"`
 	Size       int64  `db:"file_size"`
 }
 
 func (r pendingRow) scanned() scanned {
-	return scanned{hash: r.FileHash, size: r.Size}
+	return scanned{hash: r.FileSHA256, size: r.Size}
 }
 
 func loadPending(ctx context.Context, q sqlx.QueryerContext) ([]pendingRow, error) {
 	var rows []pendingRow
 	if err := sqlx.SelectContext(ctx, q, &rows,
-		`SELECT ve.id, ve.file_id, ve.source_path, ve.target_path, COALESCE(fm.file_hash, '') AS file_hash,
+		`SELECT ve.id, ve.file_id, ve.source_path, ve.target_path, COALESCE(fm.file_sha256, '') AS file_sha256,
 			fr.file_size
 		FROM virtual_fs_entries ve JOIN file_registry fr ON fr.id = ve.file_id
 		LEFT JOIN file_metadata fm ON fm.file_id = ve.file_id

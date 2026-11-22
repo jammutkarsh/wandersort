@@ -85,13 +85,13 @@ func Run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 		Dir    string `db:"file_dir"`
 		Name   string `db:"file_name"`
 		Size   int64  `db:"file_size"`
-		Hash   string `db:"file_hash"`
+		Hash   string `db:"file_sha256"`
 	}
 	// placed rows only: an unplaced file lives at its source, where it may
 	// legitimately change
 	if err := database.SQL.SelectContext(ctx, &rows, `
 		SELECT fr.id AS file_id, fr.file_dir, fr.file_name, fr.file_size,
-			COALESCE(fm.file_hash, '') AS file_hash
+			COALESCE(fm.file_sha256, '') AS file_sha256
 		FROM file_registry fr LEFT JOIN file_metadata fm ON fm.file_id = fr.id
 		WHERE fr.placed = 1 ORDER BY fr.id`); err != nil {
 		return Report{}, fmt.Errorf("load placed files: %w", err)

@@ -292,7 +292,7 @@ func TestScanner(t *testing.T) {
 				t.Error("vanished file was not hard-deleted by the sweep")
 			}
 			var metaCount int
-			if err := d.SQL.Get(&metaCount, `SELECT COUNT(*) FROM file_metadata WHERE file_hash = 'hash-delete.jpg'`); err != nil {
+			if err := d.SQL.Get(&metaCount, `SELECT COUNT(*) FROM file_metadata WHERE file_sha256 = 'hash-delete.jpg'`); err != nil {
 				t.Fatal(err)
 			}
 			if metaCount != 0 {
