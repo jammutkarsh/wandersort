@@ -4,8 +4,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/jammutkarsh/wandersort/pkg/explain"
 )
 
 // SettingRow is one line of the settings list: what it is, its value, and how to change it.
@@ -171,7 +169,7 @@ func (m SettingsModel) View() string {
 	b.WriteString("\n")
 	switch {
 	case m.err != nil:
-		b.WriteString(row(Bad.Render("✗ ")+Text.Render(explain.Error(m.err)), "", m.w) + "\n")
+		b.WriteString(errorLines(Bad.Render("✗ ")+Text.Render(ErrorText(m.err)), m.w) + "\n")
 	case m.saved:
 		b.WriteString(row(OK.Render("✓ ")+Text.Render("Saved. Files not copied yet now follow it."), "", m.w) + "\n")
 	case m.note != "":

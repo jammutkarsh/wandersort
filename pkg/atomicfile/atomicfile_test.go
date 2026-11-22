@@ -34,7 +34,7 @@ func TestCopyNeverReplacesDest(t *testing.T) {
 	write(t, src, "new")
 	write(t, dest, "old")
 
-	if _, err := Copy(src, dest, nil, nil); !errors.Is(err, fs.ErrExist) {
+	if _, err := Copy(t.Context(), src, dest, nil, nil); !errors.Is(err, fs.ErrExist) {
 		t.Fatalf("err = %v, want fs.ErrExist", err)
 	}
 	if got := read(t, dest); got != "old" {
@@ -51,7 +51,7 @@ func TestCopyCreatesDest(t *testing.T) {
 	src, dest := filepath.Join(dir, "src"), filepath.Join(dir, "sub", "dest")
 	write(t, src, "hello")
 
-	n, err := Copy(src, dest, nil, nil)
+	n, err := Copy(t.Context(), src, dest, nil, nil)
 	if err != nil || n != 5 {
 		t.Fatalf("n, err = %d, %v", n, err)
 	}
@@ -68,7 +68,7 @@ func TestCopyCheckReadsTheTempFile(t *testing.T) {
 	write(t, src, "hello")
 
 	var read string
-	if _, err := Copy(src, dest, nil, func(tmp string) error {
+	if _, err := Copy(t.Context(), src, dest, nil, func(tmp string) error {
 		b, err := os.ReadFile(tmp)
 		read = string(b)
 		if _, statErr := os.Stat(dest); !errors.Is(statErr, fs.ErrNotExist) {
@@ -92,7 +92,7 @@ func TestCopyCheckFailureLeavesNoDest(t *testing.T) {
 
 	var seen strings.Builder
 	errBad := errors.New("bad")
-	if _, err := Copy(src, dest, &seen, func(string) error { return errBad }); !errors.Is(err, errBad) {
+	if _, err := Copy(t.Context(), src, dest, &seen, func(string) error { return errBad }); !errors.Is(err, errBad) {
 		t.Fatalf("err = %v, want the check's error", err)
 	}
 	if seen.String() != "hello" {
@@ -105,7 +105,7 @@ func TestCopyCheckFailureLeavesNoDest(t *testing.T) {
 
 // Stopping mid-file ends the copy at the next chunk, landing nothing and
 // leaving no temp file.
-func TestCopyContextStopsMidFile(t *testing.T) {
+func TestCopyStopsMidFile(t *testing.T) {
 	dir := t.TempDir()
 	src, dest := filepath.Join(dir, "src"), filepath.Join(dir, "lib", "dest")
 	write(t, src, strings.Repeat("x", 3*copyBufferSize))
@@ -115,7 +115,7 @@ func TestCopyContextStopsMidFile(t *testing.T) {
 	copied := 0
 	stopAtFirstChunk := writerFunc(func(p []byte) (int, error) { copied += len(p); cancel(); return len(p), nil })
 	checked := false
-	_, err := CopyContext(ctx, src, dest, stopAtFirstChunk, func(string) error { checked = true; return nil })
+	_, err := Copy(ctx, src, dest, stopAtFirstChunk, func(string) error { checked = true; return nil })
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -146,7 +146,7 @@ func TestCopyKeepsModeAndMtime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Copy(src, dest, nil, nil); err != nil {
+	if _, err := Copy(t.Context(), src, dest, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(dest)

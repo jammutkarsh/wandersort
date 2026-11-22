@@ -69,7 +69,7 @@ func (a *app) runCheck(cmd *cobra.Command) error {
 
 func (a *app) check(full bool, res *checkResult) error {
 	if !a.LibraryExists() {
-		return fmt.Errorf("no library at %s; run 'wandersort add' first", a.OutputDir())
+		return a.noLibrary()
 	}
 
 	ctx, cancel := interruptible()

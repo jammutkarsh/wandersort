@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,8 +10,10 @@ import (
 
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/library"
+	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
+	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -68,6 +71,21 @@ func TestOpenExplainsABusyLibrary(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already has this library open") || ExitCode(err) != exitBusy {
 		t.Errorf("Open error = %q (exit %d), want the already-open message and exit %d", err.Error(), ExitCode(err), exitBusy)
+	}
+}
+
+// A folder holding only a library's backup is restored, never added to.
+func TestNoLibraryNamesTheBackup(t *testing.T) {
+	dir := t.TempDir()
+	a := &app{Session: library.New(&config.Configuration{AppDBPath: filepath.Join(dir, ".wandersort.db")}, logger.NewNoopLogger(), nil)}
+	if err := a.noLibrary(); errors.Is(err, config.ErrBackupOnly) || !strings.Contains(err.Error(), "wandersort add") {
+		t.Errorf("empty folder = %v, want to be told to add", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, db.BackupFileName), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := withRestoreHint(a.noLibrary()); !errors.Is(err, config.ErrBackupOnly) || !strings.Contains(err.Error(), tui.RestoreHint) {
+		t.Errorf("backup only = %v, want the restore command", err)
 	}
 }
 

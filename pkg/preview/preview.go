@@ -226,7 +226,7 @@ func copyFiles(ctx context.Context, srcPaths []string, destDir string, maxBytes 
 			break
 		}
 		dest := filepath.Join(destDir, filepath.Base(src))
-		n, err := atomicfile.Copy(src, dest, nil, nil)
+		n, err := atomicfile.Copy(ctx, src, dest, nil, nil)
 		if errors.Is(err, fs.ErrExist) {
 			continue // two sources share a basename; a preview needs only one
 		}

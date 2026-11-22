@@ -2,11 +2,14 @@ package exiftool
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -17,7 +20,7 @@ import (
 const leashHelperEnv = "WANDERSORT_LEASH_HELPER_EXIFTOOL"
 
 // TestLeashHelper is the process TestExiftoolEndsWithAKilledProcess kills: it
-// starts one exiftool, prints its PID and waits.
+// starts one exiftool, prints the PIDs it runs as once it answers, and waits.
 func TestLeashHelper(t *testing.T) {
 	path := os.Getenv(leashHelperEnv)
 	if path == "" {
@@ -27,7 +30,14 @@ func TestLeashHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println(e.cmd.Process.Pid)
+	if _, err := e.Extract(t.Context(), "no-such-file.jpg"); !errors.Is(err, ErrUnreadable) {
+		t.Fatalf("Extract on a missing file = %v, want ErrUnreadable", err)
+	}
+	var pids []string
+	for _, pid := range processTree(t, e.cmd.Process.Pid) {
+		pids = append(pids, strconv.Itoa(pid))
+	}
+	fmt.Println(strings.Join(pids, " "))
 	time.Sleep(time.Minute)
 	e.Close()
 }
@@ -47,26 +57,32 @@ func TestExiftoolEndsWithAKilledProcess(t *testing.T) {
 	defer helper.Process.Kill()
 	lines := bufio.NewScanner(stdout)
 	if !lines.Scan() {
-		t.Fatalf("the helper printed no PID: %v", lines.Err())
+		t.Fatalf("the helper printed no PIDs: %v", lines.Err())
 	}
-	pid, err := strconv.Atoi(lines.Text())
-	if err != nil {
-		t.Fatalf("the helper printed %q, want a PID", lines.Text())
-	}
-	if !alive(pid) {
-		t.Fatal("exiftool is not running before its process is killed")
+	var pids []int
+	for _, field := range strings.Fields(lines.Text()) {
+		pid, err := strconv.Atoi(field)
+		if err != nil {
+			t.Fatalf("the helper printed %q, want PIDs", lines.Text())
+		}
+		if !alive(pid) {
+			t.Fatalf("exiftool process %d is not running before its parent is killed", pid)
+		}
+		pids = append(pids, pid)
 	}
 
 	if err := helper.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
 	helper.Wait()
-	for deadline := time.Now().Add(10 * time.Second); alive(pid); time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(10 * time.Second); slices.ContainsFunc(pids, alive); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			if p, err := os.FindProcess(pid); err == nil {
-				p.Kill()
+			for _, pid := range pids {
+				if p, err := os.FindProcess(pid); err == nil {
+					p.Kill()
+				}
 			}
-			t.Fatal("exiftool outlived the killed process that started it")
+			t.Fatalf("exiftool (processes %v) outlived the killed process that started it", pids)
 		}
 	}
 }

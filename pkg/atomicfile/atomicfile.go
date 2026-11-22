@@ -31,13 +31,8 @@ const CopyPrefix = ".copy-"
 // error leaves dest untouched. Where the OS allows, the temp file's bytes are
 // out of the page cache by then, so check reading it reads the drive.
 // Keeps src's permission bits (minus execute) and mtime. Returns bytes written.
-func Copy(src, dest string, tee io.Writer, check func(tmp string) error) (int64, error) {
-	return CopyContext(context.Background(), src, dest, tee, check)
-}
-
-// CopyContext is Copy that stops between chunks once ctx ends, landing nothing
-// and removing the temp file.
-func CopyContext(ctx context.Context, src, dest string, tee io.Writer, check func(tmp string) error) (int64, error) {
+// It stops between chunks once ctx ends, landing nothing and removing the temp file.
+func Copy(ctx context.Context, src, dest string, tee io.Writer, check func(tmp string) error) (int64, error) {
 	if err := MkdirAll(filepath.Dir(dest)); err != nil {
 		return 0, fmt.Errorf("create dest dir %s: %w", filepath.Dir(dest), err)
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jammutkarsh/wandersort/pkg/atomicfile"
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/location"
@@ -71,7 +72,7 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 	}
 	// logged: nothing else reports progress during decompression
 	log.Info("Unpacking locationDB…", logger.UserKey, true)
-	if err := decompressZstd(archivePath, dbPath); err != nil {
+	if err := decompressZstd(ctx, archivePath, dbPath); err != nil {
 		os.Remove(archivePath)
 		return false, fmt.Errorf("decompress %s: %w", archiveName, err)
 	}
@@ -84,8 +85,8 @@ func downloadLocationDB(ctx context.Context, log logger.Logger, dbPath string, o
 }
 
 // decompressZstd streams archivePath into dest via a temp file and rename, so
-// a crash never leaves a truncated database.
-func decompressZstd(archivePath, dest string) error {
+// a crash never leaves a truncated database. It stops once ctx ends.
+func decompressZstd(ctx context.Context, archivePath, dest string) error {
 	zr, closeZr, err := openZstd(archivePath)
 	if err != nil {
 		return err
@@ -102,7 +103,7 @@ func decompressZstd(archivePath, dest string) error {
 		os.Remove(tmpName) // no-op if Rename succeeded
 	}()
 
-	if _, err := io.Copy(tmp, zr); err != nil {
+	if _, err := io.Copy(tmp, atomicfile.ContextReader{Ctx: ctx, R: zr}); err != nil {
 		return fmt.Errorf("write %s: %w", tmpName, err)
 	}
 	if err := tmp.Close(); err != nil {
