@@ -163,6 +163,10 @@ func checkBackup(ctx context.Context, b *sql.DB) error {
 	return nil
 }
 
+// ErrOldBackup means a backup holds BLAKE3 hashes (see ErrOldHashes). The
+// library it was to replace is as it was.
+var ErrOldBackup = errors.New("the backup was made by an older version and can't be read; nothing was changed")
+
 // Damaged reports whether err is SQLite finding a database that is not one, or
 // whose pages are corrupt: its backup is what helps.
 func Damaged(err error) bool {
@@ -194,7 +198,9 @@ func Restore(ctx context.Context, backup, live string) error {
 	}
 	err = checkBackup(ctx, src)
 	if err == nil {
-		err = refuseOldHashes(ctx, src)
+		if err = refuseOldHashes(ctx, src); errors.Is(err, ErrOldHashes) {
+			err = ErrOldBackup
+		}
 	}
 	src.Close()
 	if err != nil {

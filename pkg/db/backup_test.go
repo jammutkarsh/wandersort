@@ -617,8 +617,9 @@ func TestRestoreRefusesABackupWithOldHashes(t *testing.T) {
 	if err := compressFile(ctx, newHashedLibrary(t, "blake3:aa", 1), backup); err != nil {
 		t.Fatal(err)
 	}
-	if err := Restore(ctx, backup, live); !errors.Is(err, ErrOldHashes) {
-		t.Fatalf("Restore = %v, want ErrOldHashes", err)
+	// not ErrOldHashes: the library itself is fine, and is told nothing else
+	if err := Restore(ctx, backup, live); !errors.Is(err, ErrOldBackup) || errors.Is(err, ErrOldHashes) {
+		t.Fatalf("Restore = %v, want ErrOldBackup alone", err)
 	}
 	d, err := New(ctx, live, logger.NewNoopLogger())
 	if err != nil {
@@ -628,5 +629,42 @@ func TestRestoreRefusesABackupWithOldHashes(t *testing.T) {
 	var n int
 	if err := d.SQL.Get(&n, `SELECT count(*) FROM user_labels`); err != nil || n != 1 {
 		t.Errorf("user_labels = %d, %v; want 1: a refused restore changes nothing", n, err)
+	}
+}
+
+// A library from an earlier release with files recorded but none read yet has
+// no hash to refuse: it opens and is upgraded.
+func TestOpenUpgradesALibraryWithNothingHashed(t *testing.T) {
+	ctx := context.Background()
+	live := newHashedLibrary(t, "md5:aa", 0)
+	old, err := sql.Open("sqlite", live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`DELETE FROM file_metadata`,
+		`ALTER TABLE file_metadata DROP COLUMN file_sha256`,
+		`DELETE FROM schema_migrations WHERE version > 4`,
+	} {
+		if _, err := old.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old.Close()
+
+	d, err := New(ctx, live, logger.NewNoopLogger())
+	if err != nil {
+		t.Fatalf("open = %v, want it upgraded", err)
+	}
+	defer d.Close()
+	var files, hashed int
+	if err := d.SQL.Get(&files, `SELECT count(*) FROM file_registry`); err != nil || files != 1 {
+		t.Errorf("files = %d, %v; want the recorded one", files, err)
+	}
+	if err := d.SQL.Get(&hashed, `SELECT count(file_sha256) FROM file_metadata`); err != nil || hashed != 0 {
+		t.Errorf("hashed = %d, %v; want the new column, empty", hashed, err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(live), PreMigrationBackupFileName)); err != nil {
+		t.Errorf("no backup before the upgrade: %v", err)
 	}
 }
