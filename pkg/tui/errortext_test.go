@@ -53,3 +53,25 @@ func checkScreensShow(t *testing.T, err error, hint string) {
 		}
 	}
 }
+
+// A library that won't open meets people at start-up, and the Add tab is all
+// they can see of it: what to do about it stays until something replaces it,
+// where a passing warning goes by itself.
+func TestHomeKeepsTheCommandThatHelps(t *testing.T) {
+	for _, tt := range []struct {
+		err  error
+		want bool
+	}{
+		{fmt.Errorf("app db: %w", db.ErrOldHashes), true},
+		{fmt.Errorf("/photos: %w", config.ErrBackupOnly), true},
+		{fmt.Errorf("no such folder"), false},
+	} {
+		home := NewHomeModel(HomeConfig{})
+		if cmd := home.show(tt.err, ""); (cmd == nil) != tt.want {
+			t.Errorf("%v: timer set: %v, want %v", tt.err, cmd != nil, !tt.want)
+		}
+		if home.show(nil, "a note"); home.err != nil {
+			t.Errorf("%v stays after another message", tt.err)
+		}
+	}
+}

@@ -15,7 +15,7 @@ const RestoreHint = "Run 'wandersort admin db --restore -o <its folder>' to put 
 
 // NewLibraryHint is the command that makes a new library of the photos in one
 // this version can't open.
-const NewLibraryHint = "Run 'wandersort add -o <new folder> -p <its folder>' to start a new library from its photos."
+const NewLibraryHint = "Run 'wandersort add -o <new folder> -p <its folder>,<folders not copied yet>' to start a new library from its photos."
 
 // NeedsRestore reports whether err is a library only its backup helps.
 func NeedsRestore(err error) bool { return errors.Is(err, config.ErrBackupOnly) || db.Damaged(err) }
@@ -36,7 +36,7 @@ func Hint(err error) string {
 func ErrorText(err error) string {
 	text := explain.Error(err)
 	if hint := Hint(err); hint != "" {
-		text += " " + hint
+		text += "\n" + hint // its own line, so no flag is split at its hyphen
 	}
 	return text
 }
