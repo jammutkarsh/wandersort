@@ -54,9 +54,9 @@ func TestReviewEditsRefusedBesideWork(t *testing.T) {
 	}
 
 	// a discard, reset or switch holds the library while it removes the draft
-	release, ok := s.Work.HoldLibrary()
-	if !ok {
-		t.Fatal("could not hold the library")
+	release, err := s.Work.HoldLibrary()
+	if err != nil {
+		t.Fatalf("could not hold the library: %v", err)
 	}
 	_, err = fresh.Undo()
 	release()
@@ -254,11 +254,11 @@ func TestReviewWaitsForPlacesOffTheLibrary(t *testing.T) {
 	<-waiting
 	held := make(chan bool, 1)
 	go func() {
-		release, ok := s.Work.HoldLibrary()
-		if ok {
+		release, err := s.Work.HoldLibrary()
+		if err == nil {
 			release()
 		}
-		held <- ok
+		held <- err == nil
 	}()
 	select {
 	case ok := <-held:

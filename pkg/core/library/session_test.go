@@ -582,15 +582,14 @@ func TestSaveSettingsRefusedWhileTheLibraryIsHeld(t *testing.T) {
 	}
 	stored := s.Settings()
 
-	release, ok := s.Work.HoldLibrary()
-	if !ok {
-		t.Fatal("library not held")
+	release, err := s.Work.HoldLibrary()
+	if err != nil {
+		t.Fatalf("library not held: %v", err)
 	}
 	settings := s.Settings()
 	settings.Rules = []string{"date"}
 	saved := make(chan error, 1)
 	go func() { saved <- s.SaveSettings(ctx, settings, noPlaces) }()
-	var err error
 	select {
 	case err = <-saved:
 		release()
@@ -635,8 +634,10 @@ func TestWorkGroupJobs(t *testing.T) {
 	if _, err := g.StartRewrite(); !errors.Is(err, ErrBusy) {
 		t.Errorf("re-plan beside a scan = %v, want ErrBusy", err)
 	}
-	if _, ok := g.HoldLibrary(); ok {
+	if _, err := g.HoldLibrary(); err == nil {
 		t.Error("library held for a switch while a scan ran")
+	} else if busy, ok := errors.AsType[*BusyError](err); !ok || busy.Job != JobScan {
+		t.Errorf("hold beside a scan = %v, want a BusyError naming the scan", err)
 	}
 	done()
 
@@ -725,9 +726,9 @@ func TestWorkGroupHoldLibrary(t *testing.T) {
 	}
 	held := make(chan func())
 	go func() {
-		release, ok := g.HoldLibrary()
-		if !ok {
-			t.Error("hold refused beside a short read")
+		release, err := g.HoldLibrary()
+		if err != nil {
+			t.Errorf("hold refused beside a short read: %v", err)
 		}
 		held <- release
 	}()
@@ -775,7 +776,7 @@ func TestWorkGroupHoldLibrary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if release, ok := g.HoldLibrary(); ok {
+	if release, err := g.HoldLibrary(); err == nil {
 		release()
 		t.Error("library held while a copy ran on it")
 	}

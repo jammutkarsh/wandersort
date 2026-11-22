@@ -113,16 +113,16 @@ func (s *Session) saveFailurePage(failures report.FailureReport, outputDir strin
 
 // Discard takes every file not yet copied off the list (see Discard), opening
 // the library first, holding it from all other work; it refuses while a job
-// or re-plan runs (ErrBusy).
+// or re-plan runs (*BusyError, ErrReplanning).
 func (s *Session) Discard(ctx context.Context) (int, error) {
 	stop, ok := s.Work.Start()
 	if !ok {
 		return 0, ErrClosing
 	}
 	defer stop()
-	release, ok := s.Work.HoldLibrary()
-	if !ok {
-		return 0, ErrBusy
+	release, err := s.Work.HoldLibrary()
+	if err != nil {
+		return 0, err
 	}
 	defer release()
 	if err := s.openExisting(ctx); err != nil {
@@ -135,16 +135,16 @@ func (s *Session) Discard(ctx context.Context) (int, error) {
 
 // Reset empties the library (see reset), opening it first, and clears the
 // preview copies, holding the library from all other work; it refuses while a
-// job or re-plan runs (ErrBusy).
+// job or re-plan runs (*BusyError, ErrReplanning).
 func (s *Session) Reset(ctx context.Context) error {
 	stop, ok := s.Work.Start()
 	if !ok {
 		return ErrClosing
 	}
 	defer stop()
-	release, ok := s.Work.HoldLibrary()
-	if !ok {
-		return ErrBusy
+	release, err := s.Work.HoldLibrary()
+	if err != nil {
+		return err
 	}
 	defer release()
 	if err := s.openExisting(ctx); err != nil {
