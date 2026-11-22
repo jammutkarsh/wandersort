@@ -353,11 +353,11 @@ func run(ctx context.Context, database *db.DB, log logger.Logger, outputDir stri
 	return rep, nil
 }
 
-// cleanupPlacedDuplicates hard-deletes every registry row whose hash matches a
+// cleanupPlacedDuplicates hard-deletes every registry row whose hashes match a
 // placed file (election losers, re-scanned copies). Reads placed fresh each
 // run, so a stopped run is picked up next time.
 func cleanupPlacedDuplicates(ctx context.Context, database *db.DB, outputDir string) error {
-	// every metadata row sharing a placed file's hash, read up front as a fixed
+	// every metadata row sharing a placed file's hashes, read up front as a fixed
 	// id list, with the placed file's path to check first
 	var rows []struct {
 		ID          int64  `db:"id"`
@@ -370,7 +370,7 @@ func cleanupPlacedDuplicates(ctx context.Context, database *db.DB, outputDir str
 			fr2.file_name AS placed_name, fr2.file_size AS placed_size
 		FROM file_metadata fm
 		JOIN file_registry fr ON fr.id = fm.file_id
-		JOIN file_metadata fm2 ON fm2.file_hash = fm.file_hash
+		JOIN file_metadata fm2 ON fm2.file_hash = fm.file_hash AND fm2.file_sha256 = fm.file_sha256
 		JOIN file_registry fr2 ON fr2.id = fm2.file_id AND fr2.placed = 1
 		WHERE fr.placed = 0`); err != nil {
 		return fmt.Errorf("find placed duplicates: %w", err)

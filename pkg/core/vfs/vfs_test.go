@@ -1045,3 +1045,28 @@ func TestProposeWritesSettingsWithThePlan(t *testing.T) {
 		t.Errorf("after a failed proposal: rules %v, target %q; want %v, %q", settings.Rules, target, oldSettings.Rules, oldTarget)
 	}
 }
+
+// Files sharing only an MD5 are each planned, beside a placed one too.
+func TestMD5TwinsAreEachPlanned(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	meta := metaWith("2024:06:03 14:00:00", 15.5439, 73.7553, 3024, 4032)
+	placed := h.addFile(t, "2024/IMG_0001.HEIC", "IMAGE", meta)
+	h.addFile(t, "card/IMG_0002.HEIC", "IMAGE", meta)
+	h.addFile(t, "card/IMG_0003.HEIC", "IMAGE", meta)
+	if _, err := h.d.SQL.ExecContext(ctx,
+		`UPDATE file_metadata SET file_hash = 'md5:shared', file_sha256 = 'sha256:' || file_id`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.d.SQL.ExecContext(ctx, `UPDATE file_registry SET placed = 1 WHERE id = ?`, placed); err != nil {
+		t.Fatal(err)
+	}
+	v := &VFS{db: h.d, log: logger.NewNoopLogger(), cfg: DefaultConfig()}
+	masters, err := v.loadMasters(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := electedNames(masters); !slices.Equal(got, []string{"IMG_0002.HEIC", "IMG_0003.HEIC"}) {
+		t.Errorf("masters = %v, want both unplaced twins", got)
+	}
+}

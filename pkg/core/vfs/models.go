@@ -156,6 +156,7 @@ type masterFile struct {
 	FileDir           string   `db:"file_dir"`
 	FileName          string   `db:"file_name"`
 	FileHash          string   `db:"file_hash"`
+	FileSHA256        string   `db:"file_sha256"`
 	MediaType         string   `db:"media_type"`
 	Extension         string   `db:"file_extension"`
 	ModifiedAt        string   `db:"file_modified_at"`
@@ -191,6 +192,10 @@ type masterFile struct {
 	// day holds files from somewhere else too. See assignTargetPaths step 4.
 	keepLocationFolder bool
 }
+
+// contentID names a file's bytes by both hashes: files sharing only an MD5 are
+// two files.
+func (m *masterFile) contentID() string { return m.FileHash + m.FileSHA256 }
 
 // segment is one folder of a planned directory: its name, the level that
 // made it, and what it holds (see boundsFor). The location segment is where

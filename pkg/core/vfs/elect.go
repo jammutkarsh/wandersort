@@ -37,8 +37,8 @@ const (
 	penaltyDuplicateTag = -3
 )
 
-// electMasters keeps one file per content hash and reports how many hashes
-// had duplicates. rows must be in (file_dir, file_name) order, which makes ties
+// electMasters keeps one file per content and reports how many contents had
+// duplicates. rows must be in (file_dir, file_name) order, which makes ties
 // deterministic. Groups holding a placed file are dropped earlier, in SQL.
 func electMasters(rows []masterFile) (masters []masterFile, duplicateGroups int) {
 	type candidate struct {
@@ -49,17 +49,17 @@ func electMasters(rows []masterFile) (masters []masterFile, duplicateGroups int)
 	}
 	best := make(map[string]candidate, len(rows))
 	for i := range rows {
-		score := perFileScore(rows[i].absPath)
+		id, score := rows[i].contentID(), perFileScore(rows[i].absPath)
 		pathLen := len(rows[i].FileDir) + len(rows[i].FileName)
-		cur, seen := best[rows[i].FileHash]
+		cur, seen := best[id]
 		switch {
 		case !seen:
-			best[rows[i].FileHash] = candidate{idx: i, score: score, pathLen: pathLen, copies: 1}
+			best[id] = candidate{idx: i, score: score, pathLen: pathLen, copies: 1}
 		case score > cur.score || (score == cur.score && pathLen < cur.pathLen):
-			best[rows[i].FileHash] = candidate{idx: i, score: score, pathLen: pathLen, copies: cur.copies + 1}
+			best[id] = candidate{idx: i, score: score, pathLen: pathLen, copies: cur.copies + 1}
 		default:
 			cur.copies++
-			best[rows[i].FileHash] = cur
+			best[id] = cur
 		}
 	}
 

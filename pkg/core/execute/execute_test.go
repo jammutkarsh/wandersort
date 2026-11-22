@@ -1050,3 +1050,24 @@ func TestRunStopsWhenTheLibraryIsGone(t *testing.T) {
 		t.Errorf("second file = %q, want it left pending", status)
 	}
 }
+
+// Cleanup forgets duplicates only: a file sharing just its MD5 with a placed
+// one is not in the library.
+func TestRunCleanupKeepsMD5Twins(t *testing.T) {
+	d := dbtest.New(t)
+	out := libraryDir(t)
+	seedApproved(t, d, 1, "A.jpg", "hello")
+	dbtest.SeedFile(t, d, 2, "/card", "B.jpg", 5)
+	dbtest.SeedHash(t, d, 2, "x")
+	if _, err := d.SQL.ExecContext(context.Background(),
+		`UPDATE file_metadata SET file_hash = (SELECT file_hash FROM file_metadata WHERE file_id = 1) WHERE file_id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	var kept int
+	if err := d.SQL.Get(&kept, `SELECT count(*) FROM file_registry WHERE id = 2`); err != nil || kept != 1 {
+		t.Errorf("kept = %d, %v; want the MD5 twin still recorded", kept, err)
+	}
+}
