@@ -243,7 +243,8 @@ type Outcome struct {
 }
 
 // Apply runs one edit and journals it (synced) before returning. A refused edit
-// changes nothing. A failed journal write undoes the edit.
+// changes nothing. After a failed journal write the draft is what the journal
+// holds (see reload), with or without the edit.
 func (d *Draft) Apply(e Edit) (Outcome, error) {
 	tree, out, err := applyEdit(d.tree, e)
 	if err != nil {
@@ -251,8 +252,7 @@ func (d *Draft) Apply(e Edit) (Outcome, error) {
 	}
 	e.Seq, e.Plan = len(d.edits)+1, d.plan
 	if err := appendDraft(d.dir, e); err != nil {
-		d.tree = replay(cloneTree(d.base), d.edits)
-		return Outcome{}, err
+		return Outcome{}, d.reload(err)
 	}
 	sortTree(tree)
 	d.tree, d.edits = tree, append(d.edits, e)
@@ -260,19 +260,41 @@ func (d *Draft) Apply(e Edit) (Outcome, error) {
 }
 
 // Undo drops the last journalled edit and rebuilds the tree from base. Returns
-// the edit undone.
+// the edit undone. After a failed journal write the draft is what the journal
+// holds (see reload).
 func (d *Draft) Undo() (Edit, error) {
 	n := len(d.edits)
 	if n == 0 {
 		return Edit{}, ErrNothingToUndo
 	}
 	if err := writeDraft(d.dir, d.edits[:n-1]); err != nil {
-		return Edit{}, err
+		return Edit{}, d.reload(err)
 	}
 	last := d.edits[n-1]
 	d.edits = d.edits[:n-1]
 	d.tree = replay(cloneTree(d.base), d.edits)
 	return last, nil
+}
+
+// reload makes the draft what the journal holds after writeErr: a line may
+// have landed before its sync failed, or a rename before its folder's sync
+// did, and a copy applies what the journal holds, not what the screen shows.
+// Unreadable, the draft keeps its edits from before the write. Returns
+// writeErr, joined with the read's error.
+func (d *Draft) reload(writeErr error) error {
+	journal, err := readDraft(d.dir)
+	if err != nil {
+		d.tree = replay(cloneTree(d.base), d.edits)
+		return errors.Join(writeErr, err)
+	}
+	var edits []Edit
+	for _, e := range journal {
+		if e.Plan == d.plan {
+			edits = append(edits, e)
+		}
+	}
+	d.edits, d.tree = edits, replay(cloneTree(d.base), edits)
+	return writeErr
 }
 
 // Reset throws every edit away and goes back to base.
