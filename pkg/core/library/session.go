@@ -637,17 +637,30 @@ func (g *WorkGroup) Start() (done func(), ok bool) {
 	return g.wg.Done, true
 }
 
-// StartOnLibrary is Start for work on the open library; the library can't be switched while it runs.
-func (g *WorkGroup) StartOnLibrary() (done func(), ok bool) {
-	stop, ok := g.Start()
-	if !ok {
-		return nil, false
+// StartOnLibrary is Start for a short read of the open library; the library
+// can't be switched while it runs. It refuses once shutdown began
+// (ErrClosing) and while a re-plan runs or waits (ErrReplanning), rather than
+// wait the re-plan out.
+func (g *WorkGroup) StartOnLibrary() (done func(), err error) {
+	g.mu.Lock()
+	switch {
+	case g.closed:
+		err = ErrClosing
+	case g.rewrites.Load() > 0:
+		err = ErrReplanning
 	}
+	if err != nil {
+		g.mu.Unlock()
+		return nil, err
+	}
+	g.wg.Add(1)
+	stop := g.wg.Done
+	g.mu.Unlock()
 	g.library.RLock()
 	return func() {
 		g.library.RUnlock()
 		stop()
-	}, true
+	}, nil
 }
 
 // StartRewrite registers work that replaces the library's whole plan: from

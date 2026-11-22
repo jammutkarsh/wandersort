@@ -193,9 +193,9 @@ type CopyPlan struct {
 func (s *Session) CopyPlan(ctx context.Context) (CopyPlan, error) {
 	ctx, cancel := s.bound(ctx)
 	defer cancel()
-	done, ok := s.Work.StartOnLibrary()
-	if !ok {
-		return CopyPlan{}, ErrClosing
+	done, err := s.Work.StartOnLibrary()
+	if err != nil {
+		return CopyPlan{}, err
 	}
 	defer done()
 	if err := s.openExisting(ctx); err != nil {
@@ -203,7 +203,6 @@ func (s *Session) CopyPlan(ctx context.Context) (CopyPlan, error) {
 	}
 	d, outputDir := s.DB(), s.OutputDir()
 	var p CopyPlan
-	var err error
 	if p.Files, p.Bytes, err = execute.Pending(ctx, d); err != nil {
 		return CopyPlan{}, err
 	}

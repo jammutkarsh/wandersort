@@ -61,9 +61,9 @@ func (s *Session) Review(ctx context.Context, places func(context.Context) (*loc
 		}
 	}
 
-	done, ok := s.Work.StartOnLibrary()
-	if !ok {
-		return nil, ErrClosing
+	done, err := s.Work.StartOnLibrary()
+	if err != nil {
+		return nil, err
 	}
 	defer done()
 	if err := s.openExisting(ctx); err != nil {
@@ -128,9 +128,9 @@ func (r *Review) Peek(ctx context.Context, node vfs.Node) (string, error) {
 
 // nodeFiles is node's files, read under the library.
 func (r *Review) nodeFiles(ctx context.Context, node vfs.Node) ([]string, error) {
-	done, ok := r.work.StartOnLibrary()
-	if !ok {
-		return nil, ErrClosing
+	done, err := r.work.StartOnLibrary()
+	if err != nil {
+		return nil, err
 	}
 	defer done()
 	d := r.s.DB()

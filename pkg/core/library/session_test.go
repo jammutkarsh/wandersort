@@ -438,17 +438,26 @@ func TestWorkGroupRewrite(t *testing.T) {
 
 	secondIn := make(chan func())
 	go func() { done, _ := enterSecond(); secondIn <- done }()
-	started := make(chan struct{})
+	// a read is refused, not queued: a re-plan may run for minutes
+	read := make(chan error, 1)
 	go func() {
-		done, _ := g.StartOnLibrary()
-		close(started)
-		done()
+		done, err := g.StartOnLibrary()
+		if done != nil {
+			done()
+		}
+		read <- err
 	}()
+	select {
+	case err := <-read:
+		if !errors.Is(err, ErrReplanning) {
+			t.Errorf("read during a rewrite = %v, want ErrReplanning", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a read waited for a rewrite instead of being refused")
+	}
 	select {
 	case <-secondIn:
 		t.Fatal("two rewrites ran at once")
-	case <-started:
-		t.Fatal("work started on a library whose plan is being rewritten")
 	case <-time.After(50 * time.Millisecond):
 	}
 	endFirst()
@@ -456,7 +465,6 @@ func TestWorkGroupRewrite(t *testing.T) {
 		t.Error("Rewriting cleared while a second rewrite was still to run")
 	}
 	(<-secondIn)()
-	<-started
 	if g.Rewriting() {
 		t.Error("Rewriting still set after the last rewrite ended")
 	}
@@ -720,9 +728,9 @@ func TestWorkGroupHoldLibrary(t *testing.T) {
 	var g WorkGroup
 	// a short read is waited out, not refused: a front end polling a copy
 	// plan must not make every switch look busy
-	reading, ok := g.StartOnLibrary()
-	if !ok {
-		t.Fatal("StartOnLibrary refused")
+	reading, err := g.StartOnLibrary()
+	if err != nil {
+		t.Fatalf("StartOnLibrary refused: %v", err)
 	}
 	held := make(chan func())
 	go func() {
