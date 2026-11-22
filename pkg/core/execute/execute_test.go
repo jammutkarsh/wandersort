@@ -17,6 +17,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/metadata"
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
@@ -43,6 +44,17 @@ func seedApproved(t *testing.T, d *db.DB, id int64, targetRel, srcContent string
 	dbtest.SeedEntry(t, d, id, src, targetRel)
 	dbtest.SeedHash(t, d, id, hashOf(srcContent))
 	return src
+}
+
+// libraryDir is a library folder holding its database file: a copy stops once
+// that file is gone.
+func libraryDir(t *testing.T) string {
+	t.Helper()
+	out := t.TempDir()
+	if err := os.WriteFile(config.DBPath(out), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func hashOf(content string) string {
@@ -78,7 +90,7 @@ func rowStatus(t *testing.T, d *db.DB, id int64) (status string, errText *string
 
 func TestRunCopiesApprovedFilesAndMarksDone(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	seedApproved(t, d, 1, "2024/A.jpg", "hello")
 	seedApproved(t, d, 2, "2024/B.jpg", "world!")
 
@@ -105,7 +117,7 @@ func TestRunCopiesApprovedFilesAndMarksDone(t *testing.T) {
 // (path.FromSourcePath) before touching the filesystem, not use it as-is.
 func TestRunCopiesForwardSlashSourcePath(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 
 	srcDir := filepath.Join(t.TempDir(), "nested", "dir")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
@@ -133,7 +145,7 @@ func TestRunCopiesForwardSlashSourcePath(t *testing.T) {
 
 func TestRunCopyNeverTouchesSource(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	src := seedApproved(t, d, 1, "A.jpg", "hello")
 
 	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil {
@@ -146,7 +158,7 @@ func TestRunCopyNeverTouchesSource(t *testing.T) {
 
 func TestRunDryRunTouchesNothing(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	src := seedApproved(t, d, 1, "A.jpg", "hello")
 
 	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{DryRun: true})
@@ -172,7 +184,7 @@ func TestRunDryRunTouchesNothing(t *testing.T) {
 
 func TestRunBacksUpPreRunPlan(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	seedApproved(t, d, 1, "A.jpg", "hello")
 
 	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil {
@@ -213,7 +225,7 @@ func TestRunBacksUpPreRunPlan(t *testing.T) {
 
 func TestRunRecordsErrorAndContinuesPastFailure(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	// row 1's source doesn't exist on disk; row 2 is real and must still run.
 	dbtest.SeedFile(t, d, 1, "/no/such/dir", "missing.jpg", 0)
 	dbtest.SeedEntry(t, d, 1, "/no/such/dir/missing.jpg", "missing.jpg")
@@ -242,7 +254,7 @@ func TestRunRecordsErrorAndContinuesPastFailure(t *testing.T) {
 // tried again, so the file still reaches the library.
 func TestRunSkipsPlacedAndRetriesFailedRows(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	seedApproved(t, d, 1, "placed.jpg", "x")
 	dbtest.SeedPlaced(t, d, 1)
 	seedApproved(t, d, 2, "2024/failed.jpg", "y")
@@ -357,7 +369,7 @@ func targetPath(t *testing.T, d *db.DB, id int64) string {
 // _N name and the row records where it really landed.
 func TestRunNeverOverwritesExistingDestination(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	src := seedApproved(t, d, 1, "2024/A.jpg", "incoming")
 	if err := os.MkdirAll(filepath.Join(out, "2024"), 0o755); err != nil {
 		t.Fatal(err)
@@ -393,7 +405,7 @@ func TestRunNeverOverwritesExistingDestination(t *testing.T) {
 // the library: the same relative value as target_path.
 func TestRunRepointsToLibraryRelativePath(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	seedApproved(t, d, 1, "2024/A.jpg", "hello")
 
 	if _, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{}); err != nil {
@@ -442,7 +454,7 @@ func seedHashedFile(t *testing.T, d *db.DB, id int64, dir, name, hash string) {
 
 func TestRunCleansUpDuplicatesOfPlacedFiles(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	seedApproved(t, d, 1, "A.jpg", "hello")
 	// A loser duplicate: same hash, never proposed
 	seedHashedFile(t, d, 2, "/backup", "dupe.jpg", hashOf("hello"))
@@ -479,7 +491,7 @@ func TestRunCleansUpDuplicatesOfPlacedFiles(t *testing.T) {
 // can't also belong to a DONE row.
 func TestRunCleanupLeavesErrorRowsAlone(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	seedApproved(t, d, 1, "A.jpg", "hello")
 	// row 2's source doesn't exist on disk, so it lands at ERROR
 	dbtest.SeedFile(t, d, 2, "/no/such/dir", "missing.jpg", 0)
@@ -517,7 +529,7 @@ func TestRunCleanupLeavesErrorRowsAlone(t *testing.T) {
 // and the run goes on.
 func TestRunRefusesSourceChangedSinceScan(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
 	if err := os.WriteFile(src, []byte("HELLO"), 0o644); err != nil {
 		t.Fatal(err)
@@ -554,7 +566,7 @@ func TestRunRefusesSourceChangedSinceScan(t *testing.T) {
 // or `recover` left unrecorded — is where the file is: no second copy at _1.
 func TestRunRecognisesFileAlreadyPlaced(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
 	if err := os.MkdirAll(filepath.Join(out, "2024"), 0o755); err != nil {
 		t.Fatal(err)
@@ -639,7 +651,7 @@ func TestPlaceCommitsOnlyOnceTheFileIsInPlace(t *testing.T) {
 func TestRunKeepsTheCopyWhenItsRecordIsInDoubt(t *testing.T) {
 	ctx := context.Background()
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	seedApproved(t, d, 1, "2024/A.jpg", "hello")
 	// a deferred foreign key fails at COMMIT, after every statement succeeded
 	for _, stmt := range []string{
@@ -684,7 +696,7 @@ func TestRunKeepsTheCopyWhenItsRecordIsInDoubt(t *testing.T) {
 // and records nothing about it.
 func TestRunStopsBetweenFilesWhenCancelled(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	seedApproved(t, d, 1, "2024/A.jpg", "hello")
 	seedApproved(t, d, 2, "2024/B.jpg", "world")
 
@@ -716,7 +728,7 @@ func TestRunLeavesAFileStoppedMidCopyPending(t *testing.T) {
 		cancel()
 		return dst, 0, fmt.Errorf("copy: %w", ctx.Err())
 	}
-	rep, err := run(ctx, d, logger.NewNoopLogger(), t.TempDir(), Options{}, stopMidFile)
+	rep, err := run(ctx, d, logger.NewNoopLogger(), libraryDir(t), Options{}, stopMidFile)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -734,7 +746,7 @@ func TestRunLeavesAFileStoppedMidCopyPending(t *testing.T) {
 // which for a move is every file the last run had in flight.
 func TestRunRecordsLandedFileWhoseSourceIsGone(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
 
 	// The shape the previous run left behind: file in the library, source
@@ -766,7 +778,7 @@ func TestRunRecordsLandedFileWhoseSourceIsGone(t *testing.T) {
 // never taken for it.
 func TestRunRecordsLandedFilePastAGap(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
 	if err := os.MkdirAll(filepath.Join(out, "2024"), 0o755); err != nil {
 		t.Fatal(err)
@@ -799,7 +811,7 @@ func TestRunRecordsLandedFilePastAGap(t *testing.T) {
 // reconcile above must not swallow a file the user actually deleted.
 func TestRunFailsWhenSourceIsGoneAndNothingLanded(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	src := seedApproved(t, d, 1, "2024/A.jpg", "hello")
 	if err := os.Remove(src); err != nil {
 		t.Fatal(err)
@@ -823,7 +835,7 @@ func TestRunFailsWhenSourceIsGoneAndNothingLanded(t *testing.T) {
 // there is nothing else that remembers.
 func TestCleanupKeepsDuplicatesWhenThePlacedFileIsGone(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	seedApproved(t, d, 1, "A.jpg", "hello")
 	seedHashedFile(t, d, 2, "/backup", "dupe.jpg", hashOf("hello"))
 
@@ -906,7 +918,7 @@ func seedPlanWithRename(t *testing.T, d *db.DB, out string) int64 {
 // OnApplied runs once the plan is written.
 func TestRunAppliesTheReviewDraftFirst(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	id := seedPlanWithRename(t, d, out)
 	applied := 0
 	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{OnApplied: func() { applied++ }})
@@ -931,7 +943,7 @@ func TestRunAppliesTheReviewDraftFirst(t *testing.T) {
 // applied — and leaves the plan, the draft and the output as they were.
 func TestRunDryRunReportsEditedPaths(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	id := seedPlanWithRename(t, d, out)
 	var targets []string
 	rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{
@@ -960,7 +972,7 @@ func TestRunDryRunReportsEditedPaths(t *testing.T) {
 // draft stays unapplied, no backup is written, no file moves.
 func TestRunRefusesPlanThatDoesNotFit(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	id := seedPlanWithRename(t, d, out)
 	_, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{
 		OnApplied: func() { t.Error("OnApplied ran on a refused plan") },
@@ -990,7 +1002,7 @@ func TestRunRefusesPlanThatDoesNotFit(t *testing.T) {
 // lands whole or not at all.
 func TestRunTransfersWhenFreeSpaceIsUnknown(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	seedApproved(t, d, 1, "2024/06_June/03/a.jpg", "photo")
 	statfsFails := func(string) (uint64, uint64, error) { return 0, 0, errors.New("statfs failed") }
 	if rep, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{freeSpace: statfsFails}); err != nil || rep.Done != 1 {
@@ -1002,7 +1014,7 @@ func TestRunTransfersWhenFreeSpaceIsUnknown(t *testing.T) {
 // library take no new room.
 func TestCheckFitsIgnoresPlacedFiles(t *testing.T) {
 	d := dbtest.New(t)
-	out := t.TempDir()
+	out := libraryDir(t)
 	seedApproved(t, d, 1, "2024/a.jpg", "pending")
 	dbtest.SeedFile(t, d, 2, "2024", "big.jpg", 500<<30)
 	dbtest.SeedEntry(t, d, 2, "2024/big.jpg", "2024/big.jpg")
@@ -1011,5 +1023,30 @@ func TestCheckFitsIgnoresPlacedFiles(t *testing.T) {
 	plenty := func(string) (uint64, uint64, error) { return 10 << 30, 100 << 30, nil }
 	if err := checkFits(context.Background(), d, out, plenty); err != nil {
 		t.Errorf("checkFits = %v; a placed 500 GiB file must not count", err)
+	}
+}
+
+// A library whose database file went away mid-copy (a drive unplugged, its
+// mount point left behind) stops the copy: no folder is made for the next file.
+func TestRunStopsWhenTheLibraryIsGone(t *testing.T) {
+	d := dbtest.New(t)
+	out := libraryDir(t)
+	seedApproved(t, d, 1, "2024/A.jpg", "hello")
+	seedApproved(t, d, 2, "2025/B.jpg", "world!")
+
+	unplug := func(string, int64, int, int) {
+		if err := os.Remove(config.DBPath(out)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	_, err := Run(context.Background(), d, logger.NewNoopLogger(), out, Options{OnProgress: unplug})
+	if !errors.Is(err, ErrLibraryGone) {
+		t.Fatalf("Run = %v, want ErrLibraryGone", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "2025")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the next file's folder was made in a library that is gone: %v", err)
+	}
+	if status, _ := rowStatus(t, d, 2); status != statePending {
+		t.Errorf("second file = %q, want it left pending", status)
 	}
 }

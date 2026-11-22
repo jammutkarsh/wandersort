@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,11 +17,16 @@ import (
 const (
 	OutputFileName  = ".wandersort.lock"
 	InstallFileName = ".wandersort-install.lock"
+	HistoryFileName = ".wandersort-history.lock"
 
 	// Polling (not one OS-blocking wait) is what lets blocking acquire still
 	// honour ctx cancellation — a blocking flock syscall can't be interrupted.
 	pollInterval    = 200 * time.Millisecond
 	pollMaxInterval = 2 * time.Second
+
+	// the history lock is held for one small file's replace: retry often
+	historyPollInterval    = 2 * time.Millisecond
+	historyPollMaxInterval = 50 * time.Millisecond
 )
 
 // ErrHeld reports that another process currently owns the lock.
@@ -44,7 +50,7 @@ func (l *Lock) Unlock() {
 // *AlreadyRunningError; this package renders nothing.
 func AcquireOutput(dir string) (*Lock, error) {
 	lockPath := filepath.Join(dir, OutputFileName)
-	l, err := acquire(context.Background(), dir, OutputFileName, false)
+	l, err := acquire(context.Background(), dir, OutputFileName, false, pollInterval, pollMaxInterval)
 	if errors.Is(err, ErrHeld) {
 		pid, _ := readLockPID(lockPath)
 		return nil, &AlreadyRunningError{PID: pid}
@@ -55,7 +61,13 @@ func AcquireOutput(dir string) (*Lock, error) {
 // AcquireInstall takes the install lock so one process downloads dependencies
 // at a time. block waits; otherwise ErrHeld comes back at once.
 func AcquireInstall(ctx context.Context, dir string, block bool) (*Lock, error) {
-	return acquire(ctx, dir, InstallFileName, block)
+	return acquire(ctx, dir, InstallFileName, block, pollInterval, pollMaxInterval)
+}
+
+// AcquireHistory takes the lock on the app folder's history files, waiting
+// for another holder. It is held only while a history is read or replaced.
+func AcquireHistory(dir string) (*Lock, error) {
+	return acquire(context.Background(), dir, HistoryFileName, true, historyPollInterval, historyPollMaxInterval)
 }
 
 // AlreadyRunningError reports the PID of the process holding the output lock.
@@ -68,14 +80,13 @@ func (e *AlreadyRunningError) Error() string {
 func (e *AlreadyRunningError) Unwrap() error { return ErrHeld }
 
 // acquire opens dir/name and takes an advisory lock on it, retrying with
-// backoff until ctx is done when block is set.
-func acquire(ctx context.Context, dir, name string, block bool) (*Lock, error) {
+// jittered backoff from wait up to maxWait until ctx is done when block is set.
+func acquire(ctx context.Context, dir, name string, block bool, wait, maxWait time.Duration) (*Lock, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create lock directory %s: %w", dir, err)
 	}
 
 	lockPath := filepath.Join(dir, name)
-	wait := pollInterval
 	for {
 		l, err := tryLock(lockPath)
 		if err == nil {
@@ -90,11 +101,10 @@ func acquire(ctx context.Context, dir, name string, block bool) (*Lock, error) {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(wait):
+		// jittered, so waiters that met once don't keep meeting
+		case <-time.After(wait/2 + rand.N(wait)):
 		}
-		if wait < pollMaxInterval {
-			wait *= 2
-		}
+		wait = min(2*wait, maxWait)
 	}
 }
 

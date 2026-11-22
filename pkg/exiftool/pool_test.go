@@ -3,7 +3,10 @@ package exiftool
 import (
 	"context"
 	"errors"
+	"image"
+	"image/jpeg"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -64,19 +67,48 @@ func writeFile(t *testing.T, name, content string) string {
 	return p
 }
 
-func TestExtractRejectsLineBreaksInPath(t *testing.T) {
-	e, err := New(installtest.Exiftool(t))
+// A name with a line break is read through a link with a safe name: the
+// file keeps its tags, and nothing after the break reaches exiftool as an option.
+func TestExtractReadsAPathWithALineBreak(t *testing.T) {
+	bin := installtest.Exiftool(t)
+	dir := t.TempDir()
+	plain := filepath.Join(dir, "plain.jpg")
+	f, err := os.Create(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jpeg.Encode(f, image.NewGray(image.Rect(0, 0, 8, 8)), nil); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	const taken = "2024:03:05 11:22:33"
+	if out, err := exec.Command(bin, "-overwrite_original", "-DateTimeOriginal="+taken, plain).CombinedOutput(); err != nil {
+		t.Fatalf("tag the test photo: %v: %s", err, out)
+	}
+	broken := filepath.Join(dir, "line\nbreak.jpg")
+	if err := os.Rename(plain, broken); err != nil {
+		t.Skipf("file system refuses a line break in a name: %v", err)
+	}
+
+	e, err := New(bin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer e.Close()
-	for _, p := range []string{"/a/x.jpg\n-all=\n-overwrite_original\n/a/y.jpg", "/a/x\r.jpg"} {
-		if _, err := e.Extract(context.Background(), p); !errors.Is(err, ErrUnsafePath) {
-			t.Errorf("Extract(%q) = %v, want ErrUnsafePath", p, err)
-		}
+	meta, err := e.Extract(context.Background(), broken)
+	if err != nil || meta.DateTimeOriginal != taken {
+		t.Errorf("Extract = %q, %v; want DateTimeOriginal %q", meta.DateTimeOriginal, err, taken)
+	}
+	// a would-be option after the break names no file, so it is read as one
+	injected := filepath.Join(dir, "x.jpg\n-all=\n-overwrite_original\n"+broken)
+	if _, err := e.Extract(context.Background(), injected); !errors.Is(err, ErrUnreadable) {
+		t.Errorf("Extract(injected) = %v, want ErrUnreadable", err)
+	}
+	if meta, err := e.Extract(context.Background(), broken); err != nil || meta.DateTimeOriginal != taken {
+		t.Errorf("after the injected path, tags = %q, %v; want them untouched", meta.DateTimeOriginal, err)
 	}
 	if e.Dead() {
-		t.Error("an unsafe path must not cost the worker")
+		t.Error("a path with a line break must not cost the worker")
 	}
 }
 

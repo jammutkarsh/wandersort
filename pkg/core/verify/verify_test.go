@@ -2,6 +2,7 @@ package verify
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -253,4 +254,20 @@ func verifyErrors(t *testing.T, d *db.DB) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// A full check stopped mid-hash says nothing about the file: no problem is
+// reported or recorded against it.
+func TestVerifyFullStoppedMidHashBlamesNoFile(t *testing.T) {
+	out := t.TempDir()
+	abs := filepath.Join(out, "A.jpg")
+	if err := os.WriteFile(abs, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	problem, _, err := checkFile(ctx, abs, "A.jpg", 5, hashOf("hello"), true)
+	if !errors.Is(err, context.Canceled) || problem != nil {
+		t.Errorf("checkFile stopped = %+v, %v; want no problem and context.Canceled", problem, err)
+	}
 }
