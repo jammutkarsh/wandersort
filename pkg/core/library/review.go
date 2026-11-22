@@ -235,7 +235,10 @@ func (g *WorkGroup) whileIdle(f func() error) error {
 	// never waits, so it can't deadlock under mu; a hold taken after this
 	// waits for f to return
 	if !g.library.TryRLock() {
-		return ErrBusy
+		if len(g.holds) > 0 {
+			return &BusyError{Job: g.holds[0]}
+		}
+		return ErrBusy // closing
 	}
 	defer g.library.RUnlock()
 	return f()

@@ -120,7 +120,7 @@ func (s *Session) Discard(ctx context.Context) (int, error) {
 		return 0, ErrClosing
 	}
 	defer stop()
-	release, err := s.Work.HoldLibrary()
+	release, err := s.Work.HoldLibrary(JobDiscard)
 	if err != nil {
 		return 0, err
 	}
@@ -142,7 +142,7 @@ func (s *Session) Reset(ctx context.Context) error {
 		return ErrClosing
 	}
 	defer stop()
-	release, err := s.Work.HoldLibrary()
+	release, err := s.Work.HoldLibrary(JobReset)
 	if err != nil {
 		return err
 	}

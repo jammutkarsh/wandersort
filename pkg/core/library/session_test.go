@@ -590,7 +590,7 @@ func TestSaveSettingsRefusedWhileTheLibraryIsHeld(t *testing.T) {
 	}
 	stored := s.Settings()
 
-	release, err := s.Work.HoldLibrary()
+	release, err := s.Work.HoldLibrary(JobSwitch)
 	if err != nil {
 		t.Fatalf("library not held: %v", err)
 	}
@@ -606,8 +606,8 @@ func TestSaveSettingsRefusedWhileTheLibraryIsHeld(t *testing.T) {
 		<-saved
 		t.Fatal("a save queued behind the hold instead of being refused")
 	}
-	if !errors.Is(err, ErrBusy) {
-		t.Fatalf("save while a switch holds the library = %v, want ErrBusy", err)
+	if busy, ok := errors.AsType[*BusyError](err); !ok || busy.Job != JobSwitch {
+		t.Fatalf("save while a switch holds the library = %v, want a BusyError naming the switch", err)
 	}
 	got, err := config.LoadSettings(ctx, s.DB())
 	if err != nil {
@@ -642,7 +642,7 @@ func TestWorkGroupJobs(t *testing.T) {
 	if _, err := g.StartRewrite(); !errors.Is(err, ErrBusy) {
 		t.Errorf("re-plan beside a scan = %v, want ErrBusy", err)
 	}
-	if _, err := g.HoldLibrary(); err == nil {
+	if _, err := g.HoldLibrary(JobSwitch); err == nil {
 		t.Error("library held for a switch while a scan ran")
 	} else if busy, ok := errors.AsType[*BusyError](err); !ok || busy.Job != JobScan {
 		t.Errorf("hold beside a scan = %v, want a BusyError naming the scan", err)
@@ -734,7 +734,7 @@ func TestWorkGroupHoldLibrary(t *testing.T) {
 	}
 	held := make(chan func())
 	go func() {
-		release, err := g.HoldLibrary()
+		release, err := g.HoldLibrary(JobSwitch)
 		if err != nil {
 			t.Errorf("hold refused beside a short read: %v", err)
 		}
@@ -784,7 +784,7 @@ func TestWorkGroupHoldLibrary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if release, err := g.HoldLibrary(); err == nil {
+	if release, err := g.HoldLibrary(JobSwitch); err == nil {
 		release()
 		t.Error("library held while a copy ran on it")
 	}
@@ -954,5 +954,83 @@ func TestCheckAndResetWaitForNoWork(t *testing.T) {
 	}
 	if err := s.Reset(ctx); !errors.Is(err, ErrBusy) {
 		t.Errorf("reset beside a copy = %v, want ErrBusy", err)
+	}
+}
+
+// A job beside a hold is refused, naming the hold in the way: the oldest one.
+func TestJobBesideAHoldNamesIt(t *testing.T) {
+	var g WorkGroup
+	release, err := g.HoldLibrary(JobRestore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, err := g.StartJob(JobScan)
+	if busy, ok := errors.AsType[*BusyError](err); !ok || busy.Job != JobRestore {
+		t.Errorf("scan beside a restore = %v, want a BusyError naming the restore", err)
+	}
+	release()
+	if err == nil {
+		done()
+	}
+	if done, err = g.StartJob(JobScan); err != nil {
+		t.Fatalf("scan once the restore ended = %v", err)
+	}
+	done()
+}
+
+// A restore caught by shutdown is finished and reported as done, though the
+// library isn't opened again; one asked for after shutdown is refused.
+func TestRestoreAndShutdown(t *testing.T) {
+	ctx := context.Background()
+	s := testSession(t)
+	if err := s.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB().Backup(ctx, filepath.Join(s.OutputDir(), db.BackupFileName)); err != nil {
+		t.Fatal(err)
+	}
+	// until what it polls for holds; a read keeps the restore waiting meanwhile
+	until := func(what string, holds func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+			s.Work.mu.Lock()
+			ok := holds()
+			s.Work.mu.Unlock()
+			if ok {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("waited too long for %s", what)
+			}
+		}
+	}
+	reading, err := s.Work.StartOnLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := make(chan error, 1)
+	go func() { restored <- s.Restore(ctx) }()
+	until("the restore to wait for the library", func() bool { return len(s.Work.holds) == 1 })
+	stopped := make(chan struct{})
+	go func() {
+		s.Shutdown()
+		close(stopped)
+	}()
+	until("shutdown to begin", func() bool { return s.Work.closed })
+	reading()
+	<-stopped
+	select {
+	case err := <-restored:
+		if err != nil {
+			t.Errorf("restore while shutting down = %v, want it done", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the restore never ended")
+	}
+	if s.DB() != nil {
+		t.Error("a session shutting down opened the library again")
+	}
+	if err := s.Restore(ctx); !errors.Is(err, ErrClosing) {
+		t.Errorf("restore after Shutdown = %v, want ErrClosing", err)
 	}
 }

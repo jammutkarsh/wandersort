@@ -54,14 +54,14 @@ func TestReviewEditsRefusedBesideWork(t *testing.T) {
 	}
 
 	// a discard, reset or switch holds the library while it removes the draft
-	release, err := s.Work.HoldLibrary()
+	release, err := s.Work.HoldLibrary(JobSwitch)
 	if err != nil {
 		t.Fatalf("could not hold the library: %v", err)
 	}
 	_, err = fresh.Undo()
 	release()
-	if !errors.Is(err, ErrBusy) {
-		t.Errorf("edit while the library is held = %v, want ErrBusy", err)
+	if busy, ok := errors.AsType[*BusyError](err); !ok || busy.Job != JobSwitch {
+		t.Errorf("edit while the library is held = %v, want a BusyError naming the switch", err)
 	}
 
 	// once closed, another process may copy the library and remove the draft
@@ -254,7 +254,7 @@ func TestReviewWaitsForPlacesOffTheLibrary(t *testing.T) {
 	<-waiting
 	held := make(chan bool, 1)
 	go func() {
-		release, err := s.Work.HoldLibrary()
+		release, err := s.Work.HoldLibrary(JobSwitch)
 		if err == nil {
 			release()
 		}

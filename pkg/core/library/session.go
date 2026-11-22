@@ -337,7 +337,7 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 		return ErrClosing
 	}
 	defer stop()
-	release, err := s.Work.HoldLibrary()
+	release, err := s.Work.HoldLibrary(JobSwitch)
 	if err != nil {
 		return err
 	}
@@ -404,9 +404,14 @@ func isNew(ctx context.Context, d *db.DB) (bool, error) {
 // Restore puts the library's backup back over its database (see Restore),
 // holding the output lock meanwhile. A library this session has open is
 // closed first (a restore needs every connection closed) and opened again
-// after; one another process has open is db.ErrInUse.
+// after; one another process has open is db.ErrInUse. Shutdown waits for it.
 func (s *Session) Restore(ctx context.Context) (err error) {
-	release, err := s.Work.HoldLibrary()
+	stop, ok := s.Work.Start()
+	if !ok {
+		return ErrClosing
+	}
+	defer stop()
+	release, err := s.Work.HoldLibrary(JobRestore)
 	if err != nil {
 		return err
 	}
@@ -418,7 +423,8 @@ func (s *Session) Restore(ctx context.Context) (err error) {
 	s.mu.Unlock()
 	if wasOpen {
 		defer func() {
-			if openErr := s.Open(ctx); err == nil {
+			// the restore is done; shutdown closes the library anyway
+			if openErr := s.Open(ctx); err == nil && !errors.Is(openErr, ErrClosing) {
 				err = openErr
 			}
 		}()
@@ -571,23 +577,31 @@ type WorkGroup struct {
 	plan atomic.Uint64
 	// job is the scan or copy running, "" for none; guarded by mu
 	job Job
-	// holding counts holds taken or waited for (HoldLibrary); guarded by mu
-	holding int
+	// holds names the holds taken or waited for, oldest first (HoldLibrary);
+	// guarded by mu
+	holds []Job
 }
 
-// Job is work that changes the plan or what is placed: one at a time.
+// Job is work that changes the plan or what is placed, or takes the whole
+// library (the holds): one at a time.
 type Job string
 
 const (
 	JobScan  Job = "scan"
 	JobCopy  Job = "copy"
 	JobCheck Job = "check"
+
+	// holds, see HoldLibrary
+	JobSwitch  Job = "switch"
+	JobDiscard Job = "discard"
+	JobReset   Job = "reset"
+	JobRestore Job = "restore"
 )
 
 // StartJob registers j on the open library, ended by done. It refuses once
 // shutdown began (ErrClosing), while a re-plan waits or runs (ErrReplanning),
-// and while another job runs (ErrBusy): a scan replacing the pending plan
-// under a copy working through it would copy files the plan no longer holds.
+// and while another job runs or holds the library (*BusyError): a scan
+// replacing the pending plan under a copy working through it would copy files the plan no longer holds.
 // Plan moves on: anything built over the plan before the job is stale.
 func (g *WorkGroup) StartJob(j Job) (done func(), err error) {
 	g.mu.Lock()
@@ -598,8 +612,8 @@ func (g *WorkGroup) StartJob(j Job) (done func(), err error) {
 		err = ErrReplanning
 	case g.job != "":
 		err = &BusyError{Job: g.job}
-	case g.holding > 0:
-		err = ErrBusy
+	case len(g.holds) > 0:
+		err = &BusyError{Job: g.holds[0]}
 	}
 	if err != nil {
 		g.mu.Unlock()
@@ -669,7 +683,8 @@ func (g *WorkGroup) StartOnLibrary() (done func(), err error) {
 // already on the library, then holds it alone: rewrites run one at a time and
 // nothing else runs beside one. Shutdown waits only for a rewrite that
 // entered, so one never entered can't hang it; both calls refuse once shutdown
-// began (ErrClosing), and StartRewrite refuses while a job runs (ErrBusy).
+// began (ErrClosing), and StartRewrite refuses while a job runs or holds the
+// library (*BusyError).
 func (g *WorkGroup) StartRewrite() (enter func() (done func(), err error), err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -679,8 +694,8 @@ func (g *WorkGroup) StartRewrite() (enter func() (done func(), err error), err e
 	if g.job != "" {
 		return nil, &BusyError{Job: g.job}
 	}
-	if g.holding > 0 {
-		return nil, ErrBusy
+	if len(g.holds) > 0 {
+		return nil, &BusyError{Job: g.holds[0]}
 	}
 	g.rewrites.Add(1)
 	g.plan.Add(1)
@@ -707,11 +722,11 @@ func (g *WorkGroup) Rewriting() bool { return g.rewrites.Load() > 0 }
 // once it reads more.
 func (g *WorkGroup) Plan() uint64 { return g.plan.Load() }
 
-// HoldLibrary takes the library from all work. It is refused while a job
+// HoldLibrary takes the library from all work, as j. It is refused while a job
 // (*BusyError naming it) or a re-plan (ErrReplanning) runs or waits, and waits
 // out short reads (a review being built, a copy plan); no job or re-plan
 // starts while it waits or holds.
-func (g *WorkGroup) HoldLibrary() (release func(), err error) {
+func (g *WorkGroup) HoldLibrary(j Job) (release func(), err error) {
 	g.mu.Lock()
 	switch {
 	case g.job != "":
@@ -723,13 +738,14 @@ func (g *WorkGroup) HoldLibrary() (release func(), err error) {
 		g.mu.Unlock()
 		return nil, err
 	}
-	g.holding++
+	g.holds = append(g.holds, j)
 	g.mu.Unlock()
 	g.library.Lock()
 	return func() {
 		g.library.Unlock()
 		g.mu.Lock()
-		g.holding--
+		i := slices.Index(g.holds, j)
+		g.holds = slices.Delete(g.holds, i, i+1)
 		g.mu.Unlock()
 	}, nil
 }
