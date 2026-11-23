@@ -24,7 +24,7 @@ func TestError(t *testing.T) {
 		{"full drive", fmt.Errorf("copy: %w", syscall.ENOSPC), explanations[2].sentence},
 		{
 			"old hashes, wrapped", fmt.Errorf("app db: %w", db.ErrOldHashes),
-			"This library was made by an older version and can't be opened. Your photos in it are not affected. Start a new library in another folder, then add this one's folder to it, and any folders you hadn't finished copying.",
+			"This library was made by an older version and can't be opened. Nothing in it was changed. Start a new library in another folder, then add this one's folder to it, and any folders you hadn't finished copying.",
 		},
 		{"already plain", errors.New("that folder is inside the library"), "that folder is inside the library"},
 		// a known cause in one failure must not hide the others

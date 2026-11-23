@@ -282,10 +282,13 @@ func (wf *Workflow) workflowPhases(res *Result, force bool) []workflowPhase {
 			},
 			summary: func(count int) string {
 				s := "Sorted " + human.Plural(count, "file", "files") + " into folders"
-				// found counts this run's folders, planned the whole library: only
-				// fewer planned than found needs a word
-				if skipped := res.Found - count; skipped > 0 {
+				// found counts this run's folders, planned the whole library: either
+				// side larger needs a word, or the counts read as a mistake
+				switch skipped := res.Found - count; {
+				case skipped > 0:
 					s += fmt.Sprintf(" · %d skipped: already in the library, duplicates or unreadable", skipped)
+				case skipped < 0:
+					s += ", with files from earlier adds not copied yet"
 				}
 				return s
 			},

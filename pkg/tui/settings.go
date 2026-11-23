@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // SettingRow is one line of the settings list: what it is, its value, and how to change it.
@@ -161,10 +162,16 @@ func (m SettingsModel) View() string {
 		if r.Edit == nil {
 			right = FaintTxt.Render("can't change")
 		}
-		left := "  " + DimText.Render(label) + Text.Render(r.Value)
+		// a long value (a library's path) loses its middle, so its name stays
+		const indent, pillPad, gap = 2, 2, 2
+		value := r.Value
+		if m.w > 0 {
+			value = truncateMiddle(value, m.w-indent-len(label)-pillPad-ansi.StringWidth(right)-gap)
+		}
+		left := "  " + DimText.Render(label) + Text.Render(value)
 		if i == m.cursor {
 			// only the part Enter changes is boxed; its text stays in the value's column
-			left = "  " + DimText.Render(strings.TrimSuffix(label, " ")) + Pill(r.Value)
+			left = "  " + DimText.Render(strings.TrimSuffix(label, " ")) + Pill(value)
 		}
 		line := row(left, right, m.w)
 		if r.Edit != nil {
@@ -179,7 +186,7 @@ func (m SettingsModel) View() string {
 	case m.saved:
 		b.WriteString(row(OK.Render("✓ ")+Text.Render("Saved. Files not copied yet now follow it."), "", m.w) + "\n")
 	case m.note != "":
-		b.WriteString(row(FaintTxt.Render(m.note), "", m.w) + "\n")
+		b.WriteString(errorLines(FaintTxt.Render(m.note), m.w) + "\n")
 	}
 	footer := Footer(KeyHint("↑↓", "move")+"   "+KeyHint("enter", "change")+"   "+KeyHint("esc", "done")+"   "+MoreKeys(), m.w)
 	view := Screen(b.String(), footer, m.h)

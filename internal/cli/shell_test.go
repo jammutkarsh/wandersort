@@ -19,6 +19,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/db"
 	"github.com/jammutkarsh/wandersort/pkg/db/dbtest"
+	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
@@ -148,6 +149,51 @@ func TestShellModel(t *testing.T) {
 		}},
 		// Review is skipped until a proposal exists — cycling into an empty tab
 		// is a dead end the tab bar already explains.
+		// A library that refused to open (another window has it) must not
+		// trap the keyboard on Organise: Settings is the way to another one.
+		{"ShiftTabReachesSettingsPastARefusedLibrary", func(t *testing.T) {
+			m := testShell(t)
+			seedProposal(t, m.a)
+			held, err := lock.AcquireOutput(m.a.OutputDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer held.Unlock()
+			if err := m.a.Open(m.ctx); err == nil {
+				t.Fatal("Open must fail while another process holds the library")
+			}
+
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+			m = next.(shellModel)
+			if m.tab != tabSettings || m.screens[tabSettings] == nil {
+				t.Fatalf("shift+tab past a refused library = tab %d, want Settings open", m.tab)
+			}
+			if strings.Contains(m.tabBar(), "●") {
+				t.Errorf("tab bar %q marks a tab on a library that refused to open", ansi.Strip(m.tabBar()))
+			}
+		}},
+		// After a switch the Add tab speaks for the new library: the last
+		// scan's results were the old one's, the folders listed still wait.
+		{"SwitchDropsTheOldLibrarysResults", func(t *testing.T) {
+			m := testShell(t)
+			home := m.a.newHomeScreen(m.ctx, []string{"Sorted 147 files into folders"})
+			home.Add(t.TempDir())
+			m.place(tabScan, home)
+			m.libraryBefore = filepath.Join(t.TempDir(), "old")
+
+			next, _ := m.Update(tui.SettingsSavedMsg{})
+			m = next.(shellModel)
+			h, ok := m.screens[tabScan].(tui.HomeModel)
+			if !ok {
+				t.Fatalf("Add tab = %T, want the folder input", m.screens[tabScan])
+			}
+			if view := ansi.Strip(h.View()); strings.Contains(view, "Sorted 147") {
+				t.Errorf("Add tab still shows the old library's scan:\n%s", view)
+			}
+			if len(h.Folders()) != 1 {
+				t.Errorf("folders listed = %v, want the one listed before the switch", h.Folders())
+			}
+		}},
 		{"CtrlTSkipsReviewUntilItIsReady", func(t *testing.T) {
 			m := testShell(t)
 			m.screens[tabSettings] = &probe{name: "config"}

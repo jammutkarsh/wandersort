@@ -233,11 +233,11 @@ func spaceFor(ctx context.Context, database *db.DB, outputDir string, freeSpace 
 		return Space{}, fmt.Errorf("size the database: %w", err)
 	}
 	s := Space{Files: uint64(pending)}
-	free, total, err := freeSpace(outputDir)
+	free, _, err := freeSpace(outputDir)
 	if err != nil {
 		return s, nil
 	}
-	s.Needed = volume.TransferNeeds(uint64(pending), uint64(dbBytes), total)
+	s.Needed = volume.TransferNeeds(uint64(pending), uint64(dbBytes))
 	s.Reserve = s.Needed - uint64(pending) - 2*uint64(dbBytes)
 	s.Free, s.Known = free, true
 	return s, nil
@@ -398,11 +398,10 @@ func cleanupPlacedDuplicates(ctx context.Context, database *db.DB, outputDir str
 }
 
 func summary(o Options, rep Report, elapsed time.Duration) string {
-	verb := "Copied"
+	msg := fmt.Sprintf("Copied %s (%s) in %s", human.Plural(rep.Done, "file", "files"), volume.HumanBytes(uint64(rep.Bytes)), elapsed)
 	if o.DryRun {
-		verb = "Would copy"
+		msg = fmt.Sprintf("Would copy %s (%s)", human.Plural(rep.Done, "file", "files"), volume.HumanBytes(uint64(rep.Bytes)))
 	}
-	msg := fmt.Sprintf("%s %s (%s) in %s", verb, human.Plural(rep.Done, "file", "files"), volume.HumanBytes(uint64(rep.Bytes)), elapsed)
 	if rep.Failed > 0 {
 		msg += fmt.Sprintf(" — %d failed", rep.Failed)
 	}

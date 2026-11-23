@@ -46,6 +46,23 @@ func TestHome(t *testing.T) {
 				t.Errorf("view should list the added folder:\n%s", v)
 			}
 		}},
+		// A path longer than the window scrolls: what was just typed stays
+		// in sight, and the line never runs past the window.
+		{"LongPathKeepsItsEndInSight", func(t *testing.T) {
+			var m tea.Model = NewHomeModel(HomeConfig{})
+			m, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 24})
+			long := "/volumes/" + strings.Repeat("deep/", 12) + "library-end"
+			m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(long)})
+			view := viewText(m.View())
+			if !strings.Contains(view, "library-end") {
+				t.Errorf("the end of a long path is out of sight:\n%s", view)
+			}
+			for line := range strings.SplitSeq(view, "\n") {
+				if ansi.StringWidth(line) > 40 {
+					t.Errorf("line wider than the window: %q", line)
+				}
+			}
+		}},
 		// Folders under $HOME render as ~/… — the way they were typed and the
 		// way every completion offers them. The scan still gets the expanded
 		// path.

@@ -834,3 +834,27 @@ func TestRunProgressCountsEachRunFromZero(t *testing.T) {
 		}
 	}
 }
+
+// An empty file named like a photo holds no picture: it is never planned.
+func TestWalkRootSkipsEmptyFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "own.jpg"), []byte("photo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "empty.jpg"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sc := newTestScanner(t)
+	filesChan := make(chan FileDiscovery, 10)
+	if _, err := sc.walkRoot(context.Background(), root, "", filesChan, new(atomic.Int64)); err != nil {
+		t.Fatalf("walkRoot: %v", err)
+	}
+	close(filesChan)
+	var names []string
+	for d := range filesChan {
+		names = append(names, d.Name)
+	}
+	if len(names) != 1 || names[0] != "own.jpg" {
+		t.Errorf("discovered %v, want only own.jpg (the empty file skipped)", names)
+	}
+}

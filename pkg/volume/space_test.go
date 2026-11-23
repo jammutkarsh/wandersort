@@ -21,18 +21,18 @@ func TestHumanBytes(t *testing.T) {
 }
 
 func TestTransferNeeds(t *testing.T) {
-	const gib = 1 << 30
+	const mib, gib = 1 << 20, 1 << 30
 	tests := []struct {
-		name                   string
-		files, db, total, want uint64
+		name            string
+		files, db, want uint64
 	}{
-		{"small volume keeps the 1 GiB floor", 10 * gib, 1 << 20, 50 * gib, 10*gib + 2<<20 + gib},
-		{"large volume keeps 1%", 10 * gib, 0, 1000 * gib, 10*gib + 10*gib},
-		{"nothing to copy still needs the backup and reserve", 0, 100 << 20, 0, 200<<20 + gib},
+		{"a small copy needs little more than its files", 80 * mib, 1 * mib, 80*mib + 3*mib + minReserve},
+		{"a big copy needs no share of the drive", 500 * gib, 100 * mib, 500*gib + 300*mib + minReserve},
+		{"nothing to copy still needs the backup and reserve", 0, 100 * mib, 300*mib + minReserve},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := TransferNeeds(tt.files, tt.db, tt.total); got != tt.want {
+			if got := TransferNeeds(tt.files, tt.db); got != tt.want {
 				t.Errorf("TransferNeeds = %d, want %d", got, tt.want)
 			}
 		})

@@ -14,9 +14,9 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
 	"github.com/jammutkarsh/wandersort/pkg/db"
+	"github.com/jammutkarsh/wandersort/pkg/explain"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
 	"github.com/jammutkarsh/wandersort/pkg/logger"
-	"github.com/jammutkarsh/wandersort/pkg/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -87,16 +87,24 @@ func TestNoLibraryNamesTheBackup(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, db.BackupFileName), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := withHint(a.noLibrary()); !errors.Is(err, config.ErrBackupOnly) || !strings.Contains(err.Error(), tui.RestoreHint) {
-		t.Errorf("backup only = %v, want the restore command", err)
+	want := "wandersort admin db --restore -o " + dir + "'"
+	if err := withHint(a.noLibrary(), dir); !errors.Is(err, config.ErrBackupOnly) || !strings.Contains(err.Error(), want) {
+		t.Errorf("backup only = %v, want the restore command %q", err, want)
 	}
 }
 
 // A library this version can't read is left alone, so the error names the way on.
 func TestOldHashesNameTheNewLibraryCommand(t *testing.T) {
-	err := withHint(fmt.Errorf("app db: %w", db.ErrOldHashes))
-	if !errors.Is(err, db.ErrOldHashes) || !strings.Contains(err.Error(), tui.NewLibraryHint) {
-		t.Errorf("err = %v, want the command for a new library", err)
+	err := withHint(fmt.Errorf("app db: %w", db.ErrOldHashes), "/photos/Old Library")
+	if !errors.Is(err, db.ErrOldHashes) || ExitCode(err) != exitError {
+		t.Errorf("err = %v (exit %d), want ErrOldHashes kept for exit %d", err, ExitCode(err), exitError)
+	}
+	text := err.Error()
+	if strings.Contains(text, "app db:") || !strings.Contains(text, explain.Error(db.ErrOldHashes)) {
+		t.Errorf("err = %q, want the plain sentence, not the wrapped causes", text)
+	}
+	if !strings.Contains(text, `-p "/photos/Old Library",<folders not copied yet>`) {
+		t.Errorf("err = %q, want the command with this library's folder, quoted", text)
 	}
 }
 

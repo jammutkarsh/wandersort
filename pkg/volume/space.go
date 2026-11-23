@@ -9,19 +9,16 @@ func FreeBytes(path string) (uint64, error) {
 	return free, err
 }
 
-// minReserve and reserveShare size the room a transfer leaves free: 1 GiB or 1%
-// of the volume, whichever is more. A full disk breaks the database's next
-// write.
-const (
-	minReserve   = 1 << 30
-	reserveShare = 100 // 1/100 of the volume
-)
+// minReserve is the room a transfer leaves free past its files, the backup
+// and the database's own writes: a full disk breaks the database's next write.
+const minReserve = 64 << 20
 
 // TransferNeeds is the free space a transfer of fileBytes needs: the files, the
-// backup (2 × dbBytes: plain and compressed copies briefly coexist) and the
-// reserve.
-func TransferNeeds(fileBytes, dbBytes, total uint64) uint64 {
-	return fileBytes + 2*dbBytes + max(minReserve, total/reserveShare)
+// backup (2 × dbBytes: plain and compressed copies briefly coexist), the
+// database's write-ahead log (up to dbBytes again) and the reserve. It grows
+// with what is written, never with the drive's size.
+func TransferNeeds(fileBytes, dbBytes uint64) uint64 {
+	return fileBytes + 3*dbBytes + minReserve
 }
 
 // HumanBytes renders n as a short decimal size: "1.5 GB", "288 KB".

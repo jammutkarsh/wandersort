@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/charmbracelet/x/ansi"
 
@@ -10,12 +11,15 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/explain"
 )
 
+// itsFolder stands for the library's folder in a hint that doesn't know it.
+const itsFolder = "<its folder>"
+
 // RestoreHint is the command that puts a library's backup back.
-const RestoreHint = "Run 'wandersort admin db --restore -o <its folder>' to put the backup back."
+const RestoreHint = "Run 'wandersort admin db --restore -o " + itsFolder + "' to put the backup back."
 
 // NewLibraryHint is the command that makes a new library of the photos in one
 // this version can't open.
-const NewLibraryHint = "Run 'wandersort add -o <new folder> -p <its folder>,<folders not copied yet>' to start a new library from its photos."
+const NewLibraryHint = "Run 'wandersort add -o <new folder> -p " + itsFolder + ",<folders not copied yet>' to start a new library from its photos."
 
 // NeedsRestore reports whether err is a library only its backup helps.
 func NeedsRestore(err error) bool { return errors.Is(err, config.ErrBackupOnly) || db.Damaged(err) }
@@ -29,6 +33,15 @@ func Hint(err error) string {
 		return NewLibraryHint
 	}
 	return ""
+}
+
+// HintIn is Hint with the library's folder dir written in, quoted when a shell
+// would split it.
+func HintIn(err error, dir string) string {
+	if strings.ContainsAny(dir, " '\"") {
+		dir = `"` + dir + `"`
+	}
+	return strings.Replace(Hint(err), itsFolder, dir, 1)
 }
 
 // ErrorText is explain.Error for a person at the terminal: with the command
