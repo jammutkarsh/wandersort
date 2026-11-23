@@ -37,6 +37,8 @@ type Review struct {
 	Folders map[string]bool
 	// Resolver suggests place names, anchored on the settings' saved places; nil without one.
 	Resolver *location.Resolver
+	// Orphans is how many sidecars the copy takes to the orphan folder, outside the tree.
+	Orphans int
 }
 
 // Review is the review of the library's plan, opening the library first: one per plan, shared by
@@ -102,6 +104,9 @@ func (s *Session) Review(ctx context.Context, places func(context.Context) (*loc
 	}
 	if r.Folders, err = vfs.LibraryFolders(ctx, d); err != nil {
 		s.log.Warn("could not read the library's folders; new ones aren't marked", "error", err)
+	}
+	if r.Orphans, err = vfs.Orphans(ctx, d); err != nil {
+		s.log.Warn("could not count the unpaired sidecars", "error", err)
 	}
 	r.Labels = vfs.Labels(ctx, d, s.log)
 	r.Resolver = resolver.WithAnchors(resolver.BuildAnchors(ctx, s.Settings().SavedPlaces()))

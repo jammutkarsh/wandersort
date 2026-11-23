@@ -25,7 +25,9 @@ type Options struct {
 
 // Screen returns the review as a shell tab; it writes only the draft, which `wandersort copy` applies.
 func Screen(ctx context.Context, o Options) tui.Tab {
-	return newModel(o.Review, ctx, o.Review.Peek, o.Review.Resolver, o.Review.Labels, o.Review.Folders, o.Log)
+	m := newModel(o.Review, ctx, o.Review.Peek, o.Review.Resolver, o.Review.Labels, o.Review.Folders, o.Log)
+	m.orphans = o.Review.Orphans
+	return m
 }
 
 // editor is what the screen edits: a library.Review, or a bare vfs.Draft in tests.
@@ -100,6 +102,8 @@ type Model struct {
 	ask        *tui.Ask // [ctrl+r]'s full-screen question
 	// draft owns the base plan, the journal and the tree they make
 	draft editor
+	// orphans is how many sidecars go to the orphan folder, outside the tree
+	orphans int
 
 	// library is the folders already copied into, by path; rows outside it are new
 	library map[string]bool

@@ -189,7 +189,7 @@ func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 	}
 	masters, groups := electMasters(rows)
 	if groups > 0 {
-		v.log.Info(fmt.Sprintf("Kept the best copy of %d duplicate group(s)", groups), logger.UserKey, true)
+		v.log.Info("Kept the best copy of "+human.Plural(groups, "file found more than once", "files found more than once"), logger.UserKey, true)
 	}
 	return masters, nil
 }

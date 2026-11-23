@@ -176,7 +176,15 @@ func (a *app) addPlain(paths []string, force bool, res *addResult) error {
 		return err
 	}
 	res.Unreadable = len(left)
-	a.Log().Info("next: wandersort organise to correct the plan, or wandersort copy to copy it in", logger.UserKey, true)
+	pending, _, err := execute.Pending(ctx, a.DB())
+	if err != nil {
+		return err
+	}
+	if pending == 0 {
+		a.Log().Info(vfs.ErrNothingNew.Error(), logger.UserKey, true)
+	} else {
+		a.Log().Info("next: wandersort organise to correct the plan, or wandersort copy to copy it in", logger.UserKey, true)
+	}
 	if len(left) > 0 {
 		return withCode(exitPartial, fmt.Errorf("%s not be read; the next add tries again", human.Plural(len(left), "file could", "files could")))
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jammutkarsh/wandersort/pkg/core/vfs"
 	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/tui"
 )
@@ -47,6 +48,10 @@ func (m Model) header() string {
 		files += n.FileCount
 	}
 	right := human.Plural(len(m.rows), "folder", "folders") + " · " + human.Plural(files, "file", "files")
+	if m.orphans > 0 {
+		// the copy counts them too, so its total matches
+		right += fmt.Sprintf(" · %d more to %s", m.orphans, vfs.OrphanDir)
+	}
 	if n := len(m.draft.Edits()); n > 0 {
 		right += " · " + human.Plural(n, "edit", "edits")
 	}

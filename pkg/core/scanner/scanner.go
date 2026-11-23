@@ -254,7 +254,8 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 			if p == absRoot {
 				return fmt.Errorf("root unreadable: %w", err)
 			}
-			s.log.Error("Walk error", "inputPath", absRoot, "walkingPath", s.path.RelativeToHome(p), "error", err)
+			// the file log's detail: the run reports unseen folders in one warning
+			s.log.Debug("Walk error", "inputPath", absRoot, "walkingPath", s.path.RelativeToHome(p), "error", err)
 			// WalkDir reports a failure below the root for a directory it
 			// could not list: everything under it is unseen, not gone
 			gaps.dirs = append(gaps.dirs, path.ToSourcePath(p))
@@ -310,6 +311,12 @@ func (s *Scanner) walkRoot(ctx context.Context, absRoot, volumeUUID string, outp
 			s.log.Warn("Failed to get file info", "inputPath", absRoot, "walkingPath", s.path.RelativeToHome(p), "error", err)
 			gaps.files = append(gaps.files, [2]string{path.ToSourcePath(filepath.Dir(p)), d.Name()})
 			s.unseen(p)
+			return nil
+		}
+		// an empty file holds no picture, whatever its name
+		if info.Size() == 0 {
+			unsupported++
+			s.log.Debug("Empty file", "walkingPath", s.path.RelativeToHome(p))
 			return nil
 		}
 

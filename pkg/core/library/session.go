@@ -44,6 +44,8 @@ type Session struct {
 	cfg  config.Configuration
 	db   *db.DB
 	lock *lock.Lock
+	// refused is the library failing to open when last tried, until one opens
+	refused bool
 }
 
 // New is a session over cfg's output folder with no library open yet. It
@@ -129,7 +131,7 @@ func (s *Session) LibraryExists() bool {
 // remember it. In that order, a refused folder or a lost lock race writes
 // nothing into the folder. A library another process holds fails with a
 // *lock.AlreadyRunningError in the chain.
-func (s *Session) Open(ctx context.Context) error {
+func (s *Session) Open(ctx context.Context) (err error) {
 	// registered, so a library opened after shutdown began is refused rather
 	// than left with nothing to close it
 	done, ok := s.Work.Start()
@@ -142,6 +144,7 @@ func (s *Session) Open(ctx context.Context) error {
 	if s.db != nil {
 		return nil
 	}
+	defer func() { s.refused = err != nil }()
 	// From here the run touches (or tried to touch) user data: keep its log.
 	s.logFile.Persist()
 	outputDir := s.cfg.OutputDir()
@@ -368,6 +371,7 @@ func (s *Session) Switch(ctx context.Context, dir string) error {
 	s.closeLibrary(s.db, s.lock)
 	s.cfg.SetOutput(dir)
 	s.db, s.lock = appDB, l
+	s.refused = false
 	s.cfg.Settings = settings
 	s.Work.plan.Add(1) // another library, another plan
 	if err := s.cfg.Remember(dir); err != nil {
@@ -477,6 +481,9 @@ type State struct {
 
 	// Open is whether the session has the library open.
 	Open bool
+	// Refused is the library failing to open the last time it was tried
+	// (busy, from an older version, its drive gone), until one opens.
+	Refused bool
 
 	// Running is the job running on the library, "" for none.
 	Running Job
@@ -508,12 +515,12 @@ func (s *Session) Live(st State) State {
 }
 
 // CanReview reports whether there is a plan worth reviewing: "probably" while
-// the library is shut, the planned count once it is open.
+// the library is shut, unless it refused to open; the planned count once open.
 func (st State) CanReview() bool {
 	if st.Open {
 		return st.Planned > 0
 	}
-	return st.Exists
+	return st.Exists && !st.Refused
 }
 
 // HasEdits reports whether review edits are waiting.
@@ -538,6 +545,7 @@ func (s *Session) State(ctx context.Context) State {
 
 	d := s.db
 	if d == nil {
+		st.Refused = s.refused
 		return st
 	}
 	st.Open = true

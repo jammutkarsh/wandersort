@@ -69,6 +69,21 @@ func (n Node) Fixed() bool {
 
 const maxSamples = 3
 
+// Orphans counts the pending sidecars BuildTree leaves out: they go to the
+// orphan folder, past review.
+func Orphans(ctx context.Context, database *db.DB) (int, error) {
+	var n int
+	err := database.SQL.GetContext(ctx, &n,
+		`SELECT count(*) FROM virtual_fs_entries vfe
+		 JOIN folder_nodes fn ON fn.id = vfe.node_id
+		 WHERE `+db.PendingTransfer("vfe.file_id")+` AND fn.level = ?`,
+		LevelOrphan)
+	if err != nil {
+		return 0, fmt.Errorf("count orphans: %w", err)
+	}
+	return n, nil
+}
+
 // BuildTree returns the proposed folder tree for the still-reviewable entries
 // of the whole library. Empty means no proposal.
 func BuildTree(ctx context.Context, database *db.DB) ([]Node, error) {

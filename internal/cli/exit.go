@@ -77,15 +77,17 @@ func (a *app) emitJSON(res jsonResult, start time.Time, err error) error {
 		return err
 	}
 	o := res.outcome()
+	shown := err
 	if a.Session != nil {
 		o.Library = a.OutputDir()
+		shown = withHint(err, a.OutputDir())
 	}
 	if !start.IsZero() {
 		o.ElapsedMS = time.Since(start).Milliseconds()
 	}
 	o.Exit = ExitCode(err)
-	if err != nil {
-		o.Error = ansi.Strip(err.Error())
+	if shown != nil {
+		o.Error = ansi.Strip(shown.Error())
 	}
 	a.jsonPrinted = true
 	if werr := json.MarshalWrite(os.Stdout, res); werr != nil {

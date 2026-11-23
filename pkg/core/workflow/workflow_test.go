@@ -155,7 +155,7 @@ func TestWorkflowPhasesOrderAndMessages(t *testing.T) {
 // so a silent format change should fail a test, not just look different.
 func TestPhaseSummaryFormatting(t *testing.T) {
 	wf, _ := newTestWorkflow(t)
-	phases := wf.workflowPhases(&Result{Roots: []string{"/root"}}, false)
+	phases := wf.workflowPhases(&Result{Roots: []string{"/root"}, Found: 3}, false)
 
 	want := map[workflowPhaseKind]string{
 		workflowPhaseScan:     "Found 3 files",
@@ -174,6 +174,13 @@ func TestPhaseSummaryFormatting(t *testing.T) {
 	vfsPhase := wf.workflowPhases(res, false)[2]
 	if got, want := vfsPhase.summary(3), "Sorted 3 files into folders · 2 skipped: already in the library, duplicates or unreadable"; got != want {
 		t.Errorf("vfs summary after a skip: got %q, want %q", got, want)
+	}
+
+	// more planned than found: earlier adds still wait to be copied
+	res = &Result{Roots: []string{"/root"}, Found: 1}
+	vfsPhase = wf.workflowPhases(res, false)[2]
+	if got, want := vfsPhase.summary(3), "Sorted 3 files into folders, with files from earlier adds not copied yet"; got != want {
+		t.Errorf("vfs summary over earlier adds: got %q, want %q", got, want)
 	}
 }
 

@@ -46,11 +46,13 @@ wandersort copy --dry-run`,
 // copyResult is the copy command's --json result.
 type copyResult struct {
 	jsonOutcome
-	Report  string `json:"report,omitempty"`
-	Copied  int    `json:"copied"`
-	Failed  int    `json:"failed"`
-	NotRead int    `json:"notRead"`
-	Bytes   int64  `json:"bytes"`
+	Report string `json:"report,omitempty"`
+	Copied int    `json:"copied"`
+	// WouldCopy is what a dry run would copy; it copies nothing.
+	WouldCopy int   `json:"wouldCopy,omitempty"`
+	Failed    int   `json:"failed"`
+	NotRead   int   `json:"notRead"`
+	Bytes     int64 `json:"bytes"`
 	// Targets is where a dry run would place each file, library-relative.
 	Targets []string `json:"targets,omitempty"`
 }
@@ -88,6 +90,9 @@ func (a *app) copyPlain(dryRun bool, res *copyResult) error {
 	done, err := a.Copy(ctx, opts)
 	rep, left := done.Report, done.NotRead
 	res.Copied, res.Failed, res.Bytes, res.NotRead, res.Report = rep.Done, rep.Failed, rep.Bytes, len(left), done.Page
+	if dryRun {
+		res.Copied, res.WouldCopy = 0, rep.Done
+	}
 	defer a.reportLeftBehind(left)
 	if !a.jsonOut {
 		for _, t := range res.Targets {

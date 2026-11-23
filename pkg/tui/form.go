@@ -202,8 +202,24 @@ func (m *FormModel) seedInput() {
 		m.ti.SetValue(*f.Value)
 	}
 	m.ti.Placeholder = f.Placeholder
+	m.fitInput()
 	m.ti.CursorEnd()
 	m.refreshSuggestions()
+}
+
+// fitInput sizes the text input to the room beside its label, so a long value
+// scrolls to keep the cursor in sight rather than running off the screen.
+func (m *FormModel) fitInput() {
+	label := ""
+	if m.Current < len(m.Fields) && m.Fields[m.Current].Kind == FieldGroup {
+		if f := m.active(); f != nil {
+			label = labelled(f.Title)
+		}
+	}
+	// the input's indent, with room for a wrapping frame, and its cursor cell
+	const indent, cursor = 6, 1
+	m.ti.Width = max(m.bodyW()-indent-ansi.StringWidth(label)-ansi.StringWidth(Prompt())-cursor, 0)
+	m.ti.SetCursor(m.ti.Position())
 }
 
 // fillSuggestion writes the picked completion into the input.
@@ -386,6 +402,7 @@ func (m FormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.w = msg.Width
 		m.h = msg.Height
+		m.fitInput()
 	}
 
 	// Update the active input (a plain field or a group's focused sub-input).

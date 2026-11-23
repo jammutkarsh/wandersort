@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jammutkarsh/wandersort/pkg/human"
 	"github.com/jammutkarsh/wandersort/pkg/path"
@@ -185,6 +186,9 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
+		// a long path scrolls to keep the cursor in sight: prompt and cursor cell
+		m.ti.Width = max(m.w-ansi.StringWidth(Prompt())-1, 0)
+		m.ti.SetCursor(m.ti.Position())
 		return m, nil
 	case HomeErrMsg:
 		return m, m.show(msg.Err, "")
@@ -349,6 +353,9 @@ func (m *HomeModel) Add(dirs ...string) {
 }
 
 // drop removes one folder.
+// Folders is the folders listed to add.
+func (m HomeModel) Folders() []string { return slices.Clone(m.added) }
+
 func (m *HomeModel) drop(i int) {
 	if i < 0 || i >= len(m.added) {
 		return
@@ -513,7 +520,7 @@ func (m HomeModel) libraryLines() []string {
 func (m HomeModel) footer() string {
 	var b strings.Builder
 	if m.note != "" {
-		b.WriteString(row(OK.Render("✓ ")+DimText.Render(m.note), "", m.w))
+		b.WriteString(errorLines(OK.Render("✓ ")+DimText.Render(m.note), m.w)) // wrapped: a library's name ends it
 		b.WriteString("\n")
 	}
 	if m.err != nil {

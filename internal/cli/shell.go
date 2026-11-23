@@ -370,13 +370,21 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.libraryBefore = dir
 			m.screens[tabReview] = nil
 			m.screens[tabCopy] = nil
+			// the Add tab's last results were the old library's; the folders listed stay
+			var listed []string
+			if h, ok := m.screens[tabScan].(tui.HomeModel); ok {
+				listed = h.Folders()
+			}
+			home := m.a.newHomeScreen(m.ctx, nil)
+			home.Add(listed...)
+			placed := m.place(tabScan, home)
 			m.refresh()
 			note := m.forward(tabScan, tui.HomeNoteMsg{Text: "Now using the library " + path.New().Friendly(dir)})
 			if retry := m.pendingScan; retry != nil {
 				m.pendingScan = nil
-				return m, tea.Batch(note, msgCmd(*retry))
+				return m, tea.Batch(placed, note, msgCmd(*retry))
 			}
-			return m, note
+			return m, tea.Batch(placed, note)
 		}
 		// a row of the settings list saved: re-plan if it changed anything
 		return m, m.settingsSaved()
@@ -454,6 +462,7 @@ func (m shellModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.forward(tabScan, tui.HomeNoteMsg{Text: explain.Error(msg.err)})
 		}
 		if msg.err != nil {
+			m.refresh() // a library that refused to open shuts Organise
 			return m, m.forward(tabScan, tui.HomeErrMsg{Err: msg.err})
 		}
 		m.tab = tabReview
@@ -1011,14 +1020,17 @@ func (a *app) newScanScreen(session context.Context, paths []string, force bool)
 // is opened first so the list shows (and saves back to) its own settings; with
 // none, it shows the defaults and the first save creates the library.
 func (a *app) newSettingsScreen(ctx context.Context) (tui.Tab, error) {
+	note := "Changes apply to files not copied yet. Copied files stay where they are."
 	if a.DB() == nil && a.LibraryExists() {
-		if err := a.Open(ctx); err != nil {
+		if err := a.Open(ctx); errors.Is(err, library.ErrClosing) {
 			return nil, err
+		} else if err != nil {
+			// still shown: the library folder row is the way to another library
+			note = "This library can't be opened, so these are the defaults. Pick another library folder, or fix this one first."
 		}
 	}
 	geonames := func() (*location.Resolver, error) { return a.Deps.LocationNow() }
-	return tui.NewSettingsModel(a.settingsRows(ctx, geonames),
-		"Changes apply to files not copied yet. Copied files stay where they are."), nil
+	return tui.NewSettingsModel(a.settingsRows(ctx, geonames), note), nil
 }
 
 // runRoot is bare `wandersort`: the shell, or help with --plain or a piped

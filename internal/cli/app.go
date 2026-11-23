@@ -16,6 +16,7 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/core/library"
 	"github.com/jammutkarsh/wandersort/pkg/core/workflow"
+	"github.com/jammutkarsh/wandersort/pkg/explain"
 	"github.com/jammutkarsh/wandersort/pkg/install"
 	"github.com/jammutkarsh/wandersort/pkg/location"
 	"github.com/jammutkarsh/wandersort/pkg/lock"
@@ -43,7 +44,10 @@ type app struct {
 
 func Execute(version string) error {
 	a := &app{Version: version}
-	err := withHint(a.newRootCmd().Execute())
+	err := a.newRootCmd().Execute()
+	if a.Session != nil {
+		err = withHint(err, a.OutputDir())
+	}
 	defer func() { // after the result below, which may still log
 		if a.Session != nil {
 			a.LogFile().Close()
@@ -60,15 +64,25 @@ func Execute(version string) error {
 	return a.emitJSON(&jsonOutcome{}, time.Time{}, err)
 }
 
-// withHint adds the command that helps with err, where there is one; core
-// errors name no command, since other front ends have their own way.
-func withHint(err error) error {
-	hint := tui.Hint(err)
+// withHint words err that a command helps with as a sentence, then that
+// command for the library in dir; core errors name no command, since other
+// front ends have their own way.
+func withHint(err error, dir string) error {
+	hint := tui.HintIn(err, dir)
 	if hint == "" {
 		return err
 	}
-	return fmt.Errorf("%w\n%s", err, hint)
+	return &hintedError{text: explain.Error(err) + "\n" + hint, cause: err}
 }
+
+// hintedError is an error worded for the terminal; its cause still decides the exit code.
+type hintedError struct {
+	text  string
+	cause error
+}
+
+func (e *hintedError) Error() string { return e.text }
+func (e *hintedError) Unwrap() error { return e.cause }
 
 // noLibrary is why a command that needs a library can't run: add makes one,
 // unless it is a known library whose drive is unplugged, or the folder holds a
