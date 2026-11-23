@@ -39,11 +39,12 @@ func SeedFile(t testing.TB, d *db.DB, id int64, dir, name string, size int64) {
 }
 
 // SeedHash gives fileID the file_metadata row a scan would have written,
-// holding only its hash — what execute verifies a copy against.
+// holding only its hashes: hash as the SHA-256 a copy is verified against, and
+// an MD5 that differs from it, so reading the wrong column shows.
 func SeedHash(t testing.TB, d *db.DB, fileID int64, hash string) {
 	t.Helper()
 	if _, err := d.SQL.ExecContext(context.Background(),
-		`INSERT INTO file_metadata (file_hash, file_id) VALUES (?, ?)`, hash, fileID); err != nil {
+		`INSERT INTO file_metadata (file_hash, file_sha256, file_id) VALUES (?, ?, ?)`, "md5-of-"+hash, hash, fileID); err != nil {
 		t.Fatal(err)
 	}
 }

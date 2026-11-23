@@ -281,7 +281,7 @@ func assignTargetPaths(ctx context.Context, masters []masterFile, cfg Config) {
 	// 7. Build each targetPath: a directory per file, then a collision-free
 	// file name in it.
 	for i := range masters {
-		masters[i].orderTime, masters[i].orderHash = masters[i].takenAt, masters[i].FileHash
+		masters[i].orderTime, masters[i].orderHash = masters[i].takenAt, masters[i].contentID()
 	}
 	grouped := captureDirs(masters, skip, cfg)
 	pairLiveVideos(masters)
@@ -790,7 +790,7 @@ func captureDirs(masters []masterFile, skip map[string]bool, cfg Config) map[int
 			// the leader's time and hash also rank the member when names
 			// collide, so a sidecar keeps its photo's suffix
 			masters[i].orderTime = masters[leader].takenAt
-			masters[i].orderHash = masters[leader].FileHash
+			masters[i].orderHash = masters[leader].contentID()
 			masters[i].pairKey = key
 			// and its folder date, or a sidecar (file mtime only) lands in a
 			// different month than its path

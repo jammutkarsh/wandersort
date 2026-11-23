@@ -28,6 +28,7 @@ var explanations = []struct {
 	{syscall.EIO, "The drive stopped answering. Check its cable, then try again."},
 	{syscall.ENODEV, "The drive stopped answering. Check its cable, then try again."},
 	{config.ErrBackupOnly, "This library's database is missing, but its backup is there. Restore the database from the backup to open it."},
+	{db.ErrOldHashes, "This library was made by an older version and can't be opened. Your photos in it are not affected. Start a new library in another folder, then add this one's folder to it, and any folders you hadn't finished copying."},
 }
 
 // Error is err as a sentence a person can act on. Errors it does not know

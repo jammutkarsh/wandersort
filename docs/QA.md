@@ -49,13 +49,14 @@ Settings and the plan are written together: a library never holds settings its p
 16. `[A]` folder with `.DS_Store`, `.Spotlight-V100`, `._*` AppleDouble files, `.photoslibrary` bundles → skipped, no warnings flood.
 17. `[A]` mixed-case extensions (`.JPG`, `.HeIc`), no-extension files, `.txt` → media classified, others skipped, no crash.
 18. `[A]` same file copied 3× → one duplicate group, one master; the copy in a descriptively named folder wins.
-19. `[A]` 0-byte file and a >1 GB file → both hashed; every `file_hash` is `blake3:<64 hex>`.
+19. `[A]` 0-byte file and a >1 GB file → both hashed; every `file_hash` is `md5:<32 hex>` and every `file_sha256` is `sha256:<64 hex>`.
 20. `[A]` an unreadable file (`chmod 000`) → run finishes with `1 file could not be read`; `admin report` ships a `READ/open/permission-denied` row; fixed and re-added → read, error row gone.
 21. `[A]` `.AAE` sidecars → no exiftool call, still a metadata row, no error row.
 22. `[H]` `esc` during Metadata, then add again → only unread files are read.
 23. `[H]` external spinning disk → `Storage detected … class=rotational concurrentReads=1`; SSD files read first in a mixed library.
 24. `[H]` output volume smaller than the library → "may be too small" warning at the end of the run.
 25. `[A]` add the same unchanged folder twice → identical plan, no duplicate proposals.
+25a. `[A]` a library v0.2.1-beta made, opened with this build → refused, exit 1, with the `wandersort add -o … -p …` command; v0.2.1-beta still opens it; that command copies its photos into a new library and `check --full` is clean.
 26. `[A]` delete files on disk, add again → their rows are gone; add new files → only they are read.
 
 ## 4. Plan (vfs)

@@ -223,3 +223,12 @@ func TestElectMastersKeepsInputOrder(t *testing.T) {
 		t.Errorf("duplicate groups = %d, want 0 — every hash is unique", groups)
 	}
 }
+
+// Files sharing only an MD5 are two files: both are kept.
+func TestElectMastersKeepsMD5Twins(t *testing.T) {
+	a, b := dupe("md5", "/a", "IMG_1.jpg"), dupe("md5", "/b", "IMG_2.jpg")
+	a.FileSHA256, b.FileSHA256 = "sha-a", "sha-b"
+	if masters, groups := electMasters([]masterFile{a, b}); len(masters) != 2 || groups != 0 {
+		t.Errorf("elected %v, %d groups; want both and no group", electedNames(masters), groups)
+	}
+}

@@ -400,10 +400,14 @@ func (m *HomeModel) addDropped(text string) (cmd tea.Cmd, added bool) {
 	return nil, len(dirs) > 0
 }
 
-// show puts up a warning or a note (one replaces the other) for messageFor.
+// show puts up a warning or a note (one replaces the other) for messageFor; one
+// with a command to run stays until it is replaced.
 func (m *HomeModel) show(err error, note string) tea.Cmd {
 	m.err, m.note = err, note
 	m.shown++
+	if Hint(err) != "" {
+		return nil
+	}
 	shown := m.shown
 	return tea.Tick(messageFor, func(time.Time) tea.Msg { return messageExpiredMsg{shown} })
 }

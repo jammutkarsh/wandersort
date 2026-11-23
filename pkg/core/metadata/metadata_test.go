@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -365,7 +367,7 @@ func TestExtractor(t *testing.T) {
 				t.Errorf("sidecar state = %s, want %s", got, stateRead)
 			}
 			var hash string
-			if err := d.SQL.Get(&hash, `SELECT file_hash FROM file_metadata WHERE file_id = 1`); err != nil {
+			if err := d.SQL.Get(&hash, `SELECT file_sha256 FROM file_metadata WHERE file_id = 1`); err != nil {
 				t.Fatal(err)
 			}
 			want, err := HashFile(context.Background(), filepath.Join(root, "IMG_0001.AAE"))
@@ -373,7 +375,7 @@ func TestExtractor(t *testing.T) {
 				t.Fatal(err)
 			}
 			if hash != want {
-				t.Errorf("sidecar file_hash = %s, want %s", hash, want)
+				t.Errorf("sidecar file_sha256 = %s, want %s", hash, want)
 			}
 		}},
 		// A file that already has a metadata row is read: nothing to do, and
@@ -398,7 +400,7 @@ func TestExtractor(t *testing.T) {
 				t.Fatalf("Run read %d files, want 0", count)
 			}
 			var hash string
-			if err := d.SQL.Get(&hash, `SELECT file_hash FROM file_metadata WHERE file_id = 1`); err != nil {
+			if err := d.SQL.Get(&hash, `SELECT file_sha256 FROM file_metadata WHERE file_id = 1`); err != nil {
 				t.Fatal(err)
 			}
 			if hash != "earlier-hash" {
@@ -493,7 +495,7 @@ func TestExtractor(t *testing.T) {
 			}
 
 			e := mustNew(t, d, installtest.Exiftool(t), 1)
-			d.Writer.Write(e.store(1, "hash", classifier.CommonMetadata{}))
+			d.Writer.Write(e.store(1, sums{md5: "hash", sha256: "hash"}, classifier.CommonMetadata{}))
 			d.Writer.Flush()
 			if got := state(t, d, 1); got != stateRead {
 				t.Errorf("state = %s, want read", got)
@@ -523,7 +525,7 @@ func TestExtractor(t *testing.T) {
 			dbtest.SeedFile(t, d, 1, t.TempDir(), "photo.jpg", 13)
 			e := mustNew(t, d, installtest.Exiftool(t), 1)
 			for range 2 {
-				if err := d.Writer.WriteSync(context.Background(), e.store(1, "hash", classifier.CommonMetadata{})); err != nil {
+				if err := d.Writer.WriteSync(context.Background(), e.store(1, sums{md5: "hash", sha256: "hash"}, classifier.CommonMetadata{})); err != nil {
 					t.Fatalf("store: %v", err)
 				}
 			}
@@ -657,7 +659,7 @@ func TestExtractor(t *testing.T) {
 			dbtest.SeedFile(t, d, 1, t.TempDir(), "photo.jpg", 13)
 
 			e := mustNew(t, d, installtest.Exiftool(t), 1)
-			if !d.Writer.Write(e.store(1, "hash-of-photo.jpg", classifier.CommonMetadata{
+			if !d.Writer.Write(e.store(1, sums{md5: "md5-of-photo.jpg", sha256: "sha256-of-photo.jpg"}, classifier.CommonMetadata{
 				ImageWidth:       "4032",
 				ImageHeight:      "3024",
 				Orientation:      "6",
@@ -672,7 +674,8 @@ func TestExtractor(t *testing.T) {
 			d.Writer.Flush()
 
 			var row struct {
-				Hash        string   `db:"file_hash"`
+				MD5         string   `db:"file_hash"`
+				SHA256      string   `db:"file_sha256"`
 				Width       *int     `db:"exif_image_width"`
 				Lat         *float64 `db:"exif_gps_latitude"`
 				Model       *string  `db:"exif_model"`
@@ -681,13 +684,13 @@ func TestExtractor(t *testing.T) {
 				Orientation *int     `db:"exif_orientation"`
 			}
 			if err := d.SQL.Get(&row, `
-				SELECT file_hash, exif_image_width, exif_gps_latitude, exif_model,
+				SELECT file_hash, file_sha256, exif_image_width, exif_gps_latitude, exif_model,
 					exif_date_time_original, exif_create_date, exif_orientation
 				FROM file_metadata WHERE file_id = 1`); err != nil {
 				t.Fatal(err)
 			}
-			if row.Hash != "hash-of-photo.jpg" {
-				t.Errorf("file_hash = %s, want the hash the worker computed", row.Hash)
+			if row.MD5 != "md5-of-photo.jpg" || row.SHA256 != "sha256-of-photo.jpg" {
+				t.Errorf("hashes = %s, %s; want the ones the worker computed", row.MD5, row.SHA256)
 			}
 			if row.Width == nil || *row.Width != 4032 {
 				t.Errorf("exif_image_width = %v, want 4032", row.Width)
@@ -810,7 +813,7 @@ func TestExtractor(t *testing.T) {
 		}},
 		// A file of a length nothing else has is still read: placement, duplicate
 		// detection and copy verification all key on content, and a size
-		// stand-in can do none of them. Stored as blake3:<hex>
+		// stand-in can do none of them. Stored as sha256:<hex>
 		{"RunHashesAUniqueSizeFileInFull", func(t *testing.T) {
 			ctx := context.Background()
 			d := dbtest.New(t)
@@ -832,11 +835,11 @@ func TestExtractor(t *testing.T) {
 				t.Fatal(err)
 			}
 			var got string
-			if err := d.SQL.Get(&got, `SELECT file_hash FROM file_metadata WHERE file_id = 1`); err != nil {
+			if err := d.SQL.Get(&got, `SELECT file_sha256 FROM file_metadata WHERE file_id = 1`); err != nil {
 				t.Fatal(err)
 			}
-			if got != want || !strings.HasPrefix(got, "blake3:") {
-				t.Errorf("file_hash = %q, want %q (blake3:-prefixed content hash)", got, want)
+			if got != want || !strings.HasPrefix(got, "sha256:") {
+				t.Errorf("file_sha256 = %q, want %q (sha256:-prefixed content hash)", got, want)
 			}
 		}},
 	}
@@ -997,4 +1000,75 @@ func TestHashFileStopsWhenCancelled(t *testing.T) {
 	if _, err := HashFile(ctx, path); !errors.Is(err, context.Canceled) {
 		t.Errorf("HashFile after cancel = %v, want context.Canceled", err)
 	}
+}
+
+// Both hashes are the standard ones, so a value another tool reports for the
+// same bytes compares equal.
+func TestRunStoresStandardHashes(t *testing.T) {
+	d := dbtest.New(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.AAE"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dbtest.SeedFile(t, d, 1, root, "a.AAE", 5)
+	got := runHashes(t, d)
+	want := []sums{{
+		md5:    "md5:5d41402abc4b2a76b9719d911017c592",
+		sha256: "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+	}}
+	if !slices.Equal(got, want) {
+		t.Errorf("hashes = %v, want %v", got, want)
+	}
+}
+
+// A published pair: different bytes, one MD5. The scan tells them apart.
+func TestRunTellsMD5TwinsApart(t *testing.T) {
+	content, err := hex.DecodeString("d131dd02c5e6eec4693d9a0698aff95c2fcab58712467eab4004583eb8fb7f89" +
+		"55ad340609f4b30283e488832571415a085125e8f7cdc99fd91dbdf280373c5b" +
+		"d8823e3156348f5bae6dacd436c919c6dd53e2b487da03fd02396306d248cda0" +
+		"e99f33420f577ee8ce54b67080a80d1ec69821bcb6a8839396f9652b6ff72a70")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dbtest.New(t)
+	root := t.TempDir()
+	for i, name := range []string{"a.AAE", "b.AAE"} {
+		if i == 1 {
+			for _, at := range []int{19, 45, 59, 83, 109, 123} {
+				content[at] ^= 0x80
+			}
+		}
+		if err := os.WriteFile(filepath.Join(root, name), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dbtest.SeedFile(t, d, int64(i+1), root, name, int64(len(content)))
+	}
+	got := runHashes(t, d)
+	const md5OfBoth = "md5:79054025255fb1a26e4bc422aef54eb4"
+	if len(got) != 2 || got[0].md5 != md5OfBoth || got[1].md5 != md5OfBoth || got[0].sha256 == got[1].sha256 {
+		t.Errorf("hashes = %v; want MD5 %s twice and two SHA-256s", got, md5OfBoth)
+	}
+}
+
+// runHashes reads every seeded file and returns their stored hashes by id.
+func runHashes(t *testing.T, d *db.DB) []sums {
+	t.Helper()
+	if _, err := mustNew(t, d, installtest.Exiftool(t), 1).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	var rows []struct {
+		MD5    string `db:"file_hash"`
+		SHA256 string `db:"file_sha256"`
+	}
+	if err := d.SQL.Select(&rows, `SELECT file_hash, file_sha256 FROM file_metadata ORDER BY file_id`); err != nil {
+		t.Fatal(err)
+	}
+	var out []sums
+	for _, r := range rows {
+		out = append(out, sums{md5: r.MD5, sha256: r.SHA256})
+	}
+	return out
 }

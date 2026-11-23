@@ -5,6 +5,8 @@ package metadata
 
 import (
 	"context"
+	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
@@ -29,15 +31,18 @@ import (
 	"github.com/jammutkarsh/wandersort/pkg/logger"
 	wspath "github.com/jammutkarsh/wandersort/pkg/path"
 	"github.com/jammutkarsh/wandersort/pkg/volume"
-	"lukechampine.com/blake3"
 )
 
-// hashOutputSize is the output length of BLAKE3-256 in bytes
-const hashOutputSize = 32
+// Every stored hash names its algorithm, so a later change of algorithm can
+// never be mistaken for a match.
+const (
+	md5Prefix    = "md5:"
+	sha256Prefix = "sha256:"
+)
 
-// hashPrefix names the algorithm in every stored file_hash, so a later change
-// of algorithm can never be mistaken for a match
-const hashPrefix = "blake3:"
+// sums are a file's two hashes. MD5 is what groups files; SHA-256 confirms the
+// match, and is what a copy and a full check verify against.
+type sums struct{ md5, sha256 string }
 
 // maxReadBudget caps concurrent byte reads: random-read IOPS plateau around
 // 16-32 outstanding requests. Only reads are capped; exiftool is CPU-bound.
@@ -409,7 +414,7 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 		}
 	}()
 
-	sum, err := e.readFile(ctx, file)
+	read, err := e.readFile(ctx, file)
 	if err != nil {
 		// A cancelled pipeline aborts the budget wait rather than the
 		// read; that is shutdown, not a bad file, so don't record it.
@@ -456,7 +461,7 @@ func (e *Extractor) readOne(ctx context.Context, file fileRecord, extracted *ato
 	e.log.Info("Reading", logger.StreamKey, true,
 		"file", e.path.RelativeToHome(file.absPath), "extracted", extracted.Add(1), "total", total)
 
-	if !e.db.Writer.Write(e.store(file.id, sum, meta)) {
+	if !e.db.Writer.Write(e.store(file.id, read, meta)) {
 		e.log.Warn("Bulk writer closed; dropping metadata write", "fileId", file.id)
 		return false
 	}
@@ -470,19 +475,20 @@ var ErrChangedSinceScan = errors.New("file changed since it was scanned")
 
 // readFile gates the byte read on the storage budget. exiftool stays outside
 // the gate: it reads a warm header and is CPU-bound.
-func (e *Extractor) readFile(ctx context.Context, file fileRecord) (string, error) {
+func (e *Extractor) readFile(ctx context.Context, file fileRecord) (sums, error) {
 	if err := e.reads.Acquire(ctx, file.cost); err != nil {
-		return "", err // cancelled
+		return sums{}, err // cancelled
 	}
 	defer e.reads.Release(file.cost)
-	sum, n, err := hashFile(ctx, file.absPath)
+	m, s := md5.New(), NewHasher()
+	n, err := hashInto(ctx, file.absPath, io.MultiWriter(m, s))
 	if err != nil {
-		return "", err
+		return sums{}, err
 	}
 	if n != file.size {
-		return "", fmt.Errorf("%w: read %d bytes, scanned %d", ErrChangedSinceScan, n, file.size)
+		return sums{}, fmt.Errorf("%w: read %d bytes, scanned %d", ErrChangedSinceScan, n, file.size)
 	}
-	return sum, nil
+	return sums{md5: md5Prefix + hex.EncodeToString(m.Sum(nil)), sha256: HashString(s)}, nil
 }
 
 // hashBufferSize is bytes per read syscall: 32× fewer syscalls than io.Copy's
@@ -498,51 +504,49 @@ var hashBuffers = sync.Pool{
 	},
 }
 
-// NewHasher returns the hasher every stored file_hash is computed with.
-func NewHasher() hash.Hash { return blake3.New(hashOutputSize, nil) }
+// NewHasher returns the hasher every stored file_sha256 is computed with.
+func NewHasher() hash.Hash { return sha256.New() }
 
-// HashString is h's sum as file_hash stores it: algorithm prefix, then hex.
+// HashString is h's sum as file_sha256 stores it: algorithm prefix, then hex.
 func HashString(h hash.Hash) string {
-	return hashPrefix + hex.EncodeToString(h.Sum(make([]byte, 0, hashOutputSize)))
+	return sha256Prefix + hex.EncodeToString(h.Sum(nil))
 }
 
-// HashFile computes a file's file_hash, streaming it through a pooled buffer
+// HashFile computes a file's file_sha256, streaming it through a pooled buffer
 // so memory stays flat whatever the file size; it stops between reads once
 // ctx ends.
 func HashFile(ctx context.Context, filePath string) (string, error) {
-	sum, _, err := hashFile(ctx, filePath)
-	return sum, err
+	h := NewHasher()
+	if _, err := hashInto(ctx, filePath, h); err != nil {
+		return "", err
+	}
+	return HashString(h), nil
 }
 
-// hashFile is HashFile and the bytes it hashed.
-func hashFile(ctx context.Context, filePath string) (string, int64, error) {
+// hashInto streams filePath into w and returns the bytes it read.
+func hashInto(ctx context.Context, filePath string, w io.Writer) (int64, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to open file: %w", err)
+		return 0, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 	// ContextReader also hides *os.File's WriteTo: io.CopyBuffer prefers it,
 	// and its fallback ignores our buffer, silently
-	return hashReader(atomicfile.ContextReader{Ctx: ctx, R: file})
-}
-
-// hashReader hashes r through a pooled buffer; r must not implement WriterTo.
-func hashReader(r io.Reader) (string, int64, error) {
-	hasher := NewHasher()
+	r := atomicfile.ContextReader{Ctx: ctx, R: file}
 
 	buf := hashBuffers.Get().(*[]byte)
 	defer hashBuffers.Put(buf)
-	n, err := io.CopyBuffer(hasher, r, *buf)
+	n, err := io.CopyBuffer(w, r, *buf)
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to hash file: %w", err)
+		return 0, fmt.Errorf("failed to hash file: %w", err)
 	}
-	return HashString(hasher), n, nil
+	return n, nil
 }
 
-// store writes the hash and the EXIF columns as one row — which is what marks
+// store writes the hashes and the EXIF columns as one row — which is what marks
 // the file read — and clears the READ failure the row's existence supersedes.
 // An upsert: a batch whose commit failed may have landed, and the writer replays it.
-func (e *Extractor) store(fileID int64, sum string, meta classifier.CommonMetadata) db.DBOperation {
+func (e *Extractor) store(fileID int64, read sums, meta classifier.CommonMetadata) db.DBOperation {
 	isScreenshot := 0
 	if meta.IsScreenshot {
 		isScreenshot = 1
@@ -555,15 +559,16 @@ func (e *Extractor) store(fileID int64, sum string, meta classifier.CommonMetada
 		}
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO file_metadata (
-				file_hash, file_id,
+				file_hash, file_sha256, file_id,
 				exif_image_width, exif_image_height, exif_orientation,
 				exif_gps_latitude, exif_gps_longitude,
 				exif_make, exif_model,
 				exif_date_time_original, exif_create_date, exif_creation_date, exif_media_create_date,
 				is_screenshot
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (file_id) DO UPDATE SET
 				file_hash = excluded.file_hash,
+				file_sha256 = excluded.file_sha256,
 				exif_image_width = excluded.exif_image_width,
 				exif_image_height = excluded.exif_image_height,
 				exif_orientation = excluded.exif_orientation,
@@ -576,7 +581,8 @@ func (e *Extractor) store(fileID int64, sum string, meta classifier.CommonMetada
 				exif_creation_date = excluded.exif_creation_date,
 				exif_media_create_date = excluded.exif_media_create_date,
 				is_screenshot = excluded.is_screenshot`,
-			sum,
+			read.md5,
+			read.sha256,
 			fileID,
 			db.IntOrNil(meta.ImageWidth),
 			db.IntOrNil(meta.ImageHeight),

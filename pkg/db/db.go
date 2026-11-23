@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -48,6 +49,32 @@ type DB struct {
 // and starts its writer. ctx bounds the backup taken before a migration.
 func New(ctx context.Context, dbPath string, log logger.Logger) (*DB, error) {
 	return openAppDB(ctx, dbPath, log)
+}
+
+// ErrOldHashes means a library's files are known by BLAKE3 hashes, which equal
+// no MD5: opened, every photo would look new and be copied again.
+var ErrOldHashes = errors.New("this library is from an older version that this one can't read")
+
+// refuseOldHashes fails with ErrOldHashes on a library holding BLAKE3 hashes.
+func refuseOldHashes(ctx context.Context, d *sql.DB) error {
+	var scanned bool
+	if err := d.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'file_metadata')`).Scan(&scanned); err != nil {
+		return fmt.Errorf("look for recorded hashes: %w", err)
+	}
+	if !scanned {
+		return nil
+	}
+	var old bool
+	// a range rather than LIKE, so the hash index answers it; ';' follows ':'
+	if err := d.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM file_metadata WHERE file_hash >= 'blake3:' AND file_hash < 'blake3;')`).Scan(&old); err != nil {
+		return fmt.Errorf("look at recorded hashes: %w", err)
+	}
+	if old {
+		return ErrOldHashes
+	}
+	return nil
 }
 
 // Close doesn't Checkpoint: it runs on every quit, including a bare cancel
@@ -119,6 +146,12 @@ func openAppDB(ctx context.Context, dbPath string, log logger.Logger) (*DB, erro
 	log.Info("Database connection established", "path", dbPath)
 
 	sqlxDB := sqlx.NewDb(sqlDB, "sqlite")
+
+	// first of all: the version that made a refused library still opens it
+	if err := refuseOldHashes(ctx, sqlDB); err != nil {
+		sqlxDB.Close()
+		return nil, fmt.Errorf("appDB: %w", err)
+	}
 
 	// back up an existing library before migrating it; a newer schema is
 	// refused

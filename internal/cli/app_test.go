@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -86,8 +87,16 @@ func TestNoLibraryNamesTheBackup(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, db.BackupFileName), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := withRestoreHint(a.noLibrary()); !errors.Is(err, config.ErrBackupOnly) || !strings.Contains(err.Error(), tui.RestoreHint) {
+	if err := withHint(a.noLibrary()); !errors.Is(err, config.ErrBackupOnly) || !strings.Contains(err.Error(), tui.RestoreHint) {
 		t.Errorf("backup only = %v, want the restore command", err)
+	}
+}
+
+// A library this version can't read is left alone, so the error names the way on.
+func TestOldHashesNameTheNewLibraryCommand(t *testing.T) {
+	err := withHint(fmt.Errorf("app db: %w", db.ErrOldHashes))
+	if !errors.Is(err, db.ErrOldHashes) || !strings.Contains(err.Error(), tui.NewLibraryHint) {
+		t.Errorf("err = %v, want the command for a new library", err)
 	}
 }
 

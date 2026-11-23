@@ -42,7 +42,7 @@ One file per command, plus `app.go` (the `app` struct embedding `*library.Sessio
 
 - `workflow`: `RunScan(ctx, paths, force)` runs scan → metadata → vfs synchronously; refuses roots overlapping the library. `Deps.OnProgress` hears typed progress (`Progress{Phase, Done, Total}`) for the walk, the read and the plan step's start; the terminal UI reads the same from log events.
 - `scanner`: walks roots into `file_registry`. Each scan has a counter stamp; rows under a clean root with an older stamp are swept (hard delete, dependants cascade). A file is its volume plus path (two cards mounted in turn at one path are different files); a changed file (size/mtime) is a new row.
-- `metadata`: the only pass that reads bytes: BLAKE3 hash then exiftool per file, one `file_metadata` row. Reads are throttled by storage class; volumes drain fastest first.
+- `metadata`: the only pass that reads bytes: MD5 and SHA-256 in one read, then exiftool per file, one `file_metadata` row. Reads are throttled by storage class; volumes drain fastest first.
 - `vfs`: plans every unplaced master. `elect.go` picks one copy per hash each run; `plan.go`'s `Plan` derives facts, resolves locations, then `assignTargetPaths` (numbered steps, order is the rule). Plan is persisted as `folder_nodes` (folder tree with ids and `bounds`) + `virtual_fs_entries`. `route.go` sends new files into matching placed folders. `draft.go` is the review edit journal (`.wandersort.draft`); each edit carries the fingerprint of the plan it was made on and replays only onto that plan; `edit.go` holds merge/drop/flatten: a folder's `FileCount` is its own files plus its subfolders' (`TestRandomEditsCopyWhatTheReviewShows`).
 - `execute` (the `copy` command's engine): `Run` checks space, applies the draft, backs up the DB, transfers each pending row (`land.go`: hash-verified copy that never replaces an existing file), then forgets duplicates of placed files. Sequential and resumable.
 - `verify`: `check`'s engine; forgets placed files that are gone, records damage as `VERIFY` errors.
@@ -82,6 +82,7 @@ One file per command, plus `app.go` (the `app` struct embedding `*library.Sessio
 - Connection pragmas live in the DSN (`appDSN`), applied in lexicographic order: none before `locking_mode` may touch the database, or SQLite maps a `-shm` file (SIGBUS when a drive drops). `synchronous=FULL`, `mmap_size=0`, foreign keys asserted.
 - Every write goes through `db.Writer` (`Write` batched, `WriteSync` when the outcome matters); `DB.SQL` is for reads. `Flush` returns writes lost since the last flush.
 - `BulkWriter` ops must touch nothing outside their transaction (failed batches replay).
+- Two files are the same only if both hashes are: `file_hash` (`md5:<hex>`) finds the match, `file_sha256` (`sha256:<hex>`) confirms it. Copies and `check --full` verify with SHA-256 alone (`metadata.HashFile`). A library or backup holding `blake3:` hashes is refused before anything is migrated (`db.ErrOldHashes`).
 - Releases are out: a migration never changes once merged (`TestMigrationsNeverChange` pins each one); add a new one, and test it on a library the last release made.
 - Imports point down. `pkg/path`, `pkg/logger`, `pkg/lock`, `pkg/atomicfile`, `pkg/human` import nothing else in the project.
 - Run the CLI with `HOME` set to a scratch folder: `--output-path` becomes the default library.

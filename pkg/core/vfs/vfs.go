@@ -146,7 +146,7 @@ func splitLast(p string) (dir, last string) {
 
 // masterColumns is what loadMasters and placedTimes read of a file.
 const masterColumns = `
-	SELECT fr.id, fr.file_dir, fr.file_name, fm.file_hash, fr.media_type, fr.file_extension, fr.file_modified_at,
+	SELECT fr.id, fr.file_dir, fr.file_name, fm.file_hash, fm.file_sha256, fr.media_type, fr.file_extension, fr.file_modified_at,
 		fm.exif_image_width, fm.exif_image_height, fm.exif_orientation,
 		fm.exif_gps_latitude, fm.exif_gps_longitude,
 		fm.exif_make, fm.exif_model, fm.exif_date_time_original, fm.exif_create_date,
@@ -177,8 +177,8 @@ func (v *VFS) placedTimes(ctx context.Context) ([]time.Time, error) {
 func (v *VFS) loadMasters(ctx context.Context) ([]masterFile, error) {
 	var rows []masterFile
 	if err := v.db.SQL.SelectContext(ctx, &rows, masterColumns+`
-		WHERE fr.placed = 0 AND fm.file_hash NOT IN (
-			SELECT fm2.file_hash FROM file_metadata fm2
+		WHERE fr.placed = 0 AND (fm.file_hash, fm.file_sha256) NOT IN (
+			SELECT fm2.file_hash, fm2.file_sha256 FROM file_metadata fm2
 			JOIN file_registry fr2 ON fr2.id = fm2.file_id
 			WHERE fr2.placed = 1)
 		ORDER BY fr.file_dir, fr.file_name`); err != nil {
