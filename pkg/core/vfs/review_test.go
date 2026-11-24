@@ -513,3 +513,45 @@ func TestReviewConfirmMergesAcrossYearEnd(t *testing.T) {
 		}
 	}
 }
+
+// TestNodeFilesListsGatheredFilesOnce covers a gathered month: its days ride
+// along on MergedIDs, yet their files already sit under the month in the
+// database, so walking both listed every file twice and peek copied each twice.
+func TestNodeFilesListsGatheredFilesOnce(t *testing.T) {
+	h := newHarness(t)
+	h.addFile(t, "dump/A.JPG", "IMAGE", metaWith("2024:06:03 10:00:00", 0, 0, 4000, 3000))
+	h.addFile(t, "dump/B.JPG", "IMAGE", metaWith("2024:06:09 10:00:00", 0, 0, 4000, 3000))
+	h.build(t, DefaultConfig(), nil)
+
+	ctx := context.Background()
+	tree, err := BuildTree(ctx, h.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var month int64
+	var walk func([]Node)
+	walk = func(ns []Node) {
+		for i := range ns {
+			if ns[i].Level == LevelMonth && len(ns[i].Children) > 0 {
+				month = ns[i].ID
+			}
+			walk(ns[i].Children)
+		}
+	}
+	walk(tree)
+	if month == 0 {
+		t.Fatal("no month with day folders in the proposal")
+	}
+	tree, _, _, err = flattenNodes(tree, []int64{month})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := NodeFiles(ctx, h.d, *FindNode(tree, month))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Errorf("NodeFiles = %v, want A.JPG and B.JPG once each", files)
+	}
+}

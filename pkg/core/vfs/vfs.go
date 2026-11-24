@@ -357,16 +357,22 @@ func nullableID(id int64) any {
 
 // NodeFiles is every file proposed under node, as native paths ready to open.
 // A merged node's files still live under the folded-away folders until
-// Confirm rewrites them, so it looks under each.
+// Confirm rewrites them, so it looks under each. A gathered or removed
+// folder's ID is still below node in the database, so its files would come
+// up twice; each is listed once.
 func NodeFiles(ctx context.Context, database *db.DB, node Node) ([]string, error) {
 	var files []string
+	seen := map[string]bool{}
 	for _, id := range append([]int64{node.ID}, node.MergedIDs...) {
 		under, err := FilesUnder(ctx, id, database)
 		if err != nil {
 			return nil, err
 		}
 		for _, f := range under {
-			files = append(files, wspath.FromSourcePath(f))
+			if !seen[f] {
+				seen[f] = true
+				files = append(files, wspath.FromSourcePath(f))
+			}
 		}
 	}
 	return files, nil
