@@ -1,11 +1,10 @@
-package cli
+package config
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/jammutkarsh/wandersort/pkg/config"
 	"github.com/jammutkarsh/wandersort/pkg/path"
 )
 
@@ -13,9 +12,9 @@ import (
 // folders would otherwise scroll a dropdown nobody reads.
 const maxDirSuggestions = 25
 
-// suggestDirs completes directories like a shell, home-relative. Shared by the
-// output-path field and the Add tab's folder input.
-func suggestDirs(paths *path.Resolver, typed string) []string {
+// SuggestDirs completes directories like a shell, home-relative: the
+// library-folder field and the Add tab's folder input.
+func SuggestDirs(paths *path.Resolver, typed string) []string {
 	typed = paths.ExpandPath(strings.TrimSpace(typed))
 	if typed == "" {
 		return nil
@@ -27,7 +26,7 @@ func suggestDirs(paths *path.Resolver, typed string) []string {
 		dir, base = typed, ""
 	}
 	// nothing below a library is offered: it is no source to scan and no place for another library
-	if _, inside := config.InsideLibrary(filepath.Join(dir, "child")); inside {
+	if _, inside := InsideLibrary(filepath.Join(dir, "child")); inside {
 		return nil
 	}
 	entries, err := os.ReadDir(dir)

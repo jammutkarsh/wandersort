@@ -80,10 +80,13 @@ func (m *Model) applyRename(name string) {
 	if strings.TrimSpace(name) == "" || name == old {
 		return
 	}
-	if _, ok := m.applyEdit(vfs.Edit{Op: vfs.OpRename, Node: id, From: old, To: name}, func(o vfs.Outcome) string {
+	if out, ok := m.applyEdit(vfs.Edit{Op: vfs.OpRename, Node: id, From: old, To: name}, func(o vfs.Outcome) string {
+		if o.Combined {
+			return fmt.Sprintf("Combined %s into %s", old, o.Name)
+		}
 		return fmt.Sprintf("Renamed %s to %s", old, o.Name)
 	}); ok {
-		m.focusNode(id) // the re-sort may have moved it
+		m.focusNode(out.Focus) // the re-sort may have moved it; a combine leaves the sibling
 	}
 }
 

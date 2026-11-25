@@ -190,10 +190,17 @@ func (m ScanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sl.FinishRemaining(false, "done")
 		m.state = scanFinished
+		// straight into Organise once the review lands; warnings keep this
+		// screen up so they're read first
+		m.wantReview = len(m.warnings) == 0
+		switch {
 		// only now: until the scan has returned it still holds the library,
 		// and the session refuses a review beside it
-		if m.review == nil && m.reviewErr == nil && m.cfg.ReviewNext != nil {
+		case m.review == nil && m.reviewErr == nil && m.cfg.ReviewNext != nil:
 			return m, m.fetchReview()
+		case m.wantReview && m.review != nil:
+			review := m.review
+			return m, func() tea.Msg { return SwitchMsg{Next: review, Open: true} }
 		}
 		return m, m.nothingNew()
 	}

@@ -247,6 +247,7 @@ type Outcome struct {
 	Names    []string // drop, flatten: the folders acted on, in order
 	Focus    int64    // the folder the edit leaves in view: the renamed one, the merge's survivor
 	Absorbed int      // flatten: subfolders folded in
+	Combined bool     // rename: onto a sibling's name, so the two became one (Name is the survivor's)
 }
 
 // Apply runs one edit and journals it (synced) before returning. A refused edit
@@ -337,7 +338,9 @@ func applyEdit(tree []Node, e Edit) ([]Node, Outcome, error) {
 		}
 		for _, sib := range siblings {
 			if sib.ID != n.ID && nameKey(sib.Name) == nameKey(name) {
-				return tree, Outcome{}, ErrNameTaken
+				// the copy would make them one folder anyway: they become one now, the sibling's name winning
+				t, id, merged, parent, err := mergeNodes(tree, []int64{sib.ID, n.ID})
+				return t, Outcome{Focus: id, Name: merged, Parent: parent, Combined: true}, err
 			}
 		}
 		n.Name = name

@@ -136,7 +136,7 @@ func (f *settingsForm) libraryField() *tui.Field {
 			if strings.TrimSpace(typed) == "" {
 				return suggestions
 			}
-			return suggestDirs(f.paths, typed)
+			return config.SuggestDirs(f.paths, typed)
 		},
 		Validator: func(s string) error {
 			return config.CheckLibrary(f.libraryDir(s))

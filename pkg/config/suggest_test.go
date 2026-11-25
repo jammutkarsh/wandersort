@@ -1,4 +1,4 @@
-package cli
+package config
 
 import (
 	"os"
@@ -24,15 +24,32 @@ func TestSuggestDirsStaysOutOfALibrary(t *testing.T) {
 	paths := path.New()
 
 	for _, typed := range []string{lib, filepath.Join(lib, "2025"), filepath.Join(lib, "20")} {
-		if got := suggestDirs(paths, typed); len(got) != 0 {
-			t.Errorf("suggestDirs(%q) = %v, want nothing from inside the library", typed, got)
+		if got := SuggestDirs(paths, typed); len(got) != 0 {
+			t.Errorf("SuggestDirs(%q) = %v, want nothing from inside the library", typed, got)
 		}
 	}
-	got := suggestDirs(paths, filepath.Join(root, "other"))
+	got := SuggestDirs(paths, filepath.Join(root, "other"))
 	if len(got) != 1 || !strings.HasSuffix(got[0], "photos") {
-		t.Errorf("suggestDirs(other) = %v, want its photos folder", got)
+		t.Errorf("SuggestDirs(other) = %v, want its photos folder", got)
 	}
-	if got := suggestDirs(paths, filepath.Join(root, "li")); len(got) != 1 || !strings.HasSuffix(got[0], "lib") {
+	if got := SuggestDirs(paths, filepath.Join(root, "li")); len(got) != 1 || !strings.HasSuffix(got[0], "lib") {
 		t.Errorf("the library folder itself is still offered, got %v", got)
+	}
+}
+
+func TestIsBundleDir(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"Photos.app", true},
+		{"PHOTOS.APP", true},
+		{"Pictures", false},
+		{"archive.zip", false},
+	}
+	for _, tt := range tests {
+		if got := isBundleDir(tt.name); got != tt.want {
+			t.Errorf("isBundleDir(%q) = %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }
