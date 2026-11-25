@@ -28,7 +28,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # PAT with contents:write on jammutkarsh/homebrew-tap + scoop-bucket.
-          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          TAP_GITHUB_TOKEN: ${{ secrets.GH_TAP_TOKEN }}
 
   # Unsigned macOS .pkg (GoReleaser has no native .pkg; pkgbuild ships with macOS).
   macos-pkg:

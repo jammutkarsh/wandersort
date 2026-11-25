@@ -21,12 +21,12 @@ That triggers `.github/workflows/release.yml`, which:
 
 1. **Tap repos** (already created): `jammutkarsh/homebrew-tap`,
    `jammutkarsh/scoop-bucket`.
-2. **`TAP_GITHUB_TOKEN` secret** — GoReleaser needs a token that can push to those
+2. **`GH_TAP_TOKEN` secret** — GoReleaser needs a token that can push to those
    *other* repos (the default `GITHUB_TOKEN` can't). Create a PAT with
    `contents:write` on both tap repos (fine-grained) or classic `repo` scope, then:
 
    ```bash
-   gh secret set TAP_GITHUB_TOKEN --repo jammutkarsh/wandersort
+   gh secret set GH_TAP_TOKEN --repo jammutkarsh/wandersort
    ```
 
 ## Test before tagging
@@ -44,7 +44,7 @@ the release assets, `brew install`, and `scoop install` before cutting `v0.1.0`.
 
 Each release pushes the manifest to a `wandersort-<version>` branch on the
 `jammutkarsh/winget-pkgs` fork and opens a PR to `microsoft/winget-pkgs`.
-`TAP_GITHUB_TOKEN` must be a classic token with `public_repo` scope: a
+`GH_TAP_TOKEN` must be a classic token with `public_repo` scope: a
 fine-grained one can't open a PR on a repo you don't own. A failed PR is logged
 but doesn't fail the release. The first PR needs the Microsoft CLA signed and a
 moderator's review before `winget install jammutkarsh.wandersort` works.
