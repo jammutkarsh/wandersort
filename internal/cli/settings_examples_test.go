@@ -90,23 +90,6 @@ func TestMergeDaysDescribeAndExample(t *testing.T) {
 	}
 }
 
-func TestIsBundleDir(t *testing.T) {
-	tests := []struct {
-		name string
-		want bool
-	}{
-		{"Photos.app", true},
-		{"PHOTOS.APP", true},
-		{"Pictures", false},
-		{"archive.zip", false},
-	}
-	for _, tt := range tests {
-		if got := isBundleDir(tt.name); got != tt.want {
-			t.Errorf("isBundleDir(%q) = %v, want %v", tt.name, got, tt.want)
-		}
-	}
-}
-
 // Both answers must show the same files, so the only difference on screen is
 // the folders the answer adds or leaves out.
 func TestCollapseExampleShowsTheSameFilesBothWays(t *testing.T) {

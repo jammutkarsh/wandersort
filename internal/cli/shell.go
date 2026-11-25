@@ -977,7 +977,7 @@ func (a *app) newHomeScreen(ctx context.Context, lastScan []string) tui.HomeMode
 		pickFolder = func() (string, error) { return tui.PickFolder(ctx) }
 	}
 	return tui.NewHomeModel(tui.HomeConfig{
-		Suggest:    func(typed string) []string { return suggestDirs(paths, typed) },
+		Suggest:    func(typed string) []string { return config.SuggestDirs(paths, typed) },
 		LastScan:   lastScan,
 		History:    a.Configuration().SourceHistory(),
 		PickFolder: pickFolder,

@@ -39,9 +39,9 @@ func TestScanModel(t *testing.T) {
 		name string
 		fn   func(t *testing.T)
 	}{
-		// A finished plan asks what's next; the prefetched review is handed to
-		// the shell to keep, not opened over the question.
-		{"PlanReadyAsksWhatNext", func(t *testing.T) {
+		// A finished plan opens Organise; the review prefetched while the scan
+		// ran is handed over unopened until then.
+		{"PlanReadyOpensOrganise", func(t *testing.T) {
 			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
 			prefetched := &stubScreen{view: "review"}
 
@@ -51,12 +51,22 @@ func TestScanModel(t *testing.T) {
 					t.Errorf("the prefetch should be handed over unopened, got %#v", msg)
 				}
 			}
-			next, cmd = next.(ScanModel).Update(scanDoneMsg{})
-			if cmd != nil {
-				t.Errorf("finishing must not leave or switch by itself, got %v", flattenCmd(cmd))
+			_, cmd = next.(ScanModel).Update(scanDoneMsg{})
+			if msgs := flattenCmd(cmd); len(msgs) != 1 || msgs[0] != (SwitchMsg{Next: prefetched, Open: true}) {
+				t.Errorf("finishing = %#v, want Organise opened", msgs)
 			}
-			if v := ansi.Strip(next.View()); !strings.Contains(v, "Folders ready") || !strings.Contains(v, "Organise folders") || strings.Contains(v, "❯") {
-				t.Errorf("want the plan-ready choice:\n%s", v)
+		}},
+		// Warnings keep the plan-ready question up, so they're read before Organise.
+		{"WarningsKeepThePlanReadyScreen", func(t *testing.T) {
+			m := NewScanModel(ScanConfig{ReviewNext: reviewNext})
+			m.warnings = []string{"2 files couldn't be read"}
+			next, _ := m.Update(reviewReadyMsg{model: &stubScreen{view: "review"}})
+			next, cmd := next.(ScanModel).Update(scanDoneMsg{})
+			if cmd != nil {
+				t.Errorf("finishing with warnings must not switch, got %v", flattenCmd(cmd))
+			}
+			if v := ansi.Strip(next.View()); !strings.Contains(v, "Folders ready") || !strings.Contains(v, "Organise folders") || !strings.Contains(v, "couldn't be read") {
+				t.Errorf("want the warnings and the plan-ready choice:\n%s", v)
 			}
 		}},
 		// A scan that planned nothing to copy skips the plan-ready question and

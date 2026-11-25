@@ -675,8 +675,8 @@ func TestMergeNodesNamesTheWholeSpan(t *testing.T) {
 }
 
 // Folders whose names differ only in letter case are one folder once copied,
-// so the review treats them as one too: a rename onto a sibling's name is
-// refused, and a merge folds such children together.
+// so the review treats them as one too: a rename onto a sibling's name
+// combines the two under the sibling's name, and a merge folds such children together.
 func TestFoldersDifferingInCaseAreOne(t *testing.T) {
 	tree := func() []Node {
 		return []Node{{ID: pid("2024"), Name: "2024", Children: []Node{
@@ -691,8 +691,12 @@ func TestFoldersDifferingInCaseAreOne(t *testing.T) {
 		}}}
 	}
 
-	if _, _, err := applyEdit(tree(), Edit{Op: OpRename, Node: pid("2024/June/Beach"), To: "goa"}); !errors.Is(err, ErrNameTaken) {
-		t.Errorf("rename onto a sibling's name in another case = %v, want ErrNameTaken", err)
+	got, out, err := applyEdit(tree(), Edit{Op: OpRename, Node: pid("2024/June/Beach"), To: "goa"})
+	if err != nil || !out.Combined || out.Name != "Goa" {
+		t.Fatalf("rename onto a sibling's name in another case = %+v, %v; want combined into Goa", out, err)
+	}
+	if june := FindNode(got, pid("2024/June")); len(june.Children) != 1 || june.Children[0].Name != "Goa" {
+		t.Errorf("June holds %+v after the rename, want one Goa", june.Children)
 	}
 	if _, out, err := applyEdit(tree(), Edit{Op: OpRename, Node: pid("2024/June/Goa"), To: "GOA"}); err != nil || out.Name != "GOA" {
 		t.Errorf("recasing a folder's own name = %q, %v; want GOA", out.Name, err)
