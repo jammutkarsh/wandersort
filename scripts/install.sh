@@ -1,6 +1,6 @@
 #!/bin/sh
 # wandersort installer for macOS and Linux.
-#   curl -fsSL https://wandersort.utkarshchourasia.in/install.sh | sh
+#   curl -fsSL https://wandersort.app/install.sh | sh
 # Downloads the bare binary from the GitHub release and refuses to install it
 # unless it matches the release's checksums.txt.
 # Env overrides:
