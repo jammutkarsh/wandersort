@@ -113,16 +113,16 @@ jobs:
 
       - name: Purge Cloudflare cache
         env:
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_CACHE_PURGE_TOKEN }}
-          CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_WANDERSORT_PURGE_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CLOUDFLARE_WANDERSORT_ZONE_ID }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           curl -sf -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/purge_cache" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
             -H "Content-Type: application/json" \
             --data "{\"files\":[
-              \"https://wandersort.utkarshchourasia.in/files/exiftool-${VERSION}-windows.tar.zst\",
-              \"https://wandersort.utkarshchourasia.in/files/exiftool-${VERSION}-linux.tar.zst\",
-              \"https://wandersort.utkarshchourasia.in/files/exiftool-${VERSION}-darwin.tar.zst\",
-              \"https://wandersort.utkarshchourasia.in/files/exiftool.json\"
+              \"https://wandersort.app/files/exiftool-${VERSION}-windows.tar.zst\",
+              \"https://wandersort.app/files/exiftool-${VERSION}-linux.tar.zst\",
+              \"https://wandersort.app/files/exiftool-${VERSION}-darwin.tar.zst\",
+              \"https://wandersort.app/files/exiftool.json\"
             ]}"

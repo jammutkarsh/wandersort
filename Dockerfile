@@ -11,7 +11,7 @@ RUN apk add --no-cache curl
 
 ARG EXIFTOOL_VERSION
 RUN mkdir -p /deps \
-    && curl -fsSL "https://wandersort.utkarshchourasia.in/files/exiftool-${EXIFTOOL_VERSION}-linux.tar.gz" \
+    && curl -fsSL "https://wandersort.app/files/exiftool-${EXIFTOOL_VERSION}-linux.tar.gz" \
       | tar xz -C /deps \
     && curl -fsSL "https://locationdb.utkarshchourasia.in/location.db" \
       -o /deps/location.db

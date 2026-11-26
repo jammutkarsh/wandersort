@@ -31,7 +31,7 @@ const (
 	// windows is runtime.GOOS's value for Windows; the only one needing a branch
 	windows = "windows"
 
-	filesBaseURL        = "https://wandersort.utkarshchourasia.in/files"
+	filesBaseURL        = "https://wandersort.app/files"
 	releaseMetaFileName = "exiftool.json"
 
 	// releaseMetaTimeout bounds the whole manifest fetch, connect to last byte; it is under 1 KB

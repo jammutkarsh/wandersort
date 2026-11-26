@@ -1,10 +1,10 @@
-[![website](https://img.shields.io/badge/website-wandersort.utkarshchourasia.in-blue)](https://wandersort.utkarshchourasia.in) [![CI](https://github.com/jammutkarsh/wandersort/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jammutkarsh/wandersort/actions/workflows/ci.yml)
+[![website](https://img.shields.io/badge/website-wandersort.app-blue)](https://wandersort.app) [![CI](https://github.com/jammutkarsh/wandersort/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jammutkarsh/wandersort/actions/workflows/ci.yml)
 
 # WanderSort
 
 WanderSort is a local-first media organiser that scans your chaotic pile of photos and videos — scattered across hard drives, SD cards, and phone dumps — and structures them into a clean, human-readable folder tree you actually understand.
 
-[Read more](https://wandersort.utkarshchourasia.in/docs)
+[Read more](https://wandersort.app/docs)
 
 ## Install
 
@@ -19,7 +19,7 @@ brew install --cask jammutkarsh/tap/wandersort
 
 ```bash
 # Install script
-curl -fsSL https://wandersort.utkarshchourasia.in/install.sh | sh
+curl -fsSL https://wandersort.app/install.sh | sh
 ```
 
 ```bash
@@ -38,7 +38,7 @@ winget install jammutkarsh.wandersort
 
 ```powershell
 # Install script
-irm https://wandersort.utkarshchourasia.in/install.ps1 | iex
+irm https://wandersort.app/install.ps1 | iex
 ```
 
 ```powershell
@@ -51,7 +51,7 @@ scoop install wandersort
 
 ```bash
 # Install script
-curl -fsSL https://wandersort.utkarshchourasia.in/install.sh | sh
+curl -fsSL https://wandersort.app/install.sh | sh
 ```
 
 ```bash
